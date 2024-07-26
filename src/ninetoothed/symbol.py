@@ -4,7 +4,7 @@ import types
 
 
 class Symbol:
-    def __init__(self, expr):
+    def __init__(self, expr, constexpr=None, meta=None):
         if isinstance(expr, type(self)):
             self._node = expr._node
             return
@@ -20,6 +20,18 @@ class Symbol:
             expr = str(expr)
 
         self._node = ast.parse(expr, mode="eval").body
+
+        if (constexpr or meta) and not isinstance(self._node, ast.Name):
+            raise ValueError("`constexpr` and `meta` are properties of name symbols.")
+
+        if meta:
+            if constexpr is False:
+                raise ValueError("Non-constexpr meta symbol is not supported.")
+
+            self._node.id = type(self)._create_meta(self._node.id)
+
+        if constexpr:
+            self._node.id = type(self)._create_constexpr(self._node.id)
 
     def __add__(self, other):
         return type(self)(
@@ -79,3 +91,19 @@ class Symbol:
                 return node
 
         return SliceSimplifier().visit(self._node)
+
+    @staticmethod
+    def is_constexpr(name):
+        return name.startswith("_ninetoothed_constexpr_") or Symbol.is_meta(name)
+
+    @staticmethod
+    def is_meta(name):
+        return name.startswith("_ninetoothed_meta_")
+
+    @staticmethod
+    def _create_constexpr(name):
+        return f"_ninetoothed_constexpr_{name}"
+
+    @staticmethod
+    def _create_meta(name):
+        return f"_ninetoothed_meta_{name}"

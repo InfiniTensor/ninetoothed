@@ -5,6 +5,7 @@ import itertools
 import tempfile
 
 from ninetoothed.language import attribute, call
+from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
 
@@ -38,18 +39,23 @@ class CodeGenerator(ast.NodeTransformer):
 
         names_of_args = [arg.names() - {"ninetoothed"} for arg in self._args]
         names = functools.reduce(lambda x, y: x | y, names_of_args)
-        shared_names = functools.reduce(lambda x, y: x & y, names_of_args, names)
-        unshared_names = [name for name in names if name not in shared_names]
+        meta_names = {name for name in names if Symbol.is_meta(name)}
+        non_meta_names = {name for name in names if name not in meta_names}
 
-        node.args = [ast.arg(name) for name in unshared_names] + [
+        node.args = [
+            ast.arg(arg=name)
+            if not Symbol.is_constexpr(name)
+            else ast.arg(arg=name, annotation=attribute("constexpr"))
+            for name in non_meta_names
+        ] + [
             ast.arg(arg=name, annotation=attribute("constexpr").node)
-            for name in shared_names
+            for name in meta_names
         ]
 
-        autotune = self._generate_autotune(unshared_names, shared_names)
+        autotune = self._generate_autotune(non_meta_names, meta_names)
         self._func_def.decorator_list.insert(0, autotune)
 
-        self._launch = self._generate_launch(unshared_names, shared_names)
+        self._launch = self._generate_launch(non_meta_names, meta_names)
 
         return node
 
