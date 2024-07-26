@@ -121,6 +121,10 @@ class Tensor:
 
         return self.strides[dim]
 
+    @staticmethod
+    def is_pointer(name):
+        return name.endswith("_ptr")
+
     def _pointer(self):
         return f"{self.name}_ptr"
 

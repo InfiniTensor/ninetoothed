@@ -5,6 +5,7 @@ import itertools
 import tempfile
 
 from ninetoothed.language import attribute, call
+from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
 
 
@@ -115,7 +116,11 @@ class CodeGenerator(ast.NodeTransformer):
                 ast.keyword(
                     arg="key",
                     value=ast.List(
-                        elts=[ast.Constant(value=param) for param in params],
+                        elts=[
+                            ast.Constant(value=param)
+                            for param in params
+                            if not Tensor.is_pointer(param)
+                        ],
                         ctx=ast.Load(),
                     ),
                 ),
