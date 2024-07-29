@@ -73,7 +73,10 @@ class CodeGenerator(ast.NodeTransformer):
             value = self._context[node.value.id]
 
             if isinstance(value, Tensor):
-                indices = value.indices() + tuple(node.slice.elts)
+                if isinstance(node.slice, ast.Tuple):
+                    indices = value.indices() + tuple(node.slice.elts)
+                else:
+                    indices = value.indices() + (node.slice,)
                 offsets = value.offsets(indices)
                 pointers = value.pointers(offsets)
 
