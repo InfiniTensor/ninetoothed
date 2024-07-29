@@ -53,7 +53,12 @@ class Tensor:
 
         return type(self)(
             shape=outer_shape,
-            dtype=type(self)(shape=inner_shape, strides=inner_strides, name=self.name),
+            dtype=type(self)(
+                shape=inner_shape,
+                dtype=self.dtype,
+                strides=inner_strides,
+                name=self.name,
+            ),
             strides=outer_strides,
             name=self.name,
         )
@@ -63,6 +68,7 @@ class Tensor:
             {self._pointer()}
             | {name for size in self.shape for name in size.names()}
             | {name for stride in self.strides for name in stride.names()}
+            | (self.dtype.names() if isinstance(self.dtype, type(self)) else set())
         )
 
     def pointers(self, offsets=None):

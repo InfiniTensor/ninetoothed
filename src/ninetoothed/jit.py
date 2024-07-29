@@ -2,6 +2,7 @@ import ast
 import functools
 import inspect
 import itertools
+import math
 import tempfile
 
 from ninetoothed.language import attribute, call
@@ -18,7 +19,11 @@ class CodeGenerator(ast.NodeTransformer):
 
         self._args = list(self._context.values())
 
-        self._power_of_twos = tuple(2**n for n in range(5, 11))
+        self._POWER_OF_TWOS = tuple(2**n for n in range(5, 11))
+
+        self._MIN_PRODUCT = 2**10
+
+        self._MAX_PRODUCT = 2**20
 
     def visit_Module(self, node):
         self.generic_visit(node)
@@ -59,6 +64,38 @@ class CodeGenerator(ast.NodeTransformer):
 
         return node
 
+    def visit_Subscript(self, node):
+        if (
+            isinstance(node.value, ast.Name)
+            and node.value.id in self._context
+            and isinstance(node.ctx, ast.Load)
+        ):
+            value = self._context[node.value.id]
+
+            if isinstance(value, Tensor):
+                indices = value.indices() + tuple(node.slice.elts)
+                offsets = value.offsets(indices)
+                pointers = value.pointers(offsets)
+
+                return call("load", pointers).node
+
+        self.generic_visit(node)
+
+        return node
+
+    def visit_Attribute(self, node):
+        if isinstance(node.value, ast.Name) and node.value.id in self._context:
+            value = self._context[node.value.id]
+
+            if isinstance(value, Tensor):
+                inner = value.dtype
+
+                return Symbol(inner.__dict__[node.attr]).node
+
+        self.generic_visit(node)
+
+        return node
+
     def visit_Name(self, node):
         self.generic_visit(node)
 
@@ -96,12 +133,13 @@ class CodeGenerator(ast.NodeTransformer):
                 args=[
                     ast.Dict(
                         keys=[ast.Constant(value=param) for param in meta],
-                        values=[ast.Constant(value=value) for value in permutation],
+                        values=[ast.Constant(value=value) for value in values],
                     )
                 ],
                 keywords=[],
             )
-            for permutation in itertools.permutations(self._power_of_twos, len(meta))
+            for values in itertools.product(self._POWER_OF_TWOS, repeat=len(meta))
+            if self._MIN_PRODUCT <= math.prod(values) <= self._MAX_PRODUCT
         ]
 
         return ast.Call(
