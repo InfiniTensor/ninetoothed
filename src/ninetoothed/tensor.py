@@ -1,3 +1,5 @@
+import itertools
+
 from ninetoothed.language import call
 from ninetoothed.symbol import Symbol
 
@@ -63,11 +65,30 @@ class Tensor:
             name=self.name,
         )
 
+    def expand(self, shape):
+        # TODO: Add error handling.
+        return type(self)(
+            shape=[
+                new_size if new_size != -1 else size
+                for size, new_size in zip(self.shape, shape)
+            ],
+            dtype=self.dtype,
+            strides=[
+                stride if new_size == -1 else 0
+                for new_size, stride in zip(shape, self.strides)
+            ],
+            name=self.name,
+        )
+
     def names(self):
         return (
             {self._pointer()}
-            | {name for size in self.shape for name in size.names()}
-            | {name for stride in self.strides for name in stride.names()}
+            | {
+                name
+                for value in itertools.chain(self.shape, self.strides)
+                if isinstance(value, Symbol)
+                for name in value.names()
+            }
             | (self.dtype.names() if isinstance(self.dtype, type(self)) else set())
         )
 
