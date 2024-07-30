@@ -4,6 +4,7 @@ import inspect
 import itertools
 import math
 import tempfile
+import textwrap
 
 from ninetoothed.language import attribute, call
 from ninetoothed.symbol import Symbol
@@ -288,7 +289,7 @@ class Tritonizer(ast.NodeTransformer):
 
 
 def jit(func):
-    source = inspect.getsource(func)
+    source = textwrap.dedent(inspect.getsource(func))
     tree = ast.parse(source)
 
     CodeGenerator(func.__annotations__).visit(tree)
