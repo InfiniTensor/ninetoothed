@@ -108,20 +108,47 @@ class CodeGenerator(ast.NodeTransformer):
         return node
 
     def visit_Assign(self, node):
-        self.generic_visit(node)
+        if len(node.targets) == 1:
+            target = node.targets[0]
 
-        if (
-            len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id in self._context
-        ):
-            return ast.Expr(
-                call(
-                    "store",
-                    self._context[node.targets[0].id].pointers().node,
-                    node.value,
-                ).node
-            )
+            if isinstance(target, ast.Name) and target.id in self._context:
+                self.generic_visit(node)
+
+                return ast.Expr(
+                    call(
+                        "store",
+                        self._context[target.id].pointers().node,
+                        node.value,
+                    ).node
+                )
+            elif (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and target.value.id in self._context
+                and isinstance(target.ctx, ast.Store)
+            ):
+                value = self._context[target.value.id]
+
+                if isinstance(value, Tensor):
+                    self.generic_visit(node)
+
+                    indices = value.indices() + tuple(
+                        target.slice.elts
+                        if isinstance(target.slice, ast.Tuple)
+                        else target.slice
+                    )
+                    offsets = value.offsets(indices)
+                    pointers = value.pointers(offsets)
+
+                    return ast.Expr(
+                        call(
+                            "store",
+                            pointers.node,
+                            node.value,
+                        ).node
+                    )
+
+        self.generic_visit(node)
 
         return node
 
