@@ -2,6 +2,8 @@
 
 一种基于 Triton 但提供更高层抽象的领域特定语言（DSL）。
 
+**其他语言版本: [English](../README.md)、[简体中文](README.zh.md)。**
+
 ## 安装
 
 由于现在 `ninetoothed` 还没有进入到 PyPI，我们需要手动 `git clone` 本仓库，再 `pip install`。
