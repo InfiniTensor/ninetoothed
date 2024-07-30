@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ninetoothed"
+version = "0.1.0"
+authors = [{ name = "Jiacheng Huang", email = "huangjiacheng0709@outlook.com" }]
+description = "A domain-specific language based on Triton but providing higher-level abstraction."
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/InfiniTensor/ninetoothed"
+Issues = "https://github.com/InfiniTensor/ninetoothed/issues"
