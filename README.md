@@ -2,7 +2,7 @@
 
 A domain-specific language (DSL) based on Triton but providing higher-level abstractions.
 
-**Other language versions: [English](README.md), [Simplified Chinese](docs/README.zh.md).**
+**Other language versions: [English](README.md), [简体中文](docs/README.zh.md).**
 
 ## Installation
 
