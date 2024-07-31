@@ -6,20 +6,13 @@ A domain-specific language (DSL) based on Triton but providing higher-level abst
 
 ## Installation
 
-Since `ninetoothed` is not yet available on PyPI, we need to manually `git clone` this repository and then `pip install`.
+We can use `pip` to install `ninetoothed`.
 
 ```shell
-git clone https://github.com/InfiniTensor/ninetoothed.git
-pip install ./ninetoothed
+pip install ninetoothed
 ```
 
-After successfully running the above two commands, `ninetoothed` will be installed. Note that we haven't added any dependency management yet, so if you want to run the compiled kernel functions, you should at least install Triton.
-
-```shell
-pip install triton
-```
-
-Other packages can be installed as needed, such as `torch`, `matplotlib`, `pandas`, etc.
+After successfully running the above command, `ninetoothed` will be installed. However, to fully utilize its capabilities, you also need to install `triton` and a deep learning framework supported by `ninetoothed`. For trial purposes, we recommend installing `triton` and `torch`.
 
 ## Usage
 

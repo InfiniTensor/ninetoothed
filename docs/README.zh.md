@@ -6,20 +6,13 @@
 
 ## 安装
 
-由于现在 `ninetoothed` 还没有进入到 PyPI，我们需要手动 `git clone` 本仓库，再 `pip install`。
+我们可以使用 `pip` 安装 `ninetoothed`。
 
 ```shell
-git clone https://github.com/InfiniTensor/ninetoothed.git
-pip install ./ninetoothed
+pip install ninetoothed
 ```
 
-成功运行完以上两个命令之后，`ninetoothed` 就被安装好了。需要注意的是，我们目前还没有加入任何的依赖管理，所以如果想要运行编译好的核函数，那么最起码应该再安装 Triton。
-
-```shell
-pip install triton
-```
-
-其余包可以根据需要自行安装，如 `torch`、`matplotlib`、`pandas` 等。
+成功运行完以上两个命令之后，`ninetoothed` 就被安装好了。但是除了 `ninetoothed` 的本体之外，如果我们想要真正发挥它的作用，至少还需要安装 `triton` 和一个 `ninetoothed` 所支持的深度学习框架。以尝试为目的的话，我们推荐安装 `triton` 和 `torch`。
 
 ## 使用
 
