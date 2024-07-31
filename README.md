@@ -1,4 +1,4 @@
-# Nine-Toothed
+# NineToothed
 
 A domain-specific language (DSL) based on Triton but providing higher-level abstractions.
 
