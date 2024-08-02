@@ -1,4 +1,5 @@
 import ast
+import collections
 import functools
 import inspect
 import itertools
@@ -10,6 +11,67 @@ from ninetoothed.language import attribute, call
 from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
+
+
+def jit(func):
+    return JIT(func)()
+
+
+class JIT:
+    handles = collections.defaultdict(dict)
+
+    def __init__(self, func):
+        self.func = func
+
+    def __call__(self):
+        source_file = inspect.getsourcefile(self.func)
+        source_line = inspect.getsourcelines(self.func)[1]
+
+        if (
+            source_file in type(self).handles
+            and source_line in type(self).handles[source_file]
+        ):
+            return type(self).handles[source_file][source_line]
+
+        source = textwrap.dedent(inspect.getsource(self.func))
+        tree = ast.parse(source)
+
+        CodeGenerator(inspect.get_annotations(self.func)).visit(tree)
+        Tritonizer().visit(tree)
+        ast.fix_missing_locations(tree)
+
+        unparsed = ast.unparse(tree).replace("None:", ":").replace(":None", ":")
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
+            temp_file.write(unparsed.encode("utf-8"))
+            temp_file_name = temp_file.name
+
+        with open(temp_file_name, "r") as temp_file:
+            code = compile(
+                source=temp_file.read(),
+                filename=temp_file_name,
+                mode="exec",
+            )
+
+        namespace = {}
+        exec(code, namespace)
+
+        class Handle:
+            def __init__(self, kernel, launch):
+                self._kernel = kernel
+                self._launch = launch
+
+            def __call__(self, *args, **kwargs):
+                return self._launch(*args, **kwargs)
+
+        handle = Handle(
+            namespace[self.func.__name__],
+            namespace[f"launch_{self.func.__name__}"],
+        )
+
+        type(self).handles[source_file][source_line] = handle
+
+        return handle
 
 
 class CodeGenerator(ast.NodeTransformer):
@@ -286,34 +348,3 @@ class Tritonizer(ast.NodeTransformer):
             )
 
         return node
-
-
-def jit(func):
-    source = textwrap.dedent(inspect.getsource(func))
-    tree = ast.parse(source)
-
-    CodeGenerator(func.__annotations__).visit(tree)
-    Tritonizer().visit(tree)
-    ast.fix_missing_locations(tree)
-
-    unparsed = ast.unparse(tree).replace("None:", ":").replace(":None", ":")
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
-        temp_file.write(unparsed.encode("utf-8"))
-        temp_file_name = temp_file.name
-
-    with open(temp_file_name, "r") as temp_file:
-        code = compile(source=temp_file.read(), filename=temp_file_name, mode="exec")
-
-    namespace = {}
-    exec(code, namespace)
-
-    class Handle:
-        def __init__(self, kernel, launch):
-            self._kernel = kernel
-            self._launch = launch
-
-        def __call__(self, *args, **kwargs):
-            return self._launch(*args, **kwargs)
-
-    return Handle(namespace[func.__name__], namespace[f"launch_{func.__name__}"])
