@@ -46,7 +46,7 @@ class Tensor:
             new_size = call("cdiv", size, tile_size)
             outer_shape.append(new_size)
 
-            new_stride = call("cdiv", stride * size, (new_size * tile_stride))
+            new_stride = stride * tile_size // tile_stride
             outer_strides.append(new_stride)
 
             inner_shape.append(tile_size)
