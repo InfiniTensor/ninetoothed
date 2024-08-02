@@ -43,26 +43,25 @@ def matmul(lhs, rhs):
     return output
 
 
-class TestMatMul:
+@skip_if_cuda_not_available
+class TestCUDA:
     @classmethod
     def setup_class(cls):
         torch.manual_seed(0)
 
         shape = (512, 512)
 
-        cls.lhs = torch.randn(shape, device="cuda", dtype=torch.float16)
-        cls.rhs = torch.randn(shape, device="cuda", dtype=torch.float16)
+        cls.lhs = torch.randn(shape, device="cuda")
+        cls.rhs = torch.randn(shape, device="cuda")
 
-    @skip_if_cuda_not_available
-    def test_cuda_fp16(self):
-        lhs = type(self).lhs
-        rhs = type(self).rhs
+    def test_fp16(self):
+        lhs = type(self).lhs.to(torch.float16)
+        rhs = type(self).rhs.to(torch.float16)
 
         assert torch.allclose(matmul(lhs, rhs), torch.matmul(lhs, rhs))
 
-    @skip_if_cuda_not_available
     @skip_if_float8_e5m2_not_supported
-    def test_cuda_fp8(self):
+    def test_fp8(self):
         lhs = type(self).lhs.to(torch.float8_e5m2)
         rhs = type(self).rhs.T.to(torch.float8_e5m2)
 

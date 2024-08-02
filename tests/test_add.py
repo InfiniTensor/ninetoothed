@@ -23,7 +23,8 @@ def add(lhs, rhs):
     return output
 
 
-class TestAdd:
+@skip_if_cuda_not_available
+class TestCUDA:
     @classmethod
     def setup_class(cls):
         torch.manual_seed(0)
@@ -33,9 +34,8 @@ class TestAdd:
         cls.lhs = torch.rand(size, device="cuda")
         cls.rhs = torch.rand(size, device="cuda")
 
-    @skip_if_cuda_not_available
-    def test_cuda(self):
-        lhs = type(self).lhs
-        rhs = type(self).rhs
+    def test_fp32(self):
+        lhs = type(self).lhs.to(torch.float32)
+        rhs = type(self).rhs.to(torch.float32)
 
         assert torch.allclose(add(lhs, rhs), lhs + rhs)
