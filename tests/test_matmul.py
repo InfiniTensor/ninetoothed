@@ -1,5 +1,3 @@
-import unittest
-
 import ninetoothed
 import torch
 from ninetoothed import Symbol, Tensor
@@ -45,9 +43,9 @@ def matmul(lhs, rhs):
     return output
 
 
-class TestMatMul(unittest.TestCase):
+class TestMatMul:
     @classmethod
-    def setUpClass(cls):
+    def setup_class(cls):
         torch.manual_seed(0)
 
         shape = (512, 512)
@@ -60,7 +58,7 @@ class TestMatMul(unittest.TestCase):
         lhs = type(self).lhs
         rhs = type(self).rhs
 
-        self.assertTrue(torch.allclose(matmul(lhs, rhs), torch.matmul(lhs, rhs)))
+        assert torch.allclose(matmul(lhs, rhs), torch.matmul(lhs, rhs))
 
     @skip_if_cuda_not_available
     @skip_if_float8_e5m2_not_supported
@@ -68,14 +66,8 @@ class TestMatMul(unittest.TestCase):
         lhs = type(self).lhs.to(torch.float8_e5m2)
         rhs = type(self).rhs.T.to(torch.float8_e5m2)
 
-        self.assertTrue(
-            torch.allclose(
-                matmul(lhs, rhs),
-                torch.matmul(lhs.to(torch.float16), rhs.to(torch.float16)),
-                atol=0.125,
-            )
+        assert torch.allclose(
+            matmul(lhs, rhs),
+            torch.matmul(lhs.to(torch.float16), rhs.to(torch.float16)),
+            atol=0.125,
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

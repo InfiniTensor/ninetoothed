@@ -1,5 +1,3 @@
-import unittest
-
 import ninetoothed
 import torch
 from ninetoothed import Symbol, Tensor
@@ -25,9 +23,9 @@ def add(lhs, rhs):
     return output
 
 
-class TestAdd(unittest.TestCase):
+class TestAdd:
     @classmethod
-    def setUpClass(cls):
+    def setup_class(cls):
         torch.manual_seed(0)
 
         size = 98432
@@ -40,8 +38,4 @@ class TestAdd(unittest.TestCase):
         lhs = type(self).lhs
         rhs = type(self).rhs
 
-        self.assertTrue(torch.allclose(add(lhs, rhs), lhs + rhs))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert torch.allclose(add(lhs, rhs), lhs + rhs)
