@@ -4,6 +4,8 @@ import ninetoothed
 import torch
 from ninetoothed import Symbol, Tensor
 
+from tests.skippers import skip_if_cuda_not_available, skip_if_float8_e5m2_not_supported
+
 
 def matmul(lhs, rhs):
     BLOCK_SIZE_M = Symbol("BLOCK_SIZE_M", meta=True)
@@ -44,16 +46,35 @@ def matmul(lhs, rhs):
 
 
 class TestMatMul(unittest.TestCase):
-    @unittest.skipIf(not torch.cuda.is_available, "CUDA is not available")
-    def test_cuda(self):
+    @classmethod
+    def setUpClass(cls):
         torch.manual_seed(0)
 
         shape = (512, 512)
 
-        lhs = torch.randn(shape, device="cuda", dtype=torch.float16)
-        rhs = torch.randn(shape, device="cuda", dtype=torch.float16)
+        cls.lhs = torch.randn(shape, device="cuda", dtype=torch.float16)
+        cls.rhs = torch.randn(shape, device="cuda", dtype=torch.float16)
+
+    @skip_if_cuda_not_available
+    def test_cuda_fp16(self):
+        lhs = type(self).lhs
+        rhs = type(self).rhs
 
         self.assertTrue(torch.allclose(matmul(lhs, rhs), torch.matmul(lhs, rhs)))
+
+    @skip_if_cuda_not_available
+    @skip_if_float8_e5m2_not_supported
+    def test_cuda_fp8(self):
+        lhs = type(self).lhs.to(torch.float8_e5m2)
+        rhs = type(self).rhs.T.to(torch.float8_e5m2)
+
+        self.assertTrue(
+            torch.allclose(
+                matmul(lhs, rhs),
+                torch.matmul(lhs.to(torch.float16), rhs.to(torch.float16)),
+                atol=0.125,
+            )
+        )
 
 
 if __name__ == "__main__":

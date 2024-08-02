@@ -4,6 +4,8 @@ import ninetoothed
 import torch
 from ninetoothed import Symbol, Tensor
 
+from tests.skippers import skip_if_cuda_not_available
+
 
 def add(lhs, rhs):
     BLOCK_SIZE = Symbol("BLOCK_SIZE", meta=True)
@@ -24,14 +26,19 @@ def add(lhs, rhs):
 
 
 class TestAdd(unittest.TestCase):
-    @unittest.skipIf(not torch.cuda.is_available, "CUDA is not available")
-    def test_cuda(self):
+    @classmethod
+    def setUpClass(cls):
         torch.manual_seed(0)
 
         size = 98432
 
-        lhs = torch.rand(size, device="cuda")
-        rhs = torch.rand(size, device="cuda")
+        cls.lhs = torch.rand(size, device="cuda")
+        cls.rhs = torch.rand(size, device="cuda")
+
+    @skip_if_cuda_not_available
+    def test_cuda(self):
+        lhs = type(self).lhs
+        rhs = type(self).rhs
 
         self.assertTrue(torch.allclose(add(lhs, rhs), lhs + rhs))
 
