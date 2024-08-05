@@ -100,6 +100,18 @@ class CodeGenerator(ast.NodeTransformer):
 
         self.generic_visit(node)
 
+        for arg in self._args:
+            if not isinstance(arg, Tensor):
+                continue
+
+            node.body.insert(
+                0,
+                ast.Assign(
+                    targets=[Symbol(f"{arg.name}_ptrs").node],
+                    value=arg.pointers().node,
+                ),
+            )
+
         return node
 
     def visit_arguments(self, node):
@@ -136,12 +148,12 @@ class CodeGenerator(ast.NodeTransformer):
             value = self._context[node.value.id]
 
             if isinstance(value, Tensor):
-                if isinstance(node.slice, ast.Tuple):
-                    indices = value.indices() + tuple(node.slice.elts)
-                else:
-                    indices = value.indices() + (node.slice,)
-                offsets = value.offsets(indices)
-                pointers = value.pointers(offsets)
+                pointers = type(self)._create_pointers(
+                    value,
+                    node.slice.elts
+                    if isinstance(node.slice, ast.Tuple)
+                    else (node.slice,),
+                )
 
                 return call("load", pointers).node
 
@@ -166,7 +178,9 @@ class CodeGenerator(ast.NodeTransformer):
         self.generic_visit(node)
 
         if node.id in self._context and isinstance(node.ctx, ast.Load):
-            return call("load", self._context[node.id].pointers().node).node
+            return call(
+                "load", type(self)._create_pointers(self._context[node.id], ()).node
+            ).node
 
         return node
 
@@ -180,7 +194,7 @@ class CodeGenerator(ast.NodeTransformer):
                 return ast.Expr(
                     call(
                         "store",
-                        self._context[target.id].pointers().node,
+                        type(self)._create_pointers(self._context[target.id], ()).node,
                         node.value,
                     ).node
                 )
@@ -195,13 +209,12 @@ class CodeGenerator(ast.NodeTransformer):
                 if isinstance(value, Tensor):
                     self.generic_visit(node)
 
-                    indices = value.indices() + tuple(
+                    pointers = type(self)._create_pointers(
+                        value,
                         target.slice.elts
                         if isinstance(target.slice, ast.Tuple)
-                        else target.slice
+                        else (target.slice,),
                     )
-                    offsets = value.offsets(indices)
-                    pointers = value.pointers(offsets)
 
                     return ast.Expr(
                         call(
@@ -315,6 +328,14 @@ class CodeGenerator(ast.NodeTransformer):
         num_elements = functools.reduce(lambda x, y: x * y, self._args[0].shape)
 
         return ast.parse(f"lambda meta: ({num_elements},)", mode="eval").body
+
+    @staticmethod
+    def _create_pointers(tensor, indices):
+        return Symbol(f"{tensor.name}_ptrs") + tensor.offsets(
+            [0 for _ in range(tensor.ndim())]
+            + list(indices)
+            + [0 for _ in range(tensor.inmost().ndim())]
+        )
 
 
 class Tritonizer(ast.NodeTransformer):
