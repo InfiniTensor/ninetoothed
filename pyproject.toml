@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ninetoothed"
-version = "0.1.1"
+version = "0.2.0"
 authors = [{ name = "Jiacheng Huang", email = "huangjiacheng0709@outlook.com" }]
 description = "A domain-specific language based on Triton but providing higher-level abstraction."
 readme = "README.md"
@@ -18,3 +18,9 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/InfiniTensor/ninetoothed"
 Issues = "https://github.com/InfiniTensor/ninetoothed/issues"
+
+[tool.ruff]
+src = [".", "src", "tests"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

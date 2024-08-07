@@ -34,24 +34,47 @@ class Symbol:
             self._node.id = type(self)._create_constexpr(self._node.id)
 
     def __add__(self, other):
-        return type(self)(
-            ast.BinOp(left=self._node, op=ast.Add(), right=type(self)(other)._node)
-        )
+        other = type(self)(other)
+
+        if isinstance(self._node, ast.Constant) and self._node.value == 0:
+            return other
+
+        if isinstance(other._node, ast.Constant) and other._node.value == 0:
+            return self
+
+        return type(self)(ast.BinOp(left=self._node, op=ast.Add(), right=other._node))
 
     def __radd__(self, other):
         return self.__add__(other)
 
     def __mul__(self, other):
-        return type(self)(
-            ast.BinOp(left=self._node, op=ast.Mult(), right=type(self)(other)._node)
-        )
+        other = type(self)(other)
+
+        if isinstance(self._node, ast.Constant) and self._node.value == 0:
+            return type(self)(0)
+
+        if isinstance(other._node, ast.Constant) and other._node.value == 0:
+            return type(self)(0)
+
+        if isinstance(self._node, ast.Constant) and self._node.value == 1:
+            return other
+
+        if isinstance(other._node, ast.Constant) and other._node.value == 1:
+            return self
+
+        return type(self)(ast.BinOp(left=self._node, op=ast.Mult(), right=other._node))
 
     def __rmul__(self, other):
         return self.__mul__(other)
 
     def __floordiv__(self, other):
+        other = type(self)(other)
+
+        if isinstance(other._node, ast.Constant) and other._node.value == 1:
+            return self
+
         return type(self)(
-            ast.BinOp(left=self._node, op=ast.FloorDiv(), right=type(self)(other)._node)
+            ast.BinOp(left=self._node, op=ast.FloorDiv(), right=other._node)
         )
 
     def __mod__(self, other):

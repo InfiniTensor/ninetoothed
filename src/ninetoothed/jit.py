@@ -5,7 +5,6 @@ import inspect
 import itertools
 import math
 import tempfile
-import textwrap
 
 from ninetoothed.language import attribute, call
 from ninetoothed.symbol import Symbol
@@ -33,8 +32,7 @@ class JIT:
         ):
             return type(self).handles[source_file][source_line]
 
-        source = textwrap.dedent(inspect.getsource(self.func))
-        tree = ast.parse(source)
+        tree = self._get_tree()
 
         CodeGenerator(inspect.get_annotations(self.func)).visit(tree)
         Tritonizer().visit(tree)
@@ -56,15 +54,7 @@ class JIT:
         namespace = {}
         exec(code, namespace)
 
-        class Handle:
-            def __init__(self, kernel, launch):
-                self._kernel = kernel
-                self._launch = launch
-
-            def __call__(self, *args, **kwargs):
-                return self._launch(*args, **kwargs)
-
-        handle = Handle(
+        handle = _Handle(
             namespace[self.func.__name__],
             namespace[f"launch_{self.func.__name__}"],
         )
@@ -72,6 +62,15 @@ class JIT:
         type(self).handles[source_file][source_line] = handle
 
         return handle
+
+    def _get_tree(self):
+        module = ast.parse(inspect.getsource(inspect.getmodule(self.func)))
+
+        _AliasRestorer().visit(module)
+        finder = _FunctionDefFinder(self.func.__name__)
+        finder.visit(module)
+
+        return ast.Module(body=[finder.result], type_ignores=[])
 
 
 class CodeGenerator(ast.NodeTransformer):
@@ -99,6 +98,18 @@ class CodeGenerator(ast.NodeTransformer):
         self._func_def = node
 
         self.generic_visit(node)
+
+        for arg in self._args:
+            if not isinstance(arg, Tensor):
+                continue
+
+            node.body.insert(
+                0,
+                ast.Assign(
+                    targets=[Symbol(f"{arg.name}_ptrs").node],
+                    value=arg.pointers().node,
+                ),
+            )
 
         return node
 
@@ -136,12 +147,12 @@ class CodeGenerator(ast.NodeTransformer):
             value = self._context[node.value.id]
 
             if isinstance(value, Tensor):
-                if isinstance(node.slice, ast.Tuple):
-                    indices = value.indices() + tuple(node.slice.elts)
-                else:
-                    indices = value.indices() + (node.slice,)
-                offsets = value.offsets(indices)
-                pointers = value.pointers(offsets)
+                pointers = type(self)._create_pointers(
+                    value,
+                    node.slice.elts
+                    if isinstance(node.slice, ast.Tuple)
+                    else (node.slice,),
+                )
 
                 return call("load", pointers).node
 
@@ -166,7 +177,9 @@ class CodeGenerator(ast.NodeTransformer):
         self.generic_visit(node)
 
         if node.id in self._context and isinstance(node.ctx, ast.Load):
-            return call("load", self._context[node.id].pointers().node).node
+            return call(
+                "load", type(self)._create_pointers(self._context[node.id], ()).node
+            ).node
 
         return node
 
@@ -180,7 +193,7 @@ class CodeGenerator(ast.NodeTransformer):
                 return ast.Expr(
                     call(
                         "store",
-                        self._context[target.id].pointers().node,
+                        type(self)._create_pointers(self._context[target.id], ()).node,
                         node.value,
                     ).node
                 )
@@ -195,13 +208,12 @@ class CodeGenerator(ast.NodeTransformer):
                 if isinstance(value, Tensor):
                     self.generic_visit(node)
 
-                    indices = value.indices() + tuple(
+                    pointers = type(self)._create_pointers(
+                        value,
                         target.slice.elts
                         if isinstance(target.slice, ast.Tuple)
-                        else target.slice
+                        else (target.slice,),
                     )
-                    offsets = value.offsets(indices)
-                    pointers = value.pointers(offsets)
 
                     return ast.Expr(
                         call(
@@ -316,6 +328,14 @@ class CodeGenerator(ast.NodeTransformer):
 
         return ast.parse(f"lambda meta: ({num_elements},)", mode="eval").body
 
+    @staticmethod
+    def _create_pointers(tensor, indices):
+        return Symbol(f"{tensor.name}_ptrs") + tensor.offsets(
+            [0 for _ in range(tensor.ndim())]
+            + list(indices)
+            + [0 for _ in range(tensor.inmost().ndim())]
+        )
+
 
 class Tritonizer(ast.NodeTransformer):
     def visit_Module(self, node):
@@ -329,8 +349,8 @@ class Tritonizer(ast.NodeTransformer):
     def visit_Name(self, node):
         self.generic_visit(node)
 
-        if node.id == "ninetoothed":
-            node.id = "triton"
+        if node.id == "ninetoothed" or "ninetoothed." in node.id:
+            node.id = node.id.replace("ninetoothed", "triton")
 
         return node
 
@@ -348,3 +368,73 @@ class Tritonizer(ast.NodeTransformer):
             )
 
         return node
+
+
+class _Handle:
+    def __init__(self, kernel, launch):
+        self._kernel = kernel
+        self._launch = launch
+
+    def __call__(self, *args, **kwargs):
+        return self._launch(*args, **kwargs)
+
+
+class _AliasRestorer(ast.NodeTransformer):
+    def __init__(self):
+        super().__init__()
+
+        self._aliases = {}
+        self._redefined = set()
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            if alias.asname:
+                self._aliases[alias.asname] = alias.name
+
+        return node
+
+    def visit_ImportFrom(self, node):
+        for alias in node.names:
+            full_name = f"{node.module}.{alias.name}"
+            if alias.asname:
+                self._aliases[alias.asname] = full_name
+
+        return node
+
+    def visit_Assign(self, node):
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                self._redefined.add(target.id)
+
+        return self.generic_visit(node)
+
+    def visit_FunctionDef(self, node):
+        original_redefined = self._redefined.copy()
+
+        self.generic_visit(node)
+
+        self._redefined = original_redefined
+
+        return node
+
+    def visit_Name(self, node):
+        if node.id in self._redefined:
+            return node
+
+        if node.id in self._aliases:
+            return ast.Name(id=self._aliases[node.id], ctx=node.ctx)
+
+        return node
+
+
+class _FunctionDefFinder(ast.NodeVisitor):
+    def __init__(self, name):
+        self._name = name
+
+        self.result = None
+
+    def visit_FunctionDef(self, node):
+        if node.name == self._name:
+            self.result = node
+
+        self.generic_visit(node)

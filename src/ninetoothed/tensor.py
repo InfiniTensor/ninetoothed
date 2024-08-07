@@ -103,11 +103,12 @@ class Tensor:
             indices = self.indices()
 
         if not isinstance(self.dtype, type(self)):
-            if indices:
+            if len(indices) != self.ndim():
                 raise IndexError("Incorrect number of indices.")
 
             return sum(
-                self.stride(idx)
+                indices[idx]
+                * self.stride(idx)
                 * call("arange", 0, self.size(idx))[
                     tuple(slice(None) if i == idx else None for i in range(self.ndim()))
                 ]
@@ -131,7 +132,20 @@ class Tensor:
             indices.append(index // stride)
             index %= stride
 
+        curr = self.dtype
+        while isinstance(curr, type(self)):
+            indices.extend(
+                0 if curr is not self.inmost() else 1 for _ in range(curr.ndim())
+            )
+            curr = curr.dtype
+
         return tuple(indices)
+
+    def inmost(self):
+        if not isinstance(self.dtype, type(self)):
+            return self
+
+        return self.dtype.inmost()
 
     def ndim(self):
         return len(self.shape)

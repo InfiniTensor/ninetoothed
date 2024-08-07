@@ -1,7 +1,7 @@
-import ninetoothed
 import torch
-from ninetoothed import Symbol, Tensor
 
+import ninetoothed
+from ninetoothed import Symbol, Tensor
 from tests.skippers import skip_if_cuda_not_available
 
 
