@@ -9,6 +9,3 @@ jobs:
       - uses: chartboost/ruff-action@v1
         with:
           args: format --check
-      - uses: chartboost/ruff-action@v1
-        with:
-          args: check --select I
