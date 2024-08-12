@@ -10,7 +10,10 @@ def call(func, *args, **kwargs):
         ast.Call(
             func=attribute(func).node,
             args=[Symbol(arg).node for arg in args],
-            keywords=[(kwarg, Symbol(kwargs[kwarg]).node) for kwarg in kwargs],
+            keywords=[
+                ast.keyword(arg=kwarg, value=Symbol(kwargs[kwarg]).node)
+                for kwarg in kwargs
+            ],
         )
     )
 
