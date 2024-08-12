@@ -106,7 +106,7 @@ class CodeGenerator(ast.NodeTransformer):
             node.body.insert(
                 0,
                 ast.Assign(
-                    targets=[Symbol(f"{arg.name}_ptrs").node],
+                    targets=[Symbol(f"{arg.original.name}_ptrs").node],
                     value=arg.pointers().node,
                 ),
             )
@@ -281,7 +281,7 @@ class CodeGenerator(ast.NodeTransformer):
             name=f"launch_{self._func_def.name}",
             args=ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg.name) for arg in self._args],
+                args=[ast.arg(arg.original.name) for arg in self._args],
                 kwonlyargs=[],
                 defaults=[],
             ),
@@ -330,7 +330,7 @@ class CodeGenerator(ast.NodeTransformer):
 
     @staticmethod
     def _create_pointers(tensor, indices):
-        return Symbol(f"{tensor.name}_ptrs") + tensor.offsets(
+        return Symbol(f"{tensor.original.name}_ptrs") + tensor.offsets(
             [0 for _ in range(tensor.ndim())]
             + list(indices)
             + [0 for _ in range(tensor.inmost().ndim())]

@@ -7,15 +7,12 @@ from ninetoothed.symbol import Symbol
 class Tensor:
     num_instances = 0
 
-    def __init__(self, ndim=None, shape=None, dtype=None, strides=None, name=None):
+    def __init__(self, ndim=None, shape=None, dtype=None, strides=None, original=None):
         type(self).num_instances += 1
 
         self.dtype = dtype
 
-        if name is not None:
-            self.name = name
-        else:
-            self.name = f"tensor_{type(self).num_instances}"
+        self.name = f"tensor_{type(self).num_instances}"
 
         if ndim is not None:
             self.shape = [Symbol(f"{self.name}_size_{i}") for i in range(ndim)]
@@ -27,6 +24,11 @@ class Tensor:
                 self.strides = strides
             else:
                 self.strides = self._calculate_default_strides(shape)
+
+        if original:
+            self.original = original
+        else:
+            self.original = self
 
     def tile(self, tile_shape, tile_strides=None):
         if tile_strides is None:
@@ -59,10 +61,10 @@ class Tensor:
                 shape=inner_shape,
                 dtype=self.dtype,
                 strides=inner_strides,
-                name=self.name,
+                original=self.original,
             ),
             strides=outer_strides,
-            name=self.name,
+            original=self.original,
         )
 
     def expand(self, shape):
@@ -77,7 +79,7 @@ class Tensor:
                 stride if new_size == -1 else 0
                 for new_size, stride in zip(shape, self.strides)
             ],
-            name=self.name,
+            original=self.original,
         )
 
     def names(self):
@@ -128,7 +130,7 @@ class Tensor:
 
         indices = []
 
-        for stride in type(self)(shape=self.shape, name=self.name).strides:
+        for stride in type(self)(shape=self.shape, original=self.original).strides:
             indices.append(index // stride)
             index %= stride
 
@@ -167,7 +169,7 @@ class Tensor:
         return name.endswith("_ptr")
 
     def _pointer(self):
-        return f"{self.name}_ptr"
+        return f"{self.original.name}_ptr"
 
     @staticmethod
     def _calculate_default_strides(shape):
