@@ -106,8 +106,8 @@ class CodeGenerator(ast.NodeTransformer):
             node.body.insert(
                 0,
                 ast.Assign(
-                    targets=[Symbol(f"{arg.original.name}_ptrs").node],
-                    value=arg.pointers().node,
+                    targets=[Symbol(f"{arg.original.name}_pointers").node],
+                    value=(arg.original.pointer_string() + arg.offsets()).node,
                 ),
             )
 
@@ -268,7 +268,7 @@ class CodeGenerator(ast.NodeTransformer):
                         elts=[
                             ast.Constant(value=param)
                             for param in params
-                            if not Tensor.is_pointer(param)
+                            if not Tensor.pointer_pattern().fullmatch(param)
                         ],
                         ctx=ast.Load(),
                     ),
@@ -330,7 +330,7 @@ class CodeGenerator(ast.NodeTransformer):
 
     @staticmethod
     def _create_pointers(tensor, indices):
-        return Symbol(f"{tensor.original.name}_ptrs") + tensor.offsets(
+        return Symbol(f"{tensor.original.name}_pointers") + tensor.offsets(
             [0 for _ in range(tensor.ndim())]
             + list(indices)
             + [0 for _ in range(tensor.inmost().ndim())]

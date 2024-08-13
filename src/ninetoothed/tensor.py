@@ -1,4 +1,5 @@
 import itertools
+import re
 
 from ninetoothed.language import call
 from ninetoothed.symbol import Symbol
@@ -15,8 +16,8 @@ class Tensor:
         self.name = f"tensor_{type(self).num_instances}"
 
         if ndim is not None:
-            self.shape = [Symbol(f"{self.name}_size_{i}") for i in range(ndim)]
-            self.strides = [Symbol(f"{self.name}_stride_{i}") for i in range(ndim)]
+            self.shape = [Symbol(self.size_string(i)) for i in range(ndim)]
+            self.strides = [Symbol(self.stride_string(i)) for i in range(ndim)]
         else:
             self.shape = shape
 
@@ -25,7 +26,7 @@ class Tensor:
             else:
                 self.strides = self._calculate_default_strides(shape)
 
-        if original:
+        if original is not None:
             self.original = original
         else:
             self.original = self
@@ -84,7 +85,7 @@ class Tensor:
 
     def names(self):
         return (
-            {self._pointer()}
+            {self.original.pointer_string()}
             | {
                 name
                 for value in itertools.chain(self.shape, self.strides)
@@ -93,12 +94,6 @@ class Tensor:
             }
             | (self.dtype.names() if isinstance(self.dtype, type(self)) else set())
         )
-
-    def pointers(self, offsets=None):
-        if offsets is None:
-            offsets = self.offsets()
-
-        return self._pointer() + offsets
 
     def offsets(self, indices=None):
         if indices is None:
@@ -149,6 +144,15 @@ class Tensor:
 
         return self.dtype.inmost()
 
+    def pointer_string(self):
+        return f"{self.name}_pointer"
+
+    def size_string(self, dim):
+        return f"{self.name}_size_{dim}"
+
+    def stride_string(self, dim):
+        return f"{self.name}_stride_{dim}"
+
     def ndim(self):
         return len(self.shape)
 
@@ -165,11 +169,16 @@ class Tensor:
         return self.strides[dim]
 
     @staticmethod
-    def is_pointer(name):
-        return name.endswith("_ptr")
+    def pointer_pattern():
+        return re.compile(rf"({_identifier_pattern_raw_string()})_(pointer)")
 
-    def _pointer(self):
-        return f"{self.original.name}_ptr"
+    @staticmethod
+    def size_pattern():
+        return re.compile(rf"({_identifier_pattern_raw_string()})_(size)_(.+)")
+
+    @staticmethod
+    def stride_pattern():
+        return re.compile(rf"({_identifier_pattern_raw_string()})_(stride)_(.+)")
 
     @staticmethod
     def _calculate_default_strides(shape):
@@ -179,3 +188,7 @@ class Tensor:
             strides.append(size * strides[-1])
 
         return reversed(strides)
+
+
+def _identifier_pattern_raw_string():
+    return r"[a-zA-Z_][a-zA-Z0-9_]*"
