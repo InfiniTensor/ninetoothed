@@ -82,6 +82,12 @@ class Symbol:
             ast.BinOp(left=self._node, op=ast.Mod(), right=type(self)(other)._node)
         )
 
+    def __lt__(self, other):
+        other = type(self)(other)
+        return type(self)(
+            ast.Compare(left=self._node, ops=[ast.Lt()], comparators=[other._node])
+        )
+
     def __getitem__(self, key):
         return type(self)(ast.Subscript(value=self._node, slice=type(self)(key)._node))
 
