@@ -107,7 +107,7 @@ class CodeGenerator(ast.NodeTransformer):
                 0,
                 ast.Assign(
                     targets=[Symbol(f"{arg.original.name}_pointers").node],
-                    value=(arg.original.pointer_string() + arg.offsets()).node,
+                    value=(arg.original.pointer_string() + sum(arg.offsets())).node,
                 ),
             )
 
@@ -330,10 +330,12 @@ class CodeGenerator(ast.NodeTransformer):
 
     @staticmethod
     def _create_pointers(tensor, indices):
-        return Symbol(f"{tensor.original.name}_pointers") + tensor.offsets(
-            [0 for _ in range(tensor.ndim())]
-            + list(indices)
-            + [0 for _ in range(tensor.inmost().ndim())]
+        return Symbol(f"{tensor.original.name}_pointers") + sum(
+            tensor.offsets(
+                [0 for _ in range(tensor.ndim())]
+                + list(indices)
+                + [0 for _ in range(tensor.inmost().ndim())]
+            )
         )
 
 

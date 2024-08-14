@@ -103,7 +103,7 @@ class Tensor:
             if len(indices) != self.ndim():
                 raise IndexError("Incorrect number of indices.")
 
-            return sum(
+            return tuple(
                 indices[idx]
                 * self.stride(idx)
                 * call("arange", 0, self.size(idx))[
@@ -115,7 +115,7 @@ class Tensor:
         outer_indices = indices[: self.ndim()]
         inner_indices = indices[self.ndim() :]
 
-        return sum(
+        return tuple(
             index * stride for index, stride in zip(outer_indices, self.strides)
         ) + self.dtype.offsets(inner_indices)
 
