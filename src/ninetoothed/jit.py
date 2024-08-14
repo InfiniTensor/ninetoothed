@@ -332,9 +332,9 @@ class CodeGenerator(ast.NodeTransformer):
     def _create_pointers(tensor, indices):
         return Symbol(f"{tensor.original.name}_pointers") + sum(
             tensor.offsets(
-                [0 for _ in range(tensor.ndim())]
+                [0 for _ in range(tensor.ndim)]
                 + list(indices)
-                + [0 for _ in range(tensor.inmost().ndim())]
+                + [0 for _ in range(tensor.inmost().ndim)]
             )
         )
 

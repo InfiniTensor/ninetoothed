@@ -100,20 +100,20 @@ class Tensor:
             indices = self.indices()
 
         if not isinstance(self.dtype, type(self)):
-            if len(indices) != self.ndim():
+            if len(indices) != self.ndim:
                 raise IndexError("Incorrect number of indices.")
 
             return tuple(
                 indices[idx]
                 * self.stride(idx)
                 * call("arange", 0, self.size(idx))[
-                    tuple(slice(None) if i == idx else None for i in range(self.ndim()))
+                    tuple(slice(None) if i == idx else None for i in range(self.ndim))
                 ]
-                for idx in range(self.ndim())
+                for idx in range(self.ndim)
             )
 
-        outer_indices = indices[: self.ndim()]
-        inner_indices = indices[self.ndim() :]
+        outer_indices = indices[: self.ndim]
+        inner_indices = indices[self.ndim :]
 
         return tuple(
             index * stride for index, stride in zip(outer_indices, self.strides)
@@ -132,7 +132,7 @@ class Tensor:
         curr = self.dtype
         while isinstance(curr, type(self)):
             indices.extend(
-                0 if curr is not self.inmost() else 1 for _ in range(curr.ndim())
+                0 if curr is not self.inmost() else 1 for _ in range(curr.ndim)
             )
             curr = curr.dtype
 
@@ -153,9 +153,6 @@ class Tensor:
     def stride_string(self, dim):
         return f"{self.name}_stride_{dim}"
 
-    def ndim(self):
-        return len(self.shape)
-
     def size(self, dim=None):
         if dim is None:
             return self.shape
@@ -167,6 +164,10 @@ class Tensor:
             return self.strides
 
         return self.strides[dim]
+
+    @property
+    def ndim(self):
+        return len(self.shape)
 
     @staticmethod
     def pointer_pattern():
