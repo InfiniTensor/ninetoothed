@@ -78,21 +78,35 @@ class Symbol:
         )
 
     def __mod__(self, other):
-        return type(self)(
-            ast.BinOp(left=self._node, op=ast.Mod(), right=type(self)(other)._node)
-        )
+        other = type(self)(other)
+
+        return type(self)(ast.BinOp(left=self._node, op=ast.Mod(), right=other._node))
 
     def __lt__(self, other):
         other = type(self)(other)
+
         return type(self)(
             ast.Compare(left=self._node, ops=[ast.Lt()], comparators=[other._node])
         )
+
+    def __and__(self, other):
+        other = type(self)(other)
+
+        return type(self)(
+            ast.BinOp(left=self._node, op=ast.BitAnd(), right=other._node)
+        )
+
+    def __rand__(self, other):
+        return self.__and__(other)
 
     def __getitem__(self, key):
         return type(self)(ast.Subscript(value=self._node, slice=type(self)(key)._node))
 
     def __repr__(self):
         return ast.unparse(self._node)
+
+    def find_and_replace(self, target, replacement):
+        _FindAndReplacer(target.node, replacement.node).visit(self._node)
 
     def names(self):
         class NameCollector(ast.NodeVisitor):
@@ -136,3 +150,15 @@ class Symbol:
     @staticmethod
     def _create_meta(name):
         return f"_ninetoothed_meta_{name}"
+
+
+class _FindAndReplacer(ast.NodeTransformer):
+    def __init__(self, target, replacement):
+        self._target_id = target.id
+        self._replacement = replacement
+
+    def visit_Name(self, node):
+        if node.id == self._target_id:
+            return self._replacement
+
+        return self.generic_visit(node)

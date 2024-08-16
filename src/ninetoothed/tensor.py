@@ -99,25 +99,27 @@ class Tensor:
         if indices is None:
             indices = self.indices()
 
-        if not isinstance(self.dtype, type(self)):
-            if len(indices) != self.ndim:
-                raise IndexError("Incorrect number of indices.")
+        offsets = [[] for _ in range(self.original.ndim)]
 
-            return tuple(
-                indices[idx]
-                * self.stride(idx)
-                * call("arange", 0, self.size(idx))[
-                    tuple(slice(None) if i == idx else None for i in range(self.ndim))
-                ]
-                for idx in range(self.ndim)
-            )
+        curr = self
+        start = 0
 
-        outer_indices = indices[: self.ndim]
-        inner_indices = indices[self.ndim :]
+        while isinstance(curr, type(self)):
+            stop = start + curr.ndim
+            curr_indices = indices[start:stop]
 
-        return tuple(
-            index * stride for index, stride in zip(outer_indices, self.strides)
-        ) + self.dtype.offsets(inner_indices)
+            for index, stride in zip(curr_indices, curr.strides):
+                for dim in self._dims_of(stride):
+                    offsets[dim].append(index * stride)
+
+            start = stop
+            curr = curr.dtype
+
+        for dim in range(self.original.ndim):
+            offsets[dim] = sum(offsets[dim])
+            offsets[dim].find_and_replace(Symbol(self.original.strides[dim]), Symbol(1))
+
+        return offsets
 
     def indices(self, index=None):
         if index is None:
@@ -130,11 +132,16 @@ class Tensor:
             index %= stride
 
         curr = self.dtype
-        while isinstance(curr, type(self)):
-            indices.extend(
-                0 if curr is not self.inmost() else 1 for _ in range(curr.ndim)
-            )
+
+        while isinstance(curr.dtype, type(self)):
+            for _ in range(curr.ndim):
+                indices.append(0)
+
             curr = curr.dtype
+
+        if isinstance(curr, type(self)):
+            for dim in range(curr.ndim):
+                indices.append(call("arange", 0, curr.shape[dim]))
 
         return tuple(indices)
 
@@ -180,6 +187,16 @@ class Tensor:
     @staticmethod
     def stride_pattern():
         return re.compile(rf"({_identifier_pattern_raw_string()})_(stride)_(.+)")
+
+    def _dims_of(self, stride):
+        dims = set()
+        names = stride.names() if isinstance(stride, Symbol) else {stride}
+
+        for dim, original_stride in enumerate(self.original.strides):
+            if str(original_stride) in names:
+                dims.add(dim)
+
+        return dims
 
     @staticmethod
     def _calculate_default_strides(shape):
