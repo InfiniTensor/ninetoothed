@@ -8,7 +8,15 @@ from ninetoothed.symbol import Symbol
 class Tensor:
     num_instances = 0
 
-    def __init__(self, ndim=None, shape=None, dtype=None, strides=None, original=None):
+    def __init__(
+        self,
+        ndim=None,
+        shape=None,
+        dtype=None,
+        strides=None,
+        other=None,
+        original=None,
+    ):
         type(self).num_instances += 1
 
         self.dtype = dtype
@@ -25,6 +33,8 @@ class Tensor:
                 self.strides = strides
             else:
                 self.strides = self._calculate_default_strides(shape)
+
+        self.other = other
 
         if original is not None:
             self.original = original

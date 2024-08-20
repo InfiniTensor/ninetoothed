@@ -331,8 +331,9 @@ class CodeGenerator(ast.NodeTransformer):
         pointers, mask = CodeGenerator._generate_pointers_and_mask(
             tensor, intermediate_indices
         )
+        other = CodeGenerator._generate_other(tensor)
 
-        return call("load", pointers, mask=mask).node
+        return call("load", pointers, mask=mask, other=other).node
 
     @staticmethod
     def _generate_store(tensor, value, intermediate_indices=()):
@@ -363,6 +364,15 @@ class CodeGenerator(ast.NodeTransformer):
         )
 
         return pointers, mask
+
+    @staticmethod
+    def _generate_other(tensor):
+        other = tensor.original.other
+
+        if isinstance(other, float) and not math.isfinite(other):
+            return f"float('{other}')"
+
+        return other
 
     @staticmethod
     def _generate_slices(tensor, dim):
