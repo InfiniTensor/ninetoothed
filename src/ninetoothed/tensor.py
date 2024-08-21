@@ -93,6 +93,15 @@ class Tensor:
             original=self.original,
         )
 
+    def squeeze(self, dim):
+        # TODO: Add error handling.
+        return type(self)(
+            shape=[size for i, size in enumerate(self.shape) if dim != i],
+            dtype=self.dtype,
+            strides=[stride for i, stride in enumerate(self.strides) if dim != i],
+            original=self.original,
+        )
+
     def names(self):
         return (
             {self.original.pointer_string()}
