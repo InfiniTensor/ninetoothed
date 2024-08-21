@@ -1,4 +1,5 @@
 import itertools
+import re
 
 from ninetoothed.language import call
 from ninetoothed.symbol import Symbol
@@ -7,19 +8,24 @@ from ninetoothed.symbol import Symbol
 class Tensor:
     num_instances = 0
 
-    def __init__(self, ndim=None, shape=None, dtype=None, strides=None, name=None):
+    def __init__(
+        self,
+        ndim=None,
+        shape=None,
+        dtype=None,
+        strides=None,
+        other=None,
+        original=None,
+    ):
         type(self).num_instances += 1
 
         self.dtype = dtype
 
-        if name is not None:
-            self.name = name
-        else:
-            self.name = f"tensor_{type(self).num_instances}"
+        self.name = f"tensor_{type(self).num_instances}"
 
         if ndim is not None:
-            self.shape = [Symbol(f"{self.name}_size_{i}") for i in range(ndim)]
-            self.strides = [Symbol(f"{self.name}_stride_{i}") for i in range(ndim)]
+            self.shape = [Symbol(self.size_string(i)) for i in range(ndim)]
+            self.strides = [Symbol(self.stride_string(i)) for i in range(ndim)]
         else:
             self.shape = shape
 
@@ -27,6 +33,13 @@ class Tensor:
                 self.strides = strides
             else:
                 self.strides = self._calculate_default_strides(shape)
+
+        self.other = other
+
+        if original is not None:
+            self.original = original
+        else:
+            self.original = self
 
     def tile(self, tile_shape, tile_strides=None):
         if tile_strides is None:
@@ -59,10 +72,10 @@ class Tensor:
                 shape=inner_shape,
                 dtype=self.dtype,
                 strides=inner_strides,
-                name=self.name,
+                original=self.original,
             ),
             strides=outer_strides,
-            name=self.name,
+            original=self.original,
         )
 
     def expand(self, shape):
@@ -77,12 +90,21 @@ class Tensor:
                 stride if new_size == -1 else 0
                 for new_size, stride in zip(shape, self.strides)
             ],
-            name=self.name,
+            original=self.original,
+        )
+
+    def squeeze(self, dim):
+        # TODO: Add error handling.
+        return type(self)(
+            shape=[size for i, size in enumerate(self.shape) if dim != i],
+            dtype=self.dtype,
+            strides=[stride for i, stride in enumerate(self.strides) if dim != i],
+            original=self.original,
         )
 
     def names(self):
         return (
-            {self._pointer()}
+            {self.original.pointer_string()}
             | {
                 name
                 for value in itertools.chain(self.shape, self.strides)
@@ -92,35 +114,31 @@ class Tensor:
             | (self.dtype.names() if isinstance(self.dtype, type(self)) else set())
         )
 
-    def pointers(self, offsets=None):
-        if offsets is None:
-            offsets = self.offsets()
-
-        return self._pointer() + offsets
-
     def offsets(self, indices=None):
         if indices is None:
             indices = self.indices()
 
-        if not isinstance(self.dtype, type(self)):
-            if len(indices) != self.ndim():
-                raise IndexError("Incorrect number of indices.")
+        offsets = [[] for _ in range(self.original.ndim)]
 
-            return sum(
-                indices[idx]
-                * self.stride(idx)
-                * call("arange", 0, self.size(idx))[
-                    tuple(slice(None) if i == idx else None for i in range(self.ndim()))
-                ]
-                for idx in range(self.ndim())
-            )
+        curr = self
+        start = 0
 
-        outer_indices = indices[: self.ndim()]
-        inner_indices = indices[self.ndim() :]
+        while isinstance(curr, type(self)):
+            stop = start + curr.ndim
+            curr_indices = indices[start:stop]
 
-        return sum(
-            index * stride for index, stride in zip(outer_indices, self.strides)
-        ) + self.dtype.offsets(inner_indices)
+            for index, stride in zip(curr_indices, curr.strides):
+                for dim in self._dims_of(stride):
+                    offsets[dim].append(index * stride)
+
+            start = stop
+            curr = curr.dtype
+
+        for dim in range(self.original.ndim):
+            offsets[dim] = sum(offsets[dim])
+            offsets[dim].find_and_replace(Symbol(self.original.strides[dim]), Symbol(1))
+
+        return offsets
 
     def indices(self, index=None):
         if index is None:
@@ -128,16 +146,21 @@ class Tensor:
 
         indices = []
 
-        for stride in type(self)(shape=self.shape, name=self.name).strides:
+        for stride in type(self)(shape=self.shape, original=self.original).strides:
             indices.append(index // stride)
             index %= stride
 
         curr = self.dtype
-        while isinstance(curr, type(self)):
-            indices.extend(
-                0 if curr is not self.inmost() else 1 for _ in range(curr.ndim())
-            )
+
+        while isinstance(curr.dtype, type(self)):
+            for _ in range(curr.ndim):
+                indices.append(0)
+
             curr = curr.dtype
+
+        if isinstance(curr, type(self)):
+            for dim in range(curr.ndim):
+                indices.append(call("arange", 0, curr.shape[dim]))
 
         return tuple(indices)
 
@@ -147,8 +170,14 @@ class Tensor:
 
         return self.dtype.inmost()
 
-    def ndim(self):
-        return len(self.shape)
+    def pointer_string(self):
+        return f"{self.name}_pointer"
+
+    def size_string(self, dim):
+        return f"{self.name}_size_{dim}"
+
+    def stride_string(self, dim):
+        return f"{self.name}_stride_{dim}"
 
     def size(self, dim=None):
         if dim is None:
@@ -162,12 +191,31 @@ class Tensor:
 
         return self.strides[dim]
 
-    @staticmethod
-    def is_pointer(name):
-        return name.endswith("_ptr")
+    @property
+    def ndim(self):
+        return len(self.shape)
 
-    def _pointer(self):
-        return f"{self.name}_ptr"
+    @staticmethod
+    def pointer_pattern():
+        return re.compile(rf"({_identifier_pattern_raw_string()})_(pointer)")
+
+    @staticmethod
+    def size_pattern():
+        return re.compile(rf"({_identifier_pattern_raw_string()})_(size)_(.+)")
+
+    @staticmethod
+    def stride_pattern():
+        return re.compile(rf"({_identifier_pattern_raw_string()})_(stride)_(.+)")
+
+    def _dims_of(self, stride):
+        dims = set()
+        names = stride.names() if isinstance(stride, Symbol) else {stride}
+
+        for dim, original_stride in enumerate(self.original.strides):
+            if str(original_stride) in names:
+                dims.add(dim)
+
+        return dims
 
     @staticmethod
     def _calculate_default_strides(shape):
@@ -177,3 +225,7 @@ class Tensor:
             strides.append(size * strides[-1])
 
         return reversed(strides)
+
+
+def _identifier_pattern_raw_string():
+    return r"[a-zA-Z_][a-zA-Z0-9_]*"
