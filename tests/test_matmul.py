@@ -19,18 +19,21 @@ def matmul(lhs, rhs):
         .tile((1, -1))
         .expand((-1, output_tiled.shape[1]))
     )
+    lhs_tiled.dtype = lhs_tiled.dtype.squeeze(0)
+
     rhs_tiled = (
         Tensor(2)
         .tile((BLOCK_SIZE_K, BLOCK_SIZE_N))
         .tile((-1, 1))
         .expand((output_tiled.shape[0], -1))
     )
+    rhs_tiled.dtype = rhs_tiled.dtype.squeeze(1)
 
     @ninetoothed.jit
     def matmul_kernel(lhs: lhs_tiled, rhs: rhs_tiled, output: output_tiled):
         accumulator = ntl.zeros(output.shape, dtype=ntl.float32)
-        for k in range(lhs.shape[1]):
-            accumulator = ntl.dot(lhs[0, k], rhs[k, 0], accumulator)
+        for k in range(lhs.shape[0]):
+            accumulator += ntl.dot(lhs[k], rhs[k])
         output = accumulator.to(ntl.float16)
 
     output = torch.empty(
