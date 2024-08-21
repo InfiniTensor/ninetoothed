@@ -6,6 +6,8 @@ import itertools
 import math
 import tempfile
 
+import triton
+
 from ninetoothed.language import attribute, call
 from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
@@ -226,6 +228,13 @@ class CodeGenerator(ast.NodeTransformer):
         return node
 
     def _generate_autotune(self, params, meta):
+        device = triton.runtime.driver.active.get_current_device()
+        properties = triton.runtime.driver.active.utils.get_device_properties(device)
+        max_shared_mem = properties["max_shared_mem"]
+
+        num_warps = 8
+        num_stages = max_shared_mem // 2**15
+
         configs = [
             ast.Call(
                 func=ast.Attribute(
@@ -239,7 +248,10 @@ class CodeGenerator(ast.NodeTransformer):
                         values=[ast.Constant(value=value) for value in values],
                     )
                 ],
-                keywords=[],
+                keywords=[
+                    ast.keyword(arg="num_warps", value=ast.Constant(value=num_warps)),
+                    ast.keyword(arg="num_stages", value=ast.Constant(value=num_stages)),
+                ],
             )
             for values in itertools.product(self._POWER_OF_TWOS, repeat=len(meta))
             if self._MIN_PRODUCT <= math.prod(values) <= self._MAX_PRODUCT
