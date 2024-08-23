@@ -137,7 +137,7 @@ class CodeGenerator(ast.NodeTransformer):
         node.args = [
             ast.arg(arg=name)
             if not Symbol.is_constexpr(name)
-            else ast.arg(arg=name, annotation=attribute("constexpr"))
+            else ast.arg(arg=name, annotation=attribute("constexpr").node)
             for name in non_meta_names
         ] + [
             ast.arg(arg=name, annotation=attribute("constexpr").node)
@@ -287,15 +287,30 @@ class CodeGenerator(ast.NodeTransformer):
         )
 
     def _generate_launch(self, params, meta):
+        constexpr_params = [param for param in params if Symbol.is_constexpr(param)]
+        constexpr_params_without_prefixes = [
+            Symbol.remove_prefix(param) for param in constexpr_params
+        ]
+
         launch = ast.FunctionDef(
             name=f"launch_{self._func_def.name}",
             args=ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg.original.name) for arg in self._args],
+                args=[ast.arg(arg=arg.original.name) for arg in self._args]
+                + [ast.arg(arg=param) for param in constexpr_params_without_prefixes],
                 kwonlyargs=[],
                 defaults=[],
             ),
             body=[
+                ast.Assign(
+                    targets=[ast.Name(id=param, ctx=ast.Store())],
+                    value=ast.Name(id=param_without_prefix, ctx=ast.Load()),
+                )
+                for param, param_without_prefix in zip(
+                    constexpr_params, constexpr_params_without_prefixes
+                )
+            ]
+            + [
                 ast.Expr(
                     ast.Call(
                         func=ast.Subscript(
