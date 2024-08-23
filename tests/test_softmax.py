@@ -3,26 +3,26 @@ import triton
 
 import ninetoothed
 import ninetoothed.language as ntl
-from ninetoothed import Tensor
+from ninetoothed import Symbol, Tensor
 from tests.skippers import skip_if_cuda_not_available
 
 
 def softmax(input):
-    output = torch.empty_like(input)
-
-    block_size = triton.next_power_of_2(input.shape[-1])
+    BLOCK_SIZE = Symbol("BLOCK_SIZE", constexpr=True)
 
     @ninetoothed.jit
     def softmax_kernel(
-        input_row: Tensor(2, other=float("-inf")).tile((1, block_size)),
-        output_row: Tensor(2).tile((1, block_size)),
+        input_row: Tensor(2, other=float("-inf")).tile((1, BLOCK_SIZE)),
+        output_row: Tensor(2).tile((1, BLOCK_SIZE)),
     ):
         row_minus_max = input_row - ntl.max(input_row)
         numerator = ntl.exp(row_minus_max)
         denominator = ntl.sum(numerator)
         output_row = numerator / denominator  # noqa: F841
 
-    softmax_kernel(input, output)
+    output = torch.empty_like(input)
+
+    softmax_kernel(input, output, BLOCK_SIZE=triton.next_power_of_2(input.shape[-1]))
 
     return output
 
