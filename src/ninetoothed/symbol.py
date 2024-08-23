@@ -137,19 +137,39 @@ class Symbol:
 
     @staticmethod
     def is_constexpr(name):
-        return name.startswith("_ninetoothed_constexpr_") or Symbol.is_meta(name)
+        return name.startswith(Symbol._constexpr_prefix()) or Symbol.is_meta(name)
 
     @staticmethod
     def is_meta(name):
-        return name.startswith("_ninetoothed_meta_")
+        return name.startswith(Symbol._meta_prefix())
+
+    @staticmethod
+    def remove_prefix(name):
+        if name.startswith(Symbol._constexpr_prefix()):
+            return name.removeprefix(Symbol._constexpr_prefix())
+
+        if name.startswith(Symbol._meta_prefix()):
+            return name.removeprefix(Symbol._meta_prefix())
 
     @staticmethod
     def _create_constexpr(name):
-        return f"_ninetoothed_constexpr_{name}"
+        return f"{Symbol._constexpr_prefix()}{name}"
 
     @staticmethod
     def _create_meta(name):
-        return f"_ninetoothed_meta_{name}"
+        return f"{Symbol._meta_prefix()}{name}"
+
+    @staticmethod
+    def _constexpr_prefix():
+        return f"{Symbol._ninetoothed_prefix()}constexpr_"
+
+    @staticmethod
+    def _meta_prefix():
+        return f"{Symbol._ninetoothed_prefix()}meta_"
+
+    @staticmethod
+    def _ninetoothed_prefix():
+        return "_ninetoothed_"
 
 
 class _FindAndReplacer(ast.NodeTransformer):
