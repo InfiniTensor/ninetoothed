@@ -1,5 +1,7 @@
 # 九齿
 
+![九齿 Logo](source/_static/ninetoothed-logo.png)
+
 一种基于 Triton 但提供更高层抽象的领域特定语言（DSL）。
 
 **其他语言版本: [English](../README.md)、[简体中文](README.zh.md)。**
