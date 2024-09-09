@@ -178,7 +178,7 @@ class CodeGenerator(ast.NodeTransformer):
             if isinstance(value, Tensor):
                 inner = value.dtype
 
-                return Symbol(inner.__dict__[node.attr]).node
+                return Symbol(getattr(inner, node.attr)).node
 
         self.generic_visit(node)
 

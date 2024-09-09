@@ -24,8 +24,8 @@ class Tensor:
         self.name = f"tensor_{type(self).num_instances}"
 
         if ndim is not None:
-            self.shape = [Symbol(self.size_string(i)) for i in range(ndim)]
-            self.strides = [Symbol(self.stride_string(i)) for i in range(ndim)]
+            self.shape = (Symbol(self.size_string(i)) for i in range(ndim))
+            self.strides = (Symbol(self.stride_string(i)) for i in range(ndim))
         else:
             self.shape = shape
 
@@ -190,6 +190,22 @@ class Tensor:
             return self.strides
 
         return self.strides[dim]
+
+    @property
+    def shape(self):
+        return self._shape
+
+    @shape.setter
+    def shape(self, value):
+        self._shape = tuple(value)
+
+    @property
+    def strides(self):
+        return self._strides
+
+    @strides.setter
+    def strides(self, value):
+        self._strides = tuple(value)
 
     @property
     def ndim(self):
