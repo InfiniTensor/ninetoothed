@@ -59,6 +59,7 @@ class JIT:
         handle = _Handle(
             namespace[self.func.__name__],
             namespace[f"launch_{self.func.__name__}"],
+            unparsed,
         )
 
         type(self).handles[source_file][source_line] = handle
@@ -459,9 +460,10 @@ class Tritonizer(ast.NodeTransformer):
 
 
 class _Handle:
-    def __init__(self, kernel, launch):
+    def __init__(self, kernel, launch, source):
         self._kernel = kernel
         self._launch = launch
+        self._source = source
 
     def __call__(self, *args, **kwargs):
         return self._launch(*args, **kwargs)
