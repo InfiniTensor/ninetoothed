@@ -1,9 +1,11 @@
 import ast
 import collections
 import functools
+import importlib.util
 import inspect
 import itertools
 import math
+import sys
 import tempfile
 
 import triton
@@ -41,24 +43,20 @@ class JIT:
         ast.fix_missing_locations(tree)
 
         unparsed = ast.unparse(tree).replace("None:", ":").replace(":None", ":")
+        dependencies = self._find_dependencies()
+        source = "\n\n".join((unparsed, dependencies)).strip()
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
-            temp_file.write(unparsed.encode("utf-8"))
+            temp_file.write(source.encode("utf-8"))
             temp_file_name = temp_file.name
 
-        with open(temp_file_name, "r") as temp_file:
-            code = compile(
-                source=temp_file.read(),
-                filename=temp_file_name,
-                mode="exec",
-            )
-
-        namespace = {}
-        exec(code, namespace)
+        module = type(self)._import_from_path(temp_file_name, temp_file_name)
+        module_vars = vars(module)
 
         handle = _Handle(
-            namespace[self.func.__name__],
-            namespace[f"launch_{self.func.__name__}"],
+            module_vars[self.func.__name__],
+            module_vars[f"launch_{self.func.__name__}"],
+            source,
         )
 
         type(self).handles[source_file][source_line] = handle
@@ -73,6 +71,24 @@ class JIT:
         finder.visit(module)
 
         return ast.Module(body=[finder.result], type_ignores=[])
+
+    def _find_dependencies(self):
+        dependencies = set()
+
+        for obj in self.func.__globals__.values():
+            if isinstance(obj, triton.runtime.JITFunction):
+                dependencies.add(obj.src)
+
+        return "\n".join(f"@triton.jit\n{dependency}" for dependency in dependencies)
+
+    @staticmethod
+    def _import_from_path(module_name, file_path):
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+
+        return module
 
 
 class CodeGenerator(ast.NodeTransformer):
@@ -102,7 +118,7 @@ class CodeGenerator(ast.NodeTransformer):
         self.generic_visit(node)
 
         for arg in self._args:
-            if not isinstance(arg, Tensor):
+            if not isinstance(arg, Tensor) or arg.ndim == 0:
                 continue
 
             offsets = arg.offsets()
@@ -355,6 +371,9 @@ class CodeGenerator(ast.NodeTransformer):
 
     @staticmethod
     def _generate_load(tensor, intermediate_indices=()):
+        if tensor.ndim == 0:
+            return Symbol(tensor.original.name).node
+
         pointers, mask = CodeGenerator._generate_pointers_and_mask(
             tensor, intermediate_indices
         )
@@ -459,9 +478,10 @@ class Tritonizer(ast.NodeTransformer):
 
 
 class _Handle:
-    def __init__(self, kernel, launch):
+    def __init__(self, kernel, launch, source):
         self._kernel = kernel
         self._launch = launch
+        self._source = source
 
     def __call__(self, *args, **kwargs):
         return self._launch(*args, **kwargs)

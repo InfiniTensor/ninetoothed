@@ -21,7 +21,7 @@ class Tensor:
 
         self.dtype = dtype
 
-        self.name = f"tensor_{type(self).num_instances}"
+        self.name = f"_ninetoothed_tensor_{type(self).num_instances}"
 
         if ndim is not None:
             self.shape = (Symbol(self.size_string(i)) for i in range(ndim))
@@ -103,6 +103,9 @@ class Tensor:
         )
 
     def names(self):
+        if self.ndim == 0:
+            return {self.original.name}
+
         return (
             {self.original.pointer_string()}
             | {
