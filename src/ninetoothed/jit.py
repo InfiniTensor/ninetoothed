@@ -118,7 +118,7 @@ class CodeGenerator(ast.NodeTransformer):
         self.generic_visit(node)
 
         for arg in self._args:
-            if not isinstance(arg, Tensor):
+            if not isinstance(arg, Tensor) or arg.ndim == 0:
                 continue
 
             offsets = arg.offsets()
@@ -371,6 +371,9 @@ class CodeGenerator(ast.NodeTransformer):
 
     @staticmethod
     def _generate_load(tensor, intermediate_indices=()):
+        if tensor.ndim == 0:
+            return Symbol(tensor.original.name).node
+
         pointers, mask = CodeGenerator._generate_pointers_and_mask(
             tensor, intermediate_indices
         )

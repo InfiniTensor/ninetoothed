@@ -103,6 +103,9 @@ class Tensor:
         )
 
     def names(self):
+        if self.ndim == 0:
+            return {self.original.name}
+
         return (
             {self.original.pointer_string()}
             | {
