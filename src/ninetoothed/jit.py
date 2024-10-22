@@ -43,9 +43,11 @@ class JIT:
         ast.fix_missing_locations(tree)
 
         unparsed = ast.unparse(tree).replace("None:", ":").replace(":None", ":")
+        dependencies = self._find_dependencies()
+        source = "\n\n".join((unparsed, dependencies)).strip()
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
-            temp_file.write(unparsed.encode("utf-8"))
+            temp_file.write(source.encode("utf-8"))
             temp_file_name = temp_file.name
 
         module = type(self)._import_from_path(temp_file_name, temp_file_name)
@@ -54,7 +56,7 @@ class JIT:
         handle = _Handle(
             module_vars[self.func.__name__],
             module_vars[f"launch_{self.func.__name__}"],
-            unparsed,
+            source,
         )
 
         type(self).handles[source_file][source_line] = handle
@@ -69,6 +71,15 @@ class JIT:
         finder.visit(module)
 
         return ast.Module(body=[finder.result], type_ignores=[])
+
+    def _find_dependencies(self):
+        dependencies = set()
+
+        for obj in self.func.__globals__.values():
+            if isinstance(obj, triton.runtime.JITFunction):
+                dependencies.add(obj.src)
+
+        return "\n".join(f"@triton.jit\n{dependency}" for dependency in dependencies)
 
     @staticmethod
     def _import_from_path(module_name, file_path):
