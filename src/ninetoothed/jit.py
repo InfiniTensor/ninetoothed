@@ -1,9 +1,11 @@
 import ast
 import collections
 import functools
+import importlib.util
 import inspect
 import itertools
 import math
+import sys
 import tempfile
 
 import triton
@@ -46,19 +48,12 @@ class JIT:
             temp_file.write(unparsed.encode("utf-8"))
             temp_file_name = temp_file.name
 
-        with open(temp_file_name, "r") as temp_file:
-            code = compile(
-                source=temp_file.read(),
-                filename=temp_file_name,
-                mode="exec",
-            )
-
-        namespace = {}
-        exec(code, namespace)
+        module = type(self)._import_from_path(temp_file_name, temp_file_name)
+        module_vars = vars(module)
 
         handle = _Handle(
-            namespace[self.func.__name__],
-            namespace[f"launch_{self.func.__name__}"],
+            module_vars[self.func.__name__],
+            module_vars[f"launch_{self.func.__name__}"],
             unparsed,
         )
 
@@ -74,6 +69,15 @@ class JIT:
         finder.visit(module)
 
         return ast.Module(body=[finder.result], type_ignores=[])
+
+    @staticmethod
+    def _import_from_path(module_name, file_path):
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+
+        return module
 
 
 class CodeGenerator(ast.NodeTransformer):
