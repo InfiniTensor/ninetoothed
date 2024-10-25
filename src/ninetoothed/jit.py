@@ -67,10 +67,12 @@ class JIT:
         module = ast.parse(inspect.getsource(inspect.getmodule(self.func)))
 
         _AliasRestorer().visit(module)
+        collector = _ImportCollector()
+        collector.visit(module)
         finder = _FunctionDefFinder(self.func.__name__)
         finder.visit(module)
 
-        return ast.Module(body=[finder.result], type_ignores=[])
+        return ast.Module(body=collector.imports + [finder.result], type_ignores=[])
 
     def _find_dependencies(self):
         dependencies = set()
@@ -533,6 +535,23 @@ class _AliasRestorer(ast.NodeTransformer):
             return ast.Name(id=self._aliases[node.id], ctx=node.ctx)
 
         return node
+
+
+class _ImportCollector(ast.NodeVisitor):
+    def __init__(self):
+        super().__init__()
+
+        self.imports = []
+
+    def visit_Import(self, node):
+        self.imports.append(node)
+
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node):
+        self.imports.append(node)
+
+        self.generic_visit(node)
 
 
 class _FunctionDefFinder(ast.NodeVisitor):
