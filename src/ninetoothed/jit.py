@@ -40,6 +40,7 @@ class JIT:
 
         CodeGenerator(inspect.get_annotations(self.func)).visit(tree)
         Tritonizer().visit(tree)
+        _BinOpSimplifier().visit(tree)
         ast.fix_missing_locations(tree)
 
         unparsed = ast.unparse(tree).replace("None:", ":").replace(":None", ":")
@@ -475,6 +476,26 @@ class Tritonizer(ast.NodeTransformer):
             return ast.Attribute(
                 value=ast.Name(id="triton", ctx=ast.Load()), attr="jit", ctx=ast.Load()
             )
+
+        return node
+
+
+class _BinOpSimplifier(ast.NodeTransformer):
+    def visit_BinOp(self, node):
+        self.generic_visit(node)
+
+        if isinstance(node.op, ast.Mult):
+            left = Symbol(node.left)
+            right = Symbol(node.right)
+
+            if left == 0 or right == 0:
+                return Symbol(0).node
+
+            if left == 1:
+                return node.right
+
+            if right == 1:
+                return node.left
 
         return node
 
