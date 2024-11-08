@@ -162,6 +162,11 @@ class Symbol:
         if name.startswith(Symbol._meta_prefix()):
             return name.removeprefix(Symbol._meta_prefix())
 
+        if name.startswith(Symbol._ninetoothed_prefix()):
+            return name.removeprefix(Symbol._ninetoothed_prefix())
+
+        return name
+
     @staticmethod
     def _create_constexpr(name):
         return f"{Symbol._constexpr_prefix()}{name}"

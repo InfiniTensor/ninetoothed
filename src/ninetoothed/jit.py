@@ -5,6 +5,7 @@ import importlib.util
 import inspect
 import itertools
 import math
+import subprocess
 import sys
 import tempfile
 
@@ -16,15 +17,23 @@ from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
 
 
-def jit(func):
-    return JIT(func)()
+def jit(_func=None, *, _prettify=False):
+    def wrapper(func):
+        return JIT(func, _prettify=_prettify)()
+
+    if _func is None:
+        return wrapper
+
+    return wrapper(_func)
 
 
 class JIT:
     handles = collections.defaultdict(dict)
 
-    def __init__(self, func):
+    def __init__(self, func, _prettify=False):
         self.func = func
+
+        self._prettify = _prettify
 
     def __call__(self):
         source_file = inspect.getsourcefile(self.func)
@@ -43,9 +52,21 @@ class JIT:
         _BinOpSimplifier().visit(tree)
         ast.fix_missing_locations(tree)
 
+        if self._prettify:
+            name_collector = _SimplifiedNameCollector()
+            name_collector.visit(tree)
+
         unparsed = ast.unparse(tree).replace("None:", ":").replace(":None", ":")
         dependencies = self._find_dependencies()
         source = "\n\n".join((unparsed, dependencies)).strip()
+
+        if self._prettify:
+            for original, simplified in name_collector.simplified_names.items():
+                source = source.replace(original, simplified)
+
+            source = subprocess.check_output(
+                ["ruff", "format", "-"], input=source, encoding="utf-8"
+            )
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
             temp_file.write(source.encode("utf-8"))
@@ -498,6 +519,20 @@ class _BinOpSimplifier(ast.NodeTransformer):
                 return node.left
 
         return node
+
+
+class _SimplifiedNameCollector(ast.NodeVisitor):
+    def __init__(self):
+        self.simplified_names = {}
+
+    def visit_Name(self, node):
+        self.generic_visit(node)
+
+        simplified_id = Symbol.remove_prefix(node.id)
+        if simplified_id not in self.simplified_names:
+            node.id = simplified_id
+
+        self.simplified_names[node.id] = simplified_id
 
 
 class _Handle:
