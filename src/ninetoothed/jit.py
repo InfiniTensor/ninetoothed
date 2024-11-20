@@ -62,7 +62,8 @@ class JIT:
 
         if self._prettify:
             for original, simplified in name_collector.simplified_names.items():
-                source = source.replace(original, simplified)
+                if simplified not in name_collector.simplified_names:
+                    source = source.replace(original, simplified)
 
             source = subprocess.check_output(
                 ["ruff", "format", "-"], input=source, encoding="utf-8"
@@ -528,11 +529,7 @@ class _SimplifiedNameCollector(ast.NodeVisitor):
     def visit_Name(self, node):
         self.generic_visit(node)
 
-        simplified_id = Symbol.remove_prefixes(node.id)
-        if simplified_id not in self.simplified_names:
-            node.id = simplified_id
-
-        self.simplified_names[node.id] = simplified_id
+        self.simplified_names[node.id] = Symbol.remove_prefixes(node.id)
 
 
 class _Handle:
