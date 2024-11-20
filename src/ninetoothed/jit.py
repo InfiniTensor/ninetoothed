@@ -329,7 +329,7 @@ class CodeGenerator(ast.NodeTransformer):
     def _generate_launch(self, params, meta):
         constexpr_params = [param for param in params if Symbol.is_constexpr(param)]
         constexpr_params_without_prefixes = [
-            Symbol.remove_prefix(param) for param in constexpr_params
+            Symbol.remove_prefixes(param) for param in constexpr_params
         ]
 
         launch = ast.FunctionDef(
@@ -528,7 +528,7 @@ class _SimplifiedNameCollector(ast.NodeVisitor):
     def visit_Name(self, node):
         self.generic_visit(node)
 
-        simplified_id = Symbol.remove_prefix(node.id)
+        simplified_id = Symbol.remove_prefixes(node.id)
         if simplified_id not in self.simplified_names:
             node.id = simplified_id
 

@@ -1,6 +1,7 @@
 import ast
 import inspect
 import numbers
+import re
 import types
 
 
@@ -148,24 +149,23 @@ class Symbol:
 
     @staticmethod
     def is_constexpr(name):
-        return name.startswith(Symbol._constexpr_prefix()) or Symbol.is_meta(name)
+        return Symbol._CONSTEXPR in Symbol._find_prefixes(name) or Symbol.is_meta(name)
 
     @staticmethod
     def is_meta(name):
-        return name.startswith(Symbol._meta_prefix())
+        return Symbol._META in Symbol._find_prefixes(name)
 
     @staticmethod
-    def remove_prefix(name):
-        if name.startswith(Symbol._constexpr_prefix()):
-            return name.removeprefix(Symbol._constexpr_prefix())
+    def remove_prefixes(name):
+        new_name, num_subs = Symbol._NINETOOTHED_PREFIX_PATTERN.subn("", name)
 
-        if name.startswith(Symbol._meta_prefix()):
-            return name.removeprefix(Symbol._meta_prefix())
+        return new_name[1:] if num_subs > 0 else new_name
 
-        if name.startswith(Symbol._ninetoothed_prefix()):
-            return name.removeprefix(Symbol._ninetoothed_prefix())
+    _CONSTEXPR = "constexpr"
 
-        return name
+    _META = "meta"
+
+    _NINETOOTHED_PREFIX_PATTERN = re.compile(r"(?<!_)(?:__)*?_ninetoothed_(.*?)_prefix")
 
     @staticmethod
     def _create_constexpr(name):
@@ -177,15 +177,19 @@ class Symbol:
 
     @staticmethod
     def _constexpr_prefix():
-        return f"{Symbol._ninetoothed_prefix()}constexpr_"
+        return Symbol._ninetoothed_prefix(Symbol._CONSTEXPR)
 
     @staticmethod
     def _meta_prefix():
-        return f"{Symbol._ninetoothed_prefix()}meta_"
+        return Symbol._ninetoothed_prefix(Symbol._META)
 
     @staticmethod
-    def _ninetoothed_prefix():
-        return "_ninetoothed_"
+    def _ninetoothed_prefix(string):
+        return f"_ninetoothed_{string}_prefix_"
+
+    @staticmethod
+    def _find_prefixes(name):
+        return set(Symbol._NINETOOTHED_PREFIX_PATTERN.findall(name))
 
 
 class _FindAndReplacer(ast.NodeTransformer):
