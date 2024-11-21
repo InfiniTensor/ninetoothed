@@ -17,8 +17,6 @@ class Tensor:
         other=None,
         original=None,
     ):
-        type(self).num_instances += 1
-
         self.dtype = dtype
 
         self.name = f"_ninetoothed_tensor_{type(self).num_instances}"
@@ -40,6 +38,8 @@ class Tensor:
             self.original = original
         else:
             self.original = self
+
+        type(self).num_instances += 1
 
     def tile(self, tile_shape, tile_strides=None):
         if tile_strides is None:
