@@ -15,11 +15,15 @@ class Tensor:
         dtype=None,
         strides=None,
         other=None,
+        name=None,
         original=None,
     ):
         self.dtype = dtype
 
-        self.name = f"_ninetoothed_tensor_{type(self).num_instances}"
+        if name is not None:
+            self.name = name
+        else:
+            self.name = f"_ninetoothed_tensor_{type(self).num_instances}"
 
         if ndim is not None:
             self.shape = (Symbol(self.size_string(i)) for i in range(ndim))
