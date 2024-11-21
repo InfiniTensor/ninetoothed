@@ -62,6 +62,20 @@ class Symbol:
     def __radd__(self, other):
         return self.__add__(other)
 
+    def __sub__(self, other):
+        other = type(self)(other)
+
+        if self == 0:
+            return -other
+
+        if other == 0:
+            return self
+
+        return type(self)(ast.BinOp(left=self._node, op=ast.Sub(), right=other._node))
+
+    def __rsub__(self, other):
+        return type(self)(other).__sub__(self)
+
     def __mul__(self, other):
         other = type(self)(other)
 
