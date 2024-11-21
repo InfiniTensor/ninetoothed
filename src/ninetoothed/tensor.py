@@ -45,17 +45,17 @@ class Tensor:
 
         type(self).num_instances += 1
 
-    def tile(self, tile_shape, tile_strides=None):
-        if tile_strides is None:
-            tile_strides = [1 for _ in tile_shape]
+    def tile(self, tile_shape, dilation=None):
+        if dilation is None:
+            dilation = [1 for _ in tile_shape]
 
         outer_shape = []
         outer_strides = []
         inner_shape = []
         inner_strides = []
 
-        for size, stride, tile_size, tile_stride in zip(
-            self.shape, self.strides, tile_shape, tile_strides
+        for size, stride, tile_size, spacing in zip(
+            self.shape, self.strides, tile_shape, dilation
         ):
             if tile_size == -1:
                 tile_size = size
@@ -63,11 +63,11 @@ class Tensor:
             new_size = call("cdiv", size, tile_size)
             outer_shape.append(new_size)
 
-            new_stride = stride * tile_size // tile_stride
+            new_stride = stride * tile_size // spacing
             outer_strides.append(new_stride)
 
             inner_shape.append(tile_size)
-            next_stride = stride * tile_stride
+            next_stride = stride * spacing
             inner_strides.append(next_stride)
 
         return type(self)(
