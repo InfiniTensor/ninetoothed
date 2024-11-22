@@ -1,8 +1,9 @@
 import ast
 import inspect
 import numbers
-import re
 import types
+
+import ninetoothed.naming as naming
 
 
 class Symbol:
@@ -30,10 +31,10 @@ class Symbol:
             if constexpr is False:
                 raise ValueError("Non-constexpr meta symbol is not supported.")
 
-            self._node.id = type(self)._create_meta(self._node.id)
+            self._node.id = naming.make_meta(self._node.id)
 
         if constexpr:
-            self._node.id = type(self)._create_constexpr(self._node.id)
+            self._node.id = naming.make_constexpr(self._node.id)
 
     def __eq__(self, other):
         if isinstance(self._node, ast.Constant):
@@ -160,50 +161,6 @@ class Symbol:
                 return node
 
         return SliceSimplifier().visit(self._node)
-
-    @staticmethod
-    def is_constexpr(name):
-        return Symbol._CONSTEXPR in Symbol._find_prefixes(name) or Symbol.is_meta(name)
-
-    @staticmethod
-    def is_meta(name):
-        return Symbol._META in Symbol._find_prefixes(name)
-
-    @staticmethod
-    def remove_prefixes(name):
-        new_name, num_subs = Symbol._NINETOOTHED_PREFIX_PATTERN.subn("", name)
-
-        return new_name[1:] if num_subs > 0 else new_name
-
-    _CONSTEXPR = "constexpr"
-
-    _META = "meta"
-
-    _NINETOOTHED_PREFIX_PATTERN = re.compile(r"(?<!_)(?:__)*?_ninetoothed_(.*?)_prefix")
-
-    @staticmethod
-    def _create_constexpr(name):
-        return f"{Symbol._constexpr_prefix()}{name}"
-
-    @staticmethod
-    def _create_meta(name):
-        return f"{Symbol._meta_prefix()}{name}"
-
-    @staticmethod
-    def _constexpr_prefix():
-        return Symbol._ninetoothed_prefix(Symbol._CONSTEXPR)
-
-    @staticmethod
-    def _meta_prefix():
-        return Symbol._ninetoothed_prefix(Symbol._META)
-
-    @staticmethod
-    def _ninetoothed_prefix(string):
-        return f"_ninetoothed_{string}_prefix_"
-
-    @staticmethod
-    def _find_prefixes(name):
-        return set(Symbol._NINETOOTHED_PREFIX_PATTERN.findall(name))
 
 
 class _FindAndReplacer(ast.NodeTransformer):

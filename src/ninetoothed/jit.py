@@ -11,6 +11,7 @@ import tempfile
 
 import triton
 
+import ninetoothed.naming as naming
 from ninetoothed.language import attribute, call
 from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
@@ -172,12 +173,12 @@ class CodeGenerator(ast.NodeTransformer):
 
         names_of_args = [arg.names() - {"ninetoothed"} for arg in self._args]
         names = functools.reduce(lambda x, y: x | y, names_of_args)
-        meta_names = {name for name in names if Symbol.is_meta(name)}
+        meta_names = {name for name in names if naming.is_meta(name)}
         non_meta_names = {name for name in names if name not in meta_names}
 
         node.args = [
             ast.arg(arg=name)
-            if not Symbol.is_constexpr(name)
+            if not naming.is_constexpr(name)
             else ast.arg(arg=name, annotation=attribute("constexpr").node)
             for name in non_meta_names
         ] + [
@@ -328,9 +329,9 @@ class CodeGenerator(ast.NodeTransformer):
         )
 
     def _generate_launch(self, params, meta):
-        constexpr_params = [param for param in params if Symbol.is_constexpr(param)]
+        constexpr_params = [param for param in params if naming.is_constexpr(param)]
         constexpr_params_without_prefixes = [
-            Symbol.remove_prefixes(param) for param in constexpr_params
+            naming.remove_prefixes(param) for param in constexpr_params
         ]
 
         launch = ast.FunctionDef(
@@ -529,7 +530,7 @@ class _SimplifiedNameCollector(ast.NodeVisitor):
     def visit_Name(self, node):
         self.generic_visit(node)
 
-        self.simplified_names[node.id] = Symbol.remove_prefixes(node.id)
+        self.simplified_names[node.id] = naming.remove_prefixes(node.id)
 
 
 class _Handle:
