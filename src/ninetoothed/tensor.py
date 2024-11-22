@@ -119,6 +119,7 @@ class Tensor:
                 for name in value.names()
             }
             | (self.dtype.names() if isinstance(self.dtype, type(self)) else set())
+            | (self.original.names() if self.original is not self else set())
         )
 
     def offsets(self, indices=None):
