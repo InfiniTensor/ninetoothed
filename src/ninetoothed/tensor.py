@@ -1,6 +1,7 @@
 import itertools
 import re
 
+import ninetoothed.naming as naming
 from ninetoothed.language import call
 from ninetoothed.symbol import Symbol
 
@@ -178,7 +179,14 @@ class Tensor:
 
         if isinstance(curr, type(self)):
             for dim in range(curr.ndim):
-                indices.append(call("arange", 0, curr.shape[dim]))
+                size = curr.shape[dim]
+
+                if Symbol.is_name(size):
+                    name = size.node.id
+                    if not naming.is_meta(name):
+                        size = naming.make_next_power_of_2(name)
+
+                indices.append(call("arange", 0, size))
 
         return tuple(indices)
 

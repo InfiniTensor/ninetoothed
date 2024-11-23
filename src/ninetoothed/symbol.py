@@ -162,6 +162,10 @@ class Symbol:
 
         return SliceSimplifier().visit(self._node)
 
+    @staticmethod
+    def is_name(object):
+        return isinstance(object, Symbol) and isinstance(object.node, ast.Name)
+
 
 class _FindAndReplacer(ast.NodeTransformer):
     def __init__(self, target, replacement):

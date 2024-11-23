@@ -175,6 +175,11 @@ class CodeGenerator(ast.NodeTransformer):
         names = functools.reduce(lambda x, y: x | y, names_of_args)
         meta_names = {name for name in names if naming.is_meta(name)}
         non_meta_names = {name for name in names if name not in meta_names}
+        non_meta_names |= {
+            naming.make_next_power_of_2(name)
+            for name in non_meta_names
+            if naming.is_constexpr(name)
+        }
 
         node.args = [
             ast.arg(arg=name)
@@ -329,9 +334,20 @@ class CodeGenerator(ast.NodeTransformer):
         )
 
     def _generate_launch(self, params, meta):
-        constexpr_params = [param for param in params if naming.is_constexpr(param)]
-        constexpr_params_without_prefixes = [
-            naming.remove_prefixes(param) for param in constexpr_params
+        non_next_power_of_2_constexpr_params = [
+            param
+            for param in params
+            if naming.is_constexpr(param) and not naming.is_next_power_of_2(param)
+        ]
+        non_next_power_of_2_constexpr_params_without_prefixes = [
+            naming.remove_prefixes(param)
+            for param in non_next_power_of_2_constexpr_params
+        ]
+        next_power_of_2_params = [
+            param for param in params if naming.is_next_power_of_2(param)
+        ]
+        next_power_of_2_params_without_prefixes = [
+            naming.remove_prefixes(param) for param in next_power_of_2_params
         ]
 
         launch = ast.FunctionDef(
@@ -339,17 +355,33 @@ class CodeGenerator(ast.NodeTransformer):
             args=ast.arguments(
                 posonlyargs=[],
                 args=[ast.arg(arg=arg.original.name) for arg in self._args]
-                + [ast.arg(arg=param) for param in constexpr_params_without_prefixes],
+                + [
+                    ast.arg(arg=param)
+                    for param in non_next_power_of_2_constexpr_params_without_prefixes
+                ],
                 kwonlyargs=[],
                 defaults=[],
             ),
             body=[
                 ast.Assign(
                     targets=[ast.Name(id=param, ctx=ast.Store())],
-                    value=ast.Name(id=param_without_prefix, ctx=ast.Load()),
+                    value=ast.Name(id=param_without_prefixes, ctx=ast.Load()),
                 )
-                for param, param_without_prefix in zip(
-                    constexpr_params, constexpr_params_without_prefixes
+                for param, param_without_prefixes in zip(
+                    non_next_power_of_2_constexpr_params,
+                    non_next_power_of_2_constexpr_params_without_prefixes,
+                )
+            ]
+            + [
+                ast.Assign(
+                    targets=[ast.Name(id=param, ctx=ast.Store())],
+                    value=Symbol(
+                        f"triton.next_power_of_2({param_without_prefixes})"
+                    ).node,
+                )
+                for param, param_without_prefixes in zip(
+                    next_power_of_2_params,
+                    next_power_of_2_params_without_prefixes,
                 )
             ]
             + [
