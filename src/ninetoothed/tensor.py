@@ -263,7 +263,7 @@ class Tensor:
     def _calculate_default_strides(shape):
         strides = [1]
 
-        for size in shape[1:]:
+        for size in reversed(shape[1:]):
             strides.append(size * strides[-1])
 
         return reversed(strides)
