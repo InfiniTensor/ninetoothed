@@ -5,26 +5,36 @@ import importlib.util
 import inspect
 import itertools
 import math
+import subprocess
 import sys
 import tempfile
 
 import triton
 
+import ninetoothed.naming as naming
 from ninetoothed.language import attribute, call
 from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
 
 
-def jit(func):
-    return JIT(func)()
+def jit(_func=None, *, _prettify=False):
+    def wrapper(func):
+        return JIT(func, _prettify=_prettify)()
+
+    if _func is None:
+        return wrapper
+
+    return wrapper(_func)
 
 
 class JIT:
     handles = collections.defaultdict(dict)
 
-    def __init__(self, func):
+    def __init__(self, func, _prettify=False):
         self.func = func
+
+        self._prettify = _prettify
 
     def __call__(self):
         source_file = inspect.getsourcefile(self.func)
@@ -40,11 +50,25 @@ class JIT:
 
         CodeGenerator(inspect.get_annotations(self.func)).visit(tree)
         Tritonizer().visit(tree)
+        _BinOpSimplifier().visit(tree)
         ast.fix_missing_locations(tree)
+
+        if self._prettify:
+            name_collector = _SimplifiedNameCollector()
+            name_collector.visit(tree)
 
         unparsed = ast.unparse(tree).replace("None:", ":").replace(":None", ":")
         dependencies = self._find_dependencies()
         source = "\n\n".join((unparsed, dependencies)).strip()
+
+        if self._prettify:
+            for original, simplified in name_collector.simplified_names.items():
+                if simplified not in name_collector.simplified_names:
+                    source = source.replace(original, simplified)
+
+            source = subprocess.check_output(
+                ["ruff", "format", "-"], input=source, encoding="utf-8"
+            )
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
             temp_file.write(source.encode("utf-8"))
@@ -67,10 +91,12 @@ class JIT:
         module = ast.parse(inspect.getsource(inspect.getmodule(self.func)))
 
         _AliasRestorer().visit(module)
+        collector = _ImportCollector()
+        collector.visit(module)
         finder = _FunctionDefFinder(self.func.__name__)
         finder.visit(module)
 
-        return ast.Module(body=[finder.result], type_ignores=[])
+        return ast.Module(body=collector.imports + [finder.result], type_ignores=[])
 
     def _find_dependencies(self):
         dependencies = set()
@@ -147,12 +173,17 @@ class CodeGenerator(ast.NodeTransformer):
 
         names_of_args = [arg.names() - {"ninetoothed"} for arg in self._args]
         names = functools.reduce(lambda x, y: x | y, names_of_args)
-        meta_names = {name for name in names if Symbol.is_meta(name)}
+        meta_names = {name for name in names if naming.is_meta(name)}
         non_meta_names = {name for name in names if name not in meta_names}
+        non_meta_names |= {
+            naming.make_next_power_of_2(name)
+            for name in non_meta_names
+            if naming.is_constexpr(name)
+        }
 
         node.args = [
             ast.arg(arg=name)
-            if not Symbol.is_constexpr(name)
+            if not naming.is_constexpr(name)
             else ast.arg(arg=name, annotation=attribute("constexpr").node)
             for name in non_meta_names
         ] + [
@@ -303,9 +334,20 @@ class CodeGenerator(ast.NodeTransformer):
         )
 
     def _generate_launch(self, params, meta):
-        constexpr_params = [param for param in params if Symbol.is_constexpr(param)]
-        constexpr_params_without_prefixes = [
-            Symbol.remove_prefix(param) for param in constexpr_params
+        non_next_power_of_2_constexpr_params = [
+            param
+            for param in params
+            if naming.is_constexpr(param) and not naming.is_next_power_of_2(param)
+        ]
+        non_next_power_of_2_constexpr_params_without_prefixes = [
+            naming.remove_prefixes(param)
+            for param in non_next_power_of_2_constexpr_params
+        ]
+        next_power_of_2_params = [
+            param for param in params if naming.is_next_power_of_2(param)
+        ]
+        next_power_of_2_params_without_prefixes = [
+            naming.remove_prefixes(param) for param in next_power_of_2_params
         ]
 
         launch = ast.FunctionDef(
@@ -313,17 +355,33 @@ class CodeGenerator(ast.NodeTransformer):
             args=ast.arguments(
                 posonlyargs=[],
                 args=[ast.arg(arg=arg.original.name) for arg in self._args]
-                + [ast.arg(arg=param) for param in constexpr_params_without_prefixes],
+                + [
+                    ast.arg(arg=param)
+                    for param in non_next_power_of_2_constexpr_params_without_prefixes
+                ],
                 kwonlyargs=[],
                 defaults=[],
             ),
             body=[
                 ast.Assign(
                     targets=[ast.Name(id=param, ctx=ast.Store())],
-                    value=ast.Name(id=param_without_prefix, ctx=ast.Load()),
+                    value=ast.Name(id=param_without_prefixes, ctx=ast.Load()),
                 )
-                for param, param_without_prefix in zip(
-                    constexpr_params, constexpr_params_without_prefixes
+                for param, param_without_prefixes in zip(
+                    non_next_power_of_2_constexpr_params,
+                    non_next_power_of_2_constexpr_params_without_prefixes,
+                )
+            ]
+            + [
+                ast.Assign(
+                    targets=[ast.Name(id=param, ctx=ast.Store())],
+                    value=Symbol(
+                        f"triton.next_power_of_2({param_without_prefixes})"
+                    ).node,
+                )
+                for param, param_without_prefixes in zip(
+                    next_power_of_2_params,
+                    next_power_of_2_params_without_prefixes,
                 )
             ]
             + [
@@ -477,6 +535,36 @@ class Tritonizer(ast.NodeTransformer):
         return node
 
 
+class _BinOpSimplifier(ast.NodeTransformer):
+    def visit_BinOp(self, node):
+        self.generic_visit(node)
+
+        if isinstance(node.op, ast.Mult):
+            left = Symbol(node.left)
+            right = Symbol(node.right)
+
+            if left == 0 or right == 0:
+                return Symbol(0).node
+
+            if left == 1:
+                return node.right
+
+            if right == 1:
+                return node.left
+
+        return node
+
+
+class _SimplifiedNameCollector(ast.NodeVisitor):
+    def __init__(self):
+        self.simplified_names = {}
+
+    def visit_Name(self, node):
+        self.generic_visit(node)
+
+        self.simplified_names[node.id] = naming.remove_prefixes(node.id)
+
+
 class _Handle:
     def __init__(self, kernel, launch, source):
         self._kernel = kernel
@@ -533,6 +621,23 @@ class _AliasRestorer(ast.NodeTransformer):
             return ast.Name(id=self._aliases[node.id], ctx=node.ctx)
 
         return node
+
+
+class _ImportCollector(ast.NodeVisitor):
+    def __init__(self):
+        super().__init__()
+
+        self.imports = []
+
+    def visit_Import(self, node):
+        self.imports.append(node)
+
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node):
+        self.imports.append(node)
+
+        self.generic_visit(node)
 
 
 class _FunctionDefFinder(ast.NodeVisitor):

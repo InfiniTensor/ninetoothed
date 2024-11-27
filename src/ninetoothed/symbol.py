@@ -1,6 +1,9 @@
 import ast
 import inspect
+import numbers
 import types
+
+import ninetoothed.naming as naming
 
 
 class Symbol:
@@ -28,18 +31,31 @@ class Symbol:
             if constexpr is False:
                 raise ValueError("Non-constexpr meta symbol is not supported.")
 
-            self._node.id = type(self)._create_meta(self._node.id)
+            self._node.id = naming.make_meta(self._node.id)
 
         if constexpr:
-            self._node.id = type(self)._create_constexpr(self._node.id)
+            self._node.id = naming.make_constexpr(self._node.id)
+
+    def __eq__(self, other):
+        if isinstance(self._node, ast.Constant):
+            if isinstance(other, Symbol) and isinstance(other._node, ast.Constant):
+                return self._node.value == other._node.value
+
+            if isinstance(other, numbers.Number):
+                return self._node.value == other
+
+        return False
+
+    def __hash__(self):
+        return id(self)
 
     def __add__(self, other):
         other = type(self)(other)
 
-        if isinstance(self._node, ast.Constant) and self._node.value == 0:
+        if self == 0:
             return other
 
-        if isinstance(other._node, ast.Constant) and other._node.value == 0:
+        if other == 0:
             return self
 
         return type(self)(ast.BinOp(left=self._node, op=ast.Add(), right=other._node))
@@ -47,19 +63,30 @@ class Symbol:
     def __radd__(self, other):
         return self.__add__(other)
 
+    def __sub__(self, other):
+        other = type(self)(other)
+
+        if self == 0:
+            return -other
+
+        if other == 0:
+            return self
+
+        return type(self)(ast.BinOp(left=self._node, op=ast.Sub(), right=other._node))
+
+    def __rsub__(self, other):
+        return type(self)(other).__sub__(self)
+
     def __mul__(self, other):
         other = type(self)(other)
 
-        if isinstance(self._node, ast.Constant) and self._node.value == 0:
+        if self == 0 or other == 0:
             return type(self)(0)
 
-        if isinstance(other._node, ast.Constant) and other._node.value == 0:
-            return type(self)(0)
-
-        if isinstance(self._node, ast.Constant) and self._node.value == 1:
+        if self == 1:
             return other
 
-        if isinstance(other._node, ast.Constant) and other._node.value == 1:
+        if other == 1:
             return self
 
         return type(self)(ast.BinOp(left=self._node, op=ast.Mult(), right=other._node))
@@ -136,40 +163,8 @@ class Symbol:
         return SliceSimplifier().visit(self._node)
 
     @staticmethod
-    def is_constexpr(name):
-        return name.startswith(Symbol._constexpr_prefix()) or Symbol.is_meta(name)
-
-    @staticmethod
-    def is_meta(name):
-        return name.startswith(Symbol._meta_prefix())
-
-    @staticmethod
-    def remove_prefix(name):
-        if name.startswith(Symbol._constexpr_prefix()):
-            return name.removeprefix(Symbol._constexpr_prefix())
-
-        if name.startswith(Symbol._meta_prefix()):
-            return name.removeprefix(Symbol._meta_prefix())
-
-    @staticmethod
-    def _create_constexpr(name):
-        return f"{Symbol._constexpr_prefix()}{name}"
-
-    @staticmethod
-    def _create_meta(name):
-        return f"{Symbol._meta_prefix()}{name}"
-
-    @staticmethod
-    def _constexpr_prefix():
-        return f"{Symbol._ninetoothed_prefix()}constexpr_"
-
-    @staticmethod
-    def _meta_prefix():
-        return f"{Symbol._ninetoothed_prefix()}meta_"
-
-    @staticmethod
-    def _ninetoothed_prefix():
-        return "_ninetoothed_"
+    def is_name(object):
+        return isinstance(object, Symbol) and isinstance(object.node, ast.Name)
 
 
 class _FindAndReplacer(ast.NodeTransformer):

@@ -1,6 +1,7 @@
 import itertools
 import re
 
+import ninetoothed.naming as naming
 from ninetoothed.language import call
 from ninetoothed.symbol import Symbol
 
@@ -15,13 +16,15 @@ class Tensor:
         dtype=None,
         strides=None,
         other=None,
+        name=None,
         original=None,
     ):
-        type(self).num_instances += 1
-
         self.dtype = dtype
 
-        self.name = f"_ninetoothed_tensor_{type(self).num_instances}"
+        if name is not None:
+            self.name = name
+        else:
+            self.name = f"_ninetoothed_tensor_{type(self).num_instances}"
 
         if ndim is not None:
             self.shape = (Symbol(self.size_string(i)) for i in range(ndim))
@@ -41,29 +44,41 @@ class Tensor:
         else:
             self.original = self
 
-    def tile(self, tile_shape, tile_strides=None):
-        if tile_strides is None:
-            tile_strides = [1 for _ in tile_shape]
+        type(self).num_instances += 1
+
+    def tile(self, tile_shape, strides=None, dilation=None):
+        if strides is None:
+            strides = [-1 for _ in tile_shape]
+
+        if dilation is None:
+            dilation = [1 for _ in tile_shape]
 
         outer_shape = []
         outer_strides = []
         inner_shape = []
         inner_strides = []
 
-        for size, stride, tile_size, tile_stride in zip(
-            self.shape, self.strides, tile_shape, tile_strides
+        for self_size, self_stride, tile_size, stride, spacing in zip(
+            self.shape, self.strides, tile_shape, strides, dilation
         ):
             if tile_size == -1:
-                tile_size = size
+                tile_size = self_size
 
-            new_size = call("cdiv", size, tile_size)
+            if stride == -1:
+                stride = tile_size
+
+            new_size = (
+                call("cdiv", self_size - spacing * (tile_size - 1) - 1, stride) + 1
+                if stride != 0
+                else -1
+            )
             outer_shape.append(new_size)
 
-            new_stride = stride * tile_size // tile_stride
+            new_stride = self_stride * stride // spacing
             outer_strides.append(new_stride)
 
             inner_shape.append(tile_size)
-            next_stride = stride * tile_stride
+            next_stride = self_stride * spacing
             inner_strides.append(next_stride)
 
         return type(self)(
@@ -115,6 +130,7 @@ class Tensor:
                 for name in value.names()
             }
             | (self.dtype.names() if isinstance(self.dtype, type(self)) else set())
+            | (self.original.names() if self.original is not self else set())
         )
 
     def offsets(self, indices=None):
@@ -163,7 +179,14 @@ class Tensor:
 
         if isinstance(curr, type(self)):
             for dim in range(curr.ndim):
-                indices.append(call("arange", 0, curr.shape[dim]))
+                size = curr.shape[dim]
+
+                if Symbol.is_name(size):
+                    name = size.node.id
+                    if not naming.is_meta(name):
+                        size = naming.make_next_power_of_2(name)
+
+                indices.append(call("arange", 0, size))
 
         return tuple(indices)
 
@@ -240,7 +263,7 @@ class Tensor:
     def _calculate_default_strides(shape):
         strides = [1]
 
-        for size in shape[1:]:
+        for size in reversed(shape[1:]):
             strides.append(size * strides[-1])
 
         return reversed(strides)
