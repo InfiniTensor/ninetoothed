@@ -199,11 +199,7 @@ class CodeGenerator(ast.NodeTransformer):
         return node
 
     def visit_Subscript(self, node):
-        if (
-            isinstance(node.value, ast.Name)
-            and node.value.id in self._context
-            and isinstance(node.ctx, ast.Load)
-        ):
+        if self._in_context(node.value) and isinstance(node.ctx, ast.Load):
             value = self._context[node.value.id]
 
             if isinstance(value, Tensor):
@@ -219,7 +215,7 @@ class CodeGenerator(ast.NodeTransformer):
         return node
 
     def visit_Attribute(self, node):
-        if isinstance(node.value, ast.Name) and node.value.id in self._context:
+        if self._in_context(node.value):
             value = self._context[node.value.id]
 
             if isinstance(value, Tensor):
@@ -234,7 +230,7 @@ class CodeGenerator(ast.NodeTransformer):
     def visit_Name(self, node):
         self.generic_visit(node)
 
-        if node.id in self._context and isinstance(node.ctx, ast.Load):
+        if self._in_context(node) and isinstance(node.ctx, ast.Load):
             return type(self)._generate_load(self._context[node.id])
 
         return node
@@ -243,7 +239,7 @@ class CodeGenerator(ast.NodeTransformer):
         if len(node.targets) == 1:
             target = node.targets[0]
 
-            if isinstance(target, ast.Name) and target.id in self._context:
+            if self._in_context(target):
                 self.generic_visit(node)
 
                 return ast.Expr(
@@ -251,8 +247,7 @@ class CodeGenerator(ast.NodeTransformer):
                 )
             elif (
                 isinstance(target, ast.Subscript)
-                and isinstance(target.value, ast.Name)
-                and target.value.id in self._context
+                and self._in_context(target.value)
                 and isinstance(target.ctx, ast.Store)
             ):
                 value = self._context[target.value.id]
@@ -273,6 +268,9 @@ class CodeGenerator(ast.NodeTransformer):
         self.generic_visit(node)
 
         return node
+
+    def _in_context(self, node):
+        return isinstance(node, ast.Name) and node.id in self._context
 
     def _generate_autotune(self, params, meta):
         device = triton.runtime.driver.active.get_current_device()
