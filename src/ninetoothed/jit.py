@@ -141,30 +141,12 @@ class CodeGenerator(ast.NodeTransformer):
     def visit_FunctionDef(self, node):
         self._func_def = node
 
+        self._invariants = {}
+
         self.generic_visit(node)
 
-        for arg in self._args:
-            if not isinstance(arg, Tensor) or arg.ndim == 0:
-                continue
-
-            offsets = arg.offsets()
-
-            initializations = {
-                type(self)._name_for_offsets(arg, dim): offs
-                for dim, offs in enumerate(offsets)
-            } | {
-                type(self)._name_for_pointers(arg): arg.original.pointer_string()
-                + sum(
-                    type(self)._name_for_offsets(arg, dim)[
-                        type(self)._generate_slices(arg, dim)
-                    ]
-                    * stride
-                    for dim, stride in enumerate(arg.original.strides)
-                )
-            }
-
-            for target, value in reversed(initializations.items()):
-                node.body.insert(0, ast.Assign(targets=[target.node], value=value.node))
+        for target, value in reversed(self._invariants.items()):
+            node.body.insert(0, ast.Assign(targets=[target.node], value=value.node))
 
         return node
 
@@ -203,7 +185,7 @@ class CodeGenerator(ast.NodeTransformer):
             value = self._context[node.value.id]
 
             if isinstance(value, Tensor):
-                return type(self)._generate_load(
+                return self._generate_load(
                     value,
                     intermediate_indices=node.slice.elts
                     if isinstance(node.slice, ast.Tuple)
@@ -231,7 +213,7 @@ class CodeGenerator(ast.NodeTransformer):
         self.generic_visit(node)
 
         if self._in_context(node) and isinstance(node.ctx, ast.Load):
-            return type(self)._generate_load(self._context[node.id])
+            return self._generate_load(self._context[node.id])
 
         return node
 
@@ -243,7 +225,7 @@ class CodeGenerator(ast.NodeTransformer):
                 self.generic_visit(node)
 
                 return ast.Expr(
-                    type(self)._generate_store(self._context[target.id], node.value)
+                    self._generate_store(self._context[target.id], node.value)
                 )
             elif (
                 isinstance(target, ast.Subscript)
@@ -256,7 +238,7 @@ class CodeGenerator(ast.NodeTransformer):
                     self.generic_visit(node)
 
                     return ast.Expr(
-                        type(self)._generate_store(
+                        self._generate_store(
                             value,
                             node.value,
                             intermediate_indices=target.slice.elts
@@ -425,42 +407,49 @@ class CodeGenerator(ast.NodeTransformer):
 
         return ast.parse(f"lambda meta: ({num_elements},)", mode="eval").body
 
-    @staticmethod
-    def _generate_load(tensor, intermediate_indices=()):
+    def _generate_load(self, tensor, intermediate_indices=()):
         if tensor.ndim == 0:
             return Symbol(tensor.original.name).node
 
-        pointers, mask = CodeGenerator._generate_pointers_and_mask(
-            tensor, intermediate_indices
-        )
-        other = CodeGenerator._generate_other(tensor)
+        pointers, mask = self._generate_pointers_and_mask(tensor, intermediate_indices)
+        other = type(self)._generate_other(tensor)
 
         return call("load", pointers, mask=mask, other=other).node
 
-    @staticmethod
-    def _generate_store(tensor, value, intermediate_indices=()):
-        pointers, mask = CodeGenerator._generate_pointers_and_mask(
-            tensor, intermediate_indices
-        )
+    def _generate_store(self, tensor, value, intermediate_indices=()):
+        pointers, mask = self._generate_pointers_and_mask(tensor, intermediate_indices)
 
         return call("store", pointers, value, mask=mask).node
 
-    @staticmethod
-    def _generate_pointers_and_mask(tensor, intermediate_indices):
-        intermediate_offsets = CodeGenerator._generate_intermediate_offsets(
+    def _generate_pointers_and_mask(self, tensor, intermediate_indices):
+        self._invariants |= {
+            type(self)._name_for_offsets(tensor, dim): offs
+            for dim, offs in enumerate(tensor.offsets())
+        } | {
+            type(self)._name_for_pointers(tensor): tensor.original.pointer_string()
+            + sum(
+                type(self)._name_for_offsets(tensor, dim)[
+                    type(self)._generate_slices(tensor, dim)
+                ]
+                * stride
+                for dim, stride in enumerate(tensor.original.strides)
+            )
+        }
+
+        intermediate_offsets = type(self)._generate_intermediate_offsets(
             tensor, intermediate_indices
         )
         offsets = [
-            CodeGenerator._name_for_offsets(tensor, dim) + intermediate_offsets[dim]
+            type(self)._name_for_offsets(tensor, dim) + intermediate_offsets[dim]
             for dim in range(tensor.original.ndim)
         ]
-        pointers = CodeGenerator._name_for_pointers(tensor) + sum(
+        pointers = type(self)._name_for_pointers(tensor) + sum(
             map(lambda x, y: x * y, intermediate_offsets, tensor.original.strides)
         )
         mask = functools.reduce(
             lambda x, y: x & y,
             (
-                offs[CodeGenerator._generate_slices(tensor, dim)] < size
+                offs[type(self)._generate_slices(tensor, dim)] < size
                 for dim, (offs, size) in enumerate(zip(offsets, tensor.original.shape))
             ),
         )
