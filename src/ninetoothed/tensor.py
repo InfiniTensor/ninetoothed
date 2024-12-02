@@ -1,3 +1,4 @@
+import copy
 import itertools
 import re
 
@@ -154,7 +155,7 @@ class Tensor:
             curr = curr.dtype
 
         for dim in range(self.original.ndim):
-            offsets[dim] = sum(offsets[dim])
+            offsets[dim] = copy.deepcopy(sum(offsets[dim]))
             offsets[dim].find_and_replace(Symbol(self.original.strides[dim]), Symbol(1))
 
         return offsets
