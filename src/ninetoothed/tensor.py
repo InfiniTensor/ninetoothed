@@ -2,7 +2,6 @@ import copy
 import itertools
 import re
 
-import ninetoothed.naming as naming
 from ninetoothed.language import call
 from ninetoothed.symbol import Symbol
 
@@ -134,10 +133,7 @@ class Tensor:
             | (self.original.names() if self.original is not self else set())
         )
 
-    def offsets(self, indices=None):
-        if indices is None:
-            indices = self.indices()
-
+    def offsets(self, indices):
         offsets = [[] for _ in range(self.original.ndim)]
 
         curr = self
@@ -159,37 +155,6 @@ class Tensor:
             offsets[dim].find_and_replace(Symbol(self.original.strides[dim]), Symbol(1))
 
         return offsets
-
-    def indices(self, index=None):
-        if index is None:
-            index = call("program_id", 0)
-
-        indices = []
-
-        for stride in type(self)(shape=self.shape, original=self.original).strides:
-            indices.append(index // stride)
-            index %= stride
-
-        curr = self.dtype
-
-        while isinstance(curr.dtype, type(self)):
-            for _ in range(curr.ndim):
-                indices.append(0)
-
-            curr = curr.dtype
-
-        if isinstance(curr, type(self)):
-            for dim in range(curr.ndim):
-                size = curr.shape[dim]
-
-                if Symbol.is_name(size):
-                    name = size.node.id
-                    if not naming.is_meta(name):
-                        size = naming.make_next_power_of_2(name)
-
-                indices.append(call("arange", 0, size))
-
-        return tuple(indices)
 
     def inmost(self):
         if not isinstance(self.dtype, type(self)):
