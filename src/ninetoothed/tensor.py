@@ -1,4 +1,3 @@
-import copy
 import itertools
 import re
 
@@ -133,29 +132,6 @@ class Tensor:
             | (self.original.names() if self.original is not self else set())
         )
 
-    def offsets(self, indices):
-        offsets = [[] for _ in range(self.original.ndim)]
-
-        curr = self
-        start = 0
-
-        while isinstance(curr, type(self)):
-            stop = start + curr.ndim
-            curr_indices = indices[start:stop]
-
-            for index, stride in zip(curr_indices, curr.strides):
-                for dim in self._dims_of(stride):
-                    offsets[dim].append(index * stride)
-
-            start = stop
-            curr = curr.dtype
-
-        for dim in range(self.original.ndim):
-            offsets[dim] = copy.deepcopy(sum(offsets[dim]))
-            offsets[dim].find_and_replace(Symbol(self.original.strides[dim]), Symbol(1))
-
-        return offsets
-
     def inmost(self):
         if not isinstance(self.dtype, type(self)):
             return self
@@ -214,16 +190,6 @@ class Tensor:
     @staticmethod
     def stride_pattern():
         return re.compile(rf"({_identifier_pattern_raw_string()})_(stride)_(.+)")
-
-    def _dims_of(self, stride):
-        dims = set()
-        names = stride.names() if isinstance(stride, Symbol) else {stride}
-
-        for dim, original_stride in enumerate(self.original.strides):
-            if str(original_stride) in names:
-                dims.add(dim)
-
-        return dims
 
     @staticmethod
     def _calculate_default_strides(shape):

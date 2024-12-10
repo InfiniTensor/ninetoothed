@@ -1,5 +1,6 @@
 import ast
 import collections
+import copy
 import functools
 import importlib.util
 import inspect
@@ -428,7 +429,9 @@ class CodeGenerator(ast.NodeTransformer):
 
         self._invariants |= {
             type(self)._name_for_offsets(tensor, dim): offs
-            for dim, offs in enumerate(tensor.offsets(implicit_indices))
+            for dim, offs in enumerate(
+                type(self)._generate_offsets(tensor, implicit_indices)
+            )
         } | {
             type(self)._name_for_pointers(tensor): tensor.original.pointer_string()
             + sum(
@@ -510,12 +513,39 @@ class CodeGenerator(ast.NodeTransformer):
     def _generate_offset_increments(tensor, indices):
         return tuple(
             offs
-            for offs in tensor.offsets(
+            for offs in CodeGenerator._generate_offsets(
+                tensor,
                 [0 for _ in range(tensor.ndim)]
                 + list(indices)
-                + [0 for _ in range(tensor.inmost().ndim)]
+                + [0 for _ in range(tensor.inmost().ndim)],
             )
         )
+
+    @staticmethod
+    def _generate_offsets(tensor, indices):
+        offsets = [[] for _ in range(tensor.original.ndim)]
+
+        curr = tensor
+        start = 0
+
+        while isinstance(curr, type(tensor)):
+            stop = start + curr.ndim
+            curr_indices = indices[start:stop]
+
+            for index, stride in zip(curr_indices, curr.strides):
+                for dim in CodeGenerator._dims_of(tensor, stride):
+                    offsets[dim].append(index * stride)
+
+            start = stop
+            curr = curr.dtype
+
+        for dim in range(tensor.original.ndim):
+            offsets[dim] = copy.deepcopy(sum(offsets[dim]))
+            offsets[dim].find_and_replace(
+                Symbol(tensor.original.strides[dim]), Symbol(1)
+            )
+
+        return offsets
 
     @staticmethod
     def _name_for_pointers(tensor):
@@ -538,6 +568,17 @@ class CodeGenerator(ast.NodeTransformer):
             index %= stride
 
         return tuple(indices)
+
+    @staticmethod
+    def _dims_of(tensor, stride):
+        dims = set()
+        names = stride.names() if isinstance(stride, Symbol) else {stride}
+
+        for dim, original_stride in enumerate(tensor.original.strides):
+            if str(original_stride) in names:
+                dims.add(dim)
+
+        return dims
 
 
 class Tritonizer(ast.NodeTransformer):
