@@ -16,7 +16,7 @@ class Tensor:
         strides=None,
         other=None,
         name=None,
-        original=None,
+        source=None,
     ):
         self.dtype = dtype
 
@@ -38,10 +38,10 @@ class Tensor:
 
         self.other = other
 
-        if original is not None:
-            self.original = original
+        if source is not None:
+            self.source = source
         else:
-            self.original = self
+            self.source = self
 
         type(self).num_instances += 1
 
@@ -86,10 +86,10 @@ class Tensor:
                 shape=inner_shape,
                 dtype=self.dtype,
                 strides=inner_strides,
-                original=self.original,
+                source=self.source,
             ),
             strides=outer_strides,
-            original=self.original,
+            source=self.source,
         )
 
     def expand(self, shape):
@@ -104,7 +104,7 @@ class Tensor:
                 stride if new_size == -1 else 0
                 for new_size, stride in zip(shape, self.strides)
             ],
-            original=self.original,
+            source=self.source,
         )
 
     def squeeze(self, dim):
@@ -113,15 +113,15 @@ class Tensor:
             shape=[size for i, size in enumerate(self.shape) if dim != i],
             dtype=self.dtype,
             strides=[stride for i, stride in enumerate(self.strides) if dim != i],
-            original=self.original,
+            source=self.source,
         )
 
     def names(self):
         if self.ndim == 0:
-            return {self.original.name}
+            return {self.source.name}
 
         return (
-            {self.original.pointer_string()}
+            {self.source.pointer_string()}
             | {
                 name
                 for value in itertools.chain(self.shape, self.strides)
@@ -129,7 +129,7 @@ class Tensor:
                 for name in value.names()
             }
             | (self.dtype.names() if isinstance(self.dtype, type(self)) else set())
-            | (self.original.names() if self.original is not self else set())
+            | (self.source.names() if self.source is not self else set())
         )
 
     def inmost(self):

@@ -337,7 +337,7 @@ class CodeGenerator(ast.NodeTransformer):
             name=f"launch_{self._func_def.name}",
             args=ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg=arg.original.name) for arg in self._args]
+                args=[ast.arg(arg=arg.source.name) for arg in self._args]
                 + [
                     ast.arg(arg=param)
                     for param in non_next_power_of_2_constexpr_params_without_prefixes
@@ -412,7 +412,7 @@ class CodeGenerator(ast.NodeTransformer):
 
     def _generate_load(self, tensor, indices=()):
         if tensor.ndim == 0:
-            return Symbol(tensor.original.name).node
+            return Symbol(tensor.source.name).node
 
         pointers, mask = self._generate_pointers_and_mask(tensor, indices)
         other = type(self)._generate_other(tensor)
@@ -433,29 +433,29 @@ class CodeGenerator(ast.NodeTransformer):
                 type(self)._generate_offsets(tensor, implicit_indices)
             )
         } | {
-            type(self)._name_for_pointers(tensor): tensor.original.pointer_string()
+            type(self)._name_for_pointers(tensor): tensor.source.pointer_string()
             + sum(
                 type(self)._name_for_offsets(tensor, dim)[
                     type(self)._generate_slices(tensor, dim)
                 ]
                 * stride
-                for dim, stride in enumerate(tensor.original.strides)
+                for dim, stride in enumerate(tensor.source.strides)
             )
         }
 
         offset_increments = type(self)._generate_offset_increments(tensor, indices)
         offsets = [
             type(self)._name_for_offsets(tensor, dim) + offset_increments[dim]
-            for dim in range(tensor.original.ndim)
+            for dim in range(tensor.source.ndim)
         ]
         pointers = type(self)._name_for_pointers(tensor) + sum(
-            map(lambda x, y: x * y, offset_increments, tensor.original.strides)
+            map(lambda x, y: x * y, offset_increments, tensor.source.strides)
         )
         mask = functools.reduce(
             lambda x, y: x & y,
             (
                 offs[type(self)._generate_slices(tensor, dim)] < size
-                for dim, (offs, size) in enumerate(zip(offsets, tensor.original.shape))
+                for dim, (offs, size) in enumerate(zip(offsets, tensor.source.shape))
             ),
         )
 
@@ -498,7 +498,7 @@ class CodeGenerator(ast.NodeTransformer):
 
     @staticmethod
     def _generate_other(tensor):
-        other = tensor.original.other
+        other = tensor.source.other
 
         if isinstance(other, float) and not math.isfinite(other):
             return f"float('{other}')"
@@ -523,7 +523,7 @@ class CodeGenerator(ast.NodeTransformer):
 
     @staticmethod
     def _generate_offsets(tensor, indices):
-        offsets = [[] for _ in range(tensor.original.ndim)]
+        offsets = [[] for _ in range(tensor.source.ndim)]
 
         curr = tensor
         start = 0
@@ -539,25 +539,23 @@ class CodeGenerator(ast.NodeTransformer):
             start = stop
             curr = curr.dtype
 
-        for dim in range(tensor.original.ndim):
+        for dim in range(tensor.source.ndim):
             offsets[dim] = copy.deepcopy(sum(offsets[dim]))
-            offsets[dim].find_and_replace(
-                Symbol(tensor.original.strides[dim]), Symbol(1)
-            )
+            offsets[dim].find_and_replace(Symbol(tensor.source.strides[dim]), Symbol(1))
 
         return offsets
 
     @staticmethod
     def _name_for_pointers(tensor):
-        return Symbol(f"{tensor.original.name}_pointers")
+        return Symbol(f"{tensor.source.name}_pointers")
 
     @staticmethod
     def _name_for_offsets(tensor, dim):
-        return Symbol(f"{tensor.original.name}_offsets_{dim}")
+        return Symbol(f"{tensor.source.name}_offsets_{dim}")
 
     @staticmethod
     def _name_for_index(tensor, dim):
-        return Symbol(f"{tensor.original.name}_index_{dim}")
+        return Symbol(f"{tensor.source.name}_index_{dim}")
 
     @staticmethod
     def _unravel_index(index, shape):
@@ -574,8 +572,8 @@ class CodeGenerator(ast.NodeTransformer):
         dims = set()
         names = stride.names() if isinstance(stride, Symbol) else {stride}
 
-        for dim, original_stride in enumerate(tensor.original.strides):
-            if str(original_stride) in names:
+        for dim, source_stride in enumerate(tensor.source.strides):
+            if str(source_stride) in names:
                 dims.add(dim)
 
         return dims
