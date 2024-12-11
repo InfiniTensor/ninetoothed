@@ -426,36 +426,48 @@ class CodeGenerator(ast.NodeTransformer):
 
     def _generate_pointers_and_mask(self, tensor, indices):
         implicit_indices = self._generate_implicit_indices(tensor)
+        implicit_offsets = type(self)._generate_offsets(tensor, implicit_indices)
 
-        self._invariants |= {
-            type(self)._name_for_offsets(tensor, dim): offs
-            for dim, offs in enumerate(
-                type(self)._generate_offsets(tensor, implicit_indices)
-            )
-        } | {
-            type(self)._name_for_pointers(tensor): tensor.source.pointer_string()
-            + sum(
-                type(self)._name_for_offsets(tensor, dim)[
-                    type(self)._generate_slices(tensor, dim)
-                ]
-                * stride
-                for dim, stride in enumerate(tensor.source.strides)
-            )
-        }
+        for source_dim in range(tensor.source.ndim):
+            for target_dim in range(tensor.target.ndim):
+                name = type(self)._name_for_offsets(tensor, source_dim, target_dim)
+                self._invariants[name] = implicit_offsets[source_dim][target_dim]
+
+        name_for_pointers = type(self)._name_for_pointers(tensor)
+        self._invariants[name_for_pointers] = tensor.source.pointer_string()
+
+        for source_dim in range(tensor.source.ndim):
+            for target_dim in range(tensor.target.ndim):
+                offs = type(self)._name_for_offsets(tensor, source_dim, target_dim)
+                self._invariants[name_for_pointers] += (
+                    offs[type(self)._generate_slices(tensor, target_dim)]
+                    * tensor.source.strides[source_dim]
+                )
 
         offset_increments = type(self)._generate_offset_increments(tensor, indices)
         offsets = [
-            type(self)._name_for_offsets(tensor, dim) + offset_increments[dim]
-            for dim in range(tensor.source.ndim)
+            [
+                type(self)._name_for_offsets(tensor, source_dim, target_dim)
+                + offset_increments[source_dim][target_dim]
+                for target_dim in range(tensor.target.ndim)
+            ]
+            for source_dim in range(tensor.source.ndim)
         ]
         pointers = type(self)._name_for_pointers(tensor) + sum(
-            map(lambda x, y: x * y, offset_increments, tensor.source.strides)
+            offset_increments[source_dim][target_dim]
+            * tensor.source.strides[source_dim]
+            for source_dim in range(tensor.source.ndim)
+            for target_dim in range(tensor.target.ndim)
         )
         mask = functools.reduce(
             lambda x, y: x & y,
             (
-                offs[type(self)._generate_slices(tensor, dim)] < size
-                for dim, (offs, size) in enumerate(zip(offsets, tensor.source.shape))
+                offsets[source_dim][target_dim][
+                    type(self)._generate_slices(tensor, target_dim)
+                ]
+                < tensor.source.shape[source_dim]
+                for source_dim in range(tensor.source.ndim)
+                for target_dim in range(tensor.target.ndim)
             ),
         )
 
@@ -523,7 +535,10 @@ class CodeGenerator(ast.NodeTransformer):
 
     @staticmethod
     def _generate_offsets(tensor, indices):
-        offsets = [[] for _ in range(tensor.source.ndim)]
+        offsets = [
+            [Symbol(0) for _ in range(tensor.target.ndim)]
+            for _ in range(tensor.source.ndim)
+        ]
 
         curr = tensor
         start = 0
@@ -532,16 +547,22 @@ class CodeGenerator(ast.NodeTransformer):
             stop = start + curr.ndim
             curr_indices = indices[start:stop]
 
-            for index, stride in zip(curr_indices, curr.strides):
-                for dim in CodeGenerator._dims_of(tensor, stride):
-                    offsets[dim].append(index * stride)
+            for index, stride, source_dim, target_dim in zip(
+                curr_indices, curr.strides, curr.source_dims, curr.target_dims
+            ):
+                offsets[source_dim][target_dim] += index * stride
 
             start = stop
             curr = curr.dtype
 
-        for dim in range(tensor.source.ndim):
-            offsets[dim] = copy.deepcopy(sum(offsets[dim]))
-            offsets[dim].find_and_replace(Symbol(tensor.source.strides[dim]), Symbol(1))
+        for source_dim in range(tensor.source.ndim):
+            for target_dim in range(tensor.target.ndim):
+                offsets[source_dim][target_dim] = copy.deepcopy(
+                    offsets[source_dim][target_dim]
+                )
+                offsets[source_dim][target_dim].find_and_replace(
+                    Symbol(tensor.source.strides[source_dim]), Symbol(1)
+                )
 
         return offsets
 
@@ -550,8 +571,8 @@ class CodeGenerator(ast.NodeTransformer):
         return Symbol(f"{tensor.source.name}_pointers")
 
     @staticmethod
-    def _name_for_offsets(tensor, dim):
-        return Symbol(f"{tensor.source.name}_offsets_{dim}")
+    def _name_for_offsets(tensor, source_dim, target_dim):
+        return Symbol(f"{tensor.source.name}_offsets_{source_dim}_{target_dim}")
 
     @staticmethod
     def _name_for_index(tensor, dim):
@@ -566,17 +587,6 @@ class CodeGenerator(ast.NodeTransformer):
             index %= stride
 
         return tuple(indices)
-
-    @staticmethod
-    def _dims_of(tensor, stride):
-        dims = set()
-        names = stride.names() if isinstance(stride, Symbol) else {stride}
-
-        for dim, source_stride in enumerate(tensor.source.strides):
-            if str(source_stride) in names:
-                dims.add(dim)
-
-        return dims
 
 
 class Tritonizer(ast.NodeTransformer):

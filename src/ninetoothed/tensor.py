@@ -17,6 +17,9 @@ class Tensor:
         other=None,
         name=None,
         source=None,
+        source_dims=None,
+        target=None,
+        target_dims=None,
     ):
         self.dtype = dtype
 
@@ -42,6 +45,21 @@ class Tensor:
             self.source = source
         else:
             self.source = self
+
+        if source_dims is not None:
+            self.source_dims = source_dims
+        else:
+            self.source_dims = (dim for dim in range(self.source.ndim))
+
+        if target is not None:
+            self.target = target
+        else:
+            self.target = self
+
+        if target_dims is not None:
+            self.target_dims = target_dims
+        else:
+            self.target_dims = (dim for dim in range(self.target.ndim))
 
         type(self).num_instances += 1
 
@@ -87,9 +105,15 @@ class Tensor:
                 dtype=self.dtype,
                 strides=inner_strides,
                 source=self.source,
+                source_dims=self.source_dims,
+                target=self.target,
+                target_dims=self.target_dims,
             ),
             strides=outer_strides,
             source=self.source,
+            source_dims=self.source_dims,
+            target=self.target,
+            target_dims=self.target_dims,
         )
 
     def expand(self, shape):
@@ -105,6 +129,9 @@ class Tensor:
                 for new_size, stride in zip(shape, self.strides)
             ],
             source=self.source,
+            source_dims=self.source_dims,
+            target=self.target,
+            target_dims=self.target_dims,
         )
 
     def squeeze(self, dim):
@@ -114,6 +141,13 @@ class Tensor:
             dtype=self.dtype,
             strides=[stride for i, stride in enumerate(self.strides) if dim != i],
             source=self.source,
+            source_dims=[
+                source_dim for i, source_dim in enumerate(self.source_dims) if dim != i
+            ],
+            target=self.target,
+            target_dims=[
+                target_dim for i, target_dim in enumerate(self.target_dims) if dim != i
+            ],
         )
 
     def names(self):
@@ -178,6 +212,22 @@ class Tensor:
     @property
     def ndim(self):
         return len(self.shape)
+
+    @property
+    def source_dims(self):
+        return self._source_dims
+
+    @source_dims.setter
+    def source_dims(self, value):
+        self._source_dims = tuple(value)
+
+    @property
+    def target_dims(self):
+        return self._target_dims
+
+    @target_dims.setter
+    def target_dims(self, value):
+        self._target_dims = tuple(value)
 
     @staticmethod
     def pointer_pattern():
