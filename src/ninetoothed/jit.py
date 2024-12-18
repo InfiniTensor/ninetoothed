@@ -521,10 +521,9 @@ class CodeGenerator(ast.NodeTransformer):
 
     @staticmethod
     def _generate_offsets(tensor, indices):
-        offsets = [
-            [Symbol(0) for _ in range(tensor.target.ndim)]
-            for _ in range(tensor.source.ndim)
-        ]
+        offsets = collections.defaultdict(
+            lambda: collections.defaultdict(lambda: Symbol(0))
+        )
 
         curr = tensor
         start = 0
@@ -540,6 +539,19 @@ class CodeGenerator(ast.NodeTransformer):
 
             start = stop
             curr = curr.dtype
+
+        for source_dim in tuple(offsets):
+            for target_dim in tuple(offsets[source_dim]):
+                if not isinstance(source_dim, tuple):
+                    continue
+
+                unraveled = CodeGenerator._unravel_index(
+                    offsets[source_dim][target_dim],
+                    tuple(tensor.source.shape[dim] for dim in source_dim),
+                )
+
+                for offs, dim in zip(unraveled, source_dim):
+                    offsets[dim][target_dim] = offs
 
         for source_dim in range(tensor.source.ndim):
             for target_dim in range(tensor.target.ndim):
