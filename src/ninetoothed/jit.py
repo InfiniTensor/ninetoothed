@@ -425,39 +425,44 @@ class CodeGenerator(ast.NodeTransformer):
         return call("store", pointers, value, mask=mask).node
 
     def _generate_pointers_and_mask(self, tensor, indices):
-        implicit_indices = self._generate_implicit_indices(tensor)
-        implicit_offsets = type(self)._generate_offsets(tensor, implicit_indices)
+        invariant_target_dims = type(self)._find_invariant_target_dims(tensor)
+
+        indices = self._complete_indices(tensor, indices)
+        offsets = type(self)._generate_offsets(tensor, indices)
 
         for source_dim in range(tensor.source.ndim):
             for target_dim in range(tensor.target.ndim):
+                if target_dim not in invariant_target_dims:
+                    continue
+
                 name = type(self)._name_for_offsets(tensor, source_dim, target_dim)
-                self._invariants[name] = implicit_offsets[source_dim][target_dim]
+                self._invariants[name] = offsets[source_dim][target_dim]
+                offsets[source_dim][target_dim] = name
 
         name_for_pointers = type(self)._name_for_pointers(tensor)
-        self._invariants[name_for_pointers] = tensor.source.pointer_string()
+        self._invariants[name_for_pointers] = Symbol(tensor.source.pointer_string())
 
         for source_dim in range(tensor.source.ndim):
             for target_dim in range(tensor.target.ndim):
-                offs = type(self)._name_for_offsets(tensor, source_dim, target_dim)
+                if target_dim not in invariant_target_dims:
+                    continue
+
                 self._invariants[name_for_pointers] += (
-                    offs[type(self)._generate_slices(tensor, target_dim)]
+                    offsets[source_dim][target_dim][
+                        type(self)._generate_slices(tensor, target_dim)
+                    ]
                     * tensor.source.strides[source_dim]
                 )
 
-        offset_increments = type(self)._generate_offset_increments(tensor, indices)
-        offsets = [
-            [
-                type(self)._name_for_offsets(tensor, source_dim, target_dim)
-                + offset_increments[source_dim][target_dim]
-                for target_dim in range(tensor.target.ndim)
+        pointers = name_for_pointers + sum(
+            offsets[source_dim][target_dim][
+                type(self)._generate_slices(tensor, target_dim)
             ]
-            for source_dim in range(tensor.source.ndim)
-        ]
-        pointers = type(self)._name_for_pointers(tensor) + sum(
-            offset_increments[source_dim][target_dim]
             * tensor.source.strides[source_dim]
             for source_dim in range(tensor.source.ndim)
             for target_dim in range(tensor.target.ndim)
+            if target_dim not in invariant_target_dims
+            and offsets[source_dim][target_dim] != 0
         )
         mask = functools.reduce(
             lambda x, y: x & y,
@@ -468,23 +473,16 @@ class CodeGenerator(ast.NodeTransformer):
                 < tensor.source.shape[source_dim]
                 for source_dim in range(tensor.source.ndim)
                 for target_dim in range(tensor.target.ndim)
+                if offsets[source_dim][target_dim] != 0
             ),
         )
 
         return pointers, mask
 
-    def _generate_implicit_indices(self, tensor):
-        indices = list(self._generate_pid_indices(tensor))
+    def _complete_indices(self, tensor, indices):
+        indices = list(self._generate_pid_indices(tensor) + indices)
 
-        curr = tensor.dtype
-
-        while isinstance(curr.dtype, Tensor):
-            for _ in range(curr.ndim):
-                indices.append(0)
-
-            curr = curr.dtype
-
-        for size in curr.shape:
+        for size in tensor.inmost().shape:
             if Symbol.is_name(size):
                 name = size.node.id
                 if not naming.is_meta(name):
@@ -522,18 +520,6 @@ class CodeGenerator(ast.NodeTransformer):
         return tuple(slice(None) if i == dim else None for i in range(tensor.ndim))
 
     @staticmethod
-    def _generate_offset_increments(tensor, indices):
-        return tuple(
-            offs
-            for offs in CodeGenerator._generate_offsets(
-                tensor,
-                [0 for _ in range(tensor.ndim)]
-                + list(indices)
-                + [0 for _ in range(tensor.inmost().ndim)],
-            )
-        )
-
-    @staticmethod
     def _generate_offsets(tensor, indices):
         offsets = [
             [Symbol(0) for _ in range(tensor.target.ndim)]
@@ -565,6 +551,21 @@ class CodeGenerator(ast.NodeTransformer):
                 )
 
         return offsets
+
+    @staticmethod
+    def _find_invariant_target_dims(tensor):
+        invariant_target_dims = set()
+
+        curr = tensor.dtype
+
+        while isinstance(curr.dtype, Tensor):
+            for target_dim in range(curr.target.ndim):
+                if target_dim not in curr.target_dims:
+                    invariant_target_dims.add(target_dim)
+
+            curr = curr.dtype
+
+        return invariant_target_dims
 
     @staticmethod
     def _name_for_pointers(tensor):
