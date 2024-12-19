@@ -1,4 +1,5 @@
 import itertools
+import math
 import re
 
 from ninetoothed.language import call
@@ -148,6 +149,84 @@ class Tensor:
             target_dims=[
                 target_dim for i, target_dim in enumerate(self.target_dims) if dim != i
             ],
+        )
+
+    def permute(self, dims):
+        # TODO: Add error handling.
+        new_shape = [None for _ in range(self.ndim)]
+        new_strides = [None for _ in range(self.ndim)]
+        new_source_dims = [None for _ in range(self.ndim)]
+
+        for original_dim, permuted_dim in enumerate(dims):
+            new_shape[original_dim] = self.shape[permuted_dim]
+            new_strides[original_dim] = self.strides[permuted_dim]
+            new_source_dims[original_dim] = self.source_dims[permuted_dim]
+
+        return type(self)(
+            shape=new_shape,
+            dtype=self.dtype,
+            strides=new_strides,
+            source=self.source,
+            source_dims=new_source_dims,
+            target=self.target,
+            target_dims=self.target_dims,
+        )
+
+    def flatten(self, start_dim=None, end_dim=None):
+        # TODO: Add error handling.
+        if start_dim is None:
+            start_dim = 0
+        if end_dim is None:
+            end_dim = self.ndim
+
+        leading_sizes = self.shape[:start_dim]
+        flattening_sizes = self.shape[start_dim:end_dim]
+        trailing_sizes = self.shape[end_dim:]
+
+        new_shape = leading_sizes + (math.prod(flattening_sizes),) + trailing_sizes
+
+        leading_strides = self.strides[:start_dim]
+        flattening_strides = self.strides[start_dim:end_dim]
+        trailing_strides = self.strides[end_dim:]
+
+        new_strides = leading_strides + (flattening_strides[-1],) + trailing_strides
+
+        leading_source_dims = self.source_dims[:start_dim]
+        flattening_source_dims = self.source_dims[start_dim:end_dim]
+        trailing_source_dims = self.source_dims[end_dim:]
+
+        new_source_dims = (
+            leading_source_dims + (flattening_source_dims,) + trailing_source_dims
+        )
+
+        return type(self)(
+            shape=new_shape,
+            dtype=self.dtype,
+            strides=new_strides,
+            source=self.source,
+            source_dims=new_source_dims,
+            target=self.target,
+            target_dims=self.target_dims,
+        )
+
+    def ravel(self):
+        # TODO: Add error handling.
+        new_shape = []
+        new_strides = []
+
+        curr = self
+
+        while isinstance(curr, type(self)):
+            new_shape.extend(curr.shape)
+            new_strides.extend(curr.strides)
+
+            curr = curr.dtype
+
+        return type(self)(
+            shape=new_shape,
+            strides=new_strides,
+            other=self.source.other,
+            name=self.source.name,
         )
 
     def names(self):
