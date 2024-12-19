@@ -19,6 +19,15 @@ from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
 
 
+def make(arrangement, application, tensors):
+    params = inspect.signature(application).parameters
+    types = arrangement(*tensors)
+    annotations = {param: type for param, type in zip(params, types)}
+    application.__annotations__ = annotations
+
+    return jit(application)
+
+
 def jit(_func=None, *, _prettify=False):
     def wrapper(func):
         return JIT(func, _prettify=_prettify)()
@@ -175,7 +184,7 @@ class CodeGenerator(ast.NodeTransformer):
         ]
 
         autotune = self._generate_autotune(non_meta_names, meta_names)
-        self._func_def.decorator_list.insert(0, autotune)
+        self._func_def.decorator_list = [autotune, Symbol("triton.jit").node]
 
         self._launch = self._generate_launch(non_meta_names, meta_names)
 
