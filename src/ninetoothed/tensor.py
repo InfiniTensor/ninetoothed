@@ -1,7 +1,7 @@
 import itertools
+import math
 import re
 
-import ninetoothed.naming as naming
 from ninetoothed.language import call
 from ninetoothed.symbol import Symbol
 
@@ -17,7 +17,10 @@ class Tensor:
         strides=None,
         other=None,
         name=None,
-        original=None,
+        source=None,
+        source_dims=None,
+        target=None,
+        target_dims=None,
     ):
         self.dtype = dtype
 
@@ -39,10 +42,25 @@ class Tensor:
 
         self.other = other
 
-        if original is not None:
-            self.original = original
+        if source is not None:
+            self.source = source
         else:
-            self.original = self
+            self.source = self
+
+        if source_dims is not None:
+            self.source_dims = source_dims
+        else:
+            self.source_dims = (dim for dim in range(self.source.ndim))
+
+        if target is not None:
+            self.target = target
+        else:
+            self.target = self
+
+        if target_dims is not None:
+            self.target_dims = target_dims
+        else:
+            self.target_dims = (dim for dim in range(self.target.ndim))
 
         type(self).num_instances += 1
 
@@ -87,10 +105,16 @@ class Tensor:
                 shape=inner_shape,
                 dtype=self.dtype,
                 strides=inner_strides,
-                original=self.original,
+                source=self.source,
+                source_dims=self.source_dims,
+                target=self.target,
+                target_dims=self.target_dims,
             ),
             strides=outer_strides,
-            original=self.original,
+            source=self.source,
+            source_dims=self.source_dims,
+            target=self.target,
+            target_dims=self.target_dims,
         )
 
     def expand(self, shape):
@@ -105,7 +129,10 @@ class Tensor:
                 stride if new_size == -1 else 0
                 for new_size, stride in zip(shape, self.strides)
             ],
-            original=self.original,
+            source=self.source,
+            source_dims=self.source_dims,
+            target=self.target,
+            target_dims=self.target_dims,
         )
 
     def squeeze(self, dim):
@@ -114,15 +141,100 @@ class Tensor:
             shape=[size for i, size in enumerate(self.shape) if dim != i],
             dtype=self.dtype,
             strides=[stride for i, stride in enumerate(self.strides) if dim != i],
-            original=self.original,
+            source=self.source,
+            source_dims=[
+                source_dim for i, source_dim in enumerate(self.source_dims) if dim != i
+            ],
+            target=self.target,
+            target_dims=[
+                target_dim for i, target_dim in enumerate(self.target_dims) if dim != i
+            ],
+        )
+
+    def permute(self, dims):
+        # TODO: Add error handling.
+        new_shape = [None for _ in range(self.ndim)]
+        new_strides = [None for _ in range(self.ndim)]
+        new_source_dims = [None for _ in range(self.ndim)]
+
+        for original_dim, permuted_dim in enumerate(dims):
+            new_shape[original_dim] = self.shape[permuted_dim]
+            new_strides[original_dim] = self.strides[permuted_dim]
+            new_source_dims[original_dim] = self.source_dims[permuted_dim]
+
+        return type(self)(
+            shape=new_shape,
+            dtype=self.dtype,
+            strides=new_strides,
+            source=self.source,
+            source_dims=new_source_dims,
+            target=self.target,
+            target_dims=self.target_dims,
+        )
+
+    def flatten(self, start_dim=None, end_dim=None):
+        # TODO: Add error handling.
+        if start_dim is None:
+            start_dim = 0
+        if end_dim is None:
+            end_dim = self.ndim
+
+        leading_sizes = self.shape[:start_dim]
+        flattening_sizes = self.shape[start_dim:end_dim]
+        trailing_sizes = self.shape[end_dim:]
+
+        new_shape = leading_sizes + (math.prod(flattening_sizes),) + trailing_sizes
+
+        leading_strides = self.strides[:start_dim]
+        flattening_strides = self.strides[start_dim:end_dim]
+        trailing_strides = self.strides[end_dim:]
+
+        new_strides = leading_strides + (flattening_strides[-1],) + trailing_strides
+
+        leading_source_dims = self.source_dims[:start_dim]
+        flattening_source_dims = self.source_dims[start_dim:end_dim]
+        trailing_source_dims = self.source_dims[end_dim:]
+
+        new_source_dims = (
+            leading_source_dims + (flattening_source_dims,) + trailing_source_dims
+        )
+
+        return type(self)(
+            shape=new_shape,
+            dtype=self.dtype,
+            strides=new_strides,
+            source=self.source,
+            source_dims=new_source_dims,
+            target=self.target,
+            target_dims=self.target_dims,
+        )
+
+    def ravel(self):
+        # TODO: Add error handling.
+        new_shape = []
+        new_strides = []
+
+        curr = self
+
+        while isinstance(curr, type(self)):
+            new_shape.extend(curr.shape)
+            new_strides.extend(curr.strides)
+
+            curr = curr.dtype
+
+        return type(self)(
+            shape=new_shape,
+            strides=new_strides,
+            other=self.source.other,
+            name=self.source.name,
         )
 
     def names(self):
         if self.ndim == 0:
-            return {self.original.name}
+            return {self.source.name}
 
         return (
-            {self.original.pointer_string()}
+            {self.source.pointer_string()}
             | {
                 name
                 for value in itertools.chain(self.shape, self.strides)
@@ -130,65 +242,8 @@ class Tensor:
                 for name in value.names()
             }
             | (self.dtype.names() if isinstance(self.dtype, type(self)) else set())
-            | (self.original.names() if self.original is not self else set())
+            | (self.source.names() if self.source is not self else set())
         )
-
-    def offsets(self, indices=None):
-        if indices is None:
-            indices = self.indices()
-
-        offsets = [[] for _ in range(self.original.ndim)]
-
-        curr = self
-        start = 0
-
-        while isinstance(curr, type(self)):
-            stop = start + curr.ndim
-            curr_indices = indices[start:stop]
-
-            for index, stride in zip(curr_indices, curr.strides):
-                for dim in self._dims_of(stride):
-                    offsets[dim].append(index * stride)
-
-            start = stop
-            curr = curr.dtype
-
-        for dim in range(self.original.ndim):
-            offsets[dim] = sum(offsets[dim])
-            offsets[dim].find_and_replace(Symbol(self.original.strides[dim]), Symbol(1))
-
-        return offsets
-
-    def indices(self, index=None):
-        if index is None:
-            index = call("program_id", 0)
-
-        indices = []
-
-        for stride in type(self)(shape=self.shape, original=self.original).strides:
-            indices.append(index // stride)
-            index %= stride
-
-        curr = self.dtype
-
-        while isinstance(curr.dtype, type(self)):
-            for _ in range(curr.ndim):
-                indices.append(0)
-
-            curr = curr.dtype
-
-        if isinstance(curr, type(self)):
-            for dim in range(curr.ndim):
-                size = curr.shape[dim]
-
-                if Symbol.is_name(size):
-                    name = size.node.id
-                    if not naming.is_meta(name):
-                        size = naming.make_next_power_of_2(name)
-
-                indices.append(call("arange", 0, size))
-
-        return tuple(indices)
 
     def inmost(self):
         if not isinstance(self.dtype, type(self)):
@@ -237,6 +292,22 @@ class Tensor:
     def ndim(self):
         return len(self.shape)
 
+    @property
+    def source_dims(self):
+        return self._source_dims
+
+    @source_dims.setter
+    def source_dims(self, value):
+        self._source_dims = tuple(value)
+
+    @property
+    def target_dims(self):
+        return self._target_dims
+
+    @target_dims.setter
+    def target_dims(self, value):
+        self._target_dims = tuple(value)
+
     @staticmethod
     def pointer_pattern():
         return re.compile(rf"({_identifier_pattern_raw_string()})_(pointer)")
@@ -248,16 +319,6 @@ class Tensor:
     @staticmethod
     def stride_pattern():
         return re.compile(rf"({_identifier_pattern_raw_string()})_(stride)_(.+)")
-
-    def _dims_of(self, stride):
-        dims = set()
-        names = stride.names() if isinstance(stride, Symbol) else {stride}
-
-        for dim, original_stride in enumerate(self.original.strides):
-            if str(original_stride) in names:
-                dims.add(dim)
-
-        return dims
 
     @staticmethod
     def _calculate_default_strides(shape):

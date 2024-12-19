@@ -1,5 +1,6 @@
 import ast
 import collections
+import copy
 import functools
 import importlib.util
 import inspect
@@ -16,6 +17,15 @@ from ninetoothed.language import attribute, call
 from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
+
+
+def make(arrangement, application, tensors):
+    params = inspect.signature(application).parameters
+    types = arrangement(*tensors)
+    annotations = {param: type for param, type in zip(params, types)}
+    application.__annotations__ = annotations
+
+    return jit(application)
 
 
 def jit(_func=None, *, _prettify=False):
@@ -141,30 +151,12 @@ class CodeGenerator(ast.NodeTransformer):
     def visit_FunctionDef(self, node):
         self._func_def = node
 
+        self._invariants = {}
+
         self.generic_visit(node)
 
-        for arg in self._args:
-            if not isinstance(arg, Tensor) or arg.ndim == 0:
-                continue
-
-            offsets = arg.offsets()
-
-            initializations = {
-                type(self)._name_for_offsets(arg, dim): offs
-                for dim, offs in enumerate(offsets)
-            } | {
-                type(self)._name_for_pointers(arg): arg.original.pointer_string()
-                + sum(
-                    type(self)._name_for_offsets(arg, dim)[
-                        type(self)._generate_slices(arg, dim)
-                    ]
-                    * stride
-                    for dim, stride in enumerate(arg.original.strides)
-                )
-            }
-
-            for target, value in reversed(initializations.items()):
-                node.body.insert(0, ast.Assign(targets=[target.node], value=value.node))
+        for target, value in reversed(self._invariants.items()):
+            node.body.insert(0, ast.Assign(targets=[target.node], value=value.node))
 
         return node
 
@@ -192,24 +184,20 @@ class CodeGenerator(ast.NodeTransformer):
         ]
 
         autotune = self._generate_autotune(non_meta_names, meta_names)
-        self._func_def.decorator_list.insert(0, autotune)
+        self._func_def.decorator_list = [autotune, Symbol("triton.jit").node]
 
         self._launch = self._generate_launch(non_meta_names, meta_names)
 
         return node
 
     def visit_Subscript(self, node):
-        if (
-            isinstance(node.value, ast.Name)
-            and node.value.id in self._context
-            and isinstance(node.ctx, ast.Load)
-        ):
+        if self._in_context(node.value) and isinstance(node.ctx, ast.Load):
             value = self._context[node.value.id]
 
             if isinstance(value, Tensor):
-                return type(self)._generate_load(
+                return self._generate_load(
                     value,
-                    intermediate_indices=node.slice.elts
+                    indices=node.slice.elts
                     if isinstance(node.slice, ast.Tuple)
                     else (node.slice,),
                 )
@@ -219,7 +207,7 @@ class CodeGenerator(ast.NodeTransformer):
         return node
 
     def visit_Attribute(self, node):
-        if isinstance(node.value, ast.Name) and node.value.id in self._context:
+        if self._in_context(node.value):
             value = self._context[node.value.id]
 
             if isinstance(value, Tensor):
@@ -234,8 +222,8 @@ class CodeGenerator(ast.NodeTransformer):
     def visit_Name(self, node):
         self.generic_visit(node)
 
-        if node.id in self._context and isinstance(node.ctx, ast.Load):
-            return type(self)._generate_load(self._context[node.id])
+        if self._in_context(node) and isinstance(node.ctx, ast.Load):
+            return self._generate_load(self._context[node.id])
 
         return node
 
@@ -243,16 +231,15 @@ class CodeGenerator(ast.NodeTransformer):
         if len(node.targets) == 1:
             target = node.targets[0]
 
-            if isinstance(target, ast.Name) and target.id in self._context:
+            if self._in_context(target):
                 self.generic_visit(node)
 
                 return ast.Expr(
-                    type(self)._generate_store(self._context[target.id], node.value)
+                    self._generate_store(self._context[target.id], node.value)
                 )
             elif (
                 isinstance(target, ast.Subscript)
-                and isinstance(target.value, ast.Name)
-                and target.value.id in self._context
+                and self._in_context(target.value)
                 and isinstance(target.ctx, ast.Store)
             ):
                 value = self._context[target.value.id]
@@ -261,10 +248,10 @@ class CodeGenerator(ast.NodeTransformer):
                     self.generic_visit(node)
 
                     return ast.Expr(
-                        type(self)._generate_store(
+                        self._generate_store(
                             value,
                             node.value,
-                            intermediate_indices=target.slice.elts
+                            indices=target.slice.elts
                             if isinstance(target.slice, ast.Tuple)
                             else (target.slice,),
                         )
@@ -273,6 +260,11 @@ class CodeGenerator(ast.NodeTransformer):
         self.generic_visit(node)
 
         return node
+
+    _NAME_FOR_PID = Symbol("ninetoothed_pid")
+
+    def _in_context(self, node):
+        return isinstance(node, ast.Name) and node.id in self._context
 
     def _generate_autotune(self, params, meta):
         device = triton.runtime.driver.active.get_current_device()
@@ -354,7 +346,7 @@ class CodeGenerator(ast.NodeTransformer):
             name=f"launch_{self._func_def.name}",
             args=ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg=arg.original.name) for arg in self._args]
+                args=[ast.arg(arg=arg.source.name) for arg in self._args]
                 + [
                     ast.arg(arg=param)
                     for param in non_next_power_of_2_constexpr_params_without_prefixes
@@ -427,51 +419,105 @@ class CodeGenerator(ast.NodeTransformer):
 
         return ast.parse(f"lambda meta: ({num_elements},)", mode="eval").body
 
-    @staticmethod
-    def _generate_load(tensor, intermediate_indices=()):
+    def _generate_load(self, tensor, indices=()):
         if tensor.ndim == 0:
-            return Symbol(tensor.original.name).node
+            return Symbol(tensor.source.name).node
 
-        pointers, mask = CodeGenerator._generate_pointers_and_mask(
-            tensor, intermediate_indices
-        )
-        other = CodeGenerator._generate_other(tensor)
+        pointers, mask = self._generate_pointers_and_mask(tensor, indices)
+        other = type(self)._generate_other(tensor)
 
         return call("load", pointers, mask=mask, other=other).node
 
-    @staticmethod
-    def _generate_store(tensor, value, intermediate_indices=()):
-        pointers, mask = CodeGenerator._generate_pointers_and_mask(
-            tensor, intermediate_indices
-        )
+    def _generate_store(self, tensor, value, indices=()):
+        pointers, mask = self._generate_pointers_and_mask(tensor, indices)
 
         return call("store", pointers, value, mask=mask).node
 
-    @staticmethod
-    def _generate_pointers_and_mask(tensor, intermediate_indices):
-        intermediate_offsets = CodeGenerator._generate_intermediate_offsets(
-            tensor, intermediate_indices
-        )
-        offsets = [
-            CodeGenerator._name_for_offsets(tensor, dim) + intermediate_offsets[dim]
-            for dim in range(tensor.original.ndim)
-        ]
-        pointers = CodeGenerator._name_for_pointers(tensor) + sum(
-            map(lambda x, y: x * y, intermediate_offsets, tensor.original.strides)
+    def _generate_pointers_and_mask(self, tensor, indices):
+        invariant_target_dims = type(self)._find_invariant_target_dims(tensor)
+
+        indices = self._complete_indices(tensor, indices)
+        offsets = type(self)._generate_offsets(tensor, indices)
+
+        for source_dim in range(tensor.source.ndim):
+            for target_dim in range(tensor.target.ndim):
+                if target_dim not in invariant_target_dims:
+                    continue
+
+                name = type(self)._name_for_offsets(tensor, source_dim, target_dim)
+                self._invariants[name] = offsets[source_dim][target_dim]
+                offsets[source_dim][target_dim] = name
+
+        name_for_pointers = type(self)._name_for_pointers(tensor)
+        self._invariants[name_for_pointers] = Symbol(tensor.source.pointer_string())
+
+        for source_dim in range(tensor.source.ndim):
+            for target_dim in range(tensor.target.ndim):
+                if target_dim not in invariant_target_dims:
+                    continue
+
+                self._invariants[name_for_pointers] += (
+                    offsets[source_dim][target_dim][
+                        type(self)._generate_slices(tensor, target_dim)
+                    ]
+                    * tensor.source.strides[source_dim]
+                )
+
+        pointers = name_for_pointers + sum(
+            offsets[source_dim][target_dim][
+                type(self)._generate_slices(tensor, target_dim)
+            ]
+            * tensor.source.strides[source_dim]
+            for source_dim in range(tensor.source.ndim)
+            for target_dim in range(tensor.target.ndim)
+            if target_dim not in invariant_target_dims
+            and offsets[source_dim][target_dim] != 0
         )
         mask = functools.reduce(
             lambda x, y: x & y,
             (
-                offs[CodeGenerator._generate_slices(tensor, dim)] < size
-                for dim, (offs, size) in enumerate(zip(offsets, tensor.original.shape))
+                offsets[source_dim][target_dim][
+                    type(self)._generate_slices(tensor, target_dim)
+                ]
+                < tensor.source.shape[source_dim]
+                for source_dim in range(tensor.source.ndim)
+                for target_dim in range(tensor.target.ndim)
+                if offsets[source_dim][target_dim] != 0
             ),
         )
 
         return pointers, mask
 
+    def _complete_indices(self, tensor, indices):
+        indices = list(self._generate_pid_indices(tensor) + indices)
+
+        for size in tensor.inmost().shape:
+            if Symbol.is_name(size):
+                name = size.node.id
+                if not naming.is_meta(name):
+                    size = naming.make_next_power_of_2(name)
+
+            indices.append(call("arange", 0, size))
+
+        return tuple(indices)
+
+    def _generate_pid_indices(self, tensor):
+        self._invariants[type(self)._NAME_FOR_PID] = call("program_id", 0)
+
+        indices = list(
+            type(self)._unravel_index(type(self)._NAME_FOR_PID, tensor.shape)
+        )
+
+        for dim, index in enumerate(indices):
+            name = type(self)._name_for_index(tensor, dim)
+            self._invariants[name] = index
+            indices[dim] = name
+
+        return tuple(indices)
+
     @staticmethod
     def _generate_other(tensor):
-        other = tensor.original.other
+        other = tensor.source.other
 
         if isinstance(other, float) and not math.isfinite(other):
             return f"float('{other}')"
@@ -483,23 +529,86 @@ class CodeGenerator(ast.NodeTransformer):
         return tuple(slice(None) if i == dim else None for i in range(tensor.ndim))
 
     @staticmethod
-    def _generate_intermediate_offsets(tensor, intermediate_indices):
-        return tuple(
-            offs
-            for offs in tensor.offsets(
-                [0 for _ in range(tensor.ndim)]
-                + list(intermediate_indices)
-                + [0 for _ in range(tensor.inmost().ndim)]
-            )
+    def _generate_offsets(tensor, indices):
+        offsets = collections.defaultdict(
+            lambda: collections.defaultdict(lambda: Symbol(0))
         )
+
+        curr = tensor
+        start = 0
+
+        while isinstance(curr, type(tensor)):
+            stop = start + curr.ndim
+            curr_indices = indices[start:stop]
+
+            for index, stride, source_dim, target_dim in zip(
+                curr_indices, curr.strides, curr.source_dims, curr.target_dims
+            ):
+                offsets[source_dim][target_dim] += index * stride
+
+            start = stop
+            curr = curr.dtype
+
+        for source_dim in tuple(offsets):
+            for target_dim in tuple(offsets[source_dim]):
+                if not isinstance(source_dim, tuple):
+                    continue
+
+                unraveled = CodeGenerator._unravel_index(
+                    offsets[source_dim][target_dim],
+                    tuple(tensor.source.shape[dim] for dim in source_dim),
+                )
+
+                for offs, dim in zip(unraveled, source_dim):
+                    offsets[dim][target_dim] = offs
+
+        for source_dim in range(tensor.source.ndim):
+            for target_dim in range(tensor.target.ndim):
+                offsets[source_dim][target_dim] = copy.deepcopy(
+                    offsets[source_dim][target_dim]
+                )
+                offsets[source_dim][target_dim].find_and_replace(
+                    Symbol(tensor.source.strides[source_dim]), Symbol(1)
+                )
+
+        return offsets
+
+    @staticmethod
+    def _find_invariant_target_dims(tensor):
+        invariant_target_dims = set()
+
+        curr = tensor.dtype
+
+        while isinstance(curr.dtype, Tensor):
+            for target_dim in range(curr.target.ndim):
+                if target_dim not in curr.target_dims:
+                    invariant_target_dims.add(target_dim)
+
+            curr = curr.dtype
+
+        return invariant_target_dims
 
     @staticmethod
     def _name_for_pointers(tensor):
-        return Symbol(f"{tensor.original.name}_pointers")
+        return Symbol(f"{tensor.source.name}_pointers")
 
     @staticmethod
-    def _name_for_offsets(tensor, dim):
-        return Symbol(f"{tensor.original.name}_offsets_{dim}")
+    def _name_for_offsets(tensor, source_dim, target_dim):
+        return Symbol(f"{tensor.source.name}_offsets_{source_dim}_{target_dim}")
+
+    @staticmethod
+    def _name_for_index(tensor, dim):
+        return Symbol(f"{tensor.source.name}_index_{dim}")
+
+    @staticmethod
+    def _unravel_index(index, shape):
+        indices = []
+
+        for stride in Tensor(shape=shape).strides:
+            indices.append(index // stride)
+            index %= stride
+
+        return tuple(indices)
 
 
 class Tritonizer(ast.NodeTransformer):
