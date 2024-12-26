@@ -490,7 +490,7 @@ class CodeGenerator(ast.NodeTransformer):
         return pointers, mask
 
     def _complete_indices(self, tensor, indices):
-        indices = list(self._generate_pid_indices(tensor) + indices)
+        indices = list(self._generate_pid_indices(tensor) + tuple(indices))
 
         for size in tensor.inmost().shape:
             if Symbol.is_name(size):
