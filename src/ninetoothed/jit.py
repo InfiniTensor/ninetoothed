@@ -350,6 +350,7 @@ class CodeGenerator(ast.NodeTransformer):
                 + [
                     ast.arg(arg=param)
                     for param in non_next_power_of_2_constexpr_params_without_prefixes
+                    if not Tensor.size_pattern().fullmatch(param)
                 ],
                 kwonlyargs=[],
                 defaults=[],

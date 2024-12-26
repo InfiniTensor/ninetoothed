@@ -16,6 +16,7 @@ class Tensor:
         dtype=None,
         strides=None,
         other=None,
+        constexpr_shape=None,
         name=None,
         source=None,
         source_dims=None,
@@ -30,7 +31,10 @@ class Tensor:
             self.name = f"_ninetoothed_tensor_{type(self).num_instances}"
 
         if ndim is not None:
-            self.shape = (Symbol(self.size_string(i)) for i in range(ndim))
+            self.shape = (
+                Symbol(self.size_string(i), constexpr=constexpr_shape)
+                for i in range(ndim)
+            )
             self.strides = (Symbol(self.stride_string(i)) for i in range(ndim))
         else:
             self.shape = shape
