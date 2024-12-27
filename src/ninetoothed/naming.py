@@ -1,6 +1,10 @@
 import re
 
 
+def auto_generate(name):
+    return f"ninetoothed_{name}"
+
+
 def make_constexpr(name):
     return _add_prefix(name, _CONSTEXPR)
 

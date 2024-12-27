@@ -2,6 +2,7 @@ import itertools
 import math
 import re
 
+import ninetoothed.naming as naming
 from ninetoothed.language import call
 from ninetoothed.symbol import Symbol
 
@@ -28,7 +29,7 @@ class Tensor:
         if name is not None:
             self.name = name
         else:
-            self.name = f"_ninetoothed_tensor_{type(self).num_instances}"
+            self.name = naming.auto_generate(f"tensor_{type(self).num_instances}")
 
         if ndim is not None:
             self.shape = (
