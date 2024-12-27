@@ -39,23 +39,12 @@ def jit(_func=None, *, _prettify=False):
 
 
 class JIT:
-    handles = collections.defaultdict(dict)
-
     def __init__(self, func, _prettify=False):
         self.func = func
 
         self._prettify = _prettify
 
     def __call__(self):
-        source_file = inspect.getsourcefile(self.func)
-        source_line = inspect.getsourcelines(self.func)[1]
-
-        if (
-            source_file in type(self).handles
-            and source_line in type(self).handles[source_file]
-        ):
-            return type(self).handles[source_file][source_line]
-
         tree = self._get_tree()
 
         CodeGenerator(inspect.get_annotations(self.func)).visit(tree)
@@ -92,8 +81,6 @@ class JIT:
             module_vars[f"launch_{self.func.__name__}"],
             source,
         )
-
-        type(self).handles[source_file][source_line] = handle
 
         return handle
 
@@ -350,6 +337,7 @@ class CodeGenerator(ast.NodeTransformer):
                 + [
                     ast.arg(arg=param)
                     for param in non_next_power_of_2_constexpr_params_without_prefixes
+                    if not Tensor.size_pattern().fullmatch(param)
                 ],
                 kwonlyargs=[],
                 defaults=[],
@@ -489,7 +477,7 @@ class CodeGenerator(ast.NodeTransformer):
         return pointers, mask
 
     def _complete_indices(self, tensor, indices):
-        indices = list(self._generate_pid_indices(tensor) + indices)
+        indices = list(self._generate_pid_indices(tensor) + tuple(indices))
 
         for size in tensor.inmost().shape:
             if Symbol.is_name(size):

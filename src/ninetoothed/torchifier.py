@@ -1,5 +1,6 @@
 import ast
 
+import ninetoothed.naming as naming
 from ninetoothed.tensor import Tensor
 
 
@@ -8,6 +9,9 @@ class Torchifier(ast.NodeTransformer):
         self.generic_visit(node)
 
         source = node.id
+
+        if naming.is_constexpr(source):
+            return node
 
         def repl(match):
             return f"{match.group(1)}"
