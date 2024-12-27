@@ -39,23 +39,12 @@ def jit(_func=None, *, _prettify=False):
 
 
 class JIT:
-    handles = collections.defaultdict(dict)
-
     def __init__(self, func, _prettify=False):
         self.func = func
 
         self._prettify = _prettify
 
     def __call__(self):
-        source_file = inspect.getsourcefile(self.func)
-        source_line = inspect.getsourcelines(self.func)[1]
-
-        if (
-            source_file in type(self).handles
-            and source_line in type(self).handles[source_file]
-        ):
-            return type(self).handles[source_file][source_line]
-
         tree = self._get_tree()
 
         CodeGenerator(inspect.get_annotations(self.func)).visit(tree)
@@ -92,8 +81,6 @@ class JIT:
             module_vars[f"launch_{self.func.__name__}"],
             source,
         )
-
-        type(self).handles[source_file][source_line] = handle
 
         return handle
 
