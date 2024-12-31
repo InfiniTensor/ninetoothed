@@ -112,14 +112,10 @@ class Tensor:
                 strides=inner_strides,
                 source=self.source,
                 source_dims=self.source_dims,
-                target=self.target,
-                target_dims=self.target_dims,
             ),
             strides=outer_strides,
             source=self.source,
             source_dims=self.source_dims,
-            target=self.target,
-            target_dims=self.target_dims,
         )
 
     def expand(self, shape):
@@ -136,8 +132,6 @@ class Tensor:
             ],
             source=self.source,
             source_dims=self.source_dims,
-            target=self.target,
-            target_dims=self.target_dims,
         )
 
     def squeeze(self, dim):
@@ -149,10 +143,6 @@ class Tensor:
             source=self.source,
             source_dims=[
                 source_dim for i, source_dim in enumerate(self.source_dims) if dim != i
-            ],
-            target=self.target,
-            target_dims=[
-                target_dim for i, target_dim in enumerate(self.target_dims) if dim != i
             ],
         )
 
@@ -173,8 +163,6 @@ class Tensor:
             strides=new_strides,
             source=self.source,
             source_dims=new_source_dims,
-            target=self.target,
-            target_dims=self.target_dims,
         )
 
     def flatten(self, start_dim=None, end_dim=None):
@@ -210,8 +198,6 @@ class Tensor:
             strides=new_strides,
             source=self.source,
             source_dims=new_source_dims,
-            target=self.target,
-            target_dims=self.target_dims,
         )
 
     def ravel(self):
