@@ -479,7 +479,7 @@ class CodeGenerator(ast.NodeTransformer):
     def _complete_indices(self, tensor, indices):
         indices = list(self._generate_pid_indices(tensor) + tuple(indices))
 
-        for size in tensor.inmost().shape:
+        for size in tensor.innermost().shape:
             if Symbol.is_name(size):
                 name = size.node.id
                 if not naming.is_meta(name):
@@ -514,7 +514,10 @@ class CodeGenerator(ast.NodeTransformer):
 
     @staticmethod
     def _generate_slices(tensor, dim):
-        return tuple(slice(None) if i == dim else None for i in range(tensor.ndim))
+        return tuple(
+            slice(None) if target_dim == dim else None
+            for target_dim in tensor.innermost().target_dims
+        )
 
     @staticmethod
     def _generate_offsets(tensor, indices):

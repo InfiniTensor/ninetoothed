@@ -112,14 +112,10 @@ class Tensor:
                 strides=inner_strides,
                 source=self.source,
                 source_dims=self.source_dims,
-                target=self.target,
-                target_dims=self.target_dims,
             ),
             strides=outer_strides,
             source=self.source,
             source_dims=self.source_dims,
-            target=self.target,
-            target_dims=self.target_dims,
         )
 
     def expand(self, shape):
@@ -136,23 +132,22 @@ class Tensor:
             ],
             source=self.source,
             source_dims=self.source_dims,
-            target=self.target,
-            target_dims=self.target_dims,
         )
 
     def squeeze(self, dim):
+        if not isinstance(dim, tuple):
+            dim = (dim,)
+
         # TODO: Add error handling.
         return type(self)(
-            shape=[size for i, size in enumerate(self.shape) if dim != i],
+            shape=[size for i, size in enumerate(self.shape) if i not in dim],
             dtype=self.dtype,
-            strides=[stride for i, stride in enumerate(self.strides) if dim != i],
+            strides=[stride for i, stride in enumerate(self.strides) if i not in dim],
             source=self.source,
             source_dims=[
-                source_dim for i, source_dim in enumerate(self.source_dims) if dim != i
-            ],
-            target=self.target,
-            target_dims=[
-                target_dim for i, target_dim in enumerate(self.target_dims) if dim != i
+                source_dim
+                for i, source_dim in enumerate(self.source_dims)
+                if i not in dim
             ],
         )
 
@@ -173,8 +168,6 @@ class Tensor:
             strides=new_strides,
             source=self.source,
             source_dims=new_source_dims,
-            target=self.target,
-            target_dims=self.target_dims,
         )
 
     def flatten(self, start_dim=None, end_dim=None):
@@ -210,8 +203,6 @@ class Tensor:
             strides=new_strides,
             source=self.source,
             source_dims=new_source_dims,
-            target=self.target,
-            target_dims=self.target_dims,
         )
 
     def ravel(self):
@@ -250,11 +241,11 @@ class Tensor:
             | (self.source.names() if self.source is not self else set())
         )
 
-    def inmost(self):
+    def innermost(self):
         if not isinstance(self.dtype, type(self)):
             return self
 
-        return self.dtype.inmost()
+        return self.dtype.innermost()
 
     def pointer_string(self):
         return f"{self.name}_pointer"
