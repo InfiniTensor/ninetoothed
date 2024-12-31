@@ -250,11 +250,11 @@ class Tensor:
             | (self.source.names() if self.source is not self else set())
         )
 
-    def inmost(self):
+    def innermost(self):
         if not isinstance(self.dtype, type(self)):
             return self
 
-        return self.dtype.inmost()
+        return self.dtype.innermost()
 
     def pointer_string(self):
         return f"{self.name}_pointer"

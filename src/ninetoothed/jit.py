@@ -479,7 +479,7 @@ class CodeGenerator(ast.NodeTransformer):
     def _complete_indices(self, tensor, indices):
         indices = list(self._generate_pid_indices(tensor) + tuple(indices))
 
-        for size in tensor.inmost().shape:
+        for size in tensor.innermost().shape:
             if Symbol.is_name(size):
                 name = size.node.id
                 if not naming.is_meta(name):
