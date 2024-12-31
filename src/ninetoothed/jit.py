@@ -514,7 +514,10 @@ class CodeGenerator(ast.NodeTransformer):
 
     @staticmethod
     def _generate_slices(tensor, dim):
-        return tuple(slice(None) if i == dim else None for i in range(tensor.ndim))
+        return tuple(
+            slice(None) if target_dim == dim else None
+            for target_dim in tensor.innermost().target_dims
+        )
 
     @staticmethod
     def _generate_offsets(tensor, indices):
