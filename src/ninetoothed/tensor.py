@@ -135,14 +135,19 @@ class Tensor:
         )
 
     def squeeze(self, dim):
+        if not isinstance(dim, tuple):
+            dim = (dim,)
+
         # TODO: Add error handling.
         return type(self)(
-            shape=[size for i, size in enumerate(self.shape) if dim != i],
+            shape=[size for i, size in enumerate(self.shape) if i not in dim],
             dtype=self.dtype,
-            strides=[stride for i, stride in enumerate(self.strides) if dim != i],
+            strides=[stride for i, stride in enumerate(self.strides) if i not in dim],
             source=self.source,
             source_dims=[
-                source_dim for i, source_dim in enumerate(self.source_dims) if dim != i
+                source_dim
+                for i, source_dim in enumerate(self.source_dims)
+                if i not in dim
             ],
         )
 
