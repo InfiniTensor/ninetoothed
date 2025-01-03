@@ -132,6 +132,7 @@ class Tensor:
             ],
             source=self.source,
             source_dims=self.source_dims,
+            target_dims=self.target_dims,
         )
 
     def squeeze(self, dim):
@@ -147,6 +148,11 @@ class Tensor:
             source_dims=[
                 source_dim
                 for i, source_dim in enumerate(self.source_dims)
+                if i not in dim
+            ],
+            target_dims=[
+                target_dim
+                for i, target_dim in enumerate(self.target_dims)
                 if i not in dim
             ],
         )
@@ -168,6 +174,7 @@ class Tensor:
             strides=new_strides,
             source=self.source,
             source_dims=new_source_dims,
+            target_dims=self.target_dims,
         )
 
     def flatten(self, start_dim=None, end_dim=None):
@@ -197,12 +204,21 @@ class Tensor:
             leading_source_dims + (flattening_source_dims,) + trailing_source_dims
         )
 
+        leading_target_dims = self.target_dims[:start_dim]
+        flattening_target_dims = self.target_dims[start_dim:end_dim]
+        trailing_target_dims = self.target_dims[end_dim:]
+
+        new_target_dims = (
+            leading_target_dims + (flattening_target_dims[-1],) + trailing_target_dims
+        )
+
         return type(self)(
             shape=new_shape,
             dtype=self.dtype,
             strides=new_strides,
             source=self.source,
             source_dims=new_source_dims,
+            target_dims=new_target_dims,
         )
 
     def ravel(self):
