@@ -8,6 +8,21 @@ from ninetoothed.symbol import Symbol
 
 
 class Tensor:
+    """A class uesed to represent a symbolic tensor.
+
+    :param ndim: The number of dimensions of the tensor.
+    :param shape: The shape of the tensor.
+    :param dtype: The element type of the tensor.
+    :param strides: The strides of the tensor.
+    :param other: The values for out-of-bounds positions.
+    :param constexpr_shape: Whether the sizes are constexpr.
+    :param name: The name of the tensor.
+    :param source: For internal use only.
+    :param source_dims: For internal use only.
+    :param target: For internal use only.
+    :param target_dims: For internal use only.
+    """
+
     num_instances = 0
 
     def __init__(
@@ -70,6 +85,14 @@ class Tensor:
         type(self).num_instances += 1
 
     def tile(self, tile_shape, strides=None, dilation=None):
+        """Tiles the tensor into a hierarchical tensor.
+
+        :param tile_shape: The shape of a tile.
+        :param strides: The interval at which each tile is generated.
+        :param dilation: The spacing between tiles.
+        :return: A hierarchical tensor.
+        """
+
         if strides is None:
             strides = [-1 for _ in tile_shape]
 
@@ -119,6 +142,12 @@ class Tensor:
         )
 
     def expand(self, shape):
+        """Expands the specified singleton dimensions of the tensor.
+
+        :param shape: The expanded shape.
+        :return: The expanded tensor.
+        """
+
         # TODO: Add error handling.
         return type(self)(
             shape=[
@@ -136,6 +165,12 @@ class Tensor:
         )
 
     def squeeze(self, dim):
+        """Removes the specified singleton dimensions of the tensor.
+
+        :param dim: The dimension(s) to be squeezed.
+        :return: The squeezed tensor.
+        """
+
         if not isinstance(dim, tuple):
             dim = (dim,)
 
@@ -158,6 +193,12 @@ class Tensor:
         )
 
     def permute(self, dims):
+        """Permutes the dimensions of the tensor.
+
+        :param dims: The permuted ordering of the dimensions.
+        :return: The permuted tensor.
+        """
+
         # TODO: Add error handling.
         new_shape = [None for _ in range(self.ndim)]
         new_strides = [None for _ in range(self.ndim)]
@@ -178,6 +219,16 @@ class Tensor:
         )
 
     def flatten(self, start_dim=None, end_dim=None):
+        """Flattens the specified dimensions of the tensor.
+
+        See :func:`ravel` for the differences between :func:`flatten`
+        and :func:`ravel`.
+
+        :param start_dim: The first dimension to flatten.
+        :param end_dim: The dimension after the last to flatten.
+        :return: The flattened tensor.
+        """
+
         # TODO: Add error handling.
         if start_dim is None:
             start_dim = 0
@@ -222,6 +273,18 @@ class Tensor:
         )
 
     def ravel(self):
+        """Flattens the hierarchy of the tensor.
+
+        :func:`ravel` differs from :func:`flatten`, which only flattens
+        dimensions at a single level. For example, consider a tensor
+        with two levels: the first level has a shape of ``(N, P, Q)``,
+        and the second level has a shape of ``(C, R, S)``. After
+        applying :func:`ravel`, the resulting tensor will have a single
+        flattened level with a shape of ``(N, P, Q, C, R, S)``.
+
+        :return: The raveled tensor.
+        """
+
         # TODO: Add error handling.
         new_shape = []
         new_strides = []

@@ -7,6 +7,13 @@ import ninetoothed.naming as naming
 
 
 class Symbol:
+    """A class uesed to represent a symbol.
+
+    :param expr: The expression used to construct the symbol.
+    :param constexpr: Whether the symbol is a constexpr.
+    :param mata: Whether the symbol is a meta.
+    """
+
     def __init__(self, expr, constexpr=None, meta=None):
         if isinstance(expr, type(self)):
             self._node = expr._node
