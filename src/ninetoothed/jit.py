@@ -20,6 +20,13 @@ from ninetoothed.torchifier import Torchifier
 
 
 def make(arrangement, application, tensors):
+    """Integrate the arrangement and the application of the tensors.
+
+    :param arrangement: The arrangement of the tensors.
+    :param application: The application of the tensors.
+    :param tensors: The tensors.
+    :return: A handle to the compute kernel.
+    """
     params = inspect.signature(application).parameters
     types = arrangement(*tensors)
     annotations = {param: type for param, type in zip(params, types)}
@@ -28,14 +35,26 @@ def make(arrangement, application, tensors):
     return jit(application)
 
 
-def jit(_func=None, *, _prettify=False):
+def jit(func=None, *, _prettify=False):
+    """A decorator for generating compute kernels.
+
+    :param func: The function to be compiled.
+    :param _prettify: Whether to prettify the generated code.
+    :return: A handle to the compute kernel.
+
+    .. note::
+
+        The ``_prettify`` parameter is experimental, which might break
+        the generated code.
+    """
+
     def wrapper(func):
         return JIT(func, _prettify=_prettify)()
 
-    if _func is None:
+    if func is None:
         return wrapper
 
-    return wrapper(_func)
+    return wrapper(func)
 
 
 class JIT:
