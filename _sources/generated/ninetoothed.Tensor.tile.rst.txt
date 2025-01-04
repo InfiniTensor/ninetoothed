@@ -1,0 +1,6 @@
+﻿ninetoothed.Tensor.tile
+=======================
+
+.. currentmodule:: ninetoothed
+
+.. automethod:: Tensor.tile

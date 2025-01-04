@@ -1,0 +1,4 @@
+Symbol
+======
+
+.. autoclass:: ninetoothed.Symbol

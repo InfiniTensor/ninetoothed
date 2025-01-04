@@ -1,0 +1,6 @@
+﻿ninetoothed.Tensor.flatten
+==========================
+
+.. currentmodule:: ninetoothed
+
+.. automethod:: Tensor.flatten

@@ -1,0 +1,6 @@
+﻿ninetoothed.Tensor.expand
+=========================
+
+.. currentmodule:: ninetoothed
+
+.. automethod:: Tensor.expand

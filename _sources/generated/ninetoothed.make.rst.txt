@@ -1,0 +1,6 @@
+﻿ninetoothed.make
+================
+
+.. currentmodule:: ninetoothed
+
+.. autofunction:: make

@@ -1,0 +1,6 @@
+﻿ninetoothed.Tensor.permute
+==========================
+
+.. currentmodule:: ninetoothed
+
+.. automethod:: Tensor.permute

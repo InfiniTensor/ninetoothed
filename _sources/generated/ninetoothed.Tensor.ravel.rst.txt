@@ -1,0 +1,6 @@
+﻿ninetoothed.Tensor.ravel
+========================
+
+.. currentmodule:: ninetoothed
+
+.. automethod:: Tensor.ravel
