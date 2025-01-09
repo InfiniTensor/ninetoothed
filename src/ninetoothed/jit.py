@@ -491,6 +491,15 @@ class CodeGenerator(ast.NodeTransformer):
                 for target_dim in range(tensor.target.ndim)
                 if offsets[source_dim][target_dim] != 0
             ),
+        ) & functools.reduce(
+            lambda x, y: x & y,
+            (
+                indices[dim - tensor.innermost().target.ndim][
+                    type(self)._generate_slices(tensor, target_dim)
+                ]
+                < tensor.innermost().target.shape[dim]
+                for dim, target_dim in enumerate(tensor.innermost().target_dims)
+            ),
         )
 
         return pointers, mask
