@@ -39,6 +39,8 @@ def visualize(tensor, color=None, save_path=None):
 
     plt.savefig(save_path, transparent=True, bbox_inches="tight", pad_inches=0)
 
+    plt.close()
+
     visualize.count += 1
 
 
