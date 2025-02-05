@@ -3,9 +3,12 @@ import numpy as np
 from mpl_toolkits.axes_grid1 import Divider, Size
 
 
-def visualize(tensor, color="tab:blue", save_path=None):
+def visualize(tensor, color=None, save_path=None):
     outline_width = 0.1
     plt.rcParams["lines.linewidth"] = 72 * outline_width
+
+    if color is None:
+        color = f"C{visualize.count}"
 
     _, max_pos_x, max_pos_y = _visualize_tensor(plt.gca(), tensor, 0, 0, color)
 
@@ -35,6 +38,11 @@ def visualize(tensor, color="tab:blue", save_path=None):
     _visualize_tensor(ax, tensor, 0, 0, color)
 
     plt.savefig(save_path, transparent=True, bbox_inches="tight", pad_inches=0)
+
+    visualize.count += 1
+
+
+visualize.count = 0
 
 
 def _visualize_tensor(ax, tensor, x, y, color, level_spacing=4):
