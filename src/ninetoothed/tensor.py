@@ -3,7 +3,6 @@ import math
 import re
 
 import ninetoothed.naming as naming
-from ninetoothed.language import call
 from ninetoothed.symbol import Symbol
 
 
@@ -113,8 +112,11 @@ class Tensor:
             if stride == -1:
                 stride = tile_size
 
+            def cdiv(x, y):
+                return (x + y - 1) // y
+
             new_size = (
-                call("cdiv", self_size - spacing * (tile_size - 1) - 1, stride) + 1
+                (cdiv(self_size - spacing * (tile_size - 1) - 1, stride) + 1)
                 if stride != 0
                 else -1
             )
