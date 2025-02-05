@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ninetoothed"
-version = "0.11.1"
+version = "0.12.0"
 authors = [{ name = "Jiacheng Huang", email = "huangjiacheng0709@outlook.com" }]
 description = "A domain-specific language based on Triton but providing higher-level abstraction."
 readme = "README.md"
