@@ -370,6 +370,21 @@
 <section id="visualizing-a-tensor">
 <h2>Visualizing a Tensor<a class="headerlink" href="#visualizing-a-tensor" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">visualize</span></code> is the primary function of this module:</p>
+<dl class="py function">
+<dt class="sig sig-object py" id="ninetoothed.visualization.visualize">
+<span class="sig-prename descclassname"><span class="pre">ninetoothed.visualization.</span></span><span class="sig-name descname"><span class="pre">visualize</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tensor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">save_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#ninetoothed.visualization.visualize" title="Link to this definition">#</a></dt>
+<dd><p>Visualize a tensor as a structured grid representation.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>tensor</strong> – The tensor to be visualized.</p></li>
+<li><p><strong>color</strong> – The color to be used for visualization.</p></li>
+<li><p><strong>save_path</strong> – The path where the visualization should be saved.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
 <section id="basic-usage">
 <h3>Basic Usage<a class="headerlink" href="#basic-usage" title="Link to this heading">#</a></h3>
 <p>If we just want to temporarily visualize a tensor, the simplest way is to pass the tensor to <code class="docutils literal notranslate"><span class="pre">visualize</span></code> and provide a save path. Then, <code class="docutils literal notranslate"><span class="pre">visualize</span></code> will save the generated image at the specified location.</p>
@@ -440,6 +455,7 @@
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#visualizing-a-tensor">Visualizing a Tensor</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ninetoothed.visualization.visualize"><code class="docutils literal notranslate"><span class="pre">visualize()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#basic-usage">Basic Usage</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#specifying-colors">Specifying Colors</a></li>
 </ul>
