@@ -26,3 +26,13 @@ html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
 html_title = "NineToothed"
 html_logo = "_static/ninetoothed-logo.png"
+html_theme_options = {
+    "icon_links": [
+        {
+            "name": "GitHub",
+            "url": "https://github.com/InfiniTensor/ninetoothed",
+            "icon": "fa-brands fa-github",
+            "type": "fontawesome",
+        }
+    ]
+}
