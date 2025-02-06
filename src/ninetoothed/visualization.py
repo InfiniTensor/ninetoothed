@@ -4,6 +4,12 @@ from mpl_toolkits.axes_grid1 import Divider, Size
 
 
 def visualize(tensor, color=None, save_path=None):
+    """Visualize a tensor as a structured grid representation.
+
+    :param tensor: The tensor to be visualized.
+    :param color: The color to be used for visualization.
+    :param save_path: The path where the visualization should be saved.
+    """
     outline_width = 0.1
     plt.rcParams["lines.linewidth"] = 72 * outline_width
 
