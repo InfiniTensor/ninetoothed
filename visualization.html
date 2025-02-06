@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>NineToothed Documentation &#8212; NineToothed</title>
+    <title>Visualization &#8212; NineToothed</title>
   
   
   
@@ -41,10 +41,10 @@
     <script src="_static/documentation_options.js?v=5929fcd5"></script>
     <script src="_static/doctools.js?v=9bcbadda"></script>
     <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'index';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'visualization';</script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Installation" href="installation.html" />
+    <link rel="prev" title="Symbol" href="symbol.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -102,7 +102,7 @@
     
   
 
-<a class="navbar-brand logo" href="#">
+<a class="navbar-brand logo" href="index.html">
   
   
   
@@ -143,8 +143,8 @@
 </li>
 
 
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="visualization.html">
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
     Visualization
   </a>
 </li>
@@ -206,10 +206,8 @@
       
       
       
-        
-      
       <dialog id="pst-primary-sidebar-modal"></dialog>
-      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar hide-on-wide">
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
         
 
   
@@ -238,8 +236,8 @@
 </li>
 
 
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="visualization.html">
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
     Visualization
   </a>
 </li>
@@ -266,6 +264,15 @@
     
   </div>
   
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"></div>
+</nav></div>
+    </div>
+  
   
   <div class="sidebar-primary-items__end sidebar-primary__section">
       <div class="sidebar-primary-item">
@@ -286,7 +293,31 @@
           <div class="bd-content">
             <div class="bd-article-container">
               
-              <div class="bd-header-article d-print-none"></div>
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Visualization</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
               
               
               
@@ -294,29 +325,47 @@
 <div id="searchbox"></div>
                 <article class="bd-article">
                   
-  <section id="ninetoothed-documentation">
-<h1>NineToothed Documentation<a class="headerlink" href="#ninetoothed-documentation" title="Link to this heading">#</a></h1>
-<p><strong>NineToothed</strong> is a domain-specific language (DSL) based on Triton, offering higher-level abstractions. Through its tensor-oriented metaprogramming (TOM) model, it empowers developers to write high-performance compute kernels intuitively, without the need to manage low-level details like pointer arithmetic or memory access.</p>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>This project is under active development.</p>
+  <section id="visualization">
+<h1>Visualization<a class="headerlink" href="#visualization" title="Link to this heading">#</a></h1>
+<p>The <code class="docutils literal notranslate"><span class="pre">visualization</span></code> module provides a way to visualize tensors.</p>
+<section id="installation">
+<h2>Installation<a class="headerlink" href="#installation" title="Link to this heading">#</a></h2>
+<p>Since this module is optional, we need to install it before using it:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">pip</span> <span class="n">install</span> <span class="n">ninetoothed</span><span class="p">[</span><span class="n">visualization</span><span class="p">]</span>
+</pre></div>
 </div>
-<div class="toctree-wrapper compound">
-<ul>
-<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
-<li class="toctree-l1"><a class="reference internal" href="python_api.html">Python API</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="code_generation.html">Code Generation</a></li>
-<li class="toctree-l2"><a class="reference internal" href="tensor.html">Tensor</a></li>
-<li class="toctree-l2"><a class="reference internal" href="symbol.html">Symbol</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="visualization.html">Visualization</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="visualization.html#installation">Installation</a></li>
-<li class="toctree-l2"><a class="reference internal" href="visualization.html#visualizing-a-tensor">Visualizing a Tensor</a></li>
-</ul>
-</li>
-</ul>
+</section>
+<section id="visualizing-a-tensor">
+<h2>Visualizing a Tensor<a class="headerlink" href="#visualizing-a-tensor" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">visualize</span></code> is the primary function of this module:</p>
+<section id="basic-usage">
+<h3>Basic Usage<a class="headerlink" href="#basic-usage" title="Link to this heading">#</a></h3>
+<p>If we just want to temporarily visualize a tensor, the simplest way is to pass the tensor to <code class="docutils literal notranslate"><span class="pre">visualize</span></code> and provide a save path. Then, <code class="docutils literal notranslate"><span class="pre">visualize</span></code> will save the generated image at the specified location.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">x</span> <span class="o">=</span> <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">8</span><span class="p">))</span>
+<span class="n">visualize</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">&quot;x.png&quot;</span><span class="p">)</span>
+</pre></div>
 </div>
+<p>This method can also be used to temporarily visualize multiple tensors. You just need to pass the corresponding tensors and save paths to <code class="docutils literal notranslate"><span class="pre">visualize</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">x</span> <span class="o">=</span> <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">8</span><span class="p">))</span>
+<span class="n">visualize</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">&quot;x.png&quot;</span><span class="p">)</span>
+
+<span class="n">y</span> <span class="o">=</span> <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="mi">8</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span>
+<span class="n">visualize</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">&quot;y.png&quot;</span><span class="p">)</span>
+
+<span class="n">z</span> <span class="o">=</span> <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span>
+<span class="n">visualize</span><span class="p">(</span><span class="n">z</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">&quot;z.png&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="specifying-colors">
+<h3>Specifying Colors<a class="headerlink" href="#specifying-colors" title="Link to this heading">#</a></h3>
+<p>When using the above method, tensors are assigned default colors. To customize colors, we can use the <code class="docutils literal notranslate"><span class="pre">color</span></code> parameter, following <a class="reference external" href="https://matplotlib.org/stable/users/explain/colors/colors.html">Matplotlib’s color formats</a>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">x</span> <span class="o">=</span> <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">8</span><span class="p">))</span>
+<span class="n">visualize</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s2">&quot;orange&quot;</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">&quot;x.png&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
 </section>
 
 
@@ -329,14 +378,14 @@
                 <footer class="prev-next-footer d-print-none">
                   
 <div class="prev-next-area">
-    <a class="right-next"
-       href="installation.html"
-       title="next page">
+    <a class="left-prev"
+       href="symbol.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
-        <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Installation</p>
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Symbol</p>
       </div>
-      <i class="fa-solid fa-angle-right"></i>
     </a>
 </div>
                 </footer>
@@ -350,10 +399,27 @@
 
 
   <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#visualizing-a-tensor">Visualizing a Tensor</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#basic-usage">Basic Usage</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#specifying-colors">Specifying Colors</a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
   <div role="note" aria-label="source link">
     <h3>This Page</h3>
     <ul class="this-page-menu">
-      <li><a href="_sources/index.rst.txt"
+      <li><a href="_sources/visualization.rst.txt"
             rel="nofollow">Show Source</a></li>
     </ul>
    </div></div>
