@@ -12,3 +12,4 @@ NineToothed Documentation
 
    installation
    python_api
+   visualization
