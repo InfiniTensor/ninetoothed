@@ -581,13 +581,15 @@ class CodeGenerator(ast.NodeTransformer):
                 for offs, dim in zip(unraveled, source_dim):
                     offsets[dim][target_dim] = offs
 
+        source_strides = tuple(Symbol(stride) for stride in tensor.source.strides)
+
         for source_dim in range(tensor.source.ndim):
             for target_dim in range(tensor.target.ndim):
                 offsets[source_dim][target_dim] = copy.deepcopy(
                     offsets[source_dim][target_dim]
                 )
                 offsets[source_dim][target_dim].find_and_replace(
-                    Symbol(tensor.source.strides[source_dim]), Symbol(1)
+                    source_strides, Symbol(1)
                 )
 
         return offsets
