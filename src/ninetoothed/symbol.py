@@ -140,7 +140,12 @@ class Symbol:
         return ast.unparse(self._node)
 
     def find_and_replace(self, target, replacement):
-        _FindAndReplacer(target.node, replacement.node).visit(self._node)
+        if isinstance(target, tuple):
+            targets = tuple(item.node for item in target)
+        else:
+            targets = (target.node,)
+
+        _FindAndReplacer(targets, replacement.node).visit(self._node)
 
     def names(self):
         class NameCollector(ast.NodeVisitor):
@@ -175,12 +180,14 @@ class Symbol:
 
 
 class _FindAndReplacer(ast.NodeTransformer):
-    def __init__(self, target, replacement):
-        self._target_id = target.id
+    def __init__(self, targets, replacement):
+        self._targets_unparsed = tuple(
+            sorted({ast.unparse(target) for target in targets}, key=len, reverse=True)
+        )
         self._replacement = replacement
 
-    def visit_Name(self, node):
-        if node.id == self._target_id:
+    def visit(self, node):
+        if ast.unparse(node) in self._targets_unparsed:
             return self._replacement
 
-        return self.generic_visit(node)
+        return super().visit(node)
