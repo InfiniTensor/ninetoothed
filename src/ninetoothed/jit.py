@@ -505,13 +505,21 @@ class CodeGenerator(ast.NodeTransformer):
         return pointers, mask
 
     def _complete_indices(self, tensor, indices):
+        class _NextPowerOfTwoMaker(ast.NodeTransformer):
+            def visit_Name(self, node):
+                name = node.id
+
+                if not naming.is_meta(name):
+                    next_power_of_2_name = naming.make_next_power_of_2(name)
+
+                    return ast.Name(id=next_power_of_2_name, ctx=ast.Load())
+
+                return self.generic_visit(node)
+
         indices = list(self._generate_pid_indices(tensor) + tuple(indices))
 
         for size in tensor.innermost().shape:
-            if Symbol.is_name(size):
-                name = size.node.id
-                if not naming.is_meta(name):
-                    size = naming.make_next_power_of_2(name)
+            size = _NextPowerOfTwoMaker().visit(Symbol(copy.deepcopy(size)).node)
 
             indices.append(call("arange", 0, size))
 
