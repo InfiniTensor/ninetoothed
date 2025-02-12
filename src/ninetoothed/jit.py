@@ -589,7 +589,7 @@ class CodeGenerator(ast.NodeTransformer):
                 )
 
                 for offs, dim in zip(unraveled, source_dim):
-                    offsets[dim][target_dim] = offs
+                    offsets[dim][target_dim] += offs
 
         source_strides = tuple(Symbol(stride) for stride in tensor.source.strides)
 
