@@ -483,13 +483,15 @@ class CodeGenerator(ast.NodeTransformer):
         mask = functools.reduce(
             lambda x, y: x & y,
             (
-                offsets[source_dim][target_dim][
-                    type(self)._generate_slices(tensor, target_dim)
-                ]
+                sum(
+                    offsets[source_dim][target_dim][
+                        type(self)._generate_slices(tensor, target_dim)
+                    ]
+                    for target_dim in range(tensor.target.ndim)
+                    if offsets[source_dim][target_dim] != 0
+                )
                 < tensor.source.shape[source_dim]
                 for source_dim in range(tensor.source.ndim)
-                for target_dim in range(tensor.target.ndim)
-                if offsets[source_dim][target_dim] != 0
             ),
         ) & functools.reduce(
             lambda x, y: x & y,
@@ -587,7 +589,7 @@ class CodeGenerator(ast.NodeTransformer):
                 )
 
                 for offs, dim in zip(unraveled, source_dim):
-                    offsets[dim][target_dim] = offs
+                    offsets[dim][target_dim] += offs
 
         source_strides = tuple(Symbol(stride) for stride in tensor.source.strides)
 
