@@ -37,6 +37,8 @@ class Tensor:
         source_dims=None,
         target=None,
         target_dims=None,
+        unflattened=None,
+        unflattened_dims=None,
     ):
         self.dtype = dtype
 
@@ -80,6 +82,16 @@ class Tensor:
             self.target_dims = target_dims
         else:
             self.target_dims = (dim for dim in range(self.target.ndim))
+
+        if unflattened is not None:
+            self.unflattened = unflattened
+        else:
+            self.unflattened = self
+
+        if unflattened_dims is not None:
+            self.unflattened_dims = unflattened_dims
+        else:
+            self.unflattened_dims = (dim for dim in range(self.unflattened.ndim))
 
         type(self).num_instances += 1
 
@@ -137,10 +149,14 @@ class Tensor:
                 strides=inner_strides,
                 source=self.source,
                 source_dims=self.source_dims,
+                unflattened=self.unflattened,
+                unflattened_dims=self.unflattened_dims,
             ),
             strides=outer_strides,
             source=self.source,
             source_dims=self.source_dims,
+            unflattened=self.unflattened,
+            unflattened_dims=self.unflattened_dims,
         )
 
     def expand(self, shape):
@@ -164,6 +180,8 @@ class Tensor:
             source=self.source,
             source_dims=self.source_dims,
             target_dims=self.target_dims,
+            unflattened=self.unflattened,
+            unflattened_dims=self.unflattened_dims,
         )
 
     def squeeze(self, dim):
@@ -192,6 +210,12 @@ class Tensor:
                 for i, target_dim in enumerate(self.target_dims)
                 if i not in dim
             ],
+            unflattened=self.unflattened,
+            unflattened_dims=[
+                unflattened_dim
+                for i, unflattened_dim in enumerate(self.unflattened_dims)
+                if i not in dim
+            ],
         )
 
     def permute(self, dims):
@@ -205,11 +229,13 @@ class Tensor:
         new_shape = [None for _ in range(self.ndim)]
         new_strides = [None for _ in range(self.ndim)]
         new_source_dims = [None for _ in range(self.ndim)]
+        new_unflattened_dims = [None for _ in range(self.ndim)]
 
         for original_dim, permuted_dim in enumerate(dims):
             new_shape[original_dim] = self.shape[permuted_dim]
             new_strides[original_dim] = self.strides[permuted_dim]
             new_source_dims[original_dim] = self.source_dims[permuted_dim]
+            new_unflattened_dims[original_dim] = self.unflattened_dims[permuted_dim]
 
         return type(self)(
             shape=new_shape,
@@ -218,6 +244,8 @@ class Tensor:
             source=self.source,
             source_dims=new_source_dims,
             target_dims=self.target_dims,
+            unflattened=self.unflattened,
+            unflattened_dims=new_unflattened_dims,
         )
 
     def flatten(self, start_dim=None, end_dim=None):
@@ -265,6 +293,16 @@ class Tensor:
             leading_target_dims + (flattening_target_dims[-1],) + trailing_target_dims
         )
 
+        leading_unflattened_dims = self.unflattened_dims[:start_dim]
+        flattening_unflattened_dims = self.unflattened_dims[start_dim:end_dim]
+        trailing_unflattened_dims = self.unflattened_dims[end_dim:]
+
+        new_unflattened_dims = (
+            leading_unflattened_dims
+            + (flattening_unflattened_dims,)
+            + trailing_unflattened_dims
+        )
+
         return type(self)(
             shape=new_shape,
             dtype=self.dtype,
@@ -272,6 +310,8 @@ class Tensor:
             source=self.source,
             source_dims=new_source_dims,
             target_dims=new_target_dims,
+            unflattened=self.unflattened,
+            unflattened_dims=new_unflattened_dims,
         )
 
     def ravel(self):
@@ -290,12 +330,14 @@ class Tensor:
         # TODO: Add error handling.
         new_shape = []
         new_strides = []
+        new_source_dims = []
 
         curr = self
 
         while isinstance(curr, type(self)):
             new_shape.extend(curr.shape)
             new_strides.extend(curr.strides)
+            new_source_dims.extend(curr.source_dims)
 
             curr = curr.dtype
 
@@ -304,6 +346,8 @@ class Tensor:
             strides=new_strides,
             other=self.source.other,
             name=self.source.name,
+            source=self.source,
+            source_dims=new_source_dims,
         )
 
     def names(self):
@@ -384,6 +428,14 @@ class Tensor:
     @target_dims.setter
     def target_dims(self, value):
         self._target_dims = tuple(value)
+
+    @property
+    def unflattened_dims(self):
+        return self._unflattened_dims
+
+    @unflattened_dims.setter
+    def unflattened_dims(self, value):
+        self._unflattened_dims = tuple(value)
 
     @staticmethod
     def pointer_pattern():

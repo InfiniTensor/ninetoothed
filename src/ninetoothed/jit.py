@@ -559,8 +559,10 @@ class CodeGenerator(ast.NodeTransformer):
 
     @staticmethod
     def _generate_offsets(tensor, indices):
-        offsets = collections.defaultdict(
-            lambda: collections.defaultdict(lambda: Symbol(0))
+        raw_offsets = collections.defaultdict(
+            lambda: collections.defaultdict(
+                lambda: collections.defaultdict(lambda: Symbol(0))
+            )
         )
 
         curr = tensor
@@ -570,37 +572,61 @@ class CodeGenerator(ast.NodeTransformer):
             stop = start + curr.ndim
             curr_indices = indices[start:stop]
 
-            for index, stride, source_dim, target_dim in zip(
-                curr_indices, curr.strides, curr.source_dims, curr.target_dims
+            for index, stride, source_dim, target_dim, unflattened_dim in zip(
+                curr_indices,
+                curr.strides,
+                curr.source_dims,
+                curr.target_dims,
+                curr.unflattened_dims,
             ):
-                offsets[source_dim][target_dim] += index * stride
+                raw_offsets[source_dim][target_dim][unflattened_dim] += index * stride
 
             start = stop
             curr = curr.dtype
 
-        for source_dim in tuple(offsets):
-            for target_dim in tuple(offsets[source_dim]):
-                if not isinstance(source_dim, tuple):
-                    continue
-
-                unraveled = CodeGenerator._unravel_index(
-                    offsets[source_dim][target_dim],
-                    tuple(tensor.source.shape[dim] for dim in source_dim),
-                )
-
-                for offs, dim in zip(unraveled, source_dim):
-                    offsets[dim][target_dim] += offs
+        offsets = collections.defaultdict(
+            lambda: collections.defaultdict(lambda: Symbol(0))
+        )
 
         source_strides = tuple(Symbol(stride) for stride in tensor.source.strides)
 
-        for source_dim in range(tensor.source.ndim):
-            for target_dim in range(tensor.target.ndim):
-                offsets[source_dim][target_dim] = copy.deepcopy(
-                    offsets[source_dim][target_dim]
-                )
-                offsets[source_dim][target_dim].find_and_replace(
+        unflattened_strides = tuple(
+            Symbol(stride) for stride in tensor.unflattened.strides
+        )
+
+        def _add_unraveled_offsets(raw_offs, source_dim, target_dim, unflattened_dim):
+            if not isinstance(unflattened_dim, tuple):
+                offsets[source_dim][target_dim] += copy.deepcopy(
+                    raw_offs
+                ).find_and_replace(
+                    unflattened_strides, Symbol(1)
+                ) * unflattened_strides[unflattened_dim].find_and_replace(
                     source_strides, Symbol(1)
                 )
+
+                return
+
+            unraveled_offs = CodeGenerator._unravel_index(
+                raw_offs,
+                tuple(tensor.unflattened.shape[dim] for dim in unflattened_dim),
+            )
+
+            for raw_offs, source_dim, unflattened_dim in zip(
+                unraveled_offs, source_dim, unflattened_dim
+            ):
+                _add_unraveled_offsets(
+                    raw_offs, source_dim, target_dim, unflattened_dim
+                )
+
+        for source_dim in tuple(raw_offsets):
+            for target_dim in tuple(raw_offsets[source_dim]):
+                for unflattened_dim in tuple(raw_offsets[source_dim][target_dim]):
+                    _add_unraveled_offsets(
+                        raw_offsets[source_dim][target_dim][unflattened_dim],
+                        source_dim,
+                        target_dim,
+                        unflattened_dim,
+                    )
 
         return offsets
 
