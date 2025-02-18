@@ -101,6 +101,8 @@ class Tensor:
         :param tile_shape: The shape of a tile.
         :param strides: The interval at which each tile is generated.
         :param dilation: The spacing between tiles.
+        :param floor_mode: If ``True``, will use floor division to
+            compute the outer shape.
         :return: A hierarchical tensor.
         """
 
