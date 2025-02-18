@@ -145,7 +145,7 @@ class Symbol:
         else:
             targets = (target.node,)
 
-        _FindAndReplacer(targets, replacement.node).visit(self._node)
+        return Symbol(_FindAndReplacer(targets, replacement.node).visit(self._node))
 
     def names(self):
         class NameCollector(ast.NodeVisitor):
