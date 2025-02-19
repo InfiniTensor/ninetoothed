@@ -95,12 +95,14 @@ class Tensor:
 
         type(self).num_instances += 1
 
-    def tile(self, tile_shape, strides=None, dilation=None):
+    def tile(self, tile_shape, strides=None, dilation=None, floor_mode=False):
         """Tiles the tensor into a hierarchical tensor.
 
         :param tile_shape: The shape of a tile.
         :param strides: The interval at which each tile is generated.
         :param dilation: The spacing between tiles.
+        :param floor_mode: If ``True``, will use floor division to
+            compute the outer shape.
         :return: A hierarchical tensor.
         """
 
@@ -124,11 +126,21 @@ class Tensor:
             if stride == -1:
                 stride = tile_size
 
-            def cdiv(x, y):
+            def _div(x, y, floor_mode=False):
+                if floor_mode:
+                    return x // y
+
                 return (x + y - 1) // y
 
             new_size = (
-                (cdiv(self_size - spacing * (tile_size - 1) - 1, stride) + 1)
+                (
+                    _div(
+                        self_size - spacing * (tile_size - 1) - 1,
+                        stride,
+                        floor_mode=floor_mode,
+                    )
+                    + 1
+                )
                 if stride != 0
                 else -1
             )
