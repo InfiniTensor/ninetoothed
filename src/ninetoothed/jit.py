@@ -106,13 +106,18 @@ class JIT:
     def _get_tree(self):
         module = ast.parse(inspect.getsource(inspect.getmodule(self.func)))
 
-        _AliasRestorer().visit(module)
         collector = _ImportCollector()
         collector.visit(module)
+
         finder = _FunctionDefFinder(self.func.__name__)
         finder.visit(module)
+        func_def = finder.result
 
-        return ast.Module(body=collector.imports + [finder.result], type_ignores=[])
+        inliner = _Inliner(self.func.__globals__)
+        inliner.visit(func_def)
+        module.body = collector.imports + inliner.imports + [finder.result]
+
+        return _AliasRestorer().visit(module)
 
     def _find_dependencies(self):
         dependencies = set()
@@ -699,6 +704,211 @@ class Tritonizer(ast.NodeTransformer):
             )
 
         return node
+
+
+class _Inliner(ast.NodeTransformer):
+    def __init__(self, globals, imports=[]):
+        self._globals = globals
+
+        self._count = 0
+
+        self.imports = imports
+
+    def visit_Expr(self, node):
+        value, stmts = self._inline_expr(node.value)
+        node.value = value
+        node = self.generic_visit(node)
+
+        if stmts:
+            if isinstance(value, ast.Constant) and value.value is None:
+                return stmts
+
+            return stmts + [node]
+
+        return node
+
+    def visit_Assign(self, node):
+        value, stmts = self._inline_expr(node.value)
+        node.value = value
+        node = self.generic_visit(node)
+
+        if stmts:
+            return stmts + [node]
+
+        return node
+
+    def visit_Return(self, node):
+        if node.value:
+            value, stmts = self._inline_expr(node.value)
+            node.value = value
+
+            if stmts:
+                return stmts + [node]
+
+        return node
+
+    def _inline_expr(self, expr):
+        def _inline_list(lst):
+            new_list = []
+            new_stmts = []
+
+            for expr in lst:
+                expr, stmts = self._inline_expr(expr)
+
+                new_list.append(expr)
+                new_stmts.extend(stmts)
+
+            return new_list, new_stmts
+
+        def _inline_field(field):
+            if isinstance(field, ast.AST):
+                return self._inline_expr(field)
+
+            return field, []
+
+        if isinstance(expr, ast.Call):
+            new_expr, new_stmts = self._inline_call(expr)
+
+            if new_expr is not None:
+                return new_expr, new_stmts
+
+        new_stmts = []
+
+        for field, value in ast.iter_fields(expr):
+            if isinstance(value, list):
+                new_value, new_stmts = _inline_list(value)
+            else:
+                new_value, new_stmts = _inline_field(value)
+
+            setattr(expr, field, new_value)
+            new_stmts.extend(new_stmts)
+
+        return expr, new_stmts
+
+    def _inline_call(self, node):
+        class _ParameterReplacer(ast.NodeTransformer):
+            def __init__(self, mapping):
+                self._mapping = mapping
+
+            def visit_Name(self, node):
+                return self._mapping.get(node.id, node)
+
+        class _LocalVariableRenamer(ast.NodeTransformer):
+            def __init__(self, prefix, local_vars):
+                self._prefix = prefix
+
+                self._local_vars = local_vars
+
+            def visit_Name(self, node):
+                if node.id in self._local_vars:
+                    node.id = f"{self._prefix}{node.id}"
+
+                return node
+
+            def visit_arg(self, node):
+                return node
+
+        def _resolve_function(node, globals):
+            if isinstance(node, ast.Name):
+                return globals.get(node.id)
+
+            if isinstance(node, ast.Attribute):
+                obj = _resolve_function(node.value, globals)
+
+                if obj is not None:
+                    return getattr(obj, node.attr, None)
+
+            return None
+
+        def _get_source(func):
+            try:
+                return inspect.getsource(func)
+            except TypeError:
+                return None
+
+        def _find_function_definition(source):
+            finder = _FunctionDefFinder(func.__name__)
+            finder.visit(ast.parse(source))
+
+            return finder.result
+
+        def _find_assigned_names(stmts):
+            class _AssignedNameFinder(ast.NodeVisitor):
+                def __init__(self):
+                    self.result = set()
+
+                def visit_Name(self, node):
+                    if isinstance(node.ctx, ast.Store):
+                        self.result.add(node.id)
+
+            names = set()
+
+            for stmt in stmts:
+                finder = _AssignedNameFinder()
+                finder.visit(stmt)
+                names |= finder.result
+
+            return names
+
+        def _make_temporary():
+            prefix = naming.auto_generate(f"temporary_{self._count}")
+            self._count += 1
+
+            return prefix
+
+        func = _resolve_function(node.func, self._globals)
+
+        if func is None:
+            return None, []
+
+        source = _get_source(func)
+
+        if source is None:
+            return None, []
+
+        func_def = _find_function_definition(source)
+
+        if func_def is None:
+            return None, []
+
+        collector = _ImportCollector()
+        collector.visit(ast.parse(inspect.getsource(inspect.getmodule(func))))
+        self.imports.extend(collector.imports)
+
+        param_names = [arg.arg for arg in func_def.args.args]
+
+        mapping = {param: arg for param, arg in zip(param_names, node.args)}
+        param_replacer = _ParameterReplacer(mapping)
+        body = [param_replacer.visit(stmt) for stmt in func_def.body]
+
+        local_vars = _find_assigned_names(body) - set(param_names)
+        prefix = _make_temporary()
+        local_var_renamer = _LocalVariableRenamer(prefix, local_vars)
+        body = [local_var_renamer.visit(stmt) for stmt in body]
+
+        inlined_body = []
+
+        inliner = _Inliner(func.__globals__)
+
+        for stmt in body:
+            inlined_stmt = inliner.visit(stmt)
+
+            if isinstance(inlined_stmt, list):
+                inlined_body.extend(inlined_stmt)
+            else:
+                inlined_body.append(inlined_stmt)
+
+        if not inlined_body or not isinstance(inlined_body[-1], ast.Return):
+            return ast.Constant(value=None), inlined_body
+
+        ret = inlined_body.pop()
+        temp = _make_temporary()
+        assignment = ast.Assign(
+            targets=[ast.Name(id=temp, ctx=ast.Store())], value=ret.value
+        )
+        inlined_body.append(assignment)
+
+        return ast.Name(id=temp, ctx=ast.Load()), inlined_body
 
 
 class _BinOpSimplifier(ast.NodeTransformer):
