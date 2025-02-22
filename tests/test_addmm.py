@@ -43,6 +43,7 @@ def addmm(input, mat1, mat2, beta=1, alpha=1):
 class TestCUDA:
     @classmethod
     def setup_class(cls):
+        random.seed(0)
         torch.manual_seed(0)
 
         shape = (512, 512)
