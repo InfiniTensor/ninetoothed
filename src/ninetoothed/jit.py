@@ -851,7 +851,7 @@ class _Inliner(ast.NodeTransformer):
             return names
 
         def _make_temporary():
-            prefix = naming.auto_generate(f"temporary_{self._count}")
+            prefix = f"{naming.auto_generate(f'temporary_{self._count}')}_"
             self._count += 1
 
             return prefix
