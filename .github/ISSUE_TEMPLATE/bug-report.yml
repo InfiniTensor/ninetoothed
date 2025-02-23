@@ -1,0 +1,55 @@
+name: 🐛 Bug report
+description: Something isn't working as expected 🤔.
+labels: ["bug"]
+
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to fill out this bug report!
+
+  - type: checkboxes
+    attributes:
+      label: Is there an existing issue for this?
+      description: >
+        Please search to see if an issue already exists
+        for the bug you encountered.
+      options:
+      - label: I have searched the existing issues.
+        required: true
+
+  - type: textarea
+    attributes:
+      label: "Describe the bug:"
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: false
+
+  - type: textarea
+    attributes:
+      label: "To reproduce:"
+      description: >
+        Steps to reproduce the behavior.
+        If applicable, provide a small, self-contained piece of code
+        that can be run directly to reproduce the issue.
+    validations:
+      required: false
+
+  - type: textarea
+    attributes:
+      label: "Expected behavior:"
+      description: >
+        A clear and concise description of what you expected to happen.
+    validations:
+      required: false
+
+  - type: textarea
+    attributes:
+      label: "Environment details:"
+      description: >
+        Please include your NineToothed version, operating system,
+        hardware platform, and any relevant information.
+        If you are using PyTorch, please run
+        `python -m torch.utils.collect_env` to gather
+        environment information.
+    validations:
+      required: false
