@@ -1,0 +1,13 @@
+name: 🚀 Feature request
+description: I have a suggestion 🙂!
+
+body:
+  - type: textarea
+    attributes:
+      label: "Description & motivation:"
+      description: >
+        Please describe the feature that you would like to see and
+        explain the problem it would solve or
+        the benefit it would provide.
+    validations:
+      required: true
