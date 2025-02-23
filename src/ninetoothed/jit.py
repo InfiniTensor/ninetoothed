@@ -2,13 +2,14 @@ import ast
 import collections
 import copy
 import functools
+import hashlib
 import importlib.util
 import inspect
 import itertools
 import math
+import pathlib
 import subprocess
 import sys
-import tempfile
 
 import triton
 
@@ -88,11 +89,17 @@ class JIT:
                 ["ruff", "format", "-"], input=source, encoding="utf-8"
             )
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
-            temp_file.write(source.encode("utf-8"))
-            temp_file_name = temp_file.name
+        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        cache_dir = pathlib.Path.home() / ".ninetoothed"
+        cache_dir.mkdir(exist_ok=True)
+        cache_file = cache_dir / f"{digest}.py"
 
-        module = type(self)._import_from_path(temp_file_name, temp_file_name)
+        if not cache_file.exists():
+            with open(cache_file, "w", encoding="utf-8") as f:
+                f.write(source)
+
+        cache_file_str = str(cache_file)
+        module = type(self)._import_from_path(cache_file_str, cache_file_str)
         module_vars = vars(module)
 
         handle = _Handle(
