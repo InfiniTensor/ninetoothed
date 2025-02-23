@@ -184,6 +184,9 @@ class CodeGenerator(ast.NodeTransformer):
             if naming.is_constexpr(name)
         }
 
+        non_meta_names = sorted(non_meta_names)
+        meta_names = sorted(meta_names)
+
         node.args = [
             ast.arg(arg=name)
             if not naming.is_constexpr(name)
