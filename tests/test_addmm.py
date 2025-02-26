@@ -3,6 +3,7 @@ import random
 import torch
 
 import ninetoothed
+import ninetoothed.language as ntl
 import tests.test_matmul as matmul
 from ninetoothed import Tensor
 from tests.skippers import skip_if_cuda_not_available, skip_if_float8_e5m2_not_supported
@@ -19,8 +20,9 @@ def arrangement(input, mat1, mat2, beta, alpha, output):
 
 
 def application(input, mat1, mat2, beta, alpha, output):
-    matmul.application(mat1, mat2, output)
-    output = beta * input + alpha * output
+    matmul_output = ntl.zeros(output.shape, dtype=ntl.float32)
+    matmul.application(mat1, mat2, matmul_output)
+    output = beta * input + alpha * matmul_output
 
 
 def addmm(input, mat1, mat2, beta=1, alpha=1):
@@ -75,9 +77,6 @@ class TestCUDA:
         beta = type(self).beta
         alpha = type(self).alpha
 
-        # TODO: The current application function inlining feature
-        # causes some precision issues. Consider reducing `atol` and
-        # `rtol` of this test in the future.
         assert torch.allclose(
             addmm(input, mat1, mat2, beta=beta, alpha=alpha),
             torch.addmm(
@@ -87,6 +86,5 @@ class TestCUDA:
                 beta=beta,
                 alpha=alpha,
             ),
-            atol=0.5,
-            rtol=0.5,
+            atol=0.125,
         )
