@@ -162,12 +162,19 @@ class CodeGenerator(ast.NodeTransformer):
     def visit_Module(self, node):
         self.generic_visit(node)
 
+        func_with_auto_tuning = f"{Symbol(self._autotune)}({self._func_def.name})"
+
+        node.body.append(
+            ast.parse(f"{self._func_name_with_auto_tuning} = {func_with_auto_tuning}")
+        )
         node.body.append(self._launch)
 
         return node
 
     def visit_FunctionDef(self, node):
         self._func_def = node
+
+        self._func_name_with_auto_tuning = f"{self._func_def.name}_with_auto_tuning"
 
         self._invariants = {}
 
@@ -204,8 +211,8 @@ class CodeGenerator(ast.NodeTransformer):
             for name in meta_names
         ]
 
-        autotune = self._generate_autotune(non_meta_names, meta_names)
-        self._func_def.decorator_list = [autotune, Symbol("triton.jit").node]
+        self._autotune = self._generate_autotune(non_meta_names, meta_names)
+        self._func_def.decorator_list = [Symbol("triton.jit").node]
 
         self._launch = self._generate_launch(non_meta_names, meta_names)
 
@@ -402,7 +409,9 @@ class CodeGenerator(ast.NodeTransformer):
                 ast.Expr(
                     ast.Call(
                         func=ast.Subscript(
-                            value=ast.Name(id=self._func_def.name, ctx=ast.Load()),
+                            value=ast.Name(
+                                id=self._func_name_with_auto_tuning, ctx=ast.Load()
+                            ),
                             slice=self._generate_grid(),
                             ctx=ast.Load(),
                         ),
