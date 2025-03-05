@@ -65,75 +65,17 @@ class JIT:
         self._prettify = _prettify
 
     def __call__(self):
-        tree = self._get_tree()
-
-        CodeGenerator(inspect.get_annotations(self.func)).visit(tree)
-        Tritonizer().visit(tree)
-        _BinOpSimplifier().visit(tree)
-        ast.fix_missing_locations(tree)
-
-        if self._prettify:
-            name_collector = _SimplifiedNameCollector()
-            name_collector.visit(tree)
-
-        unparsed = ast.unparse(tree).replace("None:", ":").replace(":None", ":")
-        dependencies = self._find_dependencies()
-        source = "\n\n".join((unparsed, dependencies)).strip()
-
-        if self._prettify:
-            for original, simplified in name_collector.simplified_names.items():
-                if simplified not in name_collector.simplified_names:
-                    source = source.replace(original, simplified)
-
-            source = subprocess.check_output(
-                ["ruff", "format", "-"], input=source, encoding="utf-8"
-            )
-
-        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
-        cache_dir = pathlib.Path.home() / ".ninetoothed"
-        cache_dir.mkdir(exist_ok=True)
-        cache_file = cache_dir / f"{digest}.py"
-
-        if not cache_file.exists():
-            with open(cache_file, "w", encoding="utf-8") as f:
-                f.write(source)
-
-        cache_file_str = str(cache_file)
-        module = type(self)._import_from_path(cache_file_str, cache_file_str)
+        source_file = _generate_source_file(self.func, self._prettify)
+        module = type(self)._import_from_path(source_file, source_file)
         module_vars = vars(module)
 
         handle = _Handle(
             module_vars[self.func.__name__],
             module_vars[f"launch_{self.func.__name__}"],
-            source,
+            source_file,
         )
 
         return handle
-
-    def _get_tree(self):
-        module = ast.parse(inspect.getsource(inspect.getmodule(self.func)))
-
-        collector = _ImportCollector()
-        collector.visit(module)
-
-        finder = _FunctionDefFinder(self.func.__name__)
-        finder.visit(module)
-        func_def = finder.result
-
-        inliner = _Inliner(self.func.__globals__)
-        inliner.visit(func_def)
-        module.body = collector.imports + inliner.imports + [finder.result]
-
-        return _AliasRestorer().visit(module)
-
-    def _find_dependencies(self):
-        dependencies = set()
-
-        for obj in self.func.__globals__.values():
-            if isinstance(obj, triton.runtime.JITFunction):
-                dependencies.add(obj.src)
-
-        return "\n".join(f"@triton.jit\n{dependency}" for dependency in dependencies)
 
     @staticmethod
     def _import_from_path(module_name, file_path):
@@ -1046,3 +988,65 @@ class _FunctionDefFinder(ast.NodeVisitor):
             self.result = node
 
         self.generic_visit(node)
+
+
+def _generate_source_file(func, prettify):
+    def _get_tree(func):
+        module = ast.parse(inspect.getsource(inspect.getmodule(func)))
+
+        collector = _ImportCollector()
+        collector.visit(module)
+
+        finder = _FunctionDefFinder(func.__name__)
+        finder.visit(module)
+        func_def = finder.result
+
+        inliner = _Inliner(func.__globals__)
+        inliner.visit(func_def)
+        module.body = collector.imports + inliner.imports + [finder.result]
+
+        return _AliasRestorer().visit(module)
+
+    def _find_dependencies(func):
+        dependencies = set()
+
+        for obj in func.__globals__.values():
+            if isinstance(obj, triton.runtime.JITFunction):
+                dependencies.add(obj.src)
+
+        return "\n".join(f"@triton.jit\n{dependency}" for dependency in dependencies)
+
+    tree = _get_tree(func)
+
+    CodeGenerator(inspect.get_annotations(func)).visit(tree)
+    Tritonizer().visit(tree)
+    _BinOpSimplifier().visit(tree)
+    ast.fix_missing_locations(tree)
+
+    if prettify:
+        name_collector = _SimplifiedNameCollector()
+        name_collector.visit(tree)
+
+    unparsed = ast.unparse(tree).replace("None:", ":").replace(":None", ":")
+    dependencies = _find_dependencies(func)
+    source = "\n\n".join((unparsed, dependencies)).strip()
+
+    if prettify:
+        for original, simplified in name_collector.simplified_names.items():
+            if simplified not in name_collector.simplified_names:
+                source = source.replace(original, simplified)
+
+        source = subprocess.check_output(
+            ["ruff", "format", "-"], input=source, encoding="utf-8"
+        )
+
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    cache_dir = pathlib.Path.home() / ".ninetoothed"
+    cache_dir.mkdir(exist_ok=True)
+    cache_file = cache_dir / f"{digest}.py"
+
+    if not cache_file.exists():
+        with open(cache_file, "w", encoding="utf-8") as f:
+            f.write(source)
+
+    return str(cache_file)
