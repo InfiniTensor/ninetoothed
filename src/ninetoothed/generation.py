@@ -389,7 +389,11 @@ class CodeGenerator(ast.NodeTransformer):
     def _generate_grid(self):
         num_elements = functools.reduce(lambda x, y: x * y, self._args[0].shape)
 
-        return ast.parse(f"lambda meta: ({num_elements},)", mode="eval").body
+        grid = ast.parse(f"lambda meta: ({num_elements},)", mode="eval").body
+
+        self.raw_grid = copy.deepcopy(grid)
+
+        return grid
 
     def _generate_load(self, tensor, indices=()):
         if tensor.ndim == 0:
