@@ -28,7 +28,7 @@ class CodeGenerator(ast.NodeTransformer):
 
         self._MAX_PRODUCT = 2**20
 
-    def __call__(self, func, prettify):
+    def __call__(self, func, caller, prettify):
         def _get_tree(func):
             module = ast.parse(inspect.getsource(inspect.getmodule(func)))
 
@@ -55,6 +55,8 @@ class CodeGenerator(ast.NodeTransformer):
             return "\n".join(
                 f"@triton.jit\n{dependency}" for dependency in dependencies
             )
+
+        self._caller = caller
 
         self._context = inspect.get_annotations(func)
 
@@ -377,7 +379,10 @@ class CodeGenerator(ast.NodeTransformer):
 
         MetaEncloser(meta).visit(launch)
 
-        Torchifier().visit(launch)
+        if self._caller == "torch":
+            Torchifier().visit(launch)
+        else:
+            raise ValueError(f"Unsupported caller: `{self._caller}`.")
 
         return launch
 
