@@ -12,10 +12,13 @@ import subprocess
 import triton
 
 import ninetoothed.naming as naming
+from ninetoothed.cudaifier import Cudaifier
 from ninetoothed.language import attribute, call
 from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
+
+CACHE_DIR = pathlib.Path.home() / ".ninetoothed"
 
 
 class CodeGenerator(ast.NodeTransformer):
@@ -90,13 +93,17 @@ class CodeGenerator(ast.NodeTransformer):
             )
 
         digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
-        cache_dir = pathlib.Path.home() / ".ninetoothed"
+        cache_dir = CACHE_DIR
         cache_dir.mkdir(exist_ok=True)
         cache_file = cache_dir / f"{digest}.py"
 
         if not cache_file.exists():
             with open(cache_file, "w", encoding="utf-8") as f:
                 f.write(source)
+
+        self.tensors = self._args
+        self.kernel_func = self._func_def
+        self.launch_func = self._launch
 
         return str(cache_file)
 
@@ -384,6 +391,8 @@ class CodeGenerator(ast.NodeTransformer):
 
         if self._caller == "torch":
             Torchifier().visit(launch)
+        elif self._caller == "cuda":
+            Cudaifier().visit(launch)
         else:
             raise ValueError(f"Unsupported caller: `{self._caller}`.")
 
