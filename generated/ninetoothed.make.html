@@ -385,7 +385,7 @@
 <h1>ninetoothed.make<a class="headerlink" href="#ninetoothed-make" title="Link to this heading">#</a></h1>
 <dl class="py function">
 <dt class="sig sig-object py" id="ninetoothed.make">
-<span class="sig-prename descclassname"><span class="pre">ninetoothed.</span></span><span class="sig-name descname"><span class="pre">make</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">arrangement</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">application</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tensors</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#ninetoothed.make" title="Link to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">ninetoothed.</span></span><span class="sig-name descname"><span class="pre">make</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">arrangement</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">application</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tensors</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">caller</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'torch'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kernel_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_dir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_warps</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">4</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_stages</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#ninetoothed.make" title="Link to this definition">#</a></dt>
 <dd><p>Integrate the arrangement and the application of the tensors.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -393,6 +393,11 @@
 <li><p><strong>arrangement</strong> – The arrangement of the tensors.</p></li>
 <li><p><strong>application</strong> – The application of the tensors.</p></li>
 <li><p><strong>tensors</strong> – The tensors.</p></li>
+<li><p><strong>caller</strong> – Who will call the compute kernel.</p></li>
+<li><p><strong>kernel_name</strong> – The name for the generated kernel.</p></li>
+<li><p><strong>output_dir</strong> – The directory to store the generated files.</p></li>
+<li><p><strong>num_warps</strong> – The number of warps to use.</p></li>
+<li><p><strong>num_stages</strong> – The number of pipeline stages.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
