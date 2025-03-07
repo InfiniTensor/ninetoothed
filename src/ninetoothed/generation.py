@@ -28,7 +28,7 @@ class CodeGenerator(ast.NodeTransformer):
 
         self._MAX_PRODUCT = 2**20
 
-    def __call__(self, func, caller, prettify):
+    def __call__(self, func, caller, kernel_name, prettify):
         def _get_tree(func):
             module = ast.parse(inspect.getsource(inspect.getmodule(func)))
 
@@ -56,6 +56,8 @@ class CodeGenerator(ast.NodeTransformer):
                 f"@triton.jit\n{dependency}" for dependency in dependencies
             )
 
+        self.launch_func_name = f"launch_{kernel_name}"
+
         self._caller = caller
 
         self._context = inspect.get_annotations(func)
@@ -76,6 +78,7 @@ class CodeGenerator(ast.NodeTransformer):
         unparsed = ast.unparse(tree).replace("None:", ":").replace(":None", ":")
         dependencies = _find_dependencies(func)
         source = "\n\n".join((unparsed, dependencies)).strip()
+        source = source.replace(func.__name__, kernel_name)
 
         if prettify:
             for original, simplified in name_collector.simplified_names.items():
@@ -309,7 +312,7 @@ class CodeGenerator(ast.NodeTransformer):
         ]
 
         launch = ast.FunctionDef(
-            name=f"launch_{self._func_def.name}",
+            name=self.launch_func_name,
             args=ast.arguments(
                 posonlyargs=[],
                 args=[ast.arg(arg=arg.source.name) for arg in self._args]

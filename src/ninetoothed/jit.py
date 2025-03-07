@@ -4,11 +4,12 @@ import sys
 from ninetoothed.generation import CodeGenerator
 
 
-def jit(func=None, *, caller="torch", _prettify=False):
+def jit(func=None, *, caller="torch", kernel_name=None, _prettify=False):
     """A decorator for generating compute kernels.
 
     :param func: The function to be compiled.
     :param caller: Who will call the compute kernel.
+    :param kernel_name: The name for the generated kernel.
     :param _prettify: Whether to prettify the generated code.
     :return: A handle to the compute kernel.
 
@@ -19,7 +20,7 @@ def jit(func=None, *, caller="torch", _prettify=False):
     """
 
     def wrapper(func):
-        return JIT(func, caller=caller, _prettify=_prettify)()
+        return JIT(func, caller=caller, kernel_name=kernel_name, _prettify=_prettify)()
 
     if func is None:
         return wrapper
@@ -28,22 +29,29 @@ def jit(func=None, *, caller="torch", _prettify=False):
 
 
 class JIT:
-    def __init__(self, func, caller, _prettify=False):
+    def __init__(self, func, caller, kernel_name, _prettify=False):
         self.func = func
 
         self._caller = caller
+
+        if kernel_name is not None:
+            self._kernel_name = kernel_name
+        else:
+            self._kernel_name = func.__name__
 
         self._prettify = _prettify
 
     def __call__(self):
         code_generator = CodeGenerator()
-        source_file = code_generator(self.func, self._caller, self._prettify)
+        source_file = code_generator(
+            self.func, self._caller, self._kernel_name, self._prettify
+        )
         module = type(self)._import_from_path(source_file, source_file)
         module_vars = vars(module)
 
         handle = _Handle(
-            module_vars[self.func.__name__],
-            module_vars[f"launch_{self.func.__name__}"],
+            module_vars[self._kernel_name],
+            module_vars[code_generator.launch_func_name],
             source_file,
         )
 
