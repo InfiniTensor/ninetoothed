@@ -1,3 +1,5 @@
+import functools
+
 import torch
 import torch.nn.functional as F
 
@@ -7,7 +9,14 @@ from ninetoothed import Tensor
 from tests.skippers import skip_if_cuda_not_available
 
 
-def arrangement(input, filter, output):
+def arrangement(
+    input,
+    filter,
+    output,
+    BLOCK_SIZE_M=matmul.BLOCK_SIZE_M,
+    BLOCK_SIZE_N=matmul.BLOCK_SIZE_N,
+    BLOCK_SIZE_K=matmul.BLOCK_SIZE_K,
+):
     input_tiled = input.tile((1, *filter.shape[1:]), strides=(-1, -1, 1, 1))
     input_squeezed = input_tiled.squeeze(1)
     input_squeezed.dtype = input_squeezed.dtype.squeeze(0)
@@ -19,7 +28,12 @@ def arrangement(input, filter, output):
 
     output_flattened = output.permute((0, 2, 3, 1)).flatten(end_dim=3)
 
-    return matmul.arrangement(input_flattened, filter_permuted, output_flattened)
+    return functools.partial(
+        matmul.arrangement,
+        BLOCK_SIZE_M=BLOCK_SIZE_M,
+        BLOCK_SIZE_N=BLOCK_SIZE_N,
+        BLOCK_SIZE_K=BLOCK_SIZE_K,
+    )(input_flattened, filter_permuted, output_flattened)
 
 
 def conv2d(input, filter):
