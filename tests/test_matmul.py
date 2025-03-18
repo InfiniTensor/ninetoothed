@@ -5,12 +5,19 @@ import ninetoothed.language as ntl
 from ninetoothed import Symbol, Tensor
 from tests.skippers import skip_if_cuda_not_available, skip_if_float8_e5m2_not_supported
 
+BLOCK_SIZE_M = Symbol("BLOCK_SIZE_M", meta=True)
+BLOCK_SIZE_N = Symbol("BLOCK_SIZE_N", meta=True)
+BLOCK_SIZE_K = Symbol("BLOCK_SIZE_K", meta=True)
 
-def arrangement(lhs, rhs, output):
-    BLOCK_SIZE_M = Symbol("BLOCK_SIZE_M", meta=True)
-    BLOCK_SIZE_N = Symbol("BLOCK_SIZE_N", meta=True)
-    BLOCK_SIZE_K = Symbol("BLOCK_SIZE_K", meta=True)
 
+def arrangement(
+    lhs,
+    rhs,
+    output,
+    BLOCK_SIZE_M=BLOCK_SIZE_M,
+    BLOCK_SIZE_N=BLOCK_SIZE_N,
+    BLOCK_SIZE_K=BLOCK_SIZE_K,
+):
     output_tiled = output.tile((BLOCK_SIZE_M, BLOCK_SIZE_N))
 
     lhs_tiled = (
