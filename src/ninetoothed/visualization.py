@@ -118,10 +118,16 @@ def _visualize_unit_square(ax, x, y, color):
 
 
 def _visualize_rect(ax, width, height, x, y, color):
-    pos_x, pos_y = zip(*_verts_of_rect(width, height, x, y))
-
-    ax.fill(pos_x, pos_y, color)
-    ax.plot(pos_x + (pos_x[0],), pos_y + (pos_y[0],), "k")
+    ax.add_patch(
+        plt.Rectangle(
+            (x, y),
+            width,
+            height,
+            edgecolor="k",
+            facecolor=color,
+            linewidth=plt.rcParams["lines.linewidth"],
+        )
+    )
 
 
 def _verts_of_rect(width, height, x, y):
