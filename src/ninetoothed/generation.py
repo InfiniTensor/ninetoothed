@@ -82,6 +82,7 @@ class CodeGenerator(ast.NodeTransformer):
         dependencies = _find_dependencies(func)
         source = "\n\n".join((unparsed, dependencies)).strip()
         source = source.replace(func.__name__, kernel_name)
+        source += "\n"
 
         if prettify:
             for original, simplified in name_collector.simplified_names.items():
