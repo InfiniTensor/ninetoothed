@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 import uuid
 
-from ninetoothed.dtype import int64, uint64
+from ninetoothed.dtype import int64
 from ninetoothed.generation import CACHE_DIR, CodeGenerator
 from ninetoothed.tensor import Tensor
 
@@ -55,7 +55,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
 
             param_types.append(f"*{dtype}")
         elif Tensor.size_pattern().fullmatch(param):
-            param_types.append(uint64)
+            param_types.append(int64)
         elif Tensor.stride_pattern().fullmatch(param):
             param_types.append(int64)
 
