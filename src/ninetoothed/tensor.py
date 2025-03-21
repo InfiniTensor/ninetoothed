@@ -146,7 +146,7 @@ class Tensor:
             )
             outer_shape.append(new_size)
 
-            new_stride = self_stride * stride // spacing
+            new_stride = self_stride * stride
             outer_strides.append(new_stride)
 
             inner_shape.append(tile_size)
