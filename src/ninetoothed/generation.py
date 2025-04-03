@@ -5,11 +5,19 @@ import functools
 import hashlib
 import inspect
 import itertools
+import json
 import math
+import os
 import pathlib
+import shutil
 import subprocess
+import tempfile
+import time
+import uuid
 
+import sympy
 import triton
+import triton.language as tl
 
 import ninetoothed.naming as naming
 from ninetoothed.cudaifier import Cudaifier
@@ -26,11 +34,33 @@ class CodeGenerator(ast.NodeTransformer):
     def __init__(self):
         super().__init__()
 
-        self._POWER_OF_TWOS = tuple(2**n for n in range(5, 11))
+        cache_file = CACHE_DIR / "code_generator_cache.json"
 
-        self._MIN_PRODUCT = 2**10
+        log2_min_num_elements = 4
 
-        self._MAX_PRODUCT = 2**20
+        if cache_file.exists():
+            with open(cache_file) as f:
+                cache = json.load(f)
+
+            log2_max_num_elements = cache["log2_max_num_elements"]
+        else:
+            log2_max_num_elements = _determine_log2_max_num_elements_per_block(
+                log2_min_num_elements
+            )
+
+            cache = {"log2_max_num_elements": log2_max_num_elements}
+
+            with open(cache_file, "w") as f:
+                json.dump(cache, f, indent=4)
+                f.write("\n")
+
+        self._min_num_elements = 2**log2_min_num_elements
+
+        self._max_num_elements = 2**log2_max_num_elements
+
+        self._block_sizes = tuple(
+            2**n for n in range(log2_min_num_elements, log2_max_num_elements + 1)
+        )
 
     def __call__(self, func, caller, kernel_name, prettify):
         def _get_tree(func):
@@ -250,6 +280,25 @@ class CodeGenerator(ast.NodeTransformer):
         num_warps = 8
         num_stages = max_shared_mem // 2**15
 
+        inequalities = True
+
+        for arg in self._args:
+            if arg.ndim == 0:
+                continue
+
+            num_elements = sympy.simplify(str(math.prod(arg.innermost().shape)))
+
+            inequalities &= num_elements <= self._max_num_elements
+            inequalities &= num_elements >= self._min_num_elements
+
+        block_size_configs = []
+
+        for values in itertools.product(self._block_sizes, repeat=len(meta)):
+            config = {param: value for param, value in zip(meta, values)}
+
+            if sympy.logic.simplify_logic(inequalities.subs(config)):
+                block_size_configs.append(config)
+
         configs = [
             ast.Call(
                 func=ast.Attribute(
@@ -259,8 +308,14 @@ class CodeGenerator(ast.NodeTransformer):
                 ),
                 args=[
                     ast.Dict(
-                        keys=[ast.Constant(value=param) for param in meta],
-                        values=[ast.Constant(value=value) for value in values],
+                        keys=[
+                            ast.Constant(value=param)
+                            for param in block_size_config.keys()
+                        ],
+                        values=[
+                            ast.Constant(value=value)
+                            for value in block_size_config.values()
+                        ],
                     )
                 ],
                 keywords=[
@@ -268,8 +323,7 @@ class CodeGenerator(ast.NodeTransformer):
                     ast.keyword(arg="num_stages", value=ast.Constant(value=num_stages)),
                 ],
             )
-            for values in itertools.product(self._POWER_OF_TWOS, repeat=len(meta))
-            if self._MIN_PRODUCT <= math.prod(values) <= self._MAX_PRODUCT
+            for block_size_config in block_size_configs
         ]
 
         return ast.Call(
@@ -993,3 +1047,82 @@ class _FunctionDefFinder(ast.NodeVisitor):
             self.result = node
 
         self.generic_visit(node)
+
+
+def _determine_log2_max_num_elements_per_block(
+    min_exponent, max_exponent=30, num_iterations=3
+):
+    _profile_pseudo_add_kernel(1)
+
+    for n in range(min_exponent, max_exponent + 1):
+        elapsed_time = 0
+
+        for _ in range(num_iterations):
+            elapsed_time += _profile_pseudo_add_kernel(2**n)
+
+        average_elapsed_time = elapsed_time / num_iterations
+
+        if average_elapsed_time >= 1:
+            return n - 1
+
+
+def _profile_pseudo_add_kernel(block_size):
+    cache_dir = triton.runtime.cache.default_cache_dir()
+    os.makedirs(cache_dir, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as backup_dir:
+        backup_path = os.path.join(backup_dir, str(uuid.uuid4()))
+
+        if os.path.exists(backup_path):
+            shutil.rmtree(backup_path)
+
+        shutil.move(cache_dir, backup_path)
+
+        try:
+            start_time = time.time()
+
+            _run_pseudo_add_kernel(block_size)
+
+            end_time = time.time()
+
+            elapsed_time = end_time - start_time
+        finally:
+            if os.path.exists(cache_dir):
+                shutil.rmtree(cache_dir)
+
+            shutil.move(backup_path, cache_dir)
+
+        return elapsed_time
+
+
+def _run_pseudo_add_kernel(block_size):
+    @triton.jit
+    def kernel(a_ptr, b_ptr, c_ptr, num_elements, BLOCK_SIZE: tl.constexpr):
+        pid = tl.program_id(0)
+
+        offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offs < num_elements
+
+        a = tl.load(a_ptr + offs, mask=mask)
+        b = tl.load(b_ptr + offs, mask=mask)
+
+        c = a + b
+
+        tl.store(c_ptr + offs, c, mask=mask)
+
+    num_elements = 0
+    shape = (num_elements,)
+    dtype = tl.float32
+
+    a = Tensor(shape=shape, dtype=dtype)
+    b = Tensor(shape=shape, dtype=dtype)
+    c = Tensor(shape=shape, dtype=dtype)
+
+    def data_ptr():
+        return 0
+
+    a.data_ptr = data_ptr
+    b.data_ptr = data_ptr
+    c.data_ptr = data_ptr
+
+    kernel[(1,)](a, b, c, num_elements, block_size)
