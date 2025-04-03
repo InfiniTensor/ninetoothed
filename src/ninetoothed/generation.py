@@ -19,6 +19,7 @@ from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
 
 CACHE_DIR = pathlib.Path.home() / ".ninetoothed"
+CACHE_DIR.mkdir(exist_ok=True)
 
 
 class CodeGenerator(ast.NodeTransformer):
@@ -94,9 +95,7 @@ class CodeGenerator(ast.NodeTransformer):
             )
 
         digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
-        cache_dir = CACHE_DIR
-        cache_dir.mkdir(exist_ok=True)
-        cache_file = cache_dir / f"{digest}.py"
+        cache_file = CACHE_DIR / f"{digest}.py"
 
         if not cache_file.exists():
             with open(cache_file, "w", encoding="utf-8") as f:
