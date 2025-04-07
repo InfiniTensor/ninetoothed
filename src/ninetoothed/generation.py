@@ -62,7 +62,7 @@ class CodeGenerator(ast.NodeTransformer):
             2**n for n in range(log2_min_num_elements, log2_max_num_elements + 1)
         )
 
-    def __call__(self, func, caller, kernel_name, prettify):
+    def __call__(self, func, caller, kernel_name, num_warps, num_stages, prettify):
         def _get_tree(func):
             module = ast.parse(inspect.getsource(inspect.getmodule(func)))
 
@@ -93,6 +93,10 @@ class CodeGenerator(ast.NodeTransformer):
         self.launch_func_name = f"launch_{kernel_name}"
 
         self._caller = caller
+
+        self._num_wraps = num_warps
+
+        self._num_stages = num_stages
 
         self._context = inspect.get_annotations(func)
 
@@ -273,13 +277,6 @@ class CodeGenerator(ast.NodeTransformer):
         return isinstance(node, ast.Name) and node.id in self._context
 
     def _generate_autotune(self, params, meta):
-        device = triton.runtime.driver.active.get_current_device()
-        properties = triton.runtime.driver.active.utils.get_device_properties(device)
-        max_shared_mem = properties["max_shared_mem"]
-
-        num_warps = 8
-        num_stages = max_shared_mem // 2**15
-
         inequalities = True
 
         for arg in self._args:
@@ -298,6 +295,23 @@ class CodeGenerator(ast.NodeTransformer):
 
             if sympy.logic.simplify_logic(inequalities.subs(config)):
                 block_size_configs.append(config)
+
+        if isinstance(self._num_wraps, collections.abc.Iterable):
+            num_warps_configs = self._num_wraps
+        else:
+            num_warps_configs = (self._num_wraps,)
+
+        if isinstance(self._num_stages, collections.abc.Iterable):
+            num_stages_configs = self._num_stages
+        else:
+            num_stages_configs = (self._num_stages,)
+
+        compiler_configs = tuple(
+            {"num_warps": num_warps, "num_stages": num_stages}
+            for num_warps, num_stages in itertools.product(
+                num_warps_configs, num_stages_configs
+            )
+        )
 
         configs = [
             ast.Call(
@@ -319,11 +333,19 @@ class CodeGenerator(ast.NodeTransformer):
                     )
                 ],
                 keywords=[
-                    ast.keyword(arg="num_warps", value=ast.Constant(value=num_warps)),
-                    ast.keyword(arg="num_stages", value=ast.Constant(value=num_stages)),
+                    ast.keyword(
+                        arg="num_warps",
+                        value=ast.Constant(value=compiler_config["num_warps"]),
+                    ),
+                    ast.keyword(
+                        arg="num_stages",
+                        value=ast.Constant(value=compiler_config["num_stages"]),
+                    ),
                 ],
             )
-            for block_size_config in block_size_configs
+            for block_size_config, compiler_config in itertools.product(
+                block_size_configs, compiler_configs
+            )
         ]
 
         return ast.Call(

@@ -2,6 +2,7 @@ import inspect
 
 from ninetoothed.aot import aot
 from ninetoothed.jit import jit
+from ninetoothed.utils import calculate_default_configs
 
 
 def make(
@@ -11,8 +12,8 @@ def make(
     caller="torch",
     kernel_name=None,
     output_dir=None,
-    num_warps=4,
-    num_stages=3,
+    num_warps=None,
+    num_stages=None,
 ):
     """Integrate the arrangement and the application of the tensors.
 
@@ -27,13 +28,27 @@ def make(
     :return: A handle to the compute kernel.
     """
 
+    default_num_warps, default_num_stages = calculate_default_configs()
+
+    if num_warps is None:
+        num_warps = default_num_warps
+
+    if num_stages is None:
+        num_stages = default_num_stages
+
     params = inspect.signature(application).parameters
     types = arrangement(*tensors)
     annotations = {param: type for param, type in zip(params, types)}
     application.__annotations__ = annotations
 
     if caller == "torch":
-        return jit(application, caller=caller, kernel_name=kernel_name)
+        return jit(
+            application,
+            caller=caller,
+            kernel_name=kernel_name,
+            num_warps=num_warps,
+            num_stages=num_stages,
+        )
 
     return aot(
         application,
