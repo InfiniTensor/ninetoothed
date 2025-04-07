@@ -58,8 +58,11 @@ class CodeGenerator(ast.NodeTransformer):
 
         self._max_num_elements = 2**log2_max_num_elements
 
+        log2_min_block_size = log2_min_num_elements
+        log2_max_block_size = min(10, log2_max_num_elements)
+
         self._block_sizes = tuple(
-            2**n for n in range(log2_min_num_elements, log2_max_num_elements + 1)
+            2**n for n in range(log2_min_block_size, log2_max_block_size + 1)
         )
 
     def __call__(self, func, caller, kernel_name, num_warps, num_stages, prettify):
