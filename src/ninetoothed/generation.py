@@ -58,13 +58,6 @@ class CodeGenerator(ast.NodeTransformer):
 
         self._max_num_elements = 2**log2_max_num_elements
 
-        log2_min_block_size = log2_min_num_elements
-        log2_max_block_size = min(10, log2_max_num_elements)
-
-        self._block_sizes = tuple(
-            2**n for n in range(log2_min_block_size, log2_max_block_size + 1)
-        )
-
     def __call__(self, func, caller, kernel_name, num_warps, num_stages, prettify):
         def _get_tree(func):
             module = ast.parse(inspect.getsource(inspect.getmodule(func)))
@@ -173,8 +166,13 @@ class CodeGenerator(ast.NodeTransformer):
     def visit_arguments(self, node):
         self.generic_visit(node)
 
-        names_of_args = [arg.names() - {"ninetoothed"} for arg in self._args]
-        names = functools.reduce(lambda x, y: x | y, names_of_args)
+        symbols = {
+            name.node.id: name
+            for arg in self._args
+            for name in arg.names()
+            if name != "ninetoothed"
+        }
+        names = symbols.keys()
         meta_names = {name for name in names if naming.is_meta(name)}
         non_meta_names = {name for name in names if name not in meta_names}
         non_meta_names |= {
@@ -182,6 +180,8 @@ class CodeGenerator(ast.NodeTransformer):
             for name in non_meta_names
             if naming.is_constexpr(name)
         }
+
+        self._symbols = symbols
 
         non_meta_names = sorted(non_meta_names)
         meta_names = sorted(meta_names)
@@ -291,12 +291,40 @@ class CodeGenerator(ast.NodeTransformer):
             inequalities &= num_elements <= self._max_num_elements
             inequalities &= num_elements >= self._min_num_elements
 
+        values_of_meta_params = []
+
+        for param in meta:
+            symbol = self._symbols[param]
+
+            values = range(symbol.lower_bound, symbol.upper_bound + 1)
+
+            if symbol.power_of_two:
+                values = tuple(value for value in values if value & (value - 1) == 0)
+            else:
+                values = tuple(values)
+
+            values_of_meta_params.append(values)
+
+        max_values_of_non_meta_params = {}
+
+        for free_symbol in inequalities.free_symbols:
+            symbol_str = str(free_symbol)
+
+            if symbol_str in meta:
+                continue
+
+            symbol = self._symbols[symbol_str]
+
+            max_values_of_non_meta_params[symbol_str] = symbol.upper_bound
+
         block_size_configs = []
 
-        for values in itertools.product(self._block_sizes, repeat=len(meta)):
+        for values in itertools.product(*values_of_meta_params):
             config = {param: value for param, value in zip(meta, values)}
 
-            if sympy.logic.simplify_logic(inequalities.subs(config)):
+            if sympy.logic.simplify_logic(
+                inequalities.subs(config | max_values_of_non_meta_params)
+            ):
                 block_size_configs.append(config)
 
         if isinstance(self._num_wraps, collections.abc.Iterable):

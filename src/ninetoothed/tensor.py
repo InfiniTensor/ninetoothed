@@ -364,10 +364,10 @@ class Tensor:
 
     def names(self):
         if self.ndim == 0:
-            return {self.source.name}
+            return {Symbol(self.source.name)}
 
         return (
-            {self.source.pointer_string()}
+            {Symbol(self.source.pointer_string())}
             | {
                 name
                 for value in itertools.chain(self.shape, self.strides)

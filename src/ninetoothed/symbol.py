@@ -12,9 +12,20 @@ class Symbol:
     :param expr: The expression used to construct the symbol.
     :param constexpr: Whether the symbol is a constexpr.
     :param mata: Whether the symbol is a meta.
+    :param lower_bound: The minimum value for the symbol's range.
+    :param upper_bound: The maximum value for the symbol's range.
+    :param power_of_two: Whether the value should be a power of two.
     """
 
-    def __init__(self, expr, constexpr=None, meta=None):
+    def __init__(
+        self,
+        expr,
+        constexpr=None,
+        meta=None,
+        lower_bound=16,
+        upper_bound=1024,
+        power_of_two=True,
+    ):
         if isinstance(expr, type(self)):
             self._node = expr._node
             return
@@ -42,6 +53,14 @@ class Symbol:
 
         if constexpr:
             self._node.id = naming.make_constexpr(self._node.id)
+
+        self._node.symbol = self
+
+        self.lower_bound = lower_bound
+
+        self.upper_bound = upper_bound
+
+        self.power_of_two = power_of_two
 
     def __eq__(self, other):
         if isinstance(self._node, ast.Constant):
@@ -155,7 +174,7 @@ class Symbol:
             def visit_Name(self, node):
                 self.generic_visit(node)
 
-                self.names.add(node.id)
+                self.names.add(node.symbol)
 
         name_collector = NameCollector()
 
