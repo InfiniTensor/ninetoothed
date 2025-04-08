@@ -22,7 +22,7 @@ class Symbol:
         expr,
         constexpr=None,
         meta=None,
-        lower_bound=16,
+        lower_bound=32,
         upper_bound=1024,
         power_of_two=True,
     ):
