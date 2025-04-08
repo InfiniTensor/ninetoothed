@@ -47,12 +47,16 @@ class Tensor:
         else:
             self.name = naming.auto_generate(f"tensor_{type(self).num_instances}")
 
-        if shape_options is None:
-            shape_options = {}
-
         if ndim is not None:
+            if shape_options is None:
+                shape_options = tuple({} for _ in range(ndim))
+
+            if isinstance(shape_options, dict):
+                shape_options = tuple(shape_options for _ in range(ndim))
+
             self.shape = (
-                Symbol(self.size_string(i), **shape_options) for i in range(ndim)
+                Symbol(self.size_string(i), **size_options)
+                for i, size_options in zip(range(ndim), shape_options)
             )
             self.strides = (Symbol(self.stride_string(i)) for i in range(ndim))
         else:
