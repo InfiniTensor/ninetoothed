@@ -14,7 +14,7 @@ class Tensor:
     :param dtype: The element type of the tensor.
     :param strides: The strides of the tensor.
     :param other: The values for out-of-bounds positions.
-    :param constexpr_shape: Whether the sizes are constexpr.
+    :param shape_options: The options for configuring shape symbols.
     :param name: The name of the tensor.
     :param source: For internal use only.
     :param source_dims: For internal use only.
@@ -31,7 +31,7 @@ class Tensor:
         dtype=None,
         strides=None,
         other=None,
-        constexpr_shape=None,
+        shape_options=None,
         name=None,
         source=None,
         source_dims=None,
@@ -47,10 +47,12 @@ class Tensor:
         else:
             self.name = naming.auto_generate(f"tensor_{type(self).num_instances}")
 
+        if shape_options is None:
+            shape_options = {}
+
         if ndim is not None:
             self.shape = (
-                Symbol(self.size_string(i), constexpr=constexpr_shape)
-                for i in range(ndim)
+                Symbol(self.size_string(i), **shape_options) for i in range(ndim)
             )
             self.strides = (Symbol(self.stride_string(i)) for i in range(ndim))
         else:
