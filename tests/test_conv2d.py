@@ -47,7 +47,7 @@ def conv2d(input, filter):
     conv2d_kernel = ninetoothed.make(
         arrangement,
         matmul.application,
-        (Tensor(4), Tensor(4, constexpr_shape=True), Tensor(4)),
+        (Tensor(4), Tensor(4, shape_options={"constexpr": True}), Tensor(4)),
     )
 
     conv2d_kernel(input, filter, output)

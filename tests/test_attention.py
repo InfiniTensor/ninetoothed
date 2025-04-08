@@ -60,7 +60,20 @@ def attention(q, k, v):
     o = torch.empty_like(q, dtype=v.dtype)
 
     attention_kernel = ninetoothed.make(
-        arrangement, application, (Tensor(4, constexpr_shape=True) for _ in range(4))
+        arrangement,
+        application,
+        (
+            Tensor(
+                4,
+                shape_options=(
+                    None,
+                    None,
+                    {"constexpr": True},
+                    {"constexpr": True, "upper_bound": 128},
+                ),
+            )
+            for _ in range(4)
+        ),
     )
 
     attention_kernel(q, k, v, o, BLOCK_SIZE_M=128, BLOCK_SIZE_N=64)
