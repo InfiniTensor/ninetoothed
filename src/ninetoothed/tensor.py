@@ -54,6 +54,11 @@ class Tensor:
             if isinstance(shape_options, dict):
                 shape_options = tuple(shape_options for _ in range(ndim))
 
+            shape_options = tuple(
+                size_options if size_options is not None else {}
+                for size_options in shape_options
+            )
+
             self.shape = (
                 Symbol(self.size_string(i), **size_options)
                 for i, size_options in zip(range(ndim), shape_options)
