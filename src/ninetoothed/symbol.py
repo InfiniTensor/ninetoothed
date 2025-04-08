@@ -22,9 +22,9 @@ class Symbol:
         expr,
         constexpr=None,
         meta=None,
-        lower_bound=32,
-        upper_bound=1024,
-        power_of_two=True,
+        lower_bound=None,
+        upper_bound=None,
+        power_of_two=None,
     ):
         if isinstance(expr, type(self)):
             self._node = expr._node
@@ -56,11 +56,37 @@ class Symbol:
 
         self._node.symbol = self
 
-        self.lower_bound = lower_bound
+        DEFAULT_LOWER_BOUND_FOR_META_SYMBOLS = 2**5
+        DEFAULT_UPPER_BOUND_FOR_META_SYMBOLS = 2**10
+        DEFAULT_POWER_OF_TWO_FOR_META_SYMBOLS = True
 
-        self.upper_bound = upper_bound
+        DEFAULT_LOWER_BOUND_FOR_NON_META_CONSTEXPR_SYMBOLS = 1
+        DEFAULT_UPPER_BOUND_FOR_NON_META_CONSTEXPR_SYMBOLS = 2**20
+        DEFAULT_POWER_OF_TWO_FOR_NON_META_CONSTEXPR_SYMBOLS = False
 
-        self.power_of_two = power_of_two
+        if lower_bound is not None:
+            self.lower_bound = lower_bound
+        else:
+            if meta:
+                self.lower_bound = DEFAULT_LOWER_BOUND_FOR_META_SYMBOLS
+            elif constexpr:
+                self.lower_bound = DEFAULT_LOWER_BOUND_FOR_NON_META_CONSTEXPR_SYMBOLS
+
+        if upper_bound is not None:
+            self.upper_bound = upper_bound
+        else:
+            if meta:
+                self.upper_bound = DEFAULT_UPPER_BOUND_FOR_META_SYMBOLS
+            elif constexpr:
+                self.upper_bound = DEFAULT_UPPER_BOUND_FOR_NON_META_CONSTEXPR_SYMBOLS
+
+        if power_of_two is not None:
+            self.power_of_two = power_of_two
+        else:
+            if meta:
+                self.power_of_two = DEFAULT_POWER_OF_TWO_FOR_META_SYMBOLS
+            elif constexpr:
+                self.power_of_two = DEFAULT_POWER_OF_TWO_FOR_NON_META_CONSTEXPR_SYMBOLS
 
     def __eq__(self, other):
         if isinstance(self._node, ast.Constant):
