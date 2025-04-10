@@ -382,7 +382,7 @@
 <h1>Symbol<a class="headerlink" href="#symbol" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="ninetoothed.Symbol">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">ninetoothed.</span></span><span class="sig-name descname"><span class="pre">Symbol</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">expr</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">constexpr</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">meta</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#ninetoothed.Symbol" title="Link to this definition">#</a></dt>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">ninetoothed.</span></span><span class="sig-name descname"><span class="pre">Symbol</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">expr</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">constexpr</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">meta</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lower_bound</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">upper_bound</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">power_of_two</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#ninetoothed.Symbol" title="Link to this definition">#</a></dt>
 <dd><p>A class uesed to represent a symbol.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -390,6 +390,9 @@
 <li><p><strong>expr</strong> – The expression used to construct the symbol.</p></li>
 <li><p><strong>constexpr</strong> – Whether the symbol is a constexpr.</p></li>
 <li><p><strong>mata</strong> – Whether the symbol is a meta.</p></li>
+<li><p><strong>lower_bound</strong> – The minimum value for the symbol’s range.</p></li>
+<li><p><strong>upper_bound</strong> – The maximum value for the symbol’s range.</p></li>
+<li><p><strong>power_of_two</strong> – Whether the value should be a power of two.</p></li>
 </ul>
 </dd>
 </dl>

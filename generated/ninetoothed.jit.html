@@ -385,7 +385,7 @@
 <h1>ninetoothed.jit<a class="headerlink" href="#ninetoothed-jit" title="Link to this heading">#</a></h1>
 <dl class="py function">
 <dt class="sig sig-object py" id="ninetoothed.jit">
-<span class="sig-prename descclassname"><span class="pre">ninetoothed.</span></span><span class="sig-name descname"><span class="pre">jit</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">func</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">caller</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'torch'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kernel_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_prettify</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#ninetoothed.jit" title="Link to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">ninetoothed.</span></span><span class="sig-name descname"><span class="pre">jit</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">func</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">caller</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'torch'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kernel_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_warps</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_stages</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_num_configs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_prettify</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#ninetoothed.jit" title="Link to this definition">#</a></dt>
 <dd><p>A decorator for generating compute kernels.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -393,6 +393,10 @@
 <li><p><strong>func</strong> – The function to be compiled.</p></li>
 <li><p><strong>caller</strong> – Who will call the compute kernel.</p></li>
 <li><p><strong>kernel_name</strong> – The name for the generated kernel.</p></li>
+<li><p><strong>num_warps</strong> – The number of warps to use.</p></li>
+<li><p><strong>num_stages</strong> – The number of pipeline stages.</p></li>
+<li><p><strong>max_num_configs</strong> – The maximum number of auto-tuning
+configurations to use.</p></li>
 <li><p><strong>_prettify</strong> – Whether to prettify the generated code.</p></li>
 </ul>
 </dd>
