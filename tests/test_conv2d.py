@@ -48,6 +48,7 @@ def conv2d(input, filter):
         arrangement,
         matmul.application,
         (Tensor(4), Tensor(4, shape_options={"constexpr": True}), Tensor(4)),
+        max_num_configs=50,
     )
 
     conv2d_kernel(input, filter, output)
