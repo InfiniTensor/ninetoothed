@@ -9,6 +9,7 @@ import json
 import math
 import os
 import pathlib
+import random
 import shutil
 import subprocess
 import tempfile
@@ -58,7 +59,16 @@ class CodeGenerator(ast.NodeTransformer):
 
         self._max_num_elements = 2**log2_max_num_elements
 
-    def __call__(self, func, caller, kernel_name, num_warps, num_stages, prettify):
+    def __call__(
+        self,
+        func,
+        caller,
+        kernel_name,
+        num_warps,
+        num_stages,
+        max_num_configs,
+        prettify,
+    ):
         def _get_tree(func):
             module = ast.parse(inspect.getsource(inspect.getmodule(func)))
 
@@ -93,6 +103,8 @@ class CodeGenerator(ast.NodeTransformer):
         self._num_wraps = num_warps
 
         self._num_stages = num_stages
+
+        self._max_num_configs = max_num_configs
 
         self._context = inspect.get_annotations(func)
 
@@ -388,6 +400,9 @@ class CodeGenerator(ast.NodeTransformer):
                 block_size_configs, compiler_configs
             )
         ]
+
+        if self._max_num_configs is not None and len(configs) > self._max_num_configs:
+            configs = random.sample(configs, k=self._max_num_configs)
 
         if not configs:
             return None

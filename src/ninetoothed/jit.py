@@ -11,6 +11,7 @@ def jit(
     kernel_name=None,
     num_warps=None,
     num_stages=None,
+    max_num_configs=None,
     _prettify=False,
 ):
     """A decorator for generating compute kernels.
@@ -20,6 +21,8 @@ def jit(
     :param kernel_name: The name for the generated kernel.
     :param num_warps: The number of warps to use.
     :param num_stages: The number of pipeline stages.
+    :param max_num_configs: The maximum number of auto-tuning
+        configurations to use.
     :param _prettify: Whether to prettify the generated code.
     :return: A handle to the compute kernel.
 
@@ -36,6 +39,7 @@ def jit(
             kernel_name=kernel_name,
             num_warps=num_warps,
             num_stages=num_stages,
+            max_num_configs=max_num_configs,
             _prettify=_prettify,
         )()
 
@@ -47,7 +51,14 @@ def jit(
 
 class JIT:
     def __init__(
-        self, func, caller, kernel_name, num_warps, num_stages, _prettify=False
+        self,
+        func,
+        caller,
+        kernel_name,
+        num_warps,
+        num_stages,
+        max_num_configs,
+        _prettify=False,
     ):
         self.func = func
 
@@ -62,6 +73,8 @@ class JIT:
 
         self._num_stages = num_stages
 
+        self._max_num_configs = max_num_configs
+
         self._prettify = _prettify
 
     def __call__(self):
@@ -72,6 +85,7 @@ class JIT:
             self._kernel_name,
             self._num_warps,
             self._num_stages,
+            self._max_num_configs,
             self._prettify,
         )
         module = type(self)._import_from_path(source_file, source_file)
