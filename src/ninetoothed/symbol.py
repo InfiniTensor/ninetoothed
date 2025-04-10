@@ -224,6 +224,24 @@ class Symbol:
         return isinstance(object, Symbol) and isinstance(object.node, ast.Name)
 
 
+def block_size(lower_bound=None, upper_bound=None):
+    """Create a block size symbol that serves as a meta-parameter.
+
+    :param lower_bound: The lower bound for the block size's range.
+    :param upper_bound: The upper bound for the block size's range.
+    :return: A block size symbol that serves as a meta-parameter.
+    """
+
+    name = naming.auto_generate(f"BLOCK_SIZE_{block_size._num_block_sizes}")
+
+    block_size._num_block_sizes += 1
+
+    return Symbol(name, meta=True, lower_bound=lower_bound, upper_bound=upper_bound)
+
+
+block_size._num_block_sizes = 0
+
+
 class _FindAndReplacer(ast.NodeTransformer):
     def __init__(self, targets, replacement):
         self._targets_unparsed = tuple(
