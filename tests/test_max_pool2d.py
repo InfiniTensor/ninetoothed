@@ -12,8 +12,8 @@ from tests.skippers import skip_if_cuda_not_available
 def arrangement(input, output, ceil_mode=False):
     BLOCK_SIZE = Symbol("BLOCK_SIZE", meta=True)
 
-    WINDOW_HEIGHT = Symbol("WINDOW_HEIGHT", constexpr=True)
-    WINDOW_WIDTH = Symbol("WINDOW_WIDTH", constexpr=True)
+    WINDOW_HEIGHT = Symbol("WINDOW_HEIGHT", constexpr=True, upper_bound=16)
+    WINDOW_WIDTH = Symbol("WINDOW_WIDTH", constexpr=True, upper_bound=16)
 
     input_arranged = input.tile(
         (1, 1, WINDOW_HEIGHT, WINDOW_WIDTH), floor_mode=not ceil_mode

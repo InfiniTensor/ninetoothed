@@ -14,7 +14,7 @@ class Tensor:
     :param dtype: The element type of the tensor.
     :param strides: The strides of the tensor.
     :param other: The values for out-of-bounds positions.
-    :param constexpr_shape: Whether the sizes are constexpr.
+    :param shape_options: The options for configuring shape symbols.
     :param name: The name of the tensor.
     :param source: For internal use only.
     :param source_dims: For internal use only.
@@ -31,7 +31,7 @@ class Tensor:
         dtype=None,
         strides=None,
         other=None,
-        constexpr_shape=None,
+        shape_options=None,
         name=None,
         source=None,
         source_dims=None,
@@ -48,9 +48,20 @@ class Tensor:
             self.name = naming.auto_generate(f"tensor_{type(self).num_instances}")
 
         if ndim is not None:
+            if shape_options is None:
+                shape_options = tuple({} for _ in range(ndim))
+
+            if isinstance(shape_options, dict):
+                shape_options = tuple(shape_options for _ in range(ndim))
+
+            shape_options = tuple(
+                size_options if size_options is not None else {}
+                for size_options in shape_options
+            )
+
             self.shape = (
-                Symbol(self.size_string(i), constexpr=constexpr_shape)
-                for i in range(ndim)
+                Symbol(self.size_string(i), **size_options)
+                for i, size_options in zip(range(ndim), shape_options)
             )
             self.strides = (Symbol(self.stride_string(i)) for i in range(ndim))
         else:
@@ -364,10 +375,10 @@ class Tensor:
 
     def names(self):
         if self.ndim == 0:
-            return {self.source.name}
+            return {Symbol(self.source.name)}
 
         return (
-            {self.source.pointer_string()}
+            {Symbol(self.source.pointer_string())}
             | {
                 name
                 for value in itertools.chain(self.shape, self.strides)

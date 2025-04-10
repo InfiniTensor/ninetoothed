@@ -12,9 +12,20 @@ class Symbol:
     :param expr: The expression used to construct the symbol.
     :param constexpr: Whether the symbol is a constexpr.
     :param mata: Whether the symbol is a meta.
+    :param lower_bound: The minimum value for the symbol's range.
+    :param upper_bound: The maximum value for the symbol's range.
+    :param power_of_two: Whether the value should be a power of two.
     """
 
-    def __init__(self, expr, constexpr=None, meta=None):
+    def __init__(
+        self,
+        expr,
+        constexpr=None,
+        meta=None,
+        lower_bound=None,
+        upper_bound=None,
+        power_of_two=None,
+    ):
         if isinstance(expr, type(self)):
             self._node = expr._node
             return
@@ -42,6 +53,40 @@ class Symbol:
 
         if constexpr:
             self._node.id = naming.make_constexpr(self._node.id)
+
+        self._node.symbol = self
+
+        DEFAULT_LOWER_BOUND_FOR_META_SYMBOLS = 2**5
+        DEFAULT_UPPER_BOUND_FOR_META_SYMBOLS = 2**10
+        DEFAULT_POWER_OF_TWO_FOR_META_SYMBOLS = True
+
+        DEFAULT_LOWER_BOUND_FOR_NON_META_CONSTEXPR_SYMBOLS = 1
+        DEFAULT_UPPER_BOUND_FOR_NON_META_CONSTEXPR_SYMBOLS = 2**20
+        DEFAULT_POWER_OF_TWO_FOR_NON_META_CONSTEXPR_SYMBOLS = False
+
+        if lower_bound is not None:
+            self.lower_bound = lower_bound
+        else:
+            if meta:
+                self.lower_bound = DEFAULT_LOWER_BOUND_FOR_META_SYMBOLS
+            elif constexpr:
+                self.lower_bound = DEFAULT_LOWER_BOUND_FOR_NON_META_CONSTEXPR_SYMBOLS
+
+        if upper_bound is not None:
+            self.upper_bound = upper_bound
+        else:
+            if meta:
+                self.upper_bound = DEFAULT_UPPER_BOUND_FOR_META_SYMBOLS
+            elif constexpr:
+                self.upper_bound = DEFAULT_UPPER_BOUND_FOR_NON_META_CONSTEXPR_SYMBOLS
+
+        if power_of_two is not None:
+            self.power_of_two = power_of_two
+        else:
+            if meta:
+                self.power_of_two = DEFAULT_POWER_OF_TWO_FOR_META_SYMBOLS
+            elif constexpr:
+                self.power_of_two = DEFAULT_POWER_OF_TWO_FOR_NON_META_CONSTEXPR_SYMBOLS
 
     def __eq__(self, other):
         if isinstance(self._node, ast.Constant):
@@ -155,7 +200,7 @@ class Symbol:
             def visit_Name(self, node):
                 self.generic_visit(node)
 
-                self.names.add(node.id)
+                self.names.add(node.symbol)
 
         name_collector = NameCollector()
 
@@ -177,6 +222,24 @@ class Symbol:
     @staticmethod
     def is_name(object):
         return isinstance(object, Symbol) and isinstance(object.node, ast.Name)
+
+
+def block_size(lower_bound=None, upper_bound=None):
+    """Create a block size symbol that serves as a meta-parameter.
+
+    :param lower_bound: The lower bound for the block size's range.
+    :param upper_bound: The upper bound for the block size's range.
+    :return: A block size symbol that serves as a meta-parameter.
+    """
+
+    name = naming.auto_generate(f"BLOCK_SIZE_{block_size._num_block_sizes}")
+
+    block_size._num_block_sizes += 1
+
+    return Symbol(name, meta=True, lower_bound=lower_bound, upper_bound=upper_bound)
+
+
+block_size._num_block_sizes = 0
 
 
 class _FindAndReplacer(ast.NodeTransformer):

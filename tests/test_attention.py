@@ -3,13 +3,13 @@ import torch.nn.functional as F
 
 import ninetoothed
 import ninetoothed.language as ntl
-from ninetoothed import Symbol, Tensor
+from ninetoothed import Tensor
 from tests.skippers import skip_if_cuda_not_available
 
 
 def arrangement(q, k, v, o):
-    BLOCK_SIZE_M = Symbol("BLOCK_SIZE_M", constexpr=True)
-    BLOCK_SIZE_N = Symbol("BLOCK_SIZE_N", constexpr=True)
+    BLOCK_SIZE_M = ninetoothed.block_size(lower_bound=64, upper_bound=128)
+    BLOCK_SIZE_N = ninetoothed.block_size(lower_bound=32, upper_bound=64)
 
     def arrange_q_or_o(input):
         arranged = input.tile((1, 1, BLOCK_SIZE_M, -1))
@@ -60,10 +60,23 @@ def attention(q, k, v):
     o = torch.empty_like(q, dtype=v.dtype)
 
     attention_kernel = ninetoothed.make(
-        arrangement, application, (Tensor(4, constexpr_shape=True) for _ in range(4))
+        arrangement,
+        application,
+        (
+            Tensor(
+                4,
+                shape_options=(
+                    None,
+                    None,
+                    {"constexpr": True},
+                    {"constexpr": True, "upper_bound": 128},
+                ),
+            )
+            for _ in range(4)
+        ),
     )
 
-    attention_kernel(q, k, v, o, BLOCK_SIZE_M=128, BLOCK_SIZE_N=64)
+    attention_kernel(q, k, v, o)
 
     return o
 

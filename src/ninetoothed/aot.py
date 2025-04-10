@@ -36,7 +36,13 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
 
     code_generator = CodeGenerator()
     source_file = code_generator(
-        func, caller=caller, kernel_name=kernel_name, prettify=False
+        func,
+        caller=caller,
+        kernel_name=kernel_name,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        max_num_configs=None,
+        prettify=False,
     )
 
     tensors = code_generator.tensors

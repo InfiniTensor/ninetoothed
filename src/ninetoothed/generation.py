@@ -5,11 +5,20 @@ import functools
 import hashlib
 import inspect
 import itertools
+import json
 import math
+import os
 import pathlib
+import random
+import shutil
 import subprocess
+import tempfile
+import time
+import uuid
 
+import sympy
 import triton
+import triton.language as tl
 
 import ninetoothed.naming as naming
 from ninetoothed.cudaifier import Cudaifier
@@ -19,19 +28,47 @@ from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
 
 CACHE_DIR = pathlib.Path.home() / ".ninetoothed"
+CACHE_DIR.mkdir(exist_ok=True)
 
 
 class CodeGenerator(ast.NodeTransformer):
     def __init__(self):
         super().__init__()
 
-        self._POWER_OF_TWOS = tuple(2**n for n in range(5, 11))
+        cache_file = CACHE_DIR / "code_generator_cache.json"
 
-        self._MIN_PRODUCT = 2**10
+        log2_min_num_elements = 4
 
-        self._MAX_PRODUCT = 2**20
+        if cache_file.exists():
+            with open(cache_file) as f:
+                cache = json.load(f)
 
-    def __call__(self, func, caller, kernel_name, prettify):
+            log2_max_num_elements = cache["log2_max_num_elements"]
+        else:
+            log2_max_num_elements = _determine_log2_max_num_elements_per_block(
+                log2_min_num_elements
+            )
+
+            cache = {"log2_max_num_elements": log2_max_num_elements}
+
+            with open(cache_file, "w") as f:
+                json.dump(cache, f, indent=4)
+                f.write("\n")
+
+        self._min_num_elements = 2**log2_min_num_elements
+
+        self._max_num_elements = 2**log2_max_num_elements
+
+    def __call__(
+        self,
+        func,
+        caller,
+        kernel_name,
+        num_warps,
+        num_stages,
+        max_num_configs,
+        prettify,
+    ):
         def _get_tree(func):
             module = ast.parse(inspect.getsource(inspect.getmodule(func)))
 
@@ -62,6 +99,12 @@ class CodeGenerator(ast.NodeTransformer):
         self.launch_func_name = f"launch_{kernel_name}"
 
         self._caller = caller
+
+        self._num_wraps = num_warps
+
+        self._num_stages = num_stages
+
+        self._max_num_configs = max_num_configs
 
         self._context = inspect.get_annotations(func)
 
@@ -94,9 +137,7 @@ class CodeGenerator(ast.NodeTransformer):
             )
 
         digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
-        cache_dir = CACHE_DIR
-        cache_dir.mkdir(exist_ok=True)
-        cache_file = cache_dir / f"{digest}.py"
+        cache_file = CACHE_DIR / f"{digest}.py"
 
         if not cache_file.exists():
             with open(cache_file, "w", encoding="utf-8") as f:
@@ -111,11 +152,15 @@ class CodeGenerator(ast.NodeTransformer):
     def visit_Module(self, node):
         self.generic_visit(node)
 
-        func_with_auto_tuning = f"{Symbol(self._autotune)}({self._func_def.name})"
+        if self._autotune is not None:
+            func_with_auto_tuning = f"{Symbol(self._autotune)}({self._func_def.name})"
 
-        node.body.append(
-            ast.parse(f"{self._func_name_with_auto_tuning} = {func_with_auto_tuning}")
-        )
+            node.body.append(
+                ast.parse(
+                    f"{self._func_name_with_auto_tuning} = {func_with_auto_tuning}"
+                )
+            )
+
         node.body.append(self._launch)
 
         return node
@@ -137,8 +182,13 @@ class CodeGenerator(ast.NodeTransformer):
     def visit_arguments(self, node):
         self.generic_visit(node)
 
-        names_of_args = [arg.names() - {"ninetoothed"} for arg in self._args]
-        names = functools.reduce(lambda x, y: x | y, names_of_args)
+        symbols = {
+            name.node.id: name
+            for arg in self._args
+            for name in arg.names()
+            if name != "ninetoothed"
+        }
+        names = symbols.keys()
         meta_names = {name for name in names if naming.is_meta(name)}
         non_meta_names = {name for name in names if name not in meta_names}
         non_meta_names |= {
@@ -146,6 +196,8 @@ class CodeGenerator(ast.NodeTransformer):
             for name in non_meta_names
             if naming.is_constexpr(name)
         }
+
+        self._symbols = symbols
 
         non_meta_names = sorted(non_meta_names)
         meta_names = sorted(meta_names)
@@ -161,6 +213,12 @@ class CodeGenerator(ast.NodeTransformer):
         ]
 
         self._autotune = self._generate_autotune(non_meta_names, meta_names)
+
+        if self._autotune is not None:
+            self._func_name = self._func_name_with_auto_tuning
+        else:
+            self._func_name = self._func_def.name
+
         self._func_def.decorator_list = [Symbol("triton.jit").node]
 
         self._launch = self._generate_launch(non_meta_names, meta_names)
@@ -244,12 +302,69 @@ class CodeGenerator(ast.NodeTransformer):
         return isinstance(node, ast.Name) and node.id in self._context
 
     def _generate_autotune(self, params, meta):
-        device = triton.runtime.driver.active.get_current_device()
-        properties = triton.runtime.driver.active.utils.get_device_properties(device)
-        max_shared_mem = properties["max_shared_mem"]
+        inequalities = True
 
-        num_warps = 8
-        num_stages = max_shared_mem // 2**15
+        for arg in self._args:
+            if arg.ndim == 0:
+                continue
+
+            num_elements = sympy.simplify(str(math.prod(arg.innermost().shape)))
+
+            inequalities &= num_elements <= self._max_num_elements
+            inequalities &= num_elements >= self._min_num_elements
+
+        values_of_meta_params = []
+
+        for param in meta:
+            symbol = self._symbols[param]
+
+            values = range(symbol.lower_bound, symbol.upper_bound + 1)
+
+            if symbol.power_of_two:
+                values = tuple(value for value in values if value & (value - 1) == 0)
+            else:
+                values = tuple(values)
+
+            values_of_meta_params.append(values)
+
+        max_values_of_non_meta_params = {}
+
+        for free_symbol in inequalities.free_symbols:
+            symbol_str = str(free_symbol)
+
+            if symbol_str in meta:
+                continue
+
+            symbol = self._symbols[symbol_str]
+
+            max_values_of_non_meta_params[symbol_str] = symbol.upper_bound
+
+        block_size_configs = []
+
+        for values in itertools.product(*values_of_meta_params):
+            config = {param: value for param, value in zip(meta, values)}
+
+            if sympy.logic.simplify_logic(
+                inequalities.subs(config | max_values_of_non_meta_params)
+            ):
+                block_size_configs.append(config)
+
+        if isinstance(self._num_wraps, collections.abc.Iterable):
+            num_warps_configs = self._num_wraps
+        else:
+            num_warps_configs = (self._num_wraps,)
+
+        if isinstance(self._num_stages, collections.abc.Iterable):
+            num_stages_configs = self._num_stages
+        else:
+            num_stages_configs = (self._num_stages,)
+
+        compiler_configs = tuple(
+            {"num_warps": num_warps, "num_stages": num_stages}
+            for num_warps, num_stages in itertools.product(
+                num_warps_configs, num_stages_configs
+            )
+        )
 
         configs = [
             ast.Call(
@@ -260,18 +375,37 @@ class CodeGenerator(ast.NodeTransformer):
                 ),
                 args=[
                     ast.Dict(
-                        keys=[ast.Constant(value=param) for param in meta],
-                        values=[ast.Constant(value=value) for value in values],
+                        keys=[
+                            ast.Constant(value=param)
+                            for param in block_size_config.keys()
+                        ],
+                        values=[
+                            ast.Constant(value=value)
+                            for value in block_size_config.values()
+                        ],
                     )
                 ],
                 keywords=[
-                    ast.keyword(arg="num_warps", value=ast.Constant(value=num_warps)),
-                    ast.keyword(arg="num_stages", value=ast.Constant(value=num_stages)),
+                    ast.keyword(
+                        arg="num_warps",
+                        value=ast.Constant(value=compiler_config["num_warps"]),
+                    ),
+                    ast.keyword(
+                        arg="num_stages",
+                        value=ast.Constant(value=compiler_config["num_stages"]),
+                    ),
                 ],
             )
-            for values in itertools.product(self._POWER_OF_TWOS, repeat=len(meta))
-            if self._MIN_PRODUCT <= math.prod(values) <= self._MAX_PRODUCT
+            for block_size_config, compiler_config in itertools.product(
+                block_size_configs, compiler_configs
+            )
         ]
+
+        if self._max_num_configs is not None and len(configs) > self._max_num_configs:
+            configs = random.sample(configs, k=self._max_num_configs)
+
+        if not configs:
+            return None
 
         return ast.Call(
             func=ast.Attribute(
@@ -358,9 +492,7 @@ class CodeGenerator(ast.NodeTransformer):
                 ast.Expr(
                     ast.Call(
                         func=ast.Subscript(
-                            value=ast.Name(
-                                id=self._func_name_with_auto_tuning, ctx=ast.Load()
-                            ),
+                            value=ast.Name(id=self._func_name, ctx=ast.Load()),
                             slice=self._generate_grid(),
                             ctx=ast.Load(),
                         ),
@@ -994,3 +1126,82 @@ class _FunctionDefFinder(ast.NodeVisitor):
             self.result = node
 
         self.generic_visit(node)
+
+
+def _determine_log2_max_num_elements_per_block(
+    min_exponent, max_exponent=30, num_iterations=3
+):
+    _profile_pseudo_add_kernel(1)
+
+    for n in range(min_exponent, max_exponent + 1):
+        elapsed_time = 0
+
+        for _ in range(num_iterations):
+            elapsed_time += _profile_pseudo_add_kernel(2**n)
+
+        average_elapsed_time = elapsed_time / num_iterations
+
+        if average_elapsed_time >= 1:
+            return n - 1
+
+
+def _profile_pseudo_add_kernel(block_size):
+    cache_dir = triton.runtime.cache.default_cache_dir()
+    os.makedirs(cache_dir, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as backup_dir:
+        backup_path = os.path.join(backup_dir, str(uuid.uuid4()))
+
+        if os.path.exists(backup_path):
+            shutil.rmtree(backup_path)
+
+        shutil.move(cache_dir, backup_path)
+
+        try:
+            start_time = time.time()
+
+            _run_pseudo_add_kernel(block_size)
+
+            end_time = time.time()
+
+            elapsed_time = end_time - start_time
+        finally:
+            if os.path.exists(cache_dir):
+                shutil.rmtree(cache_dir)
+
+            shutil.move(backup_path, cache_dir)
+
+        return elapsed_time
+
+
+def _run_pseudo_add_kernel(block_size):
+    @triton.jit
+    def kernel(a_ptr, b_ptr, c_ptr, num_elements, BLOCK_SIZE: tl.constexpr):
+        pid = tl.program_id(0)
+
+        offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offs < num_elements
+
+        a = tl.load(a_ptr + offs, mask=mask)
+        b = tl.load(b_ptr + offs, mask=mask)
+
+        c = a + b
+
+        tl.store(c_ptr + offs, c, mask=mask)
+
+    num_elements = 0
+    shape = (num_elements,)
+    dtype = tl.float32
+
+    a = Tensor(shape=shape, dtype=dtype)
+    b = Tensor(shape=shape, dtype=dtype)
+    c = Tensor(shape=shape, dtype=dtype)
+
+    def data_ptr():
+        return 0
+
+    a.data_ptr = data_ptr
+    b.data_ptr = data_ptr
+    c.data_ptr = data_ptr
+
+    kernel[(1,)](a, b, c, num_elements, block_size)

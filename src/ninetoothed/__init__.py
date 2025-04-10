@@ -13,12 +13,13 @@ from ninetoothed.dtype import (
 )
 from ninetoothed.jit import jit
 from ninetoothed.make import make
-from ninetoothed.symbol import Symbol
+from ninetoothed.symbol import Symbol, block_size
 from ninetoothed.tensor import Tensor
 
 __all__ = [
     "Symbol",
     "Tensor",
+    "block_size",
     "float16",
     "float32",
     "float64",
