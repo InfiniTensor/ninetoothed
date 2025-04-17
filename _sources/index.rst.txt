@@ -11,5 +11,6 @@ NineToothed Documentation
    :maxdepth: 2
 
    installation
+   basics
    python_api
    visualization

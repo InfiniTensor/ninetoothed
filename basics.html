@@ -1,0 +1,686 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>The Basics &#8212; NineToothed</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="_static/doctools.js?v=9bcbadda"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script async="async" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'basics';</script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Python API" href="python_api.html" />
+    <link rel="prev" title="Installation" href="installation.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="_static/ninetoothed-logo.png" class="logo__image only-light" alt="NineToothed - Home"/>
+    <img src="_static/ninetoothed-logo.png" class="logo__image only-dark pst-js-only" alt="NineToothed - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    The Basics
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="python_api.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="visualization.html">
+    Visualization
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/InfiniTensor/ninetoothed" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    The Basics
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="python_api.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="visualization.html">
+    Visualization
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/InfiniTensor/ninetoothed" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"></div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">The Basics</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="the-basics">
+<h1>The Basics<a class="headerlink" href="#the-basics" title="Link to this heading">#</a></h1>
+<section id="symbols">
+<h2>Symbols<a class="headerlink" href="#symbols" title="Link to this heading">#</a></h2>
+<p>The concept of <strong>symbols</strong> is similar to what is described in the <a class="reference external" href="https://docs.sympy.org/latest/tutorials/intro-tutorial/intro.html">SymPy tutorial</a>. Symbols do not store actual numerical values; instead, they represent symbolic names or symbolic expressions. This allows for performing symbolic mathematical operations.</p>
+<p>In NineToothed, you can create a symbol using the <code class="docutils literal notranslate"><span class="pre">Symbol</span></code> class. For example, in the code below, we first create two symbols named <code class="docutils literal notranslate"><span class="pre">BLOCK_SIZE_M</span></code> and <code class="docutils literal notranslate"><span class="pre">BLOCK_SIZE_N</span></code>, and then perform a multiplication operation on them:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span><span class="w"> </span><span class="nn">ninetoothed</span><span class="w"> </span><span class="kn">import</span> <span class="n">Symbol</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">BLOCK_SIZE_M</span> <span class="o">=</span> <span class="n">Symbol</span><span class="p">(</span><span class="s2">&quot;BLOCK_SIZE_M&quot;</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">BLOCK_SIZE_M</span>
+<span class="go">BLOCK_SIZE_M</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">BLOCK_SIZE_N</span> <span class="o">=</span> <span class="n">Symbol</span><span class="p">(</span><span class="s2">&quot;BLOCK_SIZE_N&quot;</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">BLOCK_SIZE_N</span>
+<span class="go">BLOCK_SIZE_N</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">BLOCK_SIZE_M</span> <span class="o">*</span> <span class="n">BLOCK_SIZE_N</span>
+<span class="go">BLOCK_SIZE_M * BLOCK_SIZE_N</span>
+</pre></div>
+</div>
+</section>
+<section id="symbolic-tensors">
+<h2>Symbolic Tensors<a class="headerlink" href="#symbolic-tensors" title="Link to this heading">#</a></h2>
+<p>Similar to many deep learning frameworks, tensors are a core concept in NineToothed. However, tensors in NineToothed differ slightly from those in other frameworks—they do not store actual data. Instead, they store symbolic expressions in member variables such as <code class="docutils literal notranslate"><span class="pre">shape</span></code> and <code class="docutils literal notranslate"><span class="pre">strides</span></code>. For this reason, we refer to them as <strong>symbolic tensors</strong>.</p>
+<p>In NineToothed, you can create a tensor using the <code class="docutils literal notranslate"><span class="pre">Tensor</span></code> class. As shown in the example below, <code class="docutils literal notranslate"><span class="pre">Tensor(2)</span></code> creates a 2-dimensional tensor—essentially, a matrix. Note that the <code class="docutils literal notranslate"><span class="pre">shape</span></code> member contains symbolic expressions rather than concrete values:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span><span class="w"> </span><span class="nn">ninetoothed</span><span class="w"> </span><span class="kn">import</span> <span class="n">Tensor</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">x</span> <span class="o">=</span> <span class="n">Tensor</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">x</span><span class="o">.</span><span class="n">shape</span>
+<span class="go">(ninetoothed_tensor_0_size_0, ninetoothed_tensor_0_size_1)</span>
+</pre></div>
+</div>
+</section>
+<section id="tensor-oriented-metaprogramming">
+<h2>Tensor-Oriented Metaprogramming<a class="headerlink" href="#tensor-oriented-metaprogramming" title="Link to this heading">#</a></h2>
+<p>Thanks to symbolic tensors, we can perform certain compile-time operations on tensors in NineToothed. These operations are called <strong>meta-operations</strong>, such as <code class="docutils literal notranslate"><span class="pre">tile</span></code>, <code class="docutils literal notranslate"><span class="pre">expand</span></code>, <code class="docutils literal notranslate"><span class="pre">squeeze</span></code>, <code class="docutils literal notranslate"><span class="pre">permute</span></code>, and so on.</p>
+<p>For example, in the following code, we apply the <code class="docutils literal notranslate"><span class="pre">tile</span></code> operation to <code class="docutils literal notranslate"><span class="pre">x</span></code>, which divides <code class="docutils literal notranslate"><span class="pre">x</span></code> into blocks of shape <code class="docutils literal notranslate"><span class="pre">(BLOCK_SIZE_M,</span> <span class="pre">BLOCK_SIZE_N)</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">x_tiled</span> <span class="o">=</span> <span class="n">x</span><span class="o">.</span><span class="n">tile</span><span class="p">((</span><span class="n">BLOCK_SIZE_M</span><span class="p">,</span> <span class="n">BLOCK_SIZE_N</span><span class="p">))</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">x_tiled</span><span class="o">.</span><span class="n">shape</span>
+<span class="go">((ninetoothed_tensor_0_size_0 - (BLOCK_SIZE_M - 1) - 1 + BLOCK_SIZE_M - 1) // BLOCK_SIZE_M + 1, (ninetoothed_tensor_0_size_1 - (BLOCK_SIZE_N - 1) - 1 + BLOCK_SIZE_N - 1) // BLOCK_SIZE_N + 1)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">x_tiled</span><span class="o">.</span><span class="n">dtype</span><span class="o">.</span><span class="n">shape</span>
+<span class="go">(BLOCK_SIZE_M, BLOCK_SIZE_N)</span>
+</pre></div>
+</div>
+<p>We notice that the <code class="docutils literal notranslate"><span class="pre">dtype</span></code> of <code class="docutils literal notranslate"><span class="pre">x_tiled</span></code> also has a <code class="docutils literal notranslate"><span class="pre">shape</span></code> attribute. This is because tensors in NineToothed can be nested—that is, the elements of a tensor can themselves be tensors.</p>
+<p>In other words, during the <code class="docutils literal notranslate"><span class="pre">tile</span></code> operation, we create a two-level tensor: Each element of the outer tensor is itself an inner tensor. To make this easier to understand, let’s walk through a numerical example:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">BLOCK_SIZE_M</span> <span class="o">=</span> <span class="mi">2</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">BLOCK_SIZE_N</span> <span class="o">=</span> <span class="mi">2</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">x</span> <span class="o">=</span> <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">8</span><span class="p">))</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">x_tiled</span> <span class="o">=</span> <span class="n">x</span><span class="o">.</span><span class="n">tile</span><span class="p">((</span><span class="n">BLOCK_SIZE_M</span><span class="p">,</span> <span class="n">BLOCK_SIZE_N</span><span class="p">))</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">x_tiled</span><span class="o">.</span><span class="n">shape</span>
+<span class="go">(2, 4)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">x_tiled</span><span class="o">.</span><span class="n">dtype</span><span class="o">.</span><span class="n">shape</span>
+<span class="go">(2, 2)</span>
+</pre></div>
+</div>
+<p>As shown in the figure below, we’ve tiled the original tensor <code class="docutils literal notranslate"><span class="pre">x</span></code> of shape <code class="docutils literal notranslate"><span class="pre">(4,</span> <span class="pre">8)</span></code> into blocks of shape <code class="docutils literal notranslate"><span class="pre">(2,</span> <span class="pre">2)</span></code> (the inner tensors), resulting in a total of <code class="docutils literal notranslate"><span class="pre">(2,</span> <span class="pre">4)</span></code> such blocks (the outer tensor):</p>
+<img alt="_images/x-tiled.png" src="_images/x-tiled.png" />
+</section>
+<section id="arrange-and-apply-paradigm">
+<h2>Arrange-and-Apply Paradigm<a class="headerlink" href="#arrange-and-apply-paradigm" title="Link to this heading">#</a></h2>
+<p>After introducing meta-operations, you should be able to understand what operations can be performed on individual tensors at compile time. A series of such operations is referred to as <strong>arrangement</strong>. However, this is not enough, as we also need to establish the relationship between multiple parameter tensors.</p>
+<p>Such relationships are managed by the NineToothed compiler: The NineToothed compiler launches programs based on the shape of the outermost tensors of the arranged parameter tensors and maps the second outermost tensors to these programs.</p>
+<p>We can understand this concept using a simple arrangement function:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">arrangement</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">z</span><span class="p">,</span> <span class="n">BLOCK_SIZE</span><span class="o">=</span><span class="n">ninetoothed</span><span class="o">.</span><span class="n">block_size</span><span class="p">()):</span>
+    <span class="k">return</span> <span class="n">x</span><span class="o">.</span><span class="n">tile</span><span class="p">((</span><span class="n">BLOCK_SIZE</span><span class="p">,)),</span> <span class="n">y</span><span class="o">.</span><span class="n">tile</span><span class="p">((</span><span class="n">BLOCK_SIZE</span><span class="p">,)),</span> <span class="n">z</span><span class="o">.</span><span class="n">tile</span><span class="p">((</span><span class="n">BLOCK_SIZE</span><span class="p">,))</span>
+</pre></div>
+</div>
+<p>In this function, we apply the <code class="docutils literal notranslate"><span class="pre">tile</span></code> operation to the vectors <code class="docutils literal notranslate"><span class="pre">x</span></code>, <code class="docutils literal notranslate"><span class="pre">y</span></code>, and <code class="docutils literal notranslate"><span class="pre">z</span></code> to divide each vector into blocks of size <code class="docutils literal notranslate"><span class="pre">BLOCK_SIZE</span></code>. For example, if each vector’s length is <code class="docutils literal notranslate"><span class="pre">16</span></code> and <code class="docutils literal notranslate"><span class="pre">BLOCK_SIZE</span></code> is <code class="docutils literal notranslate"><span class="pre">2</span></code>, each vector can be divided into <code class="docutils literal notranslate"><span class="pre">8</span></code> blocks, with each block having a length of <code class="docutils literal notranslate"><span class="pre">2</span></code>. The arranged <code class="docutils literal notranslate"><span class="pre">x</span></code>, <code class="docutils literal notranslate"><span class="pre">y</span></code>, and <code class="docutils literal notranslate"><span class="pre">z</span></code> would then look as follows:</p>
+<img alt="_images/x-arranged.png" src="_images/x-arranged.png" />
+<img alt="_images/y-arranged.png" src="_images/y-arranged.png" />
+<img alt="_images/z-arranged.png" src="_images/z-arranged.png" />
+<p>Based on this arrangement, the NineToothed compiler will launch <code class="docutils literal notranslate"><span class="pre">8</span></code> programs and map the elements of the outermost tensors of the arranged <code class="docutils literal notranslate"><span class="pre">x</span></code>, <code class="docutils literal notranslate"><span class="pre">y</span></code>, and <code class="docutils literal notranslate"><span class="pre">z</span></code> (i.e., the second outermost tensors) to these <code class="docutils literal notranslate"><span class="pre">8</span></code> programs.</p>
+<p>Now that we have these mappings, we can launch the programs accordingly. However, we are still one step away from fully implementing an algorithm, because we have not defined what each program should do. In other words, we need to define how to apply the arranged tensors. In NineToothed, this can be done by defining an <strong>application</strong> function.</p>
+<p>For example, to define vector addition, we can create the following application function:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">application</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">z</span><span class="p">):</span>
+    <span class="n">z</span> <span class="o">=</span> <span class="n">x</span> <span class="o">+</span> <span class="n">y</span>
+</pre></div>
+</div>
+<p>The logic of the code is simple: It adds <code class="docutils literal notranslate"><span class="pre">x</span></code> and <code class="docutils literal notranslate"><span class="pre">y</span></code> and stores the result in <code class="docutils literal notranslate"><span class="pre">z</span></code>. However, it is important to note that the parameters of the application function are the elements of the outermost tensors of the arranged parameter tensors (i.e., the second outermost tensors), not the tensors themselves. That is, based on the above assumptions, <code class="docutils literal notranslate"><span class="pre">x</span></code>, <code class="docutils literal notranslate"><span class="pre">y</span></code>, and <code class="docutils literal notranslate"><span class="pre">z</span></code> here represent blocks of length <code class="docutils literal notranslate"><span class="pre">2</span></code>, not the original tensors of length <code class="docutils literal notranslate"><span class="pre">16</span></code>.</p>
+<p>At this point, we have defined both the arrangement and application functions. The remaining task is to integrate them into a compute kernel. In NineToothed, we can use <code class="docutils literal notranslate"><span class="pre">ninetoothed.make</span></code> to achieve this:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">kernel</span> <span class="o">=</span> <span class="n">ninetoothed</span><span class="o">.</span><span class="n">make</span><span class="p">(</span><span class="n">arrangement</span><span class="p">,</span> <span class="n">application</span><span class="p">,</span> <span class="p">(</span><span class="n">Tensor</span><span class="p">(</span><span class="mi">1</span><span class="p">),</span> <span class="n">Tensor</span><span class="p">(</span><span class="mi">1</span><span class="p">),</span> <span class="n">Tensor</span><span class="p">(</span><span class="mi">1</span><span class="p">)))</span>
+</pre></div>
+</div>
+<p>This code means that we want to arrange three 1-dimensional tensors (vectors) according to the <code class="docutils literal notranslate"><span class="pre">arrangement</span></code> function, and apply the arranged tensors using the <code class="docutils literal notranslate"><span class="pre">application</span></code> function to form a compute kernel <code class="docutils literal notranslate"><span class="pre">kernel</span></code>. The paradigm of constructing a compute kernel this way is called the <strong>arrange-and-apply paradigm</strong>.</p>
+<p>We can invoke <code class="docutils literal notranslate"><span class="pre">kernel</span></code> as follows:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+
+<span class="n">dtype</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">float16</span>
+<span class="n">device</span> <span class="o">=</span> <span class="s2">&quot;cuda&quot;</span>
+
+<span class="n">x</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">((</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">y</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">((</span><span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">6</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+
+<span class="n">z</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty_like</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+<span class="n">kernel</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">z</span><span class="p">)</span>
+
+<span class="n">reference</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">((</span><span class="mi">5</span><span class="p">,</span> <span class="mi">7</span><span class="p">,</span> <span class="mi">9</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="k">assert</span> <span class="n">torch</span><span class="o">.</span><span class="n">allclose</span><span class="p">(</span><span class="n">z</span><span class="p">,</span> <span class="n">reference</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>As shown, when we call <code class="docutils literal notranslate"><span class="pre">kernel</span></code>, we do not provide an actual value for <code class="docutils literal notranslate"><span class="pre">BLOCK_SIZE</span></code>. This is because when constructing <code class="docutils literal notranslate"><span class="pre">BLOCK_SIZE</span></code>, we used <code class="docutils literal notranslate"><span class="pre">ninetoothed.block_size</span></code>, which represents that we want to use the configurations generated by the NineToothed compiler for auto-tuning. If we want to provide a value manually (for example, during debugging), we can directly assign a specific value as follows:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">arrangement</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">z</span><span class="p">,</span> <span class="n">BLOCK_SIZE</span><span class="o">=</span><span class="mi">1024</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">x</span><span class="o">.</span><span class="n">tile</span><span class="p">((</span><span class="n">BLOCK_SIZE</span><span class="p">,)),</span> <span class="n">y</span><span class="o">.</span><span class="n">tile</span><span class="p">((</span><span class="n">BLOCK_SIZE</span><span class="p">,)),</span> <span class="n">z</span><span class="o">.</span><span class="n">tile</span><span class="p">((</span><span class="n">BLOCK_SIZE</span><span class="p">,))</span>
+</pre></div>
+</div>
+</section>
+<section id="indexing-and-iteration">
+<h2>Indexing and Iteration<a class="headerlink" href="#indexing-and-iteration" title="Link to this heading">#</a></h2>
+<p>Through the vector addition example, we got a brief understanding of how to develop compute kernels using NineToothed. In that example, the parameter tensors were arranged into two-level tensors. However, tensors in NineToothed are not limited to just two levels—they can be three-level or even more. Only the outermost level of an arranged tensor is used to launch programs. In other words, tensors with more than two levels are hierarchical and can be indexed and iterated over within the application function.</p>
+<p>Now, let’s implement a matrix multiplication kernel to better understand indexing and iteration in NineToothed, as well as deepen our understanding of the arrange-and-apply paradigm.</p>
+<p>Before we begin implementation, we first need to understand the algorithm we want to realize. Here’s a diagram for the algorithm:</p>
+<img alt="_images/tiled-matrix-multiplication.png" src="_images/tiled-matrix-multiplication.png" />
+<p>In simple terms, we tile three matrices into blocks. For each block in <span class="math notranslate nohighlight">\(C\)</span>, we need to iterate over the corresponding row of blocks of <span class="math notranslate nohighlight">\(A\)</span> and the corresponding column of blocks of <span class="math notranslate nohighlight">\(B\)</span>. Then, for each iteration, we need to perform a small matrix multiplication between the blocks of <span class="math notranslate nohighlight">\(A\)</span> and <span class="math notranslate nohighlight">\(B\)</span>, and accumulate the result into the block of <span class="math notranslate nohighlight">\(C\)</span>.</p>
+<p>With this algorithm in mind, let’s begin the implementation, starting with the arrangement phase:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">BLOCK_SIZE_M</span> <span class="o">=</span> <span class="n">ninetoothed</span><span class="o">.</span><span class="n">block_size</span><span class="p">()</span>
+<span class="n">BLOCK_SIZE_N</span> <span class="o">=</span> <span class="n">ninetoothed</span><span class="o">.</span><span class="n">block_size</span><span class="p">()</span>
+<span class="n">BLOCK_SIZE_K</span> <span class="o">=</span> <span class="n">ninetoothed</span><span class="o">.</span><span class="n">block_size</span><span class="p">()</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">arrangement</span><span class="p">(</span><span class="nb">input</span><span class="p">,</span> <span class="n">other</span><span class="p">,</span> <span class="n">output</span><span class="p">):</span>
+    <span class="n">output_arranged</span> <span class="o">=</span> <span class="n">output</span><span class="o">.</span><span class="n">tile</span><span class="p">((</span><span class="n">BLOCK_SIZE_M</span><span class="p">,</span> <span class="n">BLOCK_SIZE_N</span><span class="p">))</span>
+
+    <span class="n">input_arranged</span> <span class="o">=</span> <span class="nb">input</span><span class="o">.</span><span class="n">tile</span><span class="p">((</span><span class="n">BLOCK_SIZE_M</span><span class="p">,</span> <span class="n">BLOCK_SIZE_K</span><span class="p">))</span>
+    <span class="n">input_arranged</span> <span class="o">=</span> <span class="n">input_arranged</span><span class="o">.</span><span class="n">tile</span><span class="p">((</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">))</span>
+    <span class="n">input_arranged</span> <span class="o">=</span> <span class="n">input_arranged</span><span class="o">.</span><span class="n">expand</span><span class="p">((</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">output_arranged</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]))</span>
+    <span class="n">input_arranged</span><span class="o">.</span><span class="n">dtype</span> <span class="o">=</span> <span class="n">input_arranged</span><span class="o">.</span><span class="n">dtype</span><span class="o">.</span><span class="n">squeeze</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+
+    <span class="n">other_arranged</span> <span class="o">=</span> <span class="n">other</span><span class="o">.</span><span class="n">tile</span><span class="p">((</span><span class="n">BLOCK_SIZE_K</span><span class="p">,</span> <span class="n">BLOCK_SIZE_N</span><span class="p">))</span>
+    <span class="n">other_arranged</span> <span class="o">=</span> <span class="n">other_arranged</span><span class="o">.</span><span class="n">tile</span><span class="p">((</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
+    <span class="n">other_arranged</span> <span class="o">=</span> <span class="n">other_arranged</span><span class="o">.</span><span class="n">expand</span><span class="p">((</span><span class="n">output_arranged</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="o">-</span><span class="mi">1</span><span class="p">))</span>
+    <span class="n">other_arranged</span><span class="o">.</span><span class="n">dtype</span> <span class="o">=</span> <span class="n">other_arranged</span><span class="o">.</span><span class="n">dtype</span><span class="o">.</span><span class="n">squeeze</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">input_arranged</span><span class="p">,</span> <span class="n">other_arranged</span><span class="p">,</span> <span class="n">output_arranged</span>
+</pre></div>
+</div>
+<p>In this code, we first define the symbols <code class="docutils literal notranslate"><span class="pre">BLOCK_SIZE_M</span></code>, <code class="docutils literal notranslate"><span class="pre">BLOCK_SIZE_N</span></code>, and <code class="docutils literal notranslate"><span class="pre">BLOCK_SIZE_K</span></code>, which represent the shapes of the blocks. We then tile <code class="docutils literal notranslate"><span class="pre">output</span></code> into blocks of shape <code class="docutils literal notranslate"><span class="pre">(BLOCK_SIZE_M,</span> <span class="pre">BLOCK_SIZE_N)</span></code>, <code class="docutils literal notranslate"><span class="pre">input</span></code> into <code class="docutils literal notranslate"><span class="pre">(BLOCK_SIZE_M,</span> <span class="pre">BLOCK_SIZE_K)</span></code>, and <code class="docutils literal notranslate"><span class="pre">other</span></code> into <code class="docutils literal notranslate"><span class="pre">(BLOCK_SIZE_K,</span> <span class="pre">BLOCK_SIZE_N)</span></code>:</p>
+<img alt="_images/input-arranged-0.png" src="_images/input-arranged-0.png" />
+<img alt="_images/other-arranged-0.png" src="_images/other-arranged-0.png" />
+<img alt="_images/output-arranged-0.png" src="_images/output-arranged-0.png" />
+<p>We notice that simple arrangement is not enough for matrix multiplication. According to the diagram, each block in <code class="docutils literal notranslate"><span class="pre">output</span></code> corresponds to a row of blocks in <code class="docutils literal notranslate"><span class="pre">input</span></code> and a column of blocks in <code class="docutils literal notranslate"><span class="pre">other</span></code>. So we need to further tile <code class="docutils literal notranslate"><span class="pre">input</span></code> row-wise and <code class="docutils literal notranslate"><span class="pre">other</span></code> column-wise:</p>
+<img alt="_images/input-arranged-1.png" src="_images/input-arranged-1.png" />
+<img alt="_images/other-arranged-1.png" src="_images/other-arranged-1.png" />
+<p>But we’re still not done. Remember how the NineToothed compiler establishes the relationship between multiple parameter tensors?</p>
+<blockquote>
+<div><p>The NineToothed compiler launches programs based on the shape of the outermost tensors of the arranged parameter tensors and maps the second outermost tensors to these programs.</p>
+</div></blockquote>
+<p>Why is this important? Because it implies a crucial rule: The outermost tensors of the arranged parameter tensors must have the same shape.</p>
+<p>Currently, the shapes of the outermost tensors of the arranged parameter tensors are <code class="docutils literal notranslate"><span class="pre">(4,</span> <span class="pre">1)</span></code>, <code class="docutils literal notranslate"><span class="pre">(1,</span> <span class="pre">4)</span></code>, and <code class="docutils literal notranslate"><span class="pre">(4,</span> <span class="pre">4)</span></code>—clearly inconsistent. This suggests that the arrangement is incorrect or incomplete. From the diagram, we know we need to align each row of blocks of <code class="docutils literal notranslate"><span class="pre">input</span></code> with each column of blocks of <code class="docutils literal notranslate"><span class="pre">other</span></code>. We can achieve this via <code class="docutils literal notranslate"><span class="pre">expand</span></code>, horizontally expanding <code class="docutils literal notranslate"><span class="pre">input</span></code> and vertically expanding <code class="docutils literal notranslate"><span class="pre">other</span></code> to match the shape of <code class="docutils literal notranslate"><span class="pre">output</span></code>:</p>
+<img alt="_images/input-arranged-2.png" src="_images/input-arranged-2.png" />
+<img alt="_images/other-arranged-2.png" src="_images/other-arranged-2.png" />
+<p>Now, the outermost tensors of the arranged parameter tensors have matching shapes. Technically, arrangement is complete and we could proceed to write the application function. However, we notice that the row of blocks of <code class="docutils literal notranslate"><span class="pre">input</span></code> and the column of blocks of <code class="docutils literal notranslate"><span class="pre">other</span></code> are two-dimensional, and their shapes are of the form <code class="docutils literal notranslate"><span class="pre">(1,</span> <span class="pre">...)</span></code> and <code class="docutils literal notranslate"><span class="pre">(...,</span> <span class="pre">1)</span></code> respectively. In other words, if we do not perform additional operations, the way to index the row of blocks and the column of blocks would be <code class="docutils literal notranslate"><span class="pre">input[0,</span> <span class="pre">k]</span></code> and <code class="docutils literal notranslate"><span class="pre">other[k,</span> <span class="pre">0]</span></code>. If we want to find the range of <code class="docutils literal notranslate"><span class="pre">k</span></code> based on <code class="docutils literal notranslate"><span class="pre">input</span></code>, we would need to use <code class="docutils literal notranslate"><span class="pre">input.shape[1]</span></code>. But we know that dimensions of size <code class="docutils literal notranslate"><span class="pre">1</span></code> can be safely removed here. That’s why we add <code class="docutils literal notranslate"><span class="pre">squeeze</span></code>:</p>
+<img alt="_images/input-arranged-3.png" src="_images/input-arranged-3.png" />
+<img alt="_images/other-arranged-3.png" src="_images/other-arranged-3.png" />
+<p>With this, we can now index the row of blocks and the column of blocks with <code class="docutils literal notranslate"><span class="pre">input[k]</span></code> and <code class="docutils literal notranslate"><span class="pre">other[k]</span></code>, and use <code class="docutils literal notranslate"><span class="pre">input.shape[0]</span></code> to determine the range of <code class="docutils literal notranslate"><span class="pre">k</span></code>.</p>
+<p>At this point, the arrangement phase is complete. The final arrangement result is:</p>
+<img alt="_images/input-arranged-3.png" src="_images/input-arranged-3.png" />
+<img alt="_images/other-arranged-3.png" src="_images/other-arranged-3.png" />
+<img alt="_images/output-arranged-0.png" src="_images/output-arranged-0.png" />
+<p>Now let’s look at the application function:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">application</span><span class="p">(</span><span class="nb">input</span><span class="p">,</span> <span class="n">other</span><span class="p">,</span> <span class="n">output</span><span class="p">):</span>
+    <span class="n">accumulator</span> <span class="o">=</span> <span class="n">ntl</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">output</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">ntl</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+
+    <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">input</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]):</span>
+        <span class="n">accumulator</span> <span class="o">+=</span> <span class="n">ntl</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="nb">input</span><span class="p">[</span><span class="n">k</span><span class="p">],</span> <span class="n">other</span><span class="p">[</span><span class="n">k</span><span class="p">])</span>
+
+    <span class="n">output</span> <span class="o">=</span> <span class="n">accumulator</span>
+</pre></div>
+</div>
+<p>Within the function body, we first define an <code class="docutils literal notranslate"><span class="pre">accumulator</span></code> to accumulate intermediate results. Then, we iterate over the row of blocks of <code class="docutils literal notranslate"><span class="pre">input</span></code> and the column of blocks of <code class="docutils literal notranslate"><span class="pre">other</span></code>, and accumulate the results of small matrix multiplications into the <code class="docutils literal notranslate"><span class="pre">accumulator</span></code>. Finally, we write the <code class="docutils literal notranslate"><span class="pre">accumulator</span></code> into the corresponding block of <code class="docutils literal notranslate"><span class="pre">output</span></code>. Since this happens on each block of <code class="docutils literal notranslate"><span class="pre">output</span></code>, the overall matrix multiplication is completed.</p>
+<p>Just like in the vector addition example, after defining <code class="docutils literal notranslate"><span class="pre">arrangement</span></code> and <code class="docutils literal notranslate"><span class="pre">application</span></code>, we can integrate them using <code class="docutils literal notranslate"><span class="pre">ninetoothed.make</span></code> to build a kernel:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">kernel</span> <span class="o">=</span> <span class="n">ninetoothed</span><span class="o">.</span><span class="n">make</span><span class="p">(</span><span class="n">arrangement</span><span class="p">,</span> <span class="n">application</span><span class="p">,</span> <span class="p">(</span><span class="n">Tensor</span><span class="p">(</span><span class="mi">2</span><span class="p">),</span> <span class="n">Tensor</span><span class="p">(</span><span class="mi">2</span><span class="p">),</span> <span class="n">Tensor</span><span class="p">(</span><span class="mi">2</span><span class="p">)))</span>
+</pre></div>
+</div>
+<p>The kernel can be invoked like this:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+
+<span class="n">dtype</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">float16</span>
+<span class="n">device</span> <span class="o">=</span> <span class="s2">&quot;cuda&quot;</span>
+
+<span class="nb">input</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(((</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">)),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">other</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(((</span><span class="mi">5</span><span class="p">,</span> <span class="mi">6</span><span class="p">),</span> <span class="p">(</span><span class="mi">7</span><span class="p">,</span> <span class="mi">8</span><span class="p">)),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+
+<span class="n">output</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">((</span><span class="nb">input</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">other</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">kernel</span><span class="p">(</span><span class="nb">input</span><span class="p">,</span> <span class="n">other</span><span class="p">,</span> <span class="n">output</span><span class="p">)</span>
+
+<span class="n">reference</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(((</span><span class="mi">19</span><span class="p">,</span> <span class="mi">22</span><span class="p">),</span> <span class="p">(</span><span class="mi">43</span><span class="p">,</span> <span class="mi">50</span><span class="p">)),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="k">assert</span> <span class="n">torch</span><span class="o">.</span><span class="n">allclose</span><span class="p">(</span><span class="n">output</span><span class="p">,</span> <span class="n">reference</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="installation.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Installation</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="python_api.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Python API</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#symbols">Symbols</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#symbolic-tensors">Symbolic Tensors</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tensor-oriented-metaprogramming">Tensor-Oriented Metaprogramming</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrange-and-apply-paradigm">Arrange-and-Apply Paradigm</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#indexing-and-iteration">Indexing and Iteration</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+  <div role="note" aria-label="source link">
+    <h3>This Page</h3>
+    <ul class="this-page-menu">
+      <li><a href="_sources/basics.rst.txt"
+            rel="nofollow">Show Source</a></li>
+    </ul>
+   </div></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2024, NineToothed Contributors.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.1.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
