@@ -3,6 +3,18 @@
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath("."))
+
+from visualize import (
+    visualize_add,
+    visualize_mm,
+    visualize_tiled_matrix_multiplication,
+    visualize_x_tiled,
+)
+
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
@@ -36,3 +48,13 @@ html_theme_options = {
         }
     ]
 }
+
+os.makedirs("generated", exist_ok=True)
+
+visualize_x_tiled(4, 8, 2, 2)
+
+visualize_add(16, 2)
+
+visualize_tiled_matrix_multiplication(8, 8, 8, 2, 2, 2)
+
+visualize_mm(8, 8, 8, 2, 2, 2)

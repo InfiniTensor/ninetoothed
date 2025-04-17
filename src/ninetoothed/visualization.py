@@ -10,8 +10,6 @@ def visualize(tensor, color=None, save_path=None):
     :param color: The color to be used for visualization.
     :param save_path: The path where the visualization should be saved.
     """
-    outline_width = 0.1
-    plt.rcParams["lines.linewidth"] = 72 * outline_width
 
     if color is None:
         color = f"C{visualize.count}"
@@ -20,6 +18,24 @@ def visualize(tensor, color=None, save_path=None):
 
     width = max_pos_y + 1
     height = max_pos_x + 1
+
+    _, ax = _prepare_figure_and_axes(width, height)
+
+    _visualize_tensor(ax, tensor, 0, 0, color)
+
+    plt.savefig(save_path, transparent=True, bbox_inches="tight", pad_inches=0)
+
+    plt.close()
+
+    visualize.count += 1
+
+
+visualize.count = 0
+
+
+def _prepare_figure_and_axes(width, height):
+    outline_width = 0.1
+    plt.rcParams["lines.linewidth"] = 72 * outline_width
 
     fig = plt.figure(figsize=(width + outline_width, height + outline_width))
 
@@ -41,16 +57,7 @@ def visualize(tensor, color=None, save_path=None):
     plt.xlim((-half_outline_width, width + half_outline_width))
     plt.ylim((-half_outline_width, height + half_outline_width))
 
-    _visualize_tensor(ax, tensor, 0, 0, color)
-
-    plt.savefig(save_path, transparent=True, bbox_inches="tight", pad_inches=0)
-
-    plt.close()
-
-    visualize.count += 1
-
-
-visualize.count = 0
+    return fig, ax
 
 
 def _visualize_tensor(ax, tensor, x, y, color, level_spacing=4):
