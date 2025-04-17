@@ -66,7 +66,7 @@ In other words, during the ``tile`` operation, we create a two-level tensor: Eac
 
 As shown in the figure below, we've tiled the original tensor ``x`` of shape ``(4, 8)`` into blocks of shape ``(2, 2)`` (the inner tensors), resulting in a total of ``(2, 4)`` such blocks (the outer tensor):
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/x-tiled.png
+.. image:: generated/x-tiled.png
 
 Arrange-and-Apply Paradigm
 --------------------------
@@ -84,11 +84,11 @@ We can understand this concept using a simple arrangement function:
 
 In this function, we apply the ``tile`` operation to the vectors ``x``, ``y``, and ``z`` to divide each vector into blocks of size ``BLOCK_SIZE``. For example, if each vector's length is ``16`` and ``BLOCK_SIZE`` is ``2``, each vector can be divided into ``8`` blocks, with each block having a length of ``2``. The arranged ``x``, ``y``, and ``z`` would then look as follows:
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/x-arranged.png
+.. image:: generated/x-arranged.png
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/y-arranged.png
+.. image:: generated/y-arranged.png
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/z-arranged.png
+.. image:: generated/z-arranged.png
 
 Based on this arrangement, the NineToothed compiler will launch ``8`` programs and map the elements of the outermost tensors of the arranged ``x``, ``y``, and ``z`` (i.e., the second outermost tensors) to these ``8`` programs.
 
@@ -145,7 +145,7 @@ Now, let's implement a matrix multiplication kernel to better understand indexin
 
 Before we begin implementation, we first need to understand the algorithm we want to realize. Here's a diagram for the algorithm:
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/triton/images/tiled-matmul.png
+.. image:: generated/tiled-matrix-multiplication.png
 
 In simple terms, we tile three matrices into blocks. For each block in :math:`C`, we need to iterate over the corresponding row of blocks of :math:`A` and the corresponding column of blocks of :math:`B`. Then, for each iteration, we need to perform a small matrix multiplication between the blocks of :math:`A` and :math:`B`, and accumulate the result into the block of :math:`C`.
 
@@ -175,17 +175,17 @@ With this algorithm in mind, let's begin the implementation, starting with the a
 
 In this code, we first define the symbols ``BLOCK_SIZE_M``, ``BLOCK_SIZE_N``, and ``BLOCK_SIZE_K``, which represent the shapes of the blocks. We then tile ``output`` into blocks of shape ``(BLOCK_SIZE_M, BLOCK_SIZE_N)``, ``input`` into ``(BLOCK_SIZE_M, BLOCK_SIZE_K)``, and ``other`` into ``(BLOCK_SIZE_K, BLOCK_SIZE_N)``:
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/input-arranged-0.png
+.. image:: generated/input-arranged-0.png
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/other-arranged-0.png
+.. image:: generated/other-arranged-0.png
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/output-arranged-0.png
+.. image:: generated/output-arranged-0.png
 
 We notice that simple arrangement is not enough for matrix multiplication. According to the diagram, each block in ``output`` corresponds to a row of blocks in ``input`` and a column of blocks in ``other``. So we need to further tile ``input`` row-wise and ``other`` column-wise:
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/input-arranged-1.png
+.. image:: generated/input-arranged-1.png
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/other-arranged-1.png
+.. image:: generated/other-arranged-1.png
 
 But we're still not done. Remember how the NineToothed compiler establishes the relationship between multiple parameter tensors?
 
@@ -195,25 +195,25 @@ Why is this important? Because it implies a crucial rule: The outermost tensors 
 
 Currently, the shapes of the outermost tensors of the arranged parameter tensors are ``(4, 1)``, ``(1, 4)``, and ``(4, 4)``—clearly inconsistent. This suggests that the arrangement is incorrect or incomplete. From the diagram, we know we need to align each row of blocks of ``input`` with each column of blocks of ``other``. We can achieve this via ``expand``, horizontally expanding ``input`` and vertically expanding ``other`` to match the shape of ``output``:
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/input-arranged-2.png
+.. image:: generated/input-arranged-2.png
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/other-arranged-2.png
+.. image:: generated/other-arranged-2.png
 
 Now, the outermost tensors of the arranged parameter tensors have matching shapes. Technically, arrangement is complete and we could proceed to write the application function. However, we notice that the row of blocks of ``input`` and the column of blocks of ``other`` are two-dimensional, and their shapes are of the form ``(1, ...)`` and ``(..., 1)`` respectively. In other words, if we do not perform additional operations, the way to index the row of blocks and the column of blocks would be ``input[0, k]`` and ``other[k, 0]``. If we want to find the range of ``k`` based on ``input``, we would need to use ``input.shape[1]``. But we know that dimensions of size ``1`` can be safely removed here. That's why we add ``squeeze``:
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/input-arranged-3.png
+.. image:: generated/input-arranged-3.png
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/other-arranged-3.png
+.. image:: generated/other-arranged-3.png
 
 With this, we can now index the row of blocks and the column of blocks with ``input[k]`` and ``other[k]``, and use ``input.shape[0]`` to determine the range of ``k``.
 
 At this point, the arrangement phase is complete. The final arrangement result is:
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/input-arranged-3.png
+.. image:: generated/input-arranged-3.png
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/other-arranged-3.png
+.. image:: generated/other-arranged-3.png
 
-.. image:: https://raw.githubusercontent.com/InfiniTensor/resources/refs/heads/master/ninetoothed/images/output-arranged-0.png
+.. image:: generated/output-arranged-0.png
 
 Now let's look at the application function:
 
