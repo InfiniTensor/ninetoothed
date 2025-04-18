@@ -12,11 +12,11 @@ from tests.skippers import skip_if_cuda_not_available, skip_if_float8_e5m2_not_s
 def arrangement(input, mat1, mat2, beta, alpha, output):
     _, _, input_arranged = matmul.arrangement(mat1, mat2, input)
 
-    mat1_arrange, mat2_arranged, output_arranged = matmul.arrangement(
+    mat1_arranged, mat2_arranged, output_arranged = matmul.arrangement(
         mat1, mat2, output
     )
 
-    return input_arranged, mat1_arrange, mat2_arranged, beta, alpha, output_arranged
+    return input_arranged, mat1_arranged, mat2_arranged, beta, alpha, output_arranged
 
 
 def application(input, mat1, mat2, beta, alpha, output):
