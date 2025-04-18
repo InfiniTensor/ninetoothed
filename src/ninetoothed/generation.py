@@ -19,6 +19,7 @@ import uuid
 import sympy
 import triton
 import triton.language as tl
+from triton.language.extra import libdevice
 
 import ninetoothed.naming as naming
 from ninetoothed.cudaifier import Cudaifier
@@ -978,6 +979,9 @@ class _Inliner(ast.NodeTransformer):
         func_def = _find_function_definition(source)
 
         if func_def is None:
+            return None, []
+
+        if inspect.getmodule(func) is libdevice:
             return None, []
 
         collector = _ImportCollector()

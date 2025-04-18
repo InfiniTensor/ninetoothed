@@ -1,6 +1,10 @@
 import ast
 
+from triton.language.extra import libdevice
+
 from ninetoothed.symbol import Symbol
+
+__all__ = ["libdevice"]
 
 LANGUAGE = "ninetoothed.language"
 
