@@ -1,8 +1,8 @@
 import torch
-from triton.language.extra import libdevice
 
 import ninetoothed
 from ninetoothed import Tensor, block_size
+from ninetoothed.language import libdevice
 from tests.skippers import skip_if_cuda_not_available
 
 
