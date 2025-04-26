@@ -254,6 +254,9 @@ class CodeGenerator(ast.NodeTransformer):
         if isinstance(value, Tensor):
             attr = getattr(value, node.attr)
 
+            if node.attr == "dtype" and attr is None:
+                return Symbol(f"{value.source.pointer_string()}.type.element_ty").node
+
             if isinstance(attr, Tensor):
                 return attr
 
