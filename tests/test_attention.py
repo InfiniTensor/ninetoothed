@@ -93,6 +93,18 @@ class TestCUDA:
         cls.k = torch.randn(shape, device="cuda")
         cls.v = torch.randn(shape, device="cuda")
 
+    def test_fp32(self):
+        q = type(self).q.to(torch.float32)
+        k = type(self).k.to(torch.float32)
+        v = type(self).v.to(torch.float32)
+
+        assert torch.allclose(
+            attention(q, k, v),
+            F.scaled_dot_product_attention(q, k, v, scale=1),
+            atol=0.01,
+            rtol=0.01,
+        )
+
     def test_fp16(self):
         q = type(self).q.to(torch.float16)
         k = type(self).k.to(torch.float16)
