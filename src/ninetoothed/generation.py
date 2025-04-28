@@ -243,13 +243,24 @@ class CodeGenerator(ast.NodeTransformer):
         return node
 
     def visit_Attribute(self, node):
-        if self._in_context(node.value):
-            value = self._context[node.value.id]
+        value = node.value
 
-            if isinstance(value, Tensor):
-                inner = value.dtype
+        if isinstance(value, ast.Attribute):
+            value = self.visit_Attribute(value)
 
-                return Symbol(getattr(inner, node.attr)).node
+        if self._in_context(value):
+            value = self._context[value.id].dtype
+
+        if isinstance(value, Tensor):
+            attr = getattr(value, node.attr)
+
+            if node.attr == "dtype" and attr is None:
+                return Symbol(f"{value.source.pointer_string()}.type.element_ty").node
+
+            if isinstance(attr, Tensor):
+                return attr
+
+            return Symbol(attr).node
 
         self.generic_visit(node)
 

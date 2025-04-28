@@ -34,7 +34,7 @@ def arrangement(q, k, v, o):
 
 
 def application(q, k, v, o):
-    q_loaded = (q * 1.44269504089).to(ntl.float16)
+    q_loaded = (q * 1.44269504089).to(q.dtype)
 
     acc = ntl.zeros((q.shape[-2], q.shape[-1]), dtype=ntl.float32)
     l_i = ntl.full((q.shape[-2],), 1, dtype=ntl.float32)
@@ -48,7 +48,7 @@ def application(q, k, v, o):
         l_ij = ntl.sum(p, 1)
 
         alpha = ntl.exp2(m_i - m_ij)
-        acc = acc * alpha[:, None] + ntl.dot(p.to(ntl.float16), v[i])
+        acc = acc * alpha[:, None] + ntl.dot(p.to(v[i].dtype), v[i])
         m_i = m_ij
         l_i = l_i * alpha + l_ij
 
@@ -92,6 +92,18 @@ class TestCUDA:
         cls.q = torch.randn(shape, device="cuda")
         cls.k = torch.randn(shape, device="cuda")
         cls.v = torch.randn(shape, device="cuda")
+
+    def test_fp32(self):
+        q = type(self).q.to(torch.float32)
+        k = type(self).k.to(torch.float32)
+        v = type(self).v.to(torch.float32)
+
+        assert torch.allclose(
+            attention(q, k, v),
+            F.scaled_dot_product_attention(q, k, v, scale=1),
+            atol=0.01,
+            rtol=0.01,
+        )
 
     def test_fp16(self):
         q = type(self).q.to(torch.float16)
