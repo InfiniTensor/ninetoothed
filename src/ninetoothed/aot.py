@@ -91,7 +91,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
 
     c_header_file_name = f"{kernel_name}.{signature_hash}.h"
     c_header_file = output_contents[c_header_file_name]
-    c_header_file = f"{c_header_file}\n{unparser.header};\n"
+    c_header_file = f'{c_header_file}\n#ifdef __cplusplus\nextern "C" {unparser.header};\n#else\n{unparser.header};\n#endif\n'
     c_header_file = c_header_file.replace("<stdint.h>", f'"{_HEADER_PATH}"')
     output_contents[c_header_file_name] = c_header_file
 
