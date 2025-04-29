@@ -105,6 +105,10 @@ typedef struct {
     uint64_t *shape;
     int64_t *strides;
 } NineToothedTensor;
+
+typedef void *NineToothedStream;
+
+typedef int NineToothedResult;
 """
 
 _HEADER_PATH = CACHE_DIR / "ninetoothed.h"
@@ -135,9 +139,9 @@ class _Unparser:
         return f"return {self._generic_unparse(call)};"
 
     def _unparse_FunctionDef(self, node):
-        params = ["CUstream stream"]
+        params = ["NineToothedStream stream"]
         params += [f"NineToothedTensor {arg.arg}" for arg in node.args.args]
-        header = f"CUresult {node.name}({', '.join(params)})"
+        header = f"NineToothedResult {node.name}({', '.join(params)})"
 
         self.header = header
 
