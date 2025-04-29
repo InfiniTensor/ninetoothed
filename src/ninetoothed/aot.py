@@ -31,7 +31,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
 
     _HEADER_PATH.parent.mkdir(exist_ok=True)
 
-    if not _HEADER_PATH.exists():
+    if not _HEADER_PATH.exists() or _HEADER_PATH.read_text() != _HEADER_CONTENT:
         _HEADER_PATH.write_text(_HEADER_CONTENT)
 
     code_generator = CodeGenerator()
@@ -91,20 +91,29 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
 
     c_header_file_name = f"{kernel_name}.{signature_hash}.h"
     c_header_file = output_contents[c_header_file_name]
-    c_header_file = f"{c_header_file}\n{unparser.header};\n"
+    c_header_file = f'{c_header_file}\n#ifdef __cplusplus\nextern "C" {unparser.header};\n#else\n{unparser.header};\n#endif\n'
     c_header_file = c_header_file.replace("<stdint.h>", f'"{_HEADER_PATH}"')
     output_contents[c_header_file_name] = c_header_file
 
     return output_contents
 
 
-_HEADER_CONTENT = """#include <stdint.h>
+_HEADER_CONTENT = """#ifndef NINETOOTHED_H
+#define NINETOOTHED_H
+
+#include <stdint.h>
 
 typedef struct {
-    uintptr_t data;
+    void *data;
     uint64_t *shape;
     int64_t *strides;
 } NineToothedTensor;
+
+typedef void *NineToothedStream;
+
+typedef int NineToothedResult;
+
+#endif // NINETOOTHED_H
 """
 
 _HEADER_PATH = CACHE_DIR / "ninetoothed.h"
@@ -135,9 +144,9 @@ class _Unparser:
         return f"return {self._generic_unparse(call)};"
 
     def _unparse_FunctionDef(self, node):
-        params = ["CUstream stream"]
+        params = ["NineToothedStream stream"]
         params += [f"NineToothedTensor {arg.arg}" for arg in node.args.args]
-        header = f"CUresult {node.name}({', '.join(params)})"
+        header = f"NineToothedResult {node.name}({', '.join(params)})"
 
         self.header = header
 
