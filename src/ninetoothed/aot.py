@@ -101,7 +101,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
 _HEADER_CONTENT = """#include <stdint.h>
 
 typedef struct {
-    uintptr_t data;
+    void *data;
     uint64_t *shape;
     int64_t *strides;
 } NineToothedTensor;
