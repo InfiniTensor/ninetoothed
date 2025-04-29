@@ -98,7 +98,10 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     return output_contents
 
 
-_HEADER_CONTENT = """#include <stdint.h>
+_HEADER_CONTENT = """#ifndef NINETOOTHED_H
+#define NINETOOTHED_H
+
+#include <stdint.h>
 
 typedef struct {
     void *data;
@@ -109,6 +112,8 @@ typedef struct {
 typedef void *NineToothedStream;
 
 typedef int NineToothedResult;
+
+#endif // NINETOOTHED_H
 """
 
 _HEADER_PATH = CACHE_DIR / "ninetoothed.h"
