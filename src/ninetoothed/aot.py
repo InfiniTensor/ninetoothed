@@ -31,7 +31,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
 
     _HEADER_PATH.parent.mkdir(exist_ok=True)
 
-    if not _HEADER_PATH.exists():
+    if not _HEADER_PATH.exists() or _HEADER_PATH.read_text() != _HEADER_CONTENT:
         _HEADER_PATH.write_text(_HEADER_CONTENT)
 
     code_generator = CodeGenerator()
