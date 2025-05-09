@@ -226,6 +226,41 @@ class CodeGenerator(ast.NodeTransformer):
 
         return node
 
+    def visit_Call(self, node):
+        def _offsets(tensor, dim=None):
+            if dim is None:
+                return tensor._last_generated_overall_offsets.node
+
+            offsets = tensor._last_generated_offsets
+
+            if dim < 0:
+                dim += tensor.source.ndim
+
+            return sum(
+                offsets[dim][target_dim] for target_dim in range(tensor.target.ndim)
+            ).node
+
+        func = node.func
+        args = node.args
+
+        if isinstance(func, ast.Attribute):
+            if func.attr == "offsets":
+                value = func.value
+
+                if self._in_context(value):
+                    tensor = self._context[value.id]
+                elif isinstance(value, ast.Subscript) and self._in_context(value.value):
+                    tensor = self._context[value.value.id]
+
+                self.visit(value)
+
+                # TODO: Add error handling.
+                return _offsets(tensor, ast.literal_eval(args[0]) if args else None)
+
+        self.generic_visit(node)
+
+        return node
+
     def visit_Subscript(self, node):
         if self._in_context(node.value) and isinstance(node.ctx, ast.Load):
             value = self._context[node.value.id]
@@ -572,6 +607,8 @@ class CodeGenerator(ast.NodeTransformer):
         indices = self._complete_indices(tensor, indices)
         offsets = type(self)._generate_offsets(tensor, indices)
 
+        tensor._last_generated_offsets = offsets
+
         for source_dim in range(tensor.source.ndim):
             for target_dim in range(tensor.target.ndim):
                 if target_dim not in invariant_target_dims:
@@ -596,7 +633,7 @@ class CodeGenerator(ast.NodeTransformer):
                     * tensor.source.strides[source_dim]
                 )
 
-        pointers = name_for_pointers + sum(
+        overall_offsets = sum(
             offsets[source_dim][target_dim][
                 type(self)._generate_slices(tensor, target_dim)
             ]
@@ -606,6 +643,10 @@ class CodeGenerator(ast.NodeTransformer):
             if target_dim not in invariant_target_dims
             and offsets[source_dim][target_dim] != 0
         )
+
+        tensor._last_generated_overall_offsets = overall_offsets
+
+        pointers = name_for_pointers + overall_offsets
         mask = functools.reduce(
             lambda x, y: x & y,
             (
