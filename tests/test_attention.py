@@ -1,3 +1,4 @@
+import pytest
 import torch
 import torch.nn.functional as F
 
@@ -42,6 +43,7 @@ def application(q, k, v, o):
 
     for i in range(k.shape[0]):
         qk = ntl.dot(q_loaded, ntl.trans(k[i]))
+        qk = ntl.where(k[i].offsets(-2) < k.source.shape[-2], qk, float("-inf"))
 
         m_ij = ntl.maximum(m_i, ntl.max(qk, 1))
         p = ntl.exp2(qk - m_ij[:, None])
@@ -83,20 +85,20 @@ def attention(q, k, v):
 
 @skip_if_cuda_not_available
 class TestCUDA:
+    shapes = ((2, 4, 1024, 64), (2, 4, 1, 64))
+
     @classmethod
     def setup_class(cls):
         torch.manual_seed(0)
 
-        shape = (2, 4, 1024, 64)
+        cls.args = {
+            shape: tuple(torch.randn(shape, device="cuda") for _ in range(3))
+            for shape in cls.shapes
+        }
 
-        cls.q = torch.randn(shape, device="cuda")
-        cls.k = torch.randn(shape, device="cuda")
-        cls.v = torch.randn(shape, device="cuda")
-
-    def test_fp32(self):
-        q = type(self).q.to(torch.float32)
-        k = type(self).k.to(torch.float32)
-        v = type(self).v.to(torch.float32)
+    @pytest.mark.parametrize("shape", shapes)
+    def test_fp32(self, shape):
+        q, k, v = (arg.to(torch.float32) for arg in type(self).args[shape])
 
         assert torch.allclose(
             attention(q, k, v),
@@ -105,10 +107,9 @@ class TestCUDA:
             rtol=0.01,
         )
 
-    def test_fp16(self):
-        q = type(self).q.to(torch.float16)
-        k = type(self).k.to(torch.float16)
-        v = type(self).v.to(torch.float16)
+    @pytest.mark.parametrize("shape", shapes)
+    def test_fp16(self, shape):
+        q, k, v = (arg.to(torch.float16) for arg in type(self).args[shape])
 
         assert torch.allclose(
             attention(q, k, v),
