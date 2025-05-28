@@ -1,5 +1,6 @@
 import ast
 import pathlib
+import re
 import subprocess
 import tempfile
 import uuid
@@ -49,10 +50,13 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     kernel_func = code_generator.kernel_func
     launch_func = code_generator.launch_func
 
+    param_strings = ["stream"]
     param_types = []
 
     for arg in kernel_func.args.args:
         param = arg.arg
+
+        param_strings.append(param)
 
         if match := Tensor.pointer_pattern().fullmatch(param):
             source_name = match.group(0).removesuffix("_pointer")
@@ -64,6 +68,12 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
             param_types.append(int64)
         elif Tensor.stride_pattern().fullmatch(param):
             param_types.append(int64)
+        else:
+            source_name = param
+            tensor = _find_tensor_by_source_name(tensors, source_name)
+            dtype = tensor.source.dtype
+
+            param_types.append(dtype)
 
     signature = ", ".join(param_types)
 
@@ -76,21 +86,26 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
         source_file, kernel_name, signature, grid, num_warps, num_stages
     )
 
-    unparser = _Unparser()
+    c_source_file_name = f"{kernel_name}.{signature_hash}.c"
+    c_source_file = output_contents[c_source_file_name]
+
+    c_header_file_name = f"{kernel_name}.{signature_hash}.h"
+    c_header_file = output_contents[c_header_file_name]
+
+    pattern = rf"\({', '.join(rf'(.*) {param}' for param in param_strings)}\)"
+    c_param_type_strings = re.search(pattern, c_header_file).groups()
+
+    unparser = _Unparser(c_param_type_strings)
 
     launch_func_unparsed = unparser.unparse(launch_func)
     launch_func_unparsed = launch_func_unparsed.replace(
         func.__name__, f"{kernel_name}_{signature_hash}"
     )
 
-    c_source_file_name = f"{kernel_name}.{signature_hash}.c"
-    c_source_file = output_contents[c_source_file_name]
     c_source_file = f"{c_source_file}\n{launch_func_unparsed}\n"
     c_source_file = c_source_file.replace("<stdint.h>", f'"{_HEADER_PATH}"')
     output_contents[c_source_file_name] = c_source_file
 
-    c_header_file_name = f"{kernel_name}.{signature_hash}.h"
-    c_header_file = output_contents[c_header_file_name]
     c_header_file = f'{c_header_file}\n#ifdef __cplusplus\nextern "C" {unparser.header};\n#else\n{unparser.header};\n#endif\n'
     c_header_file = c_header_file.replace("<stdint.h>", f'"{_HEADER_PATH}"')
     output_contents[c_header_file_name] = c_header_file
@@ -120,6 +135,9 @@ _HEADER_PATH = CACHE_DIR / "ninetoothed.h"
 
 
 class _Unparser:
+    def __init__(self, param_types):
+        self._param_types = param_types
+
     def unparse(self, node):
         method_name = "_unparse_" + node.__class__.__name__
 
@@ -141,7 +159,20 @@ class _Unparser:
             keywords=[],
         )
 
-        return f"return {self._generic_unparse(call)};"
+        unparsed = f"return {self._generic_unparse(call)};"
+
+        pattern = rf"\((stream), {', '.join(r'(.*)' for _ in range(len(self._param_types) - 1))}\)"
+        args = re.search(pattern, unparsed).groups()
+
+        for i, (arg, type) in enumerate(zip(args, self._param_types)):
+            if i != 0 and "." not in arg:
+                new_arg = f"*({type} *){arg}.data"
+            else:
+                new_arg = f"({type}){arg}"
+
+            unparsed = unparsed.replace(arg, new_arg)
+
+        return unparsed
 
     def _unparse_FunctionDef(self, node):
         params = ["NineToothedStream stream"]
