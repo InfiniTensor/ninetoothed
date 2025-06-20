@@ -500,16 +500,19 @@ class CodeGenerator(ast.NodeTransformer):
             naming.remove_prefixes(param) for param in next_power_of_2_params
         ]
 
+        arg_names = [naming.remove_prefixes(arg.source.name) for arg in self._args]
+
+        arg_names += [
+            param
+            for param in non_next_power_of_2_constexpr_params_without_prefixes
+            if not Tensor.size_pattern().fullmatch(param) and param not in arg_names
+        ]
+
         launch = ast.FunctionDef(
             name=self.launch_func_name,
             args=ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg=arg.source.name) for arg in self._args]
-                + [
-                    ast.arg(arg=param)
-                    for param in non_next_power_of_2_constexpr_params_without_prefixes
-                    if not Tensor.size_pattern().fullmatch(param)
-                ],
+                args=[ast.arg(arg=name) for name in arg_names],
                 kwonlyargs=[],
                 defaults=[],
             ),

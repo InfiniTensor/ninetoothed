@@ -32,6 +32,7 @@ class Tensor:
         strides=None,
         other=None,
         shape_options=None,
+        constexpr=None,
         name=None,
         source=None,
         source_dims=None,
@@ -73,6 +74,16 @@ class Tensor:
                 self.strides = self._calculate_default_strides(shape)
 
         self.other = other
+
+        if constexpr and self.ndim != 0:
+            raise ValueError(
+                "`constexpr` can only be set for zero-dimensional tensors."
+            )
+
+        self.constexpr = constexpr
+
+        if self.constexpr:
+            self.name = naming.make_constexpr(self.name)
 
         if source is not None:
             self.source = source
