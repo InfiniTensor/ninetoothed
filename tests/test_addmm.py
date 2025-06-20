@@ -9,11 +9,23 @@ from ninetoothed import Tensor
 from tests.skippers import skip_if_cuda_not_available, skip_if_float8_e5m2_not_supported
 
 
-def arrangement(input, mat1, mat2, beta, alpha, output):
-    _, _, input_arranged = matmul.arrangement(mat1, mat2, input)
+def arrangement(
+    input,
+    mat1,
+    mat2,
+    beta,
+    alpha,
+    output,
+    BLOCK_SIZE_M=matmul.BLOCK_SIZE_M,
+    BLOCK_SIZE_N=matmul.BLOCK_SIZE_N,
+    BLOCK_SIZE_K=matmul.BLOCK_SIZE_K,
+):
+    _, _, input_arranged = matmul.arrangement(
+        mat1, mat2, input, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K
+    )
 
     mat1_arranged, mat2_arranged, output_arranged = matmul.arrangement(
-        mat1, mat2, output
+        mat1, mat2, output, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K
     )
 
     return input_arranged, mat1_arranged, mat2_arranged, beta, alpha, output_arranged

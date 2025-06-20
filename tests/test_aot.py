@@ -7,6 +7,7 @@ import torch.nn.functional as F
 
 import ninetoothed
 import ninetoothed.generation
+import tests.test_addmm as addmm
 import tests.test_conv2d as conv2d
 import tests.test_matmul as matmul
 from ninetoothed import Tensor
@@ -18,6 +19,46 @@ class TestCUDA:
     @classmethod
     def setup_class(cls):
         torch.manual_seed(0)
+
+    def test_addmm(self):
+        arrangement = functools.partial(
+            addmm.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64
+        )
+        application = addmm.application
+        tensors = tuple(
+            Tensor(ndim, dtype=ninetoothed.float16) for ndim in (2, 2, 2, 0, 0, 2)
+        )
+        caller = "cuda"
+        kernel_name = "addmm"
+        output_dir = ninetoothed.generation.CACHE_DIR
+
+        launch_func = _generate_launch_func(
+            arrangement,
+            application,
+            tensors,
+            caller=caller,
+            kernel_name=kernel_name,
+            output_dir=output_dir,
+        )
+
+        shape = (512, 512)
+        dtype = torch.float16
+        device = caller
+
+        input = torch.randn(shape, dtype=dtype, device=device)
+        mat1 = torch.randn(shape, dtype=dtype, device=device)
+        mat2 = torch.randn(shape, dtype=dtype, device=device)
+        beta = torch.randn((), dtype=dtype)
+        alpha = torch.randn((), dtype=dtype)
+        output = torch.empty(
+            (mat1.shape[0], mat2.shape[1]), dtype=mat1.dtype, device=mat1.device
+        )
+
+        _run_launch_func(launch_func, input, mat1, mat2, beta, alpha, output)
+
+        assert torch.allclose(
+            output, torch.addmm(input, mat1, mat2, beta=beta, alpha=alpha), atol=0.075
+        )
 
     def test_matmul(self):
         arrangement = functools.partial(
