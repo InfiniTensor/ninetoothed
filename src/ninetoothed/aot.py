@@ -161,7 +161,7 @@ class _Unparser:
 
         unparsed = f"return {self._generic_unparse(call)};"
 
-        pattern = rf"\((stream), {', '.join(r'(.*)' for _ in range(len(self._param_types) - 1))}\)"
+        pattern = rf"\((stream), {', '.join(r'([^,]*)' for _ in range(len(self._param_types) - 1))}\)"
         args = re.search(pattern, unparsed).groups()
 
         for i, (arg, type) in enumerate(zip(args, self._param_types)):
