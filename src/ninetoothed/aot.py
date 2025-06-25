@@ -192,8 +192,8 @@ class _Unparser:
             if isinstance(stmt, ast.Expr):
                 stmt_unparsed = stmt_unparsed.strip()
 
-                if not stmt_unparsed.endswith(";"):
-                    stmt_unparsed += ";"
+            if not stmt_unparsed.endswith(";"):
+                stmt_unparsed += ";"
 
             body_lines.append("    " + stmt_unparsed)
 
