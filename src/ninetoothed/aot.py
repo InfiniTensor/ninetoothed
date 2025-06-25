@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import uuid
 
+import ninetoothed.naming as naming
 from ninetoothed.dtype import int64
 from ninetoothed.generation import CACHE_DIR, CodeGenerator
 from ninetoothed.tensor import Tensor
@@ -26,8 +27,10 @@ def aot(
 
 def _aot(func, caller, kernel_name, num_warps, num_stages):
     def _find_tensor_by_source_name(tensors, name):
+        name = naming.remove_prefixes(name)
+
         for tensor in tensors:
-            if tensor.source.name == name:
+            if naming.remove_prefixes(tensor.source.name) == name:
                 return tensor
 
     _HEADER_PATH.parent.mkdir(exist_ok=True)
