@@ -7,11 +7,11 @@ import ninetoothed.language as ntl
 from ninetoothed import Tensor
 from tests.skippers import skip_if_cuda_not_available
 
+BLOCK_SIZE_M = ninetoothed.block_size(lower_bound=64, upper_bound=128)
+BLOCK_SIZE_N = ninetoothed.block_size(lower_bound=32, upper_bound=64)
 
-def arrangement(q, k, v, o):
-    BLOCK_SIZE_M = ninetoothed.block_size(lower_bound=64, upper_bound=128)
-    BLOCK_SIZE_N = ninetoothed.block_size(lower_bound=32, upper_bound=64)
 
+def arrangement(q, k, v, o, BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N):
     def arrange_q_or_o(input):
         arranged = input.tile((1, 1, BLOCK_SIZE_M, -1))
         arranged.dtype = arranged.dtype.squeeze((0, 1))
