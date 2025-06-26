@@ -201,6 +201,9 @@ class _Unparser:
         body_lines = []
 
         for stmt in node.body:
+            if isinstance(stmt, ast.Assign):
+                continue
+
             stmt_unparsed = self.unparse(stmt)
 
             if isinstance(stmt, ast.Expr):
