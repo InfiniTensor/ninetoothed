@@ -55,6 +55,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
 
     param_strings = ["stream"]
     param_types = []
+    constexpr_param_indices = []
 
     for arg in kernel_func.args.args:
         param = arg.arg
@@ -76,9 +77,17 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
             tensor = _find_tensor_by_source_name(tensors, source_name)
             dtype = tensor.source.dtype
 
-            param_types.append(dtype)
+            if tensor.constexpr:
+                param_types.append(f"{tensor.constexpr}")
+                constexpr_param_indices.append(len(param_types) - 1)
+            else:
+                param_types.append(dtype)
 
     signature = ", ".join(param_types)
+
+    for index in sorted(set(constexpr_param_indices), reverse=True):
+        param_strings.pop(index + 1)
+        param_types.pop(index)
 
     grid_extractor = _GridExtractor()
     launch_func = grid_extractor.visit(launch_func)
@@ -158,7 +167,12 @@ class _Unparser:
     def _unparse_Call(self, node):
         call = ast.Call(
             func=node.func,
-            args=[ast.Name(id="stream", ctx=ast.Load())] + node.args,
+            args=[ast.Name(id="stream", ctx=ast.Load())]
+            + [
+                arg
+                for arg in node.args
+                if not isinstance(arg, ast.Name) or not naming.is_constexpr(arg.id)
+            ],
             keywords=[],
         )
 
