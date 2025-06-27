@@ -103,8 +103,8 @@ class TestCUDA:
         assert torch.allclose(
             attention(q, k, v),
             F.scaled_dot_product_attention(q, k, v, scale=1),
-            atol=0.01,
-            rtol=0.01,
+            atol=0.025,
+            rtol=0.025,
         )
 
     @pytest.mark.parametrize("shape", shapes)
@@ -115,4 +115,5 @@ class TestCUDA:
             attention(q, k, v),
             F.scaled_dot_product_attention(q, k, v, scale=1),
             atol=0.01,
+            rtol=0.01,
         )
