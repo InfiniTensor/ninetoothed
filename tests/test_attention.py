@@ -11,7 +11,9 @@ BLOCK_SIZE_M = ninetoothed.block_size(lower_bound=64, upper_bound=128)
 BLOCK_SIZE_N = ninetoothed.block_size(lower_bound=32, upper_bound=64)
 
 
-def arrangement(q, k, v, o, BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N):
+def arrangement(
+    q, k, v, is_causal, o, BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N
+):
     def arrange_q_or_o(input):
         arranged = input.tile((1, 1, BLOCK_SIZE_M, -1))
         arranged.dtype = arranged.dtype.squeeze((0, 1))
@@ -31,10 +33,16 @@ def arrangement(q, k, v, o, BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N
 
     q_arranged = arrange_q_or_o(q)
 
-    return q_arranged, arrange_k_or_v(k), arrange_k_or_v(v), arrange_q_or_o(o)
+    return (
+        q_arranged,
+        arrange_k_or_v(k),
+        arrange_k_or_v(v),
+        is_causal,
+        arrange_q_or_o(o),
+    )
 
 
-def application(q, k, v, o):
+def application(q, k, v, is_causal, o):
     q_loaded = (q * 1.44269504089).to(q.dtype)
 
     acc = ntl.zeros((q.shape[-2], q.shape[-1]), dtype=ntl.float32)
@@ -44,6 +52,10 @@ def application(q, k, v, o):
     for i in range(k.shape[0]):
         qk = ntl.dot(q_loaded, ntl.trans(k[i]))
         qk = ntl.where(k[i].offsets(-2) < k.source.shape[-2], qk, float("-inf"))
+
+        if is_causal:
+            mask = q.offsets(-2)[:, None] >= k[i].offsets(-2)[None, :]
+            qk = ntl.where(mask, qk, float("-inf"))
 
         m_ij = ntl.maximum(m_i, ntl.max(qk, 1))
         p = ntl.exp2(qk - m_ij[:, None])
@@ -58,27 +70,28 @@ def application(q, k, v, o):
     o = acc  # noqa: F841
 
 
-def attention(q, k, v):
+def attention(q, k, v, is_causal=False):
     o = torch.empty_like(q, dtype=v.dtype)
 
-    attention_kernel = ninetoothed.make(
-        arrangement,
-        application,
-        (
-            Tensor(
-                4,
-                shape_options=(
-                    None,
-                    None,
-                    {"constexpr": True},
-                    {"constexpr": True, "upper_bound": 128},
-                ),
-            )
-            for _ in range(4)
-        ),
+    q_, k_, v_, o_ = (
+        Tensor(
+            4,
+            shape_options=(
+                None,
+                None,
+                {"constexpr": True},
+                {"constexpr": True, "upper_bound": 128},
+            ),
+        )
+        for _ in range(4)
     )
+    is_causal_ = Tensor(0, constexpr=True)
 
-    attention_kernel(q, k, v, o)
+    tensors = (q_, k_, v_, is_causal_, o_)
+
+    attention_kernel = ninetoothed.make(arrangement, application, tensors)
+
+    attention_kernel(q, k, v, is_causal, o)
 
     return o
 
@@ -89,6 +102,8 @@ class TestCUDA:
 
     dtypes = (torch.float32, torch.float16)
 
+    is_causal_values = (False, True)
+
     @classmethod
     def setup_class(cls):
         torch.manual_seed(0)
@@ -98,9 +113,10 @@ class TestCUDA:
             for shape in cls.shapes
         }
 
+    @pytest.mark.parametrize("is_causal", is_causal_values)
     @pytest.mark.parametrize("dtype", dtypes)
     @pytest.mark.parametrize("shape", shapes)
-    def test(self, shape, dtype):
+    def test(self, shape, dtype, is_causal):
         q, k, v = (arg.to(dtype) for arg in type(self).args[shape])
 
         if dtype == torch.float32:
@@ -111,8 +127,8 @@ class TestCUDA:
             rtol = 0.01
 
         assert torch.allclose(
-            attention(q, k, v),
-            F.scaled_dot_product_attention(q, k, v, scale=1),
+            attention(q, k, v, is_causal=is_causal),
+            F.scaled_dot_product_attention(q, k, v, is_causal=is_causal, scale=1),
             atol=atol,
             rtol=rtol,
         )
