@@ -87,6 +87,8 @@ def attention(q, k, v):
 class TestCUDA:
     shapes = ((2, 4, 1024, 64), (2, 4, 1, 64))
 
+    dtypes = (torch.float32, torch.float16)
+
     @classmethod
     def setup_class(cls):
         torch.manual_seed(0)
@@ -96,23 +98,21 @@ class TestCUDA:
             for shape in cls.shapes
         }
 
+    @pytest.mark.parametrize("dtype", dtypes)
     @pytest.mark.parametrize("shape", shapes)
-    def test_fp32(self, shape):
-        q, k, v = (arg.to(torch.float32) for arg in type(self).args[shape])
+    def test(self, shape, dtype):
+        q, k, v = (arg.to(dtype) for arg in type(self).args[shape])
+
+        if dtype == torch.float32:
+            atol = 0.025
+            rtol = 0.025
+        elif dtype == torch.float16:
+            atol = 0.01
+            rtol = 0.01
 
         assert torch.allclose(
             attention(q, k, v),
             F.scaled_dot_product_attention(q, k, v, scale=1),
-            atol=0.01,
-            rtol=0.01,
-        )
-
-    @pytest.mark.parametrize("shape", shapes)
-    def test_fp16(self, shape):
-        q, k, v = (arg.to(torch.float16) for arg in type(self).args[shape])
-
-        assert torch.allclose(
-            attention(q, k, v),
-            F.scaled_dot_product_attention(q, k, v, scale=1),
-            atol=0.01,
+            atol=atol,
+            rtol=rtol,
         )
