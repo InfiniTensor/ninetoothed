@@ -78,7 +78,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
             dtype = tensor.source.dtype
 
             if tensor.constexpr:
-                param_types.append(f"{tensor.constexpr}")
+                param_types.append(f"{tensor.value}")
                 constexpr_param_indices.append(len(param_types) - 1)
             else:
                 param_types.append(dtype)

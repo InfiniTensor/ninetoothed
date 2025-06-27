@@ -33,6 +33,7 @@ class Tensor:
         other=None,
         shape_options=None,
         constexpr=None,
+        value=None,
         name=None,
         source=None,
         source_dims=None,
@@ -84,6 +85,11 @@ class Tensor:
 
         if self.constexpr:
             self.name = naming.make_constexpr(self.name)
+
+        if not constexpr and value is not None:
+            raise ValueError("`value` can only be set for constexpr tensors.")
+
+        self.value = value
 
         if source is not None:
             self.source = source
