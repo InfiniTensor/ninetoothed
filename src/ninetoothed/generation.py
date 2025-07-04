@@ -555,7 +555,18 @@ class CodeGenerator(ast.NodeTransformer):
                             ctx=ast.Load(),
                         ),
                         args=[ast.Name(id=param, ctx=ast.Load()) for param in params],
-                        keywords=[],
+                        keywords=[
+                            ast.keyword(
+                                arg="num_warps",
+                                value=ast.Constant(value=self._num_wraps),
+                            ),
+                            ast.keyword(
+                                arg="num_stages",
+                                value=ast.Constant(value=self._num_stages),
+                            ),
+                        ]
+                        if self._autotune is None
+                        else [],
                     )
                 )
             ],
