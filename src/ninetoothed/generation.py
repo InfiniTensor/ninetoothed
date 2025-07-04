@@ -396,6 +396,14 @@ class CodeGenerator(ast.NodeTransformer):
             ):
                 block_size_configs.append(config)
 
+        if not block_size_configs:
+            if meta:
+                raise ValueError(
+                    "Failed to generate auto-tuning. Please check the upper and lower bounds of the symbols."
+                )
+            else:
+                block_size_configs.append({})
+
         if isinstance(self._num_wraps, collections.abc.Iterable):
             num_warps_configs = self._num_wraps
         else:
