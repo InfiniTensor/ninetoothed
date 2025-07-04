@@ -2,6 +2,7 @@ import importlib
 import sys
 
 from ninetoothed.generation import CodeGenerator
+from ninetoothed.utils import calculate_default_configs
 
 
 def jit(
@@ -31,6 +32,14 @@ def jit(
         The ``_prettify`` parameter is experimental, which might break
         the generated code.
     """
+
+    default_num_warps, default_num_stages = calculate_default_configs()
+
+    if num_warps is None:
+        num_warps = default_num_warps
+
+    if num_stages is None:
+        num_stages = default_num_stages
 
     def wrapper(func):
         return JIT(

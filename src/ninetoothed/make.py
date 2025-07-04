@@ -2,7 +2,6 @@ import inspect
 
 from ninetoothed.aot import aot
 from ninetoothed.jit import jit
-from ninetoothed.utils import calculate_default_configs
 
 
 def make(
@@ -30,14 +29,6 @@ def make(
         configurations to use.
     :return: A handle to the compute kernel.
     """
-
-    default_num_warps, default_num_stages = calculate_default_configs()
-
-    if num_warps is None:
-        num_warps = default_num_warps
-
-    if num_stages is None:
-        num_stages = default_num_stages
 
     params = inspect.signature(application).parameters
     types = arrangement(*tensors)
