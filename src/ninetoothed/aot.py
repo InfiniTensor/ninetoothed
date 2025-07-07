@@ -9,11 +9,25 @@ import ninetoothed.naming as naming
 from ninetoothed.dtype import int64
 from ninetoothed.generation import CACHE_DIR, CodeGenerator
 from ninetoothed.tensor import Tensor
+from ninetoothed.utils import calculate_default_configs
 
 
 def aot(
-    func, caller="cuda", kernel_name=None, output_dir=None, num_warps=4, num_stages=3
+    func,
+    caller="cuda",
+    kernel_name=None,
+    output_dir=None,
+    num_warps=None,
+    num_stages=None,
 ):
+    default_num_warps, default_num_stages = calculate_default_configs()
+
+    if num_warps is None:
+        num_warps = default_num_warps
+
+    if num_stages is None:
+        num_stages = default_num_stages
+
     output_dir = pathlib.Path(output_dir)
 
     output_contents = _aot(func, caller, kernel_name, num_warps, num_stages)

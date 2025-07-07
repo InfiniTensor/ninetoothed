@@ -396,6 +396,14 @@ class CodeGenerator(ast.NodeTransformer):
             ):
                 block_size_configs.append(config)
 
+        if not block_size_configs:
+            if meta:
+                raise ValueError(
+                    "Failed to generate auto-tuning. Please check the upper and lower bounds of the symbols."
+                )
+            else:
+                block_size_configs.append({})
+
         if isinstance(self._num_wraps, collections.abc.Iterable):
             num_warps_configs = self._num_wraps
         else:
@@ -451,7 +459,7 @@ class CodeGenerator(ast.NodeTransformer):
         if self._max_num_configs is not None and len(configs) > self._max_num_configs:
             configs = random.sample(configs, k=self._max_num_configs)
 
-        if not configs:
+        if len(configs) <= 1:
             return None
 
         return ast.Call(
@@ -547,7 +555,18 @@ class CodeGenerator(ast.NodeTransformer):
                             ctx=ast.Load(),
                         ),
                         args=[ast.Name(id=param, ctx=ast.Load()) for param in params],
-                        keywords=[],
+                        keywords=[
+                            ast.keyword(
+                                arg="num_warps",
+                                value=ast.Constant(value=self._num_wraps),
+                            ),
+                            ast.keyword(
+                                arg="num_stages",
+                                value=ast.Constant(value=self._num_stages),
+                            ),
+                        ]
+                        if self._autotune is None
+                        else [],
                     )
                 )
             ],
