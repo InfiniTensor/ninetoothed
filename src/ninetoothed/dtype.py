@@ -9,5 +9,6 @@ uint32 = "u32"
 uint64 = "u64"
 
 float16 = "fp16"
+bfloat16 = "bf16"
 float32 = "fp32"
 float64 = "fp64"

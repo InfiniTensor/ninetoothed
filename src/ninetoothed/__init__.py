@@ -1,4 +1,5 @@
 from ninetoothed.dtype import (
+    bfloat16,
     float16,
     float32,
     float64,
@@ -19,6 +20,7 @@ from ninetoothed.tensor import Tensor
 __all__ = [
     "Symbol",
     "Tensor",
+    "bfloat16",
     "block_size",
     "float16",
     "float32",
