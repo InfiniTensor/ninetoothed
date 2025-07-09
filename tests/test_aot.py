@@ -21,6 +21,42 @@ class TestCUDA:
     def setup_class(cls):
         torch.manual_seed(0)
 
+    def test_add(self):
+        def _arrangement(input, other, output):
+            def _arrange(tensor):
+                return tensor.tile((256,))
+
+            return _arrange(input), _arrange(other), _arrange(output)
+
+        def _application(input, other, output):
+            output = input + other  # noqa: F841
+
+        tensors = tuple(Tensor(1, dtype=ninetoothed.bfloat16) for _ in range(3))
+        caller = "cuda"
+        kernel_name = "add"
+        output_dir = ninetoothed.generation.CACHE_DIR
+
+        launch_func = _generate_launch_func(
+            _arrangement,
+            _application,
+            tensors,
+            caller=caller,
+            kernel_name=kernel_name,
+            output_dir=output_dir,
+        )
+
+        shape = (45327,)
+        dtype = torch.bfloat16
+        device = caller
+
+        input = torch.randn(shape, dtype=dtype, device=device)
+        other = torch.randn(shape, dtype=dtype, device=device)
+        output = torch.empty_like(input)
+
+        _run_launch_func(launch_func, input, other, output)
+
+        assert torch.allclose(output, torch.add(input, other))
+
     def test_addmm(self):
         arrangement = functools.partial(
             addmm.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64
