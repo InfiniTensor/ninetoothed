@@ -21,8 +21,9 @@ Homepage = "https://github.com/InfiniTensor/ninetoothed"
 Issues = "https://github.com/InfiniTensor/ninetoothed/issues"
 
 [project.optional-dependencies]
-visualization = ["matplotlib>=3.9.0", "numpy>=2.1.0"]
-all = ["ninetoothed[visualization]"]
+debugging = ["torch>=2.4.0"]
+visualization = ["matplotlib>=3.9.0", "numpy>=2.1.0", "ninetoothed[debugging]"]
+all = ["ninetoothed[debugging]", "ninetoothed[visualization]"]
 
 [tool.ruff]
 src = [".", "src", "tests"]

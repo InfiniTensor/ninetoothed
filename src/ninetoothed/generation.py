@@ -137,12 +137,7 @@ class CodeGenerator(ast.NodeTransformer):
                 ["ruff", "format", "-"], input=source, encoding="utf-8"
             )
 
-        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
-        cache_file = CACHE_DIR / f"{digest}.py"
-
-        if not cache_file.exists():
-            with open(cache_file, "w", encoding="utf-8") as f:
-                f.write(source)
+        cache_file = cache_source(source)
 
         self.tensors = self._args
         self.kernel_func = self._func_def
@@ -888,6 +883,17 @@ class Tritonizer(ast.NodeTransformer):
             )
 
         return node
+
+
+def cache_source(source):
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    cache_file = CACHE_DIR / f"{digest}.py"
+
+    if not cache_file.exists():
+        with open(cache_file, "w", encoding="utf-8") as f:
+            f.write(source)
+
+    return cache_file
 
 
 class _Inliner(ast.NodeTransformer):
