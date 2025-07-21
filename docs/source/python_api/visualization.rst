@@ -1,7 +1,7 @@
 Visualization
 =============
 
-The ``visualization`` module provides a way to visualize tensors.
+This module provides tools to generate useful visualizations.
 
 Installation
 ------------
@@ -15,7 +15,7 @@ Since this module is optional, we need to install it before using it:
 Visualizing a Tensor
 --------------------
 
-``visualize`` is the primary function of this module:
+``visualize`` can be used to visualize a single tensor:
 
 .. autofunction:: ninetoothed.visualization.visualize
 
@@ -51,3 +51,27 @@ When using the above method, tensors are assigned default colors. To customize c
 
     x = Tensor(shape=(4, 8))
     visualize(x, color="orange", save_path="x.png")
+
+Visualizing an Arrangement
+--------------------------
+
+``visualize_arrangement`` can be used to visualize an arrangement:
+
+.. autofunction:: ninetoothed.visualization.visualize_arrangement
+
+Note: Currently, this API must be run in a CUDA-available environment.
+
+This API requires ``arrangement`` and ``tensors`` as parameters, similar to :func:`ninetoothed.make`. However, there is a key difference: neither ``arrangement`` nor ``tensors`` can contain symbols; they can only contain concrete values.
+
+As demonstrated below, we can use ``functools.partial`` to pass concrete arguments to the ``_arrangement`` function, constructing a symbol-free ``arrangement``. In addition, we can create a tensor with a concrete shape using the ``shape`` parameter of ``Tensor``.
+
+.. code-block:: python
+
+    def _arrangement(tensor, tile_shape):
+        return (tensor.tile(tile_shape),)
+
+
+    arrangement = functools.partial(_arrangement, tile_shape=(2, 2))
+    tensors = (Tensor(shape=(5, 5)),)
+
+    visualize_arrangement(arrangement, tensors)
