@@ -1,0 +1,6 @@
+﻿ninetoothed.debugging.simulate\_arrangement
+===========================================
+
+.. currentmodule:: ninetoothed.debugging
+
+.. autofunction:: simulate_arrangement

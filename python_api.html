@@ -44,7 +44,7 @@
     <script>DOCUMENTATION_OPTIONS.pagename = 'python_api';</script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Code Generation" href="code_generation.html" />
+    <link rel="next" title="Code Generation" href="python_api/code_generation.html" />
     <link rel="prev" title="The Basics" href="basics.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -147,13 +147,6 @@
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="#">
     Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="visualization.html">
-    Visualization
   </a>
 </li>
 
@@ -266,13 +259,6 @@
   </a>
 </li>
 
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="visualization.html">
-    Visualization
-  </a>
-</li>
-
   </ul>
 </nav></div>
           
@@ -317,21 +303,26 @@
      aria-label="Section Navigation">
   <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
   <div class="bd-toc-item navbar-nav"><ul class="nav bd-sidenav">
-<li class="toctree-l1 has-children"><a class="reference internal" href="code_generation.html">Code Generation</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l2"><a class="reference internal" href="generated/ninetoothed.jit.html">ninetoothed.jit</a></li>
-<li class="toctree-l2"><a class="reference internal" href="generated/ninetoothed.make.html">ninetoothed.make</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="python_api/code_generation.html">Code Generation</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="python_api/generated/ninetoothed.jit.html">ninetoothed.jit</a></li>
+<li class="toctree-l2"><a class="reference internal" href="python_api/generated/ninetoothed.make.html">ninetoothed.make</a></li>
 </ul>
 </details></li>
-<li class="toctree-l1 has-children"><a class="reference internal" href="tensor.html">Tensor</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l2"><a class="reference internal" href="generated/ninetoothed.Tensor.tile.html">ninetoothed.Tensor.tile</a></li>
-<li class="toctree-l2"><a class="reference internal" href="generated/ninetoothed.Tensor.expand.html">ninetoothed.Tensor.expand</a></li>
-<li class="toctree-l2"><a class="reference internal" href="generated/ninetoothed.Tensor.squeeze.html">ninetoothed.Tensor.squeeze</a></li>
-<li class="toctree-l2"><a class="reference internal" href="generated/ninetoothed.Tensor.permute.html">ninetoothed.Tensor.permute</a></li>
-<li class="toctree-l2"><a class="reference internal" href="generated/ninetoothed.Tensor.flatten.html">ninetoothed.Tensor.flatten</a></li>
-<li class="toctree-l2"><a class="reference internal" href="generated/ninetoothed.Tensor.ravel.html">ninetoothed.Tensor.ravel</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="python_api/tensor.html">Tensor</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="python_api/generated/ninetoothed.Tensor.tile.html">ninetoothed.Tensor.tile</a></li>
+<li class="toctree-l2"><a class="reference internal" href="python_api/generated/ninetoothed.Tensor.expand.html">ninetoothed.Tensor.expand</a></li>
+<li class="toctree-l2"><a class="reference internal" href="python_api/generated/ninetoothed.Tensor.squeeze.html">ninetoothed.Tensor.squeeze</a></li>
+<li class="toctree-l2"><a class="reference internal" href="python_api/generated/ninetoothed.Tensor.permute.html">ninetoothed.Tensor.permute</a></li>
+<li class="toctree-l2"><a class="reference internal" href="python_api/generated/ninetoothed.Tensor.flatten.html">ninetoothed.Tensor.flatten</a></li>
+<li class="toctree-l2"><a class="reference internal" href="python_api/generated/ninetoothed.Tensor.ravel.html">ninetoothed.Tensor.ravel</a></li>
 </ul>
 </details></li>
-<li class="toctree-l1"><a class="reference internal" href="symbol.html">Symbol</a></li>
+<li class="toctree-l1"><a class="reference internal" href="python_api/symbol.html">Symbol</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="python_api/debugging.html">Debugging</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="python_api/generated/ninetoothed.debugging.simulate_arrangement.html">ninetoothed.debugging.simulate_arrangement</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="python_api/visualization.html">Visualization</a></li>
 </ul>
 </div>
 </nav></div>
@@ -393,9 +384,11 @@
 <h1>Python API<a class="headerlink" href="#python-api" title="Link to this heading">#</a></h1>
 <div class="toctree-wrapper compound">
 <ul>
-<li class="toctree-l1"><a class="reference internal" href="code_generation.html">Code Generation</a></li>
-<li class="toctree-l1"><a class="reference internal" href="tensor.html">Tensor</a></li>
-<li class="toctree-l1"><a class="reference internal" href="symbol.html">Symbol</a></li>
+<li class="toctree-l1"><a class="reference internal" href="python_api/code_generation.html">Code Generation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="python_api/tensor.html">Tensor</a></li>
+<li class="toctree-l1"><a class="reference internal" href="python_api/symbol.html">Symbol</a></li>
+<li class="toctree-l1"><a class="reference internal" href="python_api/debugging.html">Debugging</a></li>
+<li class="toctree-l1"><a class="reference internal" href="python_api/visualization.html">Visualization</a></li>
 </ul>
 </div>
 </section>
@@ -420,7 +413,7 @@
       </div>
     </a>
     <a class="right-next"
-       href="code_generation.html"
+       href="python_api/code_generation.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
