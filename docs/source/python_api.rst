@@ -4,6 +4,6 @@ Python API
 .. toctree::
    :maxdepth: 1
 
-   code_generation
-   tensor
-   symbol
+   python_api/code_generation
+   python_api/tensor
+   python_api/symbol
