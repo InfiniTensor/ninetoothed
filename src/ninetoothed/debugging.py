@@ -11,6 +11,17 @@ from ninetoothed.tensor import Tensor
 
 
 def simulate_arrangement(arrangement, tensors, device=None):
+    """Simulate the arrangement of the tensors.
+
+    :param arrangement: The arrangement of the tensors.
+    :param tensors: The tensors.
+    :param device: The device on which the tensors are.
+    :return: A tuple of source tensors and a tuple of target tensors,
+        where each tuple is sorted according to the parameter order
+        specified in ``arrangement``, and each element in each tensor
+        stores the index of that element in the source tensor.
+    """
+
     if device is None:
         device = "cuda"
 
