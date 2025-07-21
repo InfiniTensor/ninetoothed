@@ -8,3 +8,4 @@ Python API
    python_api/tensor
    python_api/symbol
    python_api/debugging
+   python_api/visualization
