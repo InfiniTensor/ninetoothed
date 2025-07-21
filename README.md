@@ -1,6 +1,6 @@
 # NineToothed
 
-![NineToothed Logo](docs/source/_static/ninetoothed-logo.png)
+![NineToothed Logo](https://github.com/InfiniTensor/ninetoothed/raw/master/docs/source/_static/ninetoothed-logo.png)
 
 [![Document](https://img.shields.io/badge/Document-ready-blue)](https://ninetoothed.org/)
 [![PyPI Version](https://img.shields.io/pypi/v/ninetoothed?color=cyan)](https://pypi.org/project/ninetoothed/)
