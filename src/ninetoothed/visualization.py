@@ -45,6 +45,12 @@ visualize.count = 0
 
 
 def visualize_arrangement(arrangement, tensors):
+    """Visualize the arrangement of the tensors.
+
+    :param arrangement: The arrangement of the tensors.
+    :param tensors: The tensors.
+    """
+
     source_tensors, target_tensors = simulate_arrangement(arrangement, tensors)
 
     param_names = inspect.signature(arrangement).parameters.keys()
