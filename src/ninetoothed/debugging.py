@@ -55,7 +55,12 @@ def simulate_arrangement(arrangement, tensors, device=None):
         source_tensors.append(source_tensor)
         target_tensors.append(target_tensor)
 
-    tensors = arrangement(*(Tensor(tensor.ndim, other=-1) for tensor in tensors))
+    tensors = arrangement(
+        *(
+            Tensor(tensor.ndim, other=-1, shape_options={"constexpr": True})
+            for tensor in tensors
+        )
+    )
     debug_tensors = tuple(_generate_debug_tensor(tensor) for tensor in tensors)
 
     application_source = _generate_debug_application_source(tensors, debug_tensors)
