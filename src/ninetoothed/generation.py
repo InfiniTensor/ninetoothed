@@ -750,21 +750,6 @@ class CodeGenerator(ast.NodeTransformer):
         return offsets
 
     @staticmethod
-    def _find_invariant_target_dims(tensor):
-        invariant_target_dims = set()
-
-        curr = tensor.dtype
-
-        while isinstance(curr.dtype, Tensor):
-            for target_dim in range(curr.target.ndim):
-                if target_dim not in curr.target_dims:
-                    invariant_target_dims.add(target_dim)
-
-            curr = curr.dtype
-
-        return invariant_target_dims
-
-    @staticmethod
     def _name_for_pointers(tensor):
         return Symbol(f"{tensor.source.name}_pointers")
 
