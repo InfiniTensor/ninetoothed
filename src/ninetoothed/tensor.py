@@ -18,7 +18,6 @@ class Tensor:
     :param shape_options: The options for configuring shape symbols.
     :param name: The name of the tensor.
     :param source: For internal use only.
-    :param source_dims: For internal use only.
     :param target_dims: For internal use only.
     """
 
@@ -36,7 +35,6 @@ class Tensor:
         value=None,
         name=None,
         source=None,
-        source_dims=None,
         target_dims=None,
         unflattened=None,
         unflattened_dims=None,
@@ -96,11 +94,6 @@ class Tensor:
             self.source = source
         else:
             self.source = self
-
-        if source_dims is not None:
-            self.source_dims = source_dims
-        else:
-            self.source_dims = (dim for dim in range(self.source.ndim))
 
         if target_dims is not None:
             self.target_dims = target_dims
@@ -216,7 +209,6 @@ class Tensor:
             dtype=self.dtype,
             strides=inner_strides,
             source=self.source,
-            source_dims=self.source_dims,
             unflattened=self.unflattened,
             unflattened_dims=self.unflattened_dims,
             _offsets=_offsets,
@@ -233,7 +225,6 @@ class Tensor:
             dtype=dtype,
             strides=outer_strides,
             source=self.source,
-            source_dims=self.source_dims,
             unflattened=self.unflattened,
             unflattened_dims=self.unflattened_dims,
             _offsets=_offsets,
@@ -274,7 +265,6 @@ class Tensor:
                 for new_size, stride in zip(shape, self.strides)
             ],
             source=self.source,
-            source_dims=self.source_dims,
             target_dims=self.target_dims,
             unflattened=self.unflattened,
             unflattened_dims=self.unflattened_dims,
@@ -314,11 +304,6 @@ class Tensor:
             dtype=self.dtype,
             strides=[stride for i, stride in enumerate(self.strides) if i not in dim],
             source=self.source,
-            source_dims=[
-                source_dim
-                for i, source_dim in enumerate(self.source_dims)
-                if i not in dim
-            ],
             target_dims=[
                 target_dim
                 for i, target_dim in enumerate(self.target_dims)
@@ -349,13 +334,11 @@ class Tensor:
         # TODO: Add error handling.
         new_shape = [None for _ in range(self.ndim)]
         new_strides = [None for _ in range(self.ndim)]
-        new_source_dims = [None for _ in range(self.ndim)]
         new_unflattened_dims = [None for _ in range(self.ndim)]
 
         for original_dim, permuted_dim in enumerate(dims):
             new_shape[original_dim] = self.shape[permuted_dim]
             new_strides[original_dim] = self.strides[permuted_dim]
-            new_source_dims[original_dim] = self.source_dims[permuted_dim]
             new_unflattened_dims[original_dim] = self.unflattened_dims[permuted_dim]
 
         self._inputs.append([])
@@ -368,7 +351,6 @@ class Tensor:
             dtype=self.dtype,
             strides=new_strides,
             source=self.source,
-            source_dims=new_source_dims,
             target_dims=self.target_dims,
             unflattened=self.unflattened,
             unflattened_dims=new_unflattened_dims,
@@ -410,14 +392,6 @@ class Tensor:
 
         new_strides = leading_strides + (flattening_strides[-1],) + trailing_strides
 
-        leading_source_dims = self.source_dims[:start_dim]
-        flattening_source_dims = self.source_dims[start_dim:end_dim]
-        trailing_source_dims = self.source_dims[end_dim:]
-
-        new_source_dims = (
-            leading_source_dims + (flattening_source_dims,) + trailing_source_dims
-        )
-
         leading_target_dims = self.target_dims[:start_dim]
         flattening_target_dims = self.target_dims[start_dim:end_dim]
         trailing_target_dims = self.target_dims[end_dim:]
@@ -454,7 +428,6 @@ class Tensor:
             dtype=self.dtype,
             strides=new_strides,
             source=self.source,
-            source_dims=new_source_dims,
             target_dims=new_target_dims,
             unflattened=self.unflattened,
             unflattened_dims=new_unflattened_dims,
@@ -483,7 +456,6 @@ class Tensor:
         # TODO: Add error handling.
         new_shape = []
         new_strides = []
-        new_source_dims = []
         outputs = []
 
         curr = self
@@ -491,7 +463,6 @@ class Tensor:
         while isinstance(curr, type(self)):
             new_shape.extend(curr.shape)
             new_strides.extend(curr.strides)
-            new_source_dims.extend(curr.source_dims)
             curr._inputs.append([])
             outputs.extend(curr._inputs)
 
@@ -520,7 +491,6 @@ class Tensor:
             other=self.source.other,
             name=self.source.name,
             source=self.source,
-            source_dims=new_source_dims,
             _offsets=_offsets,
             _outputs=outputs,
         )
@@ -599,14 +569,6 @@ class Tensor:
     @property
     def ndim(self):
         return len(self.shape)
-
-    @property
-    def source_dims(self):
-        return self._source_dims
-
-    @source_dims.setter
-    def source_dims(self, value):
-        self._source_dims = tuple(value)
 
     @property
     def target_dims(self):
