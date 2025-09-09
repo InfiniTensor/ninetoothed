@@ -714,9 +714,7 @@ class CodeGenerator(ast.NodeTransformer):
     def _generate_pid_indices(self, tensor):
         self._invariants[type(self)._NAME_FOR_PID] = call("program_id", 0)
 
-        indices = list(
-            type(self)._unravel_index(type(self)._NAME_FOR_PID, tensor.shape)
-        )
+        indices = list(Tensor._unravel_index(type(self)._NAME_FOR_PID, tensor.shape))
 
         for dim, index in enumerate(indices):
             name = type(self)._name_for_index(tensor, dim)
@@ -790,7 +788,7 @@ class CodeGenerator(ast.NodeTransformer):
 
                 return
 
-            unraveled_offs = CodeGenerator._unravel_index(
+            unraveled_offs = Tensor._unravel_index(
                 raw_offs,
                 tuple(tensor.unflattened.shape[dim] for dim in unflattened_dim),
             )
@@ -840,16 +838,6 @@ class CodeGenerator(ast.NodeTransformer):
     @staticmethod
     def _name_for_index(tensor, dim):
         return Symbol(f"{tensor.source.name}_index_{dim}")
-
-    @staticmethod
-    def _unravel_index(index, shape):
-        indices = []
-
-        for stride in Tensor(shape=shape).strides:
-            indices.append(index // stride)
-            index %= stride
-
-        return tuple(indices)
 
 
 class Tritonizer(ast.NodeTransformer):

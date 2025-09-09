@@ -490,6 +490,16 @@ class Tensor:
         return re.compile(rf"({_identifier_pattern_raw_string()})_(stride)_(.+)")
 
     @staticmethod
+    def _unravel_index(index, shape):
+        indices = []
+
+        for stride in Tensor(shape=shape).strides:
+            indices.append(index // stride)
+            index %= stride
+
+        return tuple(indices)
+
+    @staticmethod
     def _calculate_default_strides(shape):
         strides = [1]
 
