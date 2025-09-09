@@ -19,7 +19,6 @@ class Tensor:
     :param name: The name of the tensor.
     :param source: For internal use only.
     :param source_dims: For internal use only.
-    :param target: For internal use only.
     :param target_dims: For internal use only.
     """
 
@@ -38,7 +37,6 @@ class Tensor:
         name=None,
         source=None,
         source_dims=None,
-        target=None,
         target_dims=None,
         unflattened=None,
         unflattened_dims=None,
@@ -104,15 +102,10 @@ class Tensor:
         else:
             self.source_dims = (dim for dim in range(self.source.ndim))
 
-        if target is not None:
-            self.target = target
-        else:
-            self.target = self
-
         if target_dims is not None:
             self.target_dims = target_dims
         else:
-            self.target_dims = (dim for dim in range(self.target.ndim))
+            self.target_dims = (dim for dim in range(self.ndim))
 
         if unflattened is not None:
             self.unflattened = unflattened

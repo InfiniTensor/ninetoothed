@@ -667,9 +667,8 @@ class CodeGenerator(ast.NodeTransformer):
         ) & functools.reduce(
             lambda x, y: x & y,
             (
-                indices[dim - tensor.innermost().target.ndim]
-                < tensor.innermost().target.shape[dim]
-                for dim, target_dim in enumerate(tensor.innermost().target_dims)
+                indices[dim - tensor.innermost().ndim] < tensor.innermost().shape[dim]
+                for dim in range(tensor.innermost().ndim)
             ),
         )
 
