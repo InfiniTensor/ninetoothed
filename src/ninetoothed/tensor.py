@@ -36,8 +36,6 @@ class Tensor:
         name=None,
         source=None,
         target_dims=None,
-        unflattened=None,
-        unflattened_dims=None,
         _offsets=None,
         _outputs=None,
     ):
@@ -99,16 +97,6 @@ class Tensor:
             self.target_dims = target_dims
         else:
             self.target_dims = (dim for dim in range(self.ndim))
-
-        if unflattened is not None:
-            self.unflattened = unflattened
-        else:
-            self.unflattened = self
-
-        if unflattened_dims is not None:
-            self.unflattened_dims = unflattened_dims
-        else:
-            self.unflattened_dims = (dim for dim in range(self.unflattened.ndim))
 
         if _offsets is not None:
             self._levels = self.source._levels
@@ -209,8 +197,6 @@ class Tensor:
             dtype=self.dtype,
             strides=inner_strides,
             source=self.source,
-            unflattened=self.unflattened,
-            unflattened_dims=self.unflattened_dims,
             _offsets=_offsets,
             _outputs=[self._inputs[1]],
         )
@@ -225,8 +211,6 @@ class Tensor:
             dtype=dtype,
             strides=outer_strides,
             source=self.source,
-            unflattened=self.unflattened,
-            unflattened_dims=self.unflattened_dims,
             _offsets=_offsets,
             _outputs=[self._inputs[0]],
         )
@@ -266,8 +250,6 @@ class Tensor:
             ],
             source=self.source,
             target_dims=self.target_dims,
-            unflattened=self.unflattened,
-            unflattened_dims=self.unflattened_dims,
             _offsets=_offsets,
             _outputs=[self._inputs[0]],
         )
@@ -309,12 +291,6 @@ class Tensor:
                 for i, target_dim in enumerate(self.target_dims)
                 if i not in dim
             ],
-            unflattened=self.unflattened,
-            unflattened_dims=[
-                unflattened_dim
-                for i, unflattened_dim in enumerate(self.unflattened_dims)
-                if i not in dim
-            ],
             _offsets=_offsets,
             _outputs=[self._inputs[0]],
         )
@@ -334,12 +310,10 @@ class Tensor:
         # TODO: Add error handling.
         new_shape = [None for _ in range(self.ndim)]
         new_strides = [None for _ in range(self.ndim)]
-        new_unflattened_dims = [None for _ in range(self.ndim)]
 
         for original_dim, permuted_dim in enumerate(dims):
             new_shape[original_dim] = self.shape[permuted_dim]
             new_strides[original_dim] = self.strides[permuted_dim]
-            new_unflattened_dims[original_dim] = self.unflattened_dims[permuted_dim]
 
         self._inputs.append([])
 
@@ -352,8 +326,6 @@ class Tensor:
             strides=new_strides,
             source=self.source,
             target_dims=self.target_dims,
-            unflattened=self.unflattened,
-            unflattened_dims=new_unflattened_dims,
             _offsets=_offsets,
             _outputs=[self._inputs[0]],
         )
@@ -400,16 +372,6 @@ class Tensor:
             leading_target_dims + (flattening_target_dims[-1],) + trailing_target_dims
         )
 
-        leading_unflattened_dims = self.unflattened_dims[:start_dim]
-        flattening_unflattened_dims = self.unflattened_dims[start_dim:end_dim]
-        trailing_unflattened_dims = self.unflattened_dims[end_dim:]
-
-        new_unflattened_dims = (
-            leading_unflattened_dims
-            + (flattening_unflattened_dims,)
-            + trailing_unflattened_dims
-        )
-
         self._inputs.append([])
 
         def _offsets(indices):
@@ -429,8 +391,6 @@ class Tensor:
             strides=new_strides,
             source=self.source,
             target_dims=new_target_dims,
-            unflattened=self.unflattened,
-            unflattened_dims=new_unflattened_dims,
             _offsets=_offsets,
             _outputs=[self._inputs[0]],
         )
@@ -577,14 +537,6 @@ class Tensor:
     @target_dims.setter
     def target_dims(self, value):
         self._target_dims = tuple(value)
-
-    @property
-    def unflattened_dims(self):
-        return self._unflattened_dims
-
-    @unflattened_dims.setter
-    def unflattened_dims(self, value):
-        self._unflattened_dims = tuple(value)
 
     @staticmethod
     def pointer_pattern():
