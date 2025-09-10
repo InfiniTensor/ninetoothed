@@ -651,7 +651,7 @@ class CodeGenerator(ast.NodeTransformer):
         self._invariants[name_for_pointers] = Symbol(tensor.source.pointer_string())
 
         overall_offsets = sum(
-            offsets[source_dim] * tensor.source.strides[source_dim]
+            offsets[source_dim] * Symbol(tensor.source.stride_string(source_dim))
             for source_dim in range(tensor.source.ndim)
         )
 
