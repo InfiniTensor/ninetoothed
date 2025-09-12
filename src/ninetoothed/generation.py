@@ -10,11 +10,9 @@ import math
 import os
 import pathlib
 import random
-import shutil
 import subprocess
 import tempfile
 import time
-import uuid
 
 import sympy
 import triton
@@ -1139,30 +1137,23 @@ def _determine_log2_max_num_elements_per_block(
 
 
 def _profile_pseudo_add_kernel(block_size):
-    cache_dir = triton.runtime.cache.default_cache_dir()
-    os.makedirs(cache_dir, exist_ok=True)
+    with tempfile.TemporaryDirectory() as temporary_cache_dir:
+        cache_dir = os.environ.get("TRITON_CACHE_DIR")
 
-    with tempfile.TemporaryDirectory() as backup_dir:
-        backup_path = os.path.join(backup_dir, str(uuid.uuid4()))
+        os.environ["TRITON_CACHE_DIR"] = temporary_cache_dir
 
-        if os.path.exists(backup_path):
-            shutil.rmtree(backup_path)
+        start_time = time.time()
 
-        shutil.move(cache_dir, backup_path)
+        _run_pseudo_add_kernel(block_size)
 
-        try:
-            start_time = time.time()
+        end_time = time.time()
 
-            _run_pseudo_add_kernel(block_size)
+        elapsed_time = end_time - start_time
 
-            end_time = time.time()
-
-            elapsed_time = end_time - start_time
-        finally:
-            if os.path.exists(cache_dir):
-                shutil.rmtree(cache_dir)
-
-            shutil.move(backup_path, cache_dir)
+        if cache_dir is not None:
+            os.environ["TRITON_CACHE_DIR"] = cache_dir
+        else:
+            os.environ.pop("TRITON_CACHE_DIR")
 
         return elapsed_time
 
