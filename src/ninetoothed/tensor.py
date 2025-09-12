@@ -1,3 +1,4 @@
+import copy
 import itertools
 import math
 import re
@@ -12,13 +13,10 @@ class Tensor:
     :param ndim: The number of dimensions of the tensor.
     :param shape: The shape of the tensor.
     :param dtype: The element type of the tensor.
-    :param strides: The strides of the tensor.
     :param other: The values for out-of-bounds positions.
     :param shape_options: The options for configuring shape symbols.
     :param name: The name of the tensor.
     :param source: For internal use only.
-    :param source_dims: For internal use only.
-    :param target: For internal use only.
     :param target_dims: For internal use only.
     """
 
@@ -29,18 +27,15 @@ class Tensor:
         ndim=None,
         shape=None,
         dtype=None,
-        strides=None,
         other=None,
         shape_options=None,
         constexpr=None,
         value=None,
         name=None,
         source=None,
-        source_dims=None,
-        target=None,
         target_dims=None,
-        unflattened=None,
-        unflattened_dims=None,
+        _offsets=None,
+        _outputs=None,
     ):
         self.dtype = dtype
 
@@ -65,14 +60,8 @@ class Tensor:
                 Symbol(self.size_string(i), **size_options)
                 for i, size_options in zip(range(ndim), shape_options)
             )
-            self.strides = (Symbol(self.stride_string(i)) for i in range(ndim))
         else:
             self.shape = shape
-
-            if strides is not None:
-                self.strides = strides
-            else:
-                self.strides = self._calculate_default_strides(shape)
 
         self.other = other
 
@@ -96,33 +85,42 @@ class Tensor:
         else:
             self.source = self
 
-        if source_dims is not None:
-            self.source_dims = source_dims
-        else:
-            self.source_dims = (dim for dim in range(self.source.ndim))
-
-        if target is not None:
-            self.target = target
-        else:
-            self.target = self
-
         if target_dims is not None:
             self.target_dims = target_dims
         else:
-            self.target_dims = (dim for dim in range(self.target.ndim))
+            self.target_dims = (dim for dim in range(self.ndim))
 
-        if unflattened is not None:
-            self.unflattened = unflattened
-        else:
-            self.unflattened = self
+        if _offsets is not None:
+            self._levels = self.source._levels
 
-        if unflattened_dims is not None:
-            self.unflattened_dims = unflattened_dims
+            self._offsets = _offsets
+
+            self._outputs = _outputs
         else:
-            self.unflattened_dims = (dim for dim in range(self.unflattened.ndim))
+            self._levels = [[self]]
+
+            def _offsets(indices):
+                return (tuple(indices),)
+
+            self._offsets = _offsets
+
+            self._outputs = [[]]
+
+        self._inputs = []
 
         type(self).num_instances += 1
 
+    @staticmethod
+    def _meta_operation(func):
+        def wrapper(self, *args, **kwargs):
+            if self.source is self:
+                return func(copy.deepcopy(self), *args, **kwargs)
+
+            return func(self, *args, **kwargs)
+
+        return wrapper
+
+    @_meta_operation
     def tile(self, tile_shape, strides=None, dilation=None, floor_mode=False):
         """Tiles the tensor into a hierarchical tensor.
 
@@ -145,8 +143,8 @@ class Tensor:
         inner_shape = []
         inner_strides = []
 
-        for self_size, self_stride, tile_size, stride, spacing in zip(
-            self.shape, self.strides, tile_shape, strides, dilation
+        for self_size, tile_size, stride, spacing in zip(
+            self.shape, tile_shape, strides, dilation
         ):
             if tile_size == -1:
                 tile_size = self_size
@@ -172,33 +170,46 @@ class Tensor:
                 if stride != 0
                 else -1
             )
-            outer_shape.append(new_size)
 
-            new_stride = self_stride * stride
-            outer_strides.append(new_stride)
+            outer_shape.append(new_size)
+            outer_strides.append(stride)
 
             inner_shape.append(tile_size)
-            next_stride = self_stride * spacing
-            inner_strides.append(next_stride)
+            inner_strides.append(spacing)
 
-        return type(self)(
-            shape=outer_shape,
-            dtype=type(self)(
-                shape=inner_shape,
-                dtype=self.dtype,
-                strides=inner_strides,
-                source=self.source,
-                source_dims=self.source_dims,
-                unflattened=self.unflattened,
-                unflattened_dims=self.unflattened_dims,
-            ),
-            strides=outer_strides,
+        self._inputs.extend(([], []))
+
+        def _offsets(indices):
+            return (
+                tuple(index * stride for index, stride in zip(indices, inner_strides)),
+            )
+
+        dtype = type(self)(
+            shape=inner_shape,
+            dtype=self.dtype,
             source=self.source,
-            source_dims=self.source_dims,
-            unflattened=self.unflattened,
-            unflattened_dims=self.unflattened_dims,
+            _offsets=_offsets,
+            _outputs=[self._inputs[1]],
         )
 
+        def _offsets(indices):
+            return (
+                tuple(index * stride for index, stride in zip(indices, outer_strides)),
+            )
+
+        output = type(self)(
+            shape=outer_shape,
+            dtype=dtype,
+            source=self.source,
+            _offsets=_offsets,
+            _outputs=[self._inputs[0]],
+        )
+
+        self._levels.append([output, dtype])
+
+        return output
+
+    @_meta_operation
     def expand(self, shape):
         """Expands the specified singleton dimensions of the tensor.
 
@@ -206,24 +217,34 @@ class Tensor:
         :return: The expanded tensor.
         """
 
+        self._inputs.append([])
+
+        def _offsets(indices):
+            return (
+                tuple(
+                    index if new_size == -1 else 0
+                    for index, new_size in zip(indices, shape)
+                ),
+            )
+
         # TODO: Add error handling.
-        return type(self)(
+        output = type(self)(
             shape=[
                 new_size if new_size != -1 else size
                 for size, new_size in zip(self.shape, shape)
             ],
             dtype=self.dtype,
-            strides=[
-                stride if new_size == -1 else 0
-                for new_size, stride in zip(shape, self.strides)
-            ],
             source=self.source,
-            source_dims=self.source_dims,
             target_dims=self.target_dims,
-            unflattened=self.unflattened,
-            unflattened_dims=self.unflattened_dims,
+            _offsets=_offsets,
+            _outputs=[self._inputs[0]],
         )
 
+        self._levels.append([output])
+
+        return output
+
+    @_meta_operation
     def squeeze(self, dim):
         """Removes the specified singleton dimensions of the tensor.
 
@@ -234,30 +255,36 @@ class Tensor:
         if not isinstance(dim, tuple):
             dim = (dim,)
 
+        self._inputs.append([])
+
+        def _offsets(indices):
+            return (
+                (
+                    lambda iter: tuple(
+                        next(iter) if i not in dim else 0 for i in range(self.ndim)
+                    )
+                )(iter(indices)),
+            )
+
         # TODO: Add error handling.
-        return type(self)(
+        output = type(self)(
             shape=[size for i, size in enumerate(self.shape) if i not in dim],
             dtype=self.dtype,
-            strides=[stride for i, stride in enumerate(self.strides) if i not in dim],
             source=self.source,
-            source_dims=[
-                source_dim
-                for i, source_dim in enumerate(self.source_dims)
-                if i not in dim
-            ],
             target_dims=[
                 target_dim
                 for i, target_dim in enumerate(self.target_dims)
                 if i not in dim
             ],
-            unflattened=self.unflattened,
-            unflattened_dims=[
-                unflattened_dim
-                for i, unflattened_dim in enumerate(self.unflattened_dims)
-                if i not in dim
-            ],
+            _offsets=_offsets,
+            _outputs=[self._inputs[0]],
         )
 
+        self._levels.append([output])
+
+        return output
+
+    @_meta_operation
     def permute(self, dims):
         """Permutes the dimensions of the tensor.
 
@@ -267,27 +294,29 @@ class Tensor:
 
         # TODO: Add error handling.
         new_shape = [None for _ in range(self.ndim)]
-        new_strides = [None for _ in range(self.ndim)]
-        new_source_dims = [None for _ in range(self.ndim)]
-        new_unflattened_dims = [None for _ in range(self.ndim)]
 
         for original_dim, permuted_dim in enumerate(dims):
             new_shape[original_dim] = self.shape[permuted_dim]
-            new_strides[original_dim] = self.strides[permuted_dim]
-            new_source_dims[original_dim] = self.source_dims[permuted_dim]
-            new_unflattened_dims[original_dim] = self.unflattened_dims[permuted_dim]
 
-        return type(self)(
+        self._inputs.append([])
+
+        def _offsets(indices):
+            return (tuple(indices[dims.index(dim)] for dim in range(len(dims))),)
+
+        output = type(self)(
             shape=new_shape,
             dtype=self.dtype,
-            strides=new_strides,
             source=self.source,
-            source_dims=new_source_dims,
             target_dims=self.target_dims,
-            unflattened=self.unflattened,
-            unflattened_dims=new_unflattened_dims,
+            _offsets=_offsets,
+            _outputs=[self._inputs[0]],
         )
 
+        self._levels.append([output])
+
+        return output
+
+    @_meta_operation
     def flatten(self, start_dim=None, end_dim=None):
         """Flattens the specified dimensions of the tensor.
 
@@ -311,20 +340,6 @@ class Tensor:
 
         new_shape = leading_sizes + (math.prod(flattening_sizes),) + trailing_sizes
 
-        leading_strides = self.strides[:start_dim]
-        flattening_strides = self.strides[start_dim:end_dim]
-        trailing_strides = self.strides[end_dim:]
-
-        new_strides = leading_strides + (flattening_strides[-1],) + trailing_strides
-
-        leading_source_dims = self.source_dims[:start_dim]
-        flattening_source_dims = self.source_dims[start_dim:end_dim]
-        trailing_source_dims = self.source_dims[end_dim:]
-
-        new_source_dims = (
-            leading_source_dims + (flattening_source_dims,) + trailing_source_dims
-        )
-
         leading_target_dims = self.target_dims[:start_dim]
         flattening_target_dims = self.target_dims[start_dim:end_dim]
         trailing_target_dims = self.target_dims[end_dim:]
@@ -333,27 +348,33 @@ class Tensor:
             leading_target_dims + (flattening_target_dims[-1],) + trailing_target_dims
         )
 
-        leading_unflattened_dims = self.unflattened_dims[:start_dim]
-        flattening_unflattened_dims = self.unflattened_dims[start_dim:end_dim]
-        trailing_unflattened_dims = self.unflattened_dims[end_dim:]
+        self._inputs.append([])
 
-        new_unflattened_dims = (
-            leading_unflattened_dims
-            + (flattening_unflattened_dims,)
-            + trailing_unflattened_dims
-        )
+        def _offsets(indices):
+            start_dim_ = self.ndim + start_dim if start_dim < 0 else start_dim
 
-        return type(self)(
+            return (
+                (
+                    indices[:start_dim_]
+                    + type(self)._unravel_index(indices[start_dim_], flattening_sizes)
+                    + indices[start_dim_ + 1 :]
+                ),
+            )
+
+        output = type(self)(
             shape=new_shape,
             dtype=self.dtype,
-            strides=new_strides,
             source=self.source,
-            source_dims=new_source_dims,
             target_dims=new_target_dims,
-            unflattened=self.unflattened,
-            unflattened_dims=new_unflattened_dims,
+            _offsets=_offsets,
+            _outputs=[self._inputs[0]],
         )
 
+        self._levels.append([output])
+
+        return output
+
+    @_meta_operation
     def ravel(self):
         """Flattens the hierarchy of the tensor.
 
@@ -369,36 +390,68 @@ class Tensor:
 
         # TODO: Add error handling.
         new_shape = []
-        new_strides = []
-        new_source_dims = []
+        outputs = []
 
         curr = self
 
         while isinstance(curr, type(self)):
             new_shape.extend(curr.shape)
-            new_strides.extend(curr.strides)
-            new_source_dims.extend(curr.source_dims)
+            curr._inputs.append([])
+            outputs.extend(curr._inputs)
 
             curr = curr.dtype
 
-        return type(self)(
+        def _offsets(indices):
+            outputs = []
+
+            curr = self
+            start = 0
+
+            while isinstance(curr, type(self)):
+                stop = start + curr.ndim
+                curr_indices = indices[start:stop]
+
+                outputs.append(curr_indices)
+
+                start = stop
+                curr = curr.dtype
+
+            return tuple(outputs)
+
+        output = type(self)(
             shape=new_shape,
-            strides=new_strides,
             other=self.source.other,
             name=self.source.name,
             source=self.source,
-            source_dims=new_source_dims,
+            _offsets=_offsets,
+            _outputs=outputs,
         )
+
+        self._levels.append([output])
+
+        return output
+
+    def offsets(self):
+        for output_, output in zip(
+            self._outputs,
+            self._offsets(tuple(sum(indices) for indices in zip(*self._inputs))),
+        ):
+            output_.clear()
+            output_.extend(output)
 
     def names(self):
         if self.ndim == 0:
             return {Symbol(self.source.name)}
 
+        strides = tuple(
+            Symbol(self.source.stride_string(dim)) for dim in range(self.ndim)
+        )
+
         return (
             {Symbol(self.source.pointer_string())}
             | {
                 name
-                for value in itertools.chain(self.shape, self.strides)
+                for value in itertools.chain(self.shape, strides)
                 if isinstance(value, Symbol)
                 for name in value.names()
             }
@@ -427,12 +480,6 @@ class Tensor:
 
         return self.shape[dim]
 
-    def stride(self, dim=None):
-        if dim is None:
-            return self.strides
-
-        return self.strides[dim]
-
     @property
     def shape(self):
         return self._shape
@@ -442,24 +489,8 @@ class Tensor:
         self._shape = tuple(value)
 
     @property
-    def strides(self):
-        return self._strides
-
-    @strides.setter
-    def strides(self, value):
-        self._strides = tuple(value)
-
-    @property
     def ndim(self):
         return len(self.shape)
-
-    @property
-    def source_dims(self):
-        return self._source_dims
-
-    @source_dims.setter
-    def source_dims(self, value):
-        self._source_dims = tuple(value)
 
     @property
     def target_dims(self):
@@ -468,14 +499,6 @@ class Tensor:
     @target_dims.setter
     def target_dims(self, value):
         self._target_dims = tuple(value)
-
-    @property
-    def unflattened_dims(self):
-        return self._unflattened_dims
-
-    @unflattened_dims.setter
-    def unflattened_dims(self, value):
-        self._unflattened_dims = tuple(value)
 
     @staticmethod
     def pointer_pattern():
@@ -488,6 +511,16 @@ class Tensor:
     @staticmethod
     def stride_pattern():
         return re.compile(rf"({_identifier_pattern_raw_string()})_(stride)_(.+)")
+
+    @staticmethod
+    def _unravel_index(index, shape):
+        indices = []
+
+        for stride in Tensor._calculate_default_strides(shape):
+            indices.append(index // stride)
+            index %= stride
+
+        return tuple(indices)
 
     @staticmethod
     def _calculate_default_strides(shape):
