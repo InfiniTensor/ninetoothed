@@ -636,25 +636,11 @@ class CodeGenerator(ast.NodeTransformer):
         return pointers, mask
 
     def _complete_indices(self, tensor, indices):
-        class _NextPowerOfTwoMaker(ast.NodeTransformer):
-            def visit_Name(self, node):
-                name = node.id
-
-                if not naming.is_meta(name):
-                    next_power_of_2_name = naming.make_next_power_of_2(name)
-
-                    return ast.Name(id=next_power_of_2_name, ctx=ast.Load())
-
-                return self.generic_visit(node)
-
-        indices = list(self._generate_pid_indices(tensor) + tuple(indices))
-
-        for size in tensor.innermost().shape:
-            size = _NextPowerOfTwoMaker().visit(Symbol(copy.deepcopy(size)).node)
-
-            indices.append(call("arange", 0, size))
-
-        return tuple(indices)
+        return (
+            tuple(self._generate_pid_indices(tensor))
+            + tuple(indices)
+            + tuple(type(self)._generate_innermost_indices(tensor))
+        )
 
     def _generate_pid_indices(self, tensor):
         self._invariants[type(self)._NAME_FOR_PID] = call("program_id", 0)
@@ -754,6 +740,28 @@ class CodeGenerator(ast.NodeTransformer):
             offsets[dim] += offset
 
         return offsets
+
+    @staticmethod
+    def _generate_innermost_indices(tensor):
+        class _NextPowerOfTwoMaker(ast.NodeTransformer):
+            def visit_Name(self, node):
+                name = node.id
+
+                if not naming.is_meta(name):
+                    next_power_of_2_name = naming.make_next_power_of_2(name)
+
+                    return ast.Name(id=next_power_of_2_name, ctx=ast.Load())
+
+                return self.generic_visit(node)
+
+        indices = []
+
+        for size in tensor.innermost().shape:
+            size = _NextPowerOfTwoMaker().visit(Symbol(copy.deepcopy(size)).node)
+
+            indices.append(call("arange", 0, size))
+
+        return tuple(indices)
 
     @staticmethod
     def _name_for_pointers(tensor):
