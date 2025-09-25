@@ -99,7 +99,7 @@ class Symbol:
         return False
 
     def __hash__(self):
-        return id(self)
+        return hash(str(self))
 
     def __add__(self, other):
         other = type(self)(other)
