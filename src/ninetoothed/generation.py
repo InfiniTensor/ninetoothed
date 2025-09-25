@@ -624,51 +624,14 @@ class CodeGenerator(ast.NodeTransformer):
     def _generate_pointers_and_mask(self, tensor, indices):
         indices = [Symbol(index) for index in self._complete_indices(tensor, indices)]
 
-        curr = tensor
-        start = 0
-
-        while isinstance(curr, type(tensor)):
-            for i, target_dim in enumerate(curr.target_dims):
-                index = indices[start + i]
-
-                if isinstance(index.node, ast.Constant):
-                    continue
-
-                indices[start + i] = index[
-                    type(self)._generate_slices(tensor, target_dim)
-                ]
-
-            start += curr.ndim
-            curr = curr.dtype
-
-        offsets = type(self)._generate_offsets(tensor, indices)
-
-        tensor._last_generated_offsets = offsets
-
         name_for_pointers = type(self)._name_for_pointers(tensor)
         self._invariants[name_for_pointers] = Symbol(tensor.source.pointer_string())
 
-        overall_offsets = sum(
-            offsets[source_dim] * Symbol(tensor.source.stride_string(source_dim))
-            for source_dim in range(tensor.source.ndim)
+        overall_offsets, mask = type(self)._generate_overall_offsets_and_mask(
+            tensor, indices
         )
-
-        tensor._last_generated_overall_offsets = overall_offsets
 
         pointers = name_for_pointers + overall_offsets
-        mask = functools.reduce(
-            lambda x, y: x & y,
-            (
-                offsets[source_dim] < tensor.source.shape[source_dim]
-                for source_dim in range(tensor.source.ndim)
-            ),
-        ) & functools.reduce(
-            lambda x, y: x & y,
-            (
-                indices[dim - tensor.innermost().ndim] < tensor.innermost().shape[dim]
-                for dim in range(tensor.innermost().ndim)
-            ),
-        )
 
         return pointers, mask
 
@@ -720,6 +683,52 @@ class CodeGenerator(ast.NodeTransformer):
             slice(None) if target_dim == dim else None
             for target_dim in tensor.innermost().target_dims
         )
+
+    @staticmethod
+    def _generate_overall_offsets_and_mask(tensor, indices):
+        curr = tensor
+        start = 0
+
+        while isinstance(curr, type(tensor)):
+            for i, target_dim in enumerate(curr.target_dims):
+                index = indices[start + i]
+
+                if isinstance(index.node, ast.Constant):
+                    continue
+
+                indices[start + i] = index[
+                    CodeGenerator._generate_slices(tensor, target_dim)
+                ]
+
+            start += curr.ndim
+            curr = curr.dtype
+
+        offsets = CodeGenerator._generate_offsets(tensor, indices)
+
+        tensor._last_generated_offsets = offsets
+
+        overall_offsets = sum(
+            offsets[source_dim] * Symbol(tensor.source.stride_string(source_dim))
+            for source_dim in range(tensor.source.ndim)
+        )
+
+        tensor._last_generated_overall_offsets = overall_offsets
+
+        mask = functools.reduce(
+            lambda x, y: x & y,
+            (
+                offsets[source_dim] < tensor.source.shape[source_dim]
+                for source_dim in range(tensor.source.ndim)
+            ),
+        ) & functools.reduce(
+            lambda x, y: x & y,
+            (
+                indices[dim - tensor.innermost().ndim] < tensor.innermost().shape[dim]
+                for dim in range(tensor.innermost().ndim)
+            ),
+        )
+
+        return overall_offsets, mask
 
     @staticmethod
     def _generate_offsets(tensor, indices):
