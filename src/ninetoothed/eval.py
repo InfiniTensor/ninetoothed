@@ -40,6 +40,9 @@ def _eval(tensor, subs=None):
 
         return string
 
+    if tensor.source.ndim == 0:
+        return np.array(0, dtype=np.intp)
+
     if subs is None:
         subs = {tensor.source: {"shape": tensor.source.shape}}
 
