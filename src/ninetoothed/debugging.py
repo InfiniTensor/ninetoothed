@@ -4,6 +4,7 @@ import textwrap
 
 import torch
 
+from ninetoothed.eval import _generate_target_tensor_shape
 from ninetoothed.generation import cache_source
 from ninetoothed.jit import import_from_path
 from ninetoothed.make import make
@@ -40,14 +41,7 @@ def simulate_arrangement(arrangement, tensors, device=None):
 
         num_programs = math.prod(tensor.shape)
 
-        shape = [math.prod(arranged.shape)]
-
-        curr = arranged.dtype
-
-        while isinstance(curr, type(arranged)):
-            shape.extend(curr.shape)
-
-            curr = curr.dtype
+        shape = _generate_target_tensor_shape(arranged)
 
         source_tensor = torch.arange(num_programs, device=device).view(tensor.shape)
         target_tensor = torch.empty(shape, dtype=source_tensor.dtype, device=device)

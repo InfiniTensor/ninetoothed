@@ -96,10 +96,17 @@ class Symbol:
             if isinstance(other, numbers.Number):
                 return self._node.value == other
 
+        if isinstance(self._node, ast.Name):
+            if isinstance(other, Symbol) and isinstance(other._node, ast.Name):
+                return (
+                    self._node.id == other._node.id
+                    and self._node.ctx == other._node.ctx
+                )
+
         return False
 
     def __hash__(self):
-        return id(self)
+        return hash(str(self))
 
     def __add__(self, other):
         other = type(self)(other)

@@ -16,3 +16,12 @@ Meta-Operations
    ninetoothed.Tensor.permute
    ninetoothed.Tensor.flatten
    ninetoothed.Tensor.ravel
+
+Evaluation
+----------
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   ninetoothed.Tensor.eval
