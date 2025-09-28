@@ -390,8 +390,22 @@
 <h1>ninetoothed.Tensor.flatten<a class="headerlink" href="#ninetoothed-tensor-flatten" title="Link to this heading">#</a></h1>
 <dl class="py method">
 <dt class="sig sig-object py" id="ninetoothed.Tensor.flatten">
-<span class="sig-prename descclassname"><span class="pre">Tensor.</span></span><span class="sig-name descname"><span class="pre">flatten</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#ninetoothed.Tensor.flatten" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
+<span class="sig-prename descclassname"><span class="pre">Tensor.</span></span><span class="sig-name descname"><span class="pre">flatten</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">start_dim</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">end_dim</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#ninetoothed.Tensor.flatten" title="Link to this definition">#</a></dt>
+<dd><p>Flattens the specified dimensions of the tensor.</p>
+<p>See <a class="reference internal" href="ninetoothed.Tensor.ravel.html#ninetoothed.Tensor.ravel" title="ninetoothed.Tensor.ravel"><code class="xref py py-func docutils literal notranslate"><span class="pre">ravel()</span></code></a> for the differences between <a class="reference internal" href="#ninetoothed.Tensor.flatten" title="ninetoothed.Tensor.flatten"><code class="xref py py-func docutils literal notranslate"><span class="pre">flatten()</span></code></a>
+and <a class="reference internal" href="ninetoothed.Tensor.ravel.html#ninetoothed.Tensor.ravel" title="ninetoothed.Tensor.ravel"><code class="xref py py-func docutils literal notranslate"><span class="pre">ravel()</span></code></a>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>start_dim</strong> – The first dimension to flatten.</p></li>
+<li><p><strong>end_dim</strong> – The dimension after the last to flatten.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The flattened tensor.</p>
+</dd>
+</dl>
+</dd></dl>
 
 </section>
 
