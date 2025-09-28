@@ -8,7 +8,7 @@ version = "0.20.0"
 authors = [{ name = "Jiacheng Huang", email = "huangjiacheng0709@outlook.com" }]
 description = "A domain-specific language based on Triton but providing higher-level abstraction."
 readme = "README.md"
-dependencies = ["triton>=3.0.0", "sympy>=1.13.0"]
+dependencies = ["triton>=3.0.0", "sympy>=1.13.0", "numpy>=2.1.0"]
 requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -22,7 +22,7 @@ Issues = "https://github.com/InfiniTensor/ninetoothed/issues"
 
 [project.optional-dependencies]
 debugging = ["torch>=2.4.0"]
-visualization = ["matplotlib>=3.9.0", "numpy>=2.1.0", "ninetoothed[debugging]"]
+visualization = ["matplotlib>=3.9.0", "ninetoothed[debugging]"]
 all = ["ninetoothed[debugging]", "ninetoothed[visualization]"]
 
 [tool.ruff]
