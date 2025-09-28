@@ -11,6 +11,13 @@ _NUMPY = "np"
 
 
 def _eval(tensor, subs=None):
+    """Evaluate the symbolic tensor into a numeric tensor.
+
+    :param tensor: The symbolic tensor.
+    :param subs: The substitutions for symbolic variables.
+    :return: A numeric tensor as a ``numpy.ndarray``.
+    """
+
     def _generate_replacements(subs):
         replacements = {
             ninetoothed.language.LANGUAGE: _NUMPY,
