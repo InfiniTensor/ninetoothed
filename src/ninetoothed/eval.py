@@ -10,7 +10,7 @@ from ninetoothed.tensor import Tensor
 _NUMPY = "np"
 
 
-def _eval(tensor, subs):
+def _eval(tensor, subs=None):
     def _generate_replacements(subs):
         replacements = {
             ninetoothed.language.LANGUAGE: _NUMPY,
@@ -39,6 +39,9 @@ def _eval(tensor, subs):
             string = string.replace(old, new)
 
         return string
+
+    if subs is None:
+        subs = {tensor.source: {"shape": tensor.source.shape}}
 
     replacements = _generate_replacements(subs)
 
