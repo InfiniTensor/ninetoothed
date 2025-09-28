@@ -1,0 +1,6 @@
+﻿ninetoothed.Tensor.eval
+=======================
+
+.. currentmodule:: ninetoothed
+
+.. automethod:: Tensor.eval

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>ninetoothed.Tensor.flatten &#8212; NineToothed</title>
+    <title>ninetoothed.Tensor.eval &#8212; NineToothed</title>
   
   
   
@@ -41,11 +41,11 @@
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../../_static/doctools.js?v=9bcbadda"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'python_api/generated/ninetoothed.Tensor.flatten';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'python_api/generated/ninetoothed.Tensor.eval';</script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="ninetoothed.Tensor.ravel" href="ninetoothed.Tensor.ravel.html" />
-    <link rel="prev" title="ninetoothed.Tensor.permute" href="ninetoothed.Tensor.permute.html" />
+    <link rel="next" title="Symbol" href="../symbol.html" />
+    <link rel="prev" title="ninetoothed.Tensor.ravel" href="ninetoothed.Tensor.ravel.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -313,9 +313,9 @@
 <li class="toctree-l2"><a class="reference internal" href="ninetoothed.Tensor.expand.html">ninetoothed.Tensor.expand</a></li>
 <li class="toctree-l2"><a class="reference internal" href="ninetoothed.Tensor.squeeze.html">ninetoothed.Tensor.squeeze</a></li>
 <li class="toctree-l2"><a class="reference internal" href="ninetoothed.Tensor.permute.html">ninetoothed.Tensor.permute</a></li>
-<li class="toctree-l2 current active"><a class="current reference internal" href="#">ninetoothed.Tensor.flatten</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ninetoothed.Tensor.flatten.html">ninetoothed.Tensor.flatten</a></li>
 <li class="toctree-l2"><a class="reference internal" href="ninetoothed.Tensor.ravel.html">ninetoothed.Tensor.ravel</a></li>
-<li class="toctree-l2"><a class="reference internal" href="ninetoothed.Tensor.eval.html">ninetoothed.Tensor.eval</a></li>
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">ninetoothed.Tensor.eval</a></li>
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../symbol.html">Symbol</a></li>
@@ -370,7 +370,7 @@
     
     <li class="breadcrumb-item"><a href="../tensor.html" class="nav-link">Tensor</a></li>
     
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">ninetoothed.Tensor.flatten</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">ninetoothed.Tensor.eval</span></li>
   </ul>
 </nav>
 </div>
@@ -387,23 +387,21 @@
 <div id="searchbox"></div>
                 <article class="bd-article">
                   
-  <section id="ninetoothed-tensor-flatten">
-<h1>ninetoothed.Tensor.flatten<a class="headerlink" href="#ninetoothed-tensor-flatten" title="Link to this heading">#</a></h1>
+  <section id="ninetoothed-tensor-eval">
+<h1>ninetoothed.Tensor.eval<a class="headerlink" href="#ninetoothed-tensor-eval" title="Link to this heading">#</a></h1>
 <dl class="py method">
-<dt class="sig sig-object py" id="ninetoothed.Tensor.flatten">
-<span class="sig-prename descclassname"><span class="pre">Tensor.</span></span><span class="sig-name descname"><span class="pre">flatten</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">start_dim</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">end_dim</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#ninetoothed.Tensor.flatten" title="Link to this definition">#</a></dt>
-<dd><p>Flattens the specified dimensions of the tensor.</p>
-<p>See <a class="reference internal" href="ninetoothed.Tensor.ravel.html#ninetoothed.Tensor.ravel" title="ninetoothed.Tensor.ravel"><code class="xref py py-func docutils literal notranslate"><span class="pre">ravel()</span></code></a> for the differences between <a class="reference internal" href="#ninetoothed.Tensor.flatten" title="ninetoothed.Tensor.flatten"><code class="xref py py-func docutils literal notranslate"><span class="pre">flatten()</span></code></a>
-and <a class="reference internal" href="ninetoothed.Tensor.ravel.html#ninetoothed.Tensor.ravel" title="ninetoothed.Tensor.ravel"><code class="xref py py-func docutils literal notranslate"><span class="pre">ravel()</span></code></a>.</p>
+<dt class="sig sig-object py" id="ninetoothed.Tensor.eval">
+<span class="sig-prename descclassname"><span class="pre">Tensor.</span></span><span class="sig-name descname"><span class="pre">eval</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">subs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#ninetoothed.Tensor.eval" title="Link to this definition">#</a></dt>
+<dd><p>Evaluate the symbolic tensor into a numeric tensor.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>start_dim</strong> – The first dimension to flatten.</p></li>
-<li><p><strong>end_dim</strong> – The dimension after the last to flatten.</p></li>
+<li><p><strong>tensor</strong> – The symbolic tensor.</p></li>
+<li><p><strong>subs</strong> – The substitutions for symbolic variables.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>The flattened tensor.</p>
+<dd class="field-even"><p>A numeric tensor as a <code class="docutils literal notranslate"><span class="pre">numpy.ndarray</span></code>.</p>
 </dd>
 </dl>
 </dd></dl>
@@ -421,20 +419,20 @@ and <a class="reference internal" href="ninetoothed.Tensor.ravel.html#ninetoothe
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="ninetoothed.Tensor.permute.html"
+       href="ninetoothed.Tensor.ravel.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">ninetoothed.Tensor.permute</p>
+        <p class="prev-next-title">ninetoothed.Tensor.ravel</p>
       </div>
     </a>
     <a class="right-next"
-       href="ninetoothed.Tensor.ravel.html"
+       href="../symbol.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">ninetoothed.Tensor.ravel</p>
+        <p class="prev-next-title">Symbol</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -457,7 +455,7 @@ and <a class="reference internal" href="ninetoothed.Tensor.ravel.html#ninetoothe
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ninetoothed.Tensor.flatten"><code class="docutils literal notranslate"><span class="pre">Tensor.flatten()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ninetoothed.Tensor.eval"><code class="docutils literal notranslate"><span class="pre">Tensor.eval()</span></code></a></li>
 </ul>
   </nav></div>
 
@@ -465,7 +463,7 @@ and <a class="reference internal" href="ninetoothed.Tensor.ravel.html#ninetoothe
   <div role="note" aria-label="source link">
     <h3>This Page</h3>
     <ul class="this-page-menu">
-      <li><a href="../../_sources/python_api/generated/ninetoothed.Tensor.flatten.rst.txt"
+      <li><a href="../../_sources/python_api/generated/ninetoothed.Tensor.eval.rst.txt"
             rel="nofollow">Show Source</a></li>
     </ul>
    </div></div>
