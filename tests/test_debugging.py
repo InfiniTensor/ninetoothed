@@ -241,3 +241,9 @@ def test_addmm():
         zip(target_tensors, reference_target_tensors),
     ):
         assert torch.equal(tensor.to(reference_tensor.device), reference_tensor)
+
+    for tensor, reference_tensor in zip(
+        (arranged.eval() for arranged in arrangement(*tensors)),
+        reference_target_tensors,
+    ):
+        assert torch.equal(torch.from_numpy(tensor), reference_tensor)
