@@ -1,4 +1,5 @@
 import copy
+import functools
 import itertools
 import math
 import re
@@ -112,6 +113,7 @@ class Tensor:
 
     @staticmethod
     def _meta_operation(func):
+        @functools.wraps(func)
         def wrapper(self, *args, **kwargs):
             if self.source is self:
                 return func(copy.deepcopy(self), *args, **kwargs)
