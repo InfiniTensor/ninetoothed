@@ -12,6 +12,7 @@ from ninetoothed.dtype import (
     uint32,
     uint64,
 )
+from ninetoothed.eval import _eval as eval
 from ninetoothed.jit import jit
 from ninetoothed.make import make
 from ninetoothed.symbol import Symbol, block_size
@@ -29,6 +30,7 @@ __all__ = [
     "int16",
     "int32",
     "int64",
+    "eval",
     "jit",
     "make",
     "uint8",
