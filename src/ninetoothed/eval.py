@@ -50,11 +50,9 @@ def _eval(tensor, subs):
     for index in np.ndindex(shape[: -tensor.innermost().ndim]):
         overall_offsets, mask = CodeGenerator._generate_overall_offsets_and_mask(
             tensor,
-            list(
-                Tensor._unravel_index(Symbol(f"np.array([{index[0]}])"), tensor.shape)
-                + tuple(Symbol(index) for index in index[1:])
-                + CodeGenerator._generate_innermost_indices(tensor)
-            ),
+            Tensor._unravel_index(Symbol(f"np.array([{index[0]}])"), tensor.shape)
+            + tuple(Symbol(index) for index in index[1:])
+            + CodeGenerator._generate_innermost_indices(tensor),
         )
 
         overall_offsets = _replace(str(overall_offsets), replacements)

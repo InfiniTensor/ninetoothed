@@ -672,6 +672,8 @@ class CodeGenerator(ast.NodeTransformer):
 
     @staticmethod
     def _generate_overall_offsets_and_mask(tensor, indices):
+        indices = list(indices)
+
         curr = tensor
         start = 0
 
