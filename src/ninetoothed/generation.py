@@ -741,6 +741,13 @@ class CodeGenerator(ast.NodeTransformer):
         for dim, offset in enumerate(tensor.source._outputs[0]):
             offsets[dim] += offset
 
+        curr = tensor
+
+        while isinstance(curr, type(tensor)):
+            curr._inputs.clear()
+
+            curr = curr.dtype
+
         return offsets
 
     @staticmethod
