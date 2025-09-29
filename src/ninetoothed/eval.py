@@ -1,3 +1,4 @@
+import copy
 import math
 
 import numpy as np
@@ -19,6 +20,8 @@ def _eval(tensor, subs=None):
     """
 
     def _generate_replacements(subs):
+        subs = copy.deepcopy(subs)
+
         replacements = {
             ninetoothed.language.LANGUAGE: _NUMPY,
             "slice(None, None, None)": ":",
