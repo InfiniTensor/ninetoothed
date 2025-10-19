@@ -9,7 +9,6 @@ import json
 import math
 import os
 import pathlib
-import random
 import subprocess
 import tempfile
 import time
@@ -455,7 +454,10 @@ class CodeGenerator(ast.NodeTransformer):
         ]
 
         if self._max_num_configs is not None and len(configs) > self._max_num_configs:
-            configs = random.sample(configs, k=self._max_num_configs)
+            configs = [
+                configs[i * len(configs) // self._max_num_configs]
+                for i in range(self._max_num_configs)
+            ]
 
         if len(configs) <= 1:
             return None
