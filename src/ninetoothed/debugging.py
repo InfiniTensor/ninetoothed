@@ -41,7 +41,7 @@ def simulate_arrangement(arrangement, tensors, device=None):
 
         num_programs = math.prod(tensor.shape)
 
-        shape = _generate_target_tensor_shape(arranged)
+        shape = _generate_target_tensor_shape(arranged, flatten_outermost=True)
 
         source_tensor = torch.arange(num_programs, device=device).view(tensor.shape)
         target_tensor = torch.empty(shape, dtype=source_tensor.dtype, device=device)

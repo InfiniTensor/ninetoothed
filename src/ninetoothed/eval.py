@@ -17,6 +17,12 @@ def _eval(tensor, subs=None):
     :param tensor: The symbolic tensor.
     :param subs: The substitutions for symbolic variables.
     :return: A numeric tensor as a ``numpy.ndarray``.
+
+    .. versionchanged:: 0.22.0
+
+        The dimensions of the outermost level are preserved.
+        Previously, the evaluation would flatten the dimensions of the
+        outermost level.
     """
 
     def _generate_replacements(subs):
@@ -66,8 +72,7 @@ def _eval(tensor, subs=None):
     for index in np.ndindex(shape[: -tensor.innermost().ndim]):
         overall_offsets, mask = CodeGenerator._generate_overall_offsets_and_mask(
             tensor,
-            Tensor._unravel_index(Symbol(f"np.array([{index[0]}])"), tensor.shape)
-            + tuple(Symbol(index) for index in index[1:])
+            tuple(Symbol(index) for index in index)
             + CodeGenerator._generate_innermost_indices(tensor),
         )
 
@@ -81,10 +86,15 @@ def _eval(tensor, subs=None):
     return result
 
 
-def _generate_target_tensor_shape(tensor):
-    shape = [math.prod(tensor.shape)]
+def _generate_target_tensor_shape(tensor, flatten_outermost=False):
+    if flatten_outermost:
+        shape = [math.prod(tensor.shape)]
 
-    curr = tensor.dtype
+        curr = tensor.dtype
+    else:
+        shape = []
+
+        curr = tensor
 
     while isinstance(curr, type(tensor)):
         shape.extend(curr.shape)
