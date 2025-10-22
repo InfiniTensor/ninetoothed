@@ -36,9 +36,12 @@ def visualize(tensor, color=None, save_path=None):
 
     _visualize_tensor(ax, tensor, 0, 0, color)
 
-    plt.savefig(save_path, transparent=True, bbox_inches="tight", pad_inches=0)
+    if save_path is not None:
+        plt.savefig(save_path, transparent=True, bbox_inches="tight", pad_inches=0)
 
-    plt.close()
+        plt.close()
+    else:
+        plt.show()
 
     visualize.count += 1
 
