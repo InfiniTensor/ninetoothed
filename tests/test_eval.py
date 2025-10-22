@@ -5,12 +5,29 @@ from ninetoothed import Tensor
 
 
 def test_eval():
+    assert (Tensor(shape=(2, 3)).eval() == np.array([[0, 1, 2], [3, 4, 5]])).all()
+
     x = Tensor(2)
 
     block_size_m = ninetoothed.block_size()
     block_size_n = ninetoothed.block_size()
 
     subs = {x: {"shape": (5, 6)}, block_size_m: 2, block_size_n: 3}
+
+    x_evaluated = x.eval(subs)
+
+    assert (
+        x_evaluated
+        == np.array(
+            [
+                [0, 1, 2, 3, 4, 5],
+                [6, 7, 8, 9, 10, 11],
+                [12, 13, 14, 15, 16, 17],
+                [18, 19, 20, 21, 22, 23],
+                [24, 25, 26, 27, 28, 29],
+            ]
+        )
+    ).all()
 
     x_tiled = x.tile((block_size_m, block_size_n))
 
