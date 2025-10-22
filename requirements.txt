@@ -1,3 +1,5 @@
+jupyter
+jupytext
 matplotlib
 pandas
 pytest
