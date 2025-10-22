@@ -81,6 +81,22 @@ class CodeGenerator(ast.NodeTransformer):
 
                 for name, value in func.__globals__.items():
                     if inspect.ismodule(value):
+                        if value is libdevice:
+                            aliases[name] = naming.auto_generate("libdevice")
+
+                            libdevice_alias = ast.alias(
+                                name="libdevice", asname=aliases[name]
+                            )
+                            libdevice_import = ast.ImportFrom(
+                                module="triton.language.extra",
+                                names=[libdevice_alias],
+                                level=0,
+                            )
+
+                            module.body.insert(0, libdevice_import)
+
+                            continue
+
                         aliases[name] = value.__name__
 
                 return aliases
