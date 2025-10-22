@@ -1,5 +1,6 @@
 import copy
 import math
+import re
 
 import numpy as np
 
@@ -52,7 +53,7 @@ def _eval(tensor, subs=None):
         for old, new in sorted(
             replacements.items(), key=lambda key: len(key), reverse=True
         ):
-            string = string.replace(old, new)
+            string = re.sub(rf"\b{re.escape(old)}\b", new, string)
 
         return string
 
