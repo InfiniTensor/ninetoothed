@@ -27,6 +27,8 @@ def visualize(tensor, color=None, save_path=None):
 
     _, max_pos_x, max_pos_y = _visualize_tensor(plt.gca(), tensor, 0, 0, color)
 
+    plt.close()
+
     width = max_pos_y + 1
     height = max_pos_x + 1
 
