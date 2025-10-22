@@ -22,7 +22,14 @@ Visualizing a Tensor
 Basic Usage
 ^^^^^^^^^^^
 
-If we just want to temporarily visualize a tensor, the simplest way is to pass the tensor to ``visualize`` and provide a save path. Then, ``visualize`` will save the generated image at the specified location.
+If we just want to temporarily visualize a tensor, the simplest way is to pass the tensor to ``visualize``.
+
+.. code-block:: python
+
+    x = Tensor(shape=(4, 8))
+    visualize(x)
+
+To save the visualization to a file, provide the ``save_path``. Then, ``visualize`` will save the generated image at the specified location.
 
 .. code-block:: python
 
