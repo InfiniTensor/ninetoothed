@@ -26,36 +26,6 @@ def _eval(tensor, subs=None):
         outermost level.
     """
 
-    def _generate_replacements(subs):
-        subs = copy.deepcopy(subs)
-
-        replacements = {
-            ninetoothed.language.LANGUAGE: _NUMPY,
-            "slice(None, None, None)": ":",
-        }
-
-        for old, new in subs.items():
-            if isinstance(old, Tensor):
-                shape = new.shape if isinstance(new, Tensor) else new["shape"]
-
-                for dim, size in enumerate(shape):
-                    replacements[old.size_string(dim)] = str(size)
-
-                for dim, stride in enumerate(Tensor._calculate_default_strides(shape)):
-                    replacements[old.stride_string(dim)] = str(stride)
-            elif isinstance(old, Symbol):
-                replacements[str(old)] = str(new)
-
-        return replacements
-
-    def _replace(string, replacements):
-        for old, new in sorted(
-            replacements.items(), key=lambda key: len(key), reverse=True
-        ):
-            string = re.sub(rf"\b{re.escape(old)}\b", new, string)
-
-        return string
-
     if tensor.source.ndim == 0:
         return np.array(0, dtype=np.intp)
 
@@ -105,6 +75,38 @@ def _generate_target_tensor_shape(tensor, flatten_outermost=False):
         curr = curr.dtype
 
     return shape
+
+
+def _generate_replacements(subs):
+    subs = copy.deepcopy(subs)
+
+    replacements = {
+        ninetoothed.language.LANGUAGE: _NUMPY,
+        "slice(None, None, None)": ":",
+    }
+
+    for old, new in subs.items():
+        if isinstance(old, Tensor):
+            shape = new.shape if isinstance(new, Tensor) else new["shape"]
+
+            for dim, size in enumerate(shape):
+                replacements[old.size_string(dim)] = str(size)
+
+            for dim, stride in enumerate(Tensor._calculate_default_strides(shape)):
+                replacements[old.stride_string(dim)] = str(stride)
+        elif isinstance(old, Symbol):
+            replacements[str(old)] = str(new)
+
+    return replacements
+
+
+def _replace(string, replacements):
+    for old, new in sorted(
+        replacements.items(), key=lambda key: len(key), reverse=True
+    ):
+        string = re.sub(rf"\b{re.escape(old)}\b", new, string)
+
+    return string
 
 
 Tensor.eval = _eval
