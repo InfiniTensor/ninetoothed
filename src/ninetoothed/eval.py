@@ -36,13 +36,12 @@ def _eval(tensor, subs=None):
 
         for old, new in subs.items():
             if isinstance(old, Tensor):
-                if "strides" not in new:
-                    new["strides"] = Tensor._calculate_default_strides(new["shape"])
+                shape = new.shape if isinstance(new, Tensor) else new["shape"]
 
-                for dim, size in enumerate(new["shape"]):
+                for dim, size in enumerate(shape):
                     replacements[old.size_string(dim)] = str(size)
 
-                for dim, stride in enumerate(new["strides"]):
+                for dim, stride in enumerate(Tensor._calculate_default_strides(shape)):
                     replacements[old.stride_string(dim)] = str(stride)
             elif isinstance(old, Symbol):
                 replacements[str(old)] = str(new)

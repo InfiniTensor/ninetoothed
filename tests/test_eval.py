@@ -1,10 +1,12 @@
 import numpy as np
+import pytest
 
 import ninetoothed
 from ninetoothed import Tensor
 
 
-def test_eval():
+@pytest.mark.parametrize("use_tensor_in_subs", (False, True))
+def test_eval(use_tensor_in_subs):
     assert (Tensor(shape=(2, 3)).eval() == np.array([[0, 1, 2], [3, 4, 5]])).all()
 
     x = Tensor(2)
@@ -13,6 +15,9 @@ def test_eval():
     block_size_n = ninetoothed.block_size()
 
     subs = {x: {"shape": (5, 6)}, block_size_m: 2, block_size_n: 3}
+
+    if use_tensor_in_subs:
+        subs[x] = Tensor(shape=subs[x]["shape"])
 
     x_evaluated = x.eval(subs)
 
