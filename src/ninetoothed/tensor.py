@@ -109,6 +109,8 @@ class Tensor:
 
         self._inputs = []
 
+        self._history = []
+
         type(self).num_instances += 1
 
     @staticmethod
@@ -116,9 +118,14 @@ class Tensor:
         @functools.wraps(func)
         def wrapper(self, *args, **kwargs):
             if self.source is self:
-                return func(copy.deepcopy(self), *args, **kwargs)
+                self = copy.deepcopy(self)
 
-            return func(self, *args, **kwargs)
+            result = func(self, *args, **kwargs)
+
+            result._history.extend(self._history)
+            result._history.append((func, args, kwargs))
+
+            return result
 
         return wrapper
 
