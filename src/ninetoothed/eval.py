@@ -35,7 +35,7 @@ def _eval(tensor, subs=None):
     replacements = _generate_replacements(subs)
 
     shape = _generate_target_tensor_shape(tensor)
-    shape = tuple(eval(_replace(str(size), replacements)) for size in shape)
+    shape = tuple(_replace_and_evaluate(size, replacements) for size in shape)
 
     if not isinstance(tensor.dtype, type(tensor)):
         return np.arange(math.prod(shape), dtype=np.intp).reshape(shape)
@@ -98,6 +98,21 @@ def _generate_replacements(subs):
             replacements[str(old)] = str(new)
 
     return replacements
+
+
+def _replace_and_evaluate(object, replacements):
+    if isinstance(object, (list, tuple, set)):
+        return type(object)(
+            _replace_and_evaluate(item, replacements) for item in object
+        )
+
+    if isinstance(object, dict):
+        return {
+            key: _replace_and_evaluate(value, replacements)
+            for key, value in object.items()
+        }
+
+    return eval(_replace(str(object), replacements))
 
 
 def _replace(string, replacements):
