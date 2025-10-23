@@ -413,7 +413,12 @@
 
 <section id="basic-usage">
 <h3>Basic Usage<a class="headerlink" href="#basic-usage" title="Link to this heading">#</a></h3>
-<p>If we just want to temporarily visualize a tensor, the simplest way is to pass the tensor to <code class="docutils literal notranslate"><span class="pre">visualize</span></code> and provide a save path. Then, <code class="docutils literal notranslate"><span class="pre">visualize</span></code> will save the generated image at the specified location.</p>
+<p>If we just want to temporarily visualize a tensor, the simplest way is to pass the tensor to <code class="docutils literal notranslate"><span class="pre">visualize</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">x</span> <span class="o">=</span> <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">8</span><span class="p">))</span>
+<span class="n">visualize</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>To save the visualization to a file, provide the <code class="docutils literal notranslate"><span class="pre">save_path</span></code>. Then, <code class="docutils literal notranslate"><span class="pre">visualize</span></code> will save the generated image at the specified location.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">x</span> <span class="o">=</span> <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">8</span><span class="p">))</span>
 <span class="n">visualize</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">&quot;x.png&quot;</span><span class="p">)</span>
 </pre></div>
