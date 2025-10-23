@@ -11,6 +11,7 @@ import os
 import pathlib
 import subprocess
 import tempfile
+import textwrap
 import time
 
 import sympy
@@ -68,20 +69,39 @@ class CodeGenerator(ast.NodeTransformer):
         prettify,
     ):
         def _get_tree(func):
-            module = ast.parse(inspect.getsource(inspect.getmodule(func)))
-
-            collector = _ImportCollector()
-            collector.visit(module)
-
-            finder = _FunctionDefFinder(func.__name__)
-            finder.visit(module)
-            func_def = finder.result
+            func_def = ast.parse(textwrap.dedent(inspect.getsource(func)))
 
             inliner = _Inliner(func.__globals__)
             inliner.visit(func_def)
-            module.body = collector.imports + inliner.imports + [finder.result]
 
-            return _AliasRestorer().visit(module)
+            module = ast.Module(body=[func_def], type_ignores=[])
+
+            def _find_aliases(func):
+                aliases = {}
+
+                for name, value in func.__globals__.items():
+                    if inspect.ismodule(value):
+                        if value is libdevice:
+                            aliases[name] = naming.auto_generate("libdevice")
+
+                            libdevice_alias = ast.alias(
+                                name="libdevice", asname=aliases[name]
+                            )
+                            libdevice_import = ast.ImportFrom(
+                                module="triton.language.extra",
+                                names=[libdevice_alias],
+                                level=0,
+                            )
+
+                            module.body.insert(0, libdevice_import)
+
+                            continue
+
+                        aliases[name] = value.__name__
+
+                return aliases
+
+            return _AliasRestorer(_find_aliases(func)).visit(module)
 
         def _find_dependencies(func):
             dependencies = set()
@@ -832,12 +852,10 @@ def cache_source(source):
 
 
 class _Inliner(ast.NodeTransformer):
-    def __init__(self, globals, imports=[]):
+    def __init__(self, globals):
         self._globals = globals
 
         self._count = 0
-
-        self.imports = imports
 
     def visit_Expr(self, node):
         value, stmts = self._inline_expr(node.value)
@@ -999,10 +1017,6 @@ class _Inliner(ast.NodeTransformer):
         if inspect.getmodule(func) is libdevice:
             return None, []
 
-        collector = _ImportCollector()
-        collector.visit(ast.parse(inspect.getsource(inspect.getmodule(func))))
-        self.imports.extend(collector.imports)
-
         param_names = [arg.arg for arg in func_def.args.args]
 
         mapping = {param: arg for param, arg in zip(param_names, node.args)}
@@ -1070,26 +1084,12 @@ class _SimplifiedNameCollector(ast.NodeVisitor):
 
 
 class _AliasRestorer(ast.NodeTransformer):
-    def __init__(self):
+    def __init__(self, aliases):
         super().__init__()
 
-        self._aliases = {}
+        self._aliases = aliases
+
         self._redefined = set()
-
-    def visit_Import(self, node):
-        for alias in node.names:
-            if alias.asname:
-                self._aliases[alias.asname] = alias.name
-
-        return node
-
-    def visit_ImportFrom(self, node):
-        for alias in node.names:
-            full_name = f"{node.module}.{alias.name}"
-            if alias.asname:
-                self._aliases[alias.asname] = full_name
-
-        return node
 
     def visit_Assign(self, node):
         for target in node.targets:
@@ -1115,23 +1115,6 @@ class _AliasRestorer(ast.NodeTransformer):
             return ast.Name(id=self._aliases[node.id], ctx=node.ctx)
 
         return node
-
-
-class _ImportCollector(ast.NodeVisitor):
-    def __init__(self):
-        super().__init__()
-
-        self.imports = []
-
-    def visit_Import(self, node):
-        self.imports.append(node)
-
-        self.generic_visit(node)
-
-    def visit_ImportFrom(self, node):
-        self.imports.append(node)
-
-        self.generic_visit(node)
 
 
 class _FunctionDefFinder(ast.NodeVisitor):
