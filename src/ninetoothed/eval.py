@@ -59,6 +59,48 @@ def _eval(tensor, subs=None):
     return result
 
 
+def _subs(tensor, subs):
+    """Substitute symbols in the tensor.
+
+    :param tensor: The symbolic tensor.
+    :param subs: The substitutions for symbolic variables.
+    :return: A new tensor with the substitutions applied.
+    """
+
+    replacements = _generate_replacements(subs)
+
+    source = Tensor(
+        shape=_replace_and_evaluate(tensor.source.shape, replacements),
+        dtype=tensor.source.dtype,
+        other=tensor.source.other,
+        name=tensor.source.name,
+    )
+
+    def _reconstruct(source, history):
+        curr = source
+
+        for func, args, kwargs in history:
+            args = _replace_and_evaluate(args, replacements)
+            kwargs = _replace_and_evaluate(kwargs, replacements)
+
+            curr = func(curr, *args, **kwargs)
+
+        return curr
+
+    substituted = _reconstruct(source, tensor._history)
+
+    curr_new = substituted
+    curr_old = tensor
+
+    while isinstance(curr_new.dtype, type(tensor)):
+        curr_new.dtype = _reconstruct(curr_new.dtype, curr_old.dtype._history)
+
+        curr_new = curr_new.dtype
+        curr_old = curr_old.dtype
+
+    return substituted
+
+
 def _generate_target_tensor_shape(tensor, flatten_outermost=False):
     if flatten_outermost:
         shape = [math.prod(tensor.shape)]
@@ -125,3 +167,5 @@ def _replace(string, replacements):
 
 
 Tensor.eval = _eval
+
+Tensor.subs = _subs
