@@ -25,3 +25,4 @@ Evaluation
    :nosignatures:
 
    ninetoothed.Tensor.eval
+   ninetoothed.Tensor.subs

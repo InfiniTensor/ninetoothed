@@ -1,0 +1,6 @@
+﻿ninetoothed.Tensor.subs
+=======================
+
+.. currentmodule:: ninetoothed
+
+.. automethod:: Tensor.subs
