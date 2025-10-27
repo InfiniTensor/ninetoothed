@@ -773,7 +773,7 @@ class CodeGenerator(ast.NodeTransformer):
         return offsets
 
     @staticmethod
-    def _generate_innermost_indices(tensor):
+    def _generate_innermost_indices(tensor, use_power_of_2_sizes=True):
         class _NextPowerOfTwoMaker(ast.NodeTransformer):
             def visit_Name(self, node):
                 name = node.id
@@ -788,7 +788,8 @@ class CodeGenerator(ast.NodeTransformer):
         indices = []
 
         for size in tensor.innermost().shape:
-            size = _NextPowerOfTwoMaker().visit(Symbol(copy.deepcopy(size)).node)
+            if use_power_of_2_sizes:
+                size = _NextPowerOfTwoMaker().visit(Symbol(copy.deepcopy(size)).node)
 
             indices.append(call("arange", 0, size))
 
