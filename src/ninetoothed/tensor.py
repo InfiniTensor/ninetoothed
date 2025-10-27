@@ -47,7 +47,7 @@ class Tensor:
         if name is not None:
             self.name = name
         else:
-            self.name = naming.auto_generate(f"tensor_{type(self).num_instances}")
+            self.name = Tensor.auto_generated_name_string()
 
         assert ndim is not None or shape is not None, (
             "Either `ndim` or `shape` must be provided."
@@ -727,6 +727,14 @@ class Tensor:
         self._levels.append([output])
 
         return output
+
+    @staticmethod
+    def auto_generated_name_string():
+        return naming.auto_generate(f"tensor_{Tensor.num_instances}")
+
+    @staticmethod
+    def auto_generated_name_pattern():
+        return re.compile(rf"({naming.auto_generate('tensor_')})(\d+)")
 
     @staticmethod
     def pointer_pattern():
