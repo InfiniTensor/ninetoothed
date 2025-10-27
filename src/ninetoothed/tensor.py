@@ -475,13 +475,13 @@ class Tensor:
         return self.dtype.innermost()
 
     def pointer_string(self):
-        return f"{self.name}_pointer"
+        return naming.auto_generate(f"{self.name}_pointer")
 
     def size_string(self, dim):
-        return f"{self.name}_size_{dim}"
+        return naming.auto_generate(f"{self.name}_size_{dim}")
 
     def stride_string(self, dim):
-        return f"{self.name}_stride_{dim}"
+        return naming.auto_generate(f"{self.name}_stride_{dim}")
 
     def size(self, dim=None):
         if dim is None:
@@ -511,15 +511,21 @@ class Tensor:
 
     @staticmethod
     def pointer_pattern():
-        return re.compile(rf"({_identifier_pattern_raw_string()})_(pointer)")
+        return re.compile(
+            naming.auto_generate(rf"({_identifier_pattern_raw_string()})_(pointer)")
+        )
 
     @staticmethod
     def size_pattern():
-        return re.compile(rf"({_identifier_pattern_raw_string()})_(size)_(.+)")
+        return re.compile(
+            naming.auto_generate(rf"({_identifier_pattern_raw_string()})_(size)_(.+)")
+        )
 
     @staticmethod
     def stride_pattern():
-        return re.compile(rf"({_identifier_pattern_raw_string()})_(stride)_(.+)")
+        return re.compile(
+            naming.auto_generate(rf"({_identifier_pattern_raw_string()})_(stride)_(.+)")
+        )
 
     @staticmethod
     def _unravel_index(index, shape):
