@@ -46,7 +46,9 @@ def _eval(tensor, subs=None):
         overall_offsets, mask = CodeGenerator._generate_overall_offsets_and_mask(
             tensor,
             tuple(Symbol(index) for index in index)
-            + CodeGenerator._generate_innermost_indices(tensor),
+            + CodeGenerator._generate_innermost_indices(
+                tensor, use_power_of_2_sizes=False
+            ),
         )
 
         overall_offsets = _replace(str(overall_offsets), replacements)
