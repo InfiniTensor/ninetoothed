@@ -145,6 +145,17 @@ class CodeGenerator(ast.NodeTransformer):
         source = source.replace(func.__name__, kernel_name)
         source += "\n"
 
+        for count, (prefix, index) in enumerate(
+            sorted(
+                set(
+                    (match[0], int(match[1]))
+                    for match in Tensor.auto_generated_name_pattern().findall(source)
+                ),
+                key=lambda match: match[1],
+            )
+        ):
+            source = source.replace(f"{prefix}{index}", f"{prefix}{count}")
+
         if prettify:
             for original, simplified in name_collector.simplified_names.items():
                 if simplified not in name_collector.simplified_names:
