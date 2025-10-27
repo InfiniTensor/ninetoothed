@@ -77,7 +77,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
         param_strings.append(param)
 
         if match := Tensor.pointer_pattern().fullmatch(param):
-            source_name = match.group(0).removesuffix("_pointer")
+            source_name = match.group(1)
             tensor = _find_tensor_by_source_name(tensors, source_name)
             dtype = tensor.source.dtype
 
