@@ -43,7 +43,7 @@ class Tensor:
         if name is not None:
             self.name = name
         else:
-            self.name = naming.auto_generate(f"tensor_{type(self).num_instances}")
+            self.name = Tensor.auto_generated_name_string()
 
         if ndim is not None:
             if shape_options is None:
@@ -508,6 +508,14 @@ class Tensor:
     @target_dims.setter
     def target_dims(self, value):
         self._target_dims = tuple(value)
+
+    @staticmethod
+    def auto_generated_name_string():
+        return naming.auto_generate(f"tensor_{Tensor.num_instances}")
+
+    @staticmethod
+    def auto_generated_name_pattern():
+        return re.compile(rf"({naming.auto_generate('tensor_')})(\d+)")
 
     @staticmethod
     def pointer_pattern():
