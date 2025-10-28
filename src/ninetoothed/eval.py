@@ -37,9 +37,6 @@ def _eval(tensor, subs=None):
     shape = _generate_target_tensor_shape(tensor)
     shape = tuple(_replace_and_evaluate(size, replacements) for size in shape)
 
-    if not isinstance(tensor.dtype, type(tensor)):
-        return np.arange(math.prod(shape), dtype=np.intp).reshape(shape)
-
     result = np.empty(shape, dtype=np.intp)
 
     for index in np.ndindex(shape[: -tensor.innermost().ndim]):
