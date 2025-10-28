@@ -39,6 +39,28 @@ def test_eval(use_tensor_in_subs, subs_before_eval):
         )
     ).all()
 
+    x_permuted = x.permute((1, 0))
+
+    if subs_before_eval:
+        x_permuted_substituted = x_permuted.subs(subs)
+        x_permuted_evaluated = x_permuted_substituted.eval()
+    else:
+        x_permuted_evaluated = x_permuted.eval(subs)
+
+    assert (
+        x_permuted_evaluated
+        == np.array(
+            [
+                [0, 6, 12, 18, 24],
+                [1, 7, 13, 19, 25],
+                [2, 8, 14, 20, 26],
+                [3, 9, 15, 21, 27],
+                [4, 10, 16, 22, 28],
+                [5, 11, 17, 23, 29],
+            ]
+        )
+    ).all()
+
     x_tiled = x.tile((block_size_m, block_size_n))
 
     if subs_before_eval:
