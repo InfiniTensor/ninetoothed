@@ -106,6 +106,10 @@ class JIT:
             source_file,
         )
 
+        handle.num_warps = self._num_warps
+        handle.num_stages = self._num_stages
+        handle.max_num_configs = self._max_num_configs
+
         return handle
 
 

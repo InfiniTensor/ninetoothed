@@ -37,7 +37,7 @@ def make(
     application.__annotations__ = annotations
 
     if caller == "torch":
-        return jit(
+        kernel = jit(
             application,
             caller=caller,
             kernel_name=kernel_name,
@@ -45,6 +45,12 @@ def make(
             num_stages=num_stages,
             max_num_configs=max_num_configs,
         )
+
+        kernel.arrangement = arrangement
+        kernel.application = application
+        kernel.tensors = tensors
+
+        return kernel
 
     return aot(
         application,
