@@ -76,32 +76,19 @@ class CodeGenerator(ast.NodeTransformer):
 
             module = ast.Module(body=[func_def], type_ignores=[])
 
-            def _find_aliases(func):
-                aliases = {}
+            if inliner.libdevice_used:
+                libdevice_alias = ast.alias(
+                    name="libdevice", asname=inliner.LIBDEVICE_ALIAS
+                )
+                libdevice_import = ast.ImportFrom(
+                    module="triton.language.extra",
+                    names=[libdevice_alias],
+                    level=0,
+                )
 
-                for name, value in func.__globals__.items():
-                    if inspect.ismodule(value):
-                        if value is libdevice:
-                            aliases[name] = naming.auto_generate("libdevice")
+                module.body.insert(0, libdevice_import)
 
-                            libdevice_alias = ast.alias(
-                                name="libdevice", asname=aliases[name]
-                            )
-                            libdevice_import = ast.ImportFrom(
-                                module="triton.language.extra",
-                                names=[libdevice_alias],
-                                level=0,
-                            )
-
-                            module.body.insert(0, libdevice_import)
-
-                            continue
-
-                        aliases[name] = value.__name__
-
-                return aliases
-
-            return _AliasRestorer(_find_aliases(func)).visit(module)
+            return module
 
         def _find_dependencies(func):
             dependencies = set()
@@ -853,10 +840,41 @@ def cache_source(source):
 
 
 class _Inliner(ast.NodeTransformer):
+    LIBDEVICE_ALIAS = naming.auto_generate("libdevice")
+
     def __init__(self, globals):
+        self.libdevice_used = False
+
         self._globals = globals
 
         self._count = 0
+
+    def visit(self, node):
+        def _find_aliases():
+            aliases = {}
+
+            for name, value in self._globals.items():
+                if inspect.ismodule(value):
+                    if value is libdevice:
+                        aliases[name] = self.LIBDEVICE_ALIAS
+                        self.libdevice_used = True
+
+                        continue
+
+                    aliases[name] = value.__name__
+
+            return aliases
+
+        node = super().visit(node)
+
+        alias_restorer = _AliasRestorer(_find_aliases())
+
+        if isinstance(node, list):
+            node = [alias_restorer.visit(item) for item in node]
+        else:
+            node = alias_restorer.visit(node)
+
+        return node
 
     def visit_Expr(self, node):
         value, stmts = self._inline_expr(node.value)
