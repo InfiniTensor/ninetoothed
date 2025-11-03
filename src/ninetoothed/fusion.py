@@ -1,0 +1,338 @@
+import inspect
+
+import ninetoothed.naming as naming
+from ninetoothed.generation import cache_source
+from ninetoothed.jit import import_from_path
+from ninetoothed.make import make
+from ninetoothed.symbol import Symbol
+from ninetoothed.tensor import Tensor
+
+
+class Node:
+    def __init__(self, kernel, args=None, kwargs=None):
+        if args is None:
+            args = ()
+
+        if kwargs is None:
+            kwargs = {}
+
+        self.kernel = kernel
+
+        self.args = args
+
+        self.kwargs = kwargs
+
+
+def _fuse_node_pair(input_node, other_node):
+    if input_node.kwargs or other_node.kwargs:
+        return None
+
+    input_kernel = input_node.kernel
+    other_kernel = other_node.kernel
+
+    mapping = {}
+
+    for other_position, arg in enumerate(other_node.args):
+        if arg not in input_node.args:
+            continue
+
+        mapping[other_position] = input_node.args.index(arg)
+
+    fused_kernel = _fuse_kernel_pair(input_kernel, other_kernel, mapping)
+
+    if fused_kernel is None:
+        return None
+
+    fused_args = input_node.args + other_node.args
+    fused_kwargs = input_node.kwargs | other_node.kwargs
+
+    fused_node = Node(fused_kernel, args=fused_args, kwargs=fused_kwargs)
+
+    return fused_node
+
+
+def _fuse_kernel_pair(input_kernel, other_kernel, mapping):
+    arrangement, tensors = _fuse_arrangement_pair(input_kernel, other_kernel, mapping)
+
+    if arrangement is None:
+        return None
+
+    application = _fuse_application_pair(input_kernel, other_kernel)
+
+    if application is None:
+        return None
+
+    input_num_warps = (
+        input_kernel.num_warps
+        if not isinstance(input_kernel.num_warps, int)
+        else (input_kernel.num_warps,)
+    )
+    other_num_warps = (
+        other_kernel.num_warps
+        if not isinstance(other_kernel.num_warps, int)
+        else (other_kernel.num_warps,)
+    )
+
+    num_warps = tuple(set(input_num_warps) | set(other_num_warps))
+
+    input_num_stages = (
+        input_kernel.num_stages
+        if not isinstance(input_kernel.num_stages, int)
+        else (input_kernel.num_stages,)
+    )
+    other_num_stages = (
+        other_kernel.num_stages
+        if not isinstance(other_kernel.num_stages, int)
+        else (other_kernel.num_stages,)
+    )
+
+    num_stages = tuple(set(input_num_stages) | set(other_num_stages))
+
+    if input_kernel.max_num_configs is None or other_kernel.max_num_configs is None:
+        max_num_configs = None
+    else:
+        max_num_configs = max(
+            input_kernel.max_num_configs, other_kernel.max_num_configs
+        )
+
+    return make(
+        arrangement,
+        application,
+        tensors,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        max_num_configs=max_num_configs,
+    )
+
+
+def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
+    input_arrangement = input_kernel.arrangement
+    other_arrangement = other_kernel.arrangement
+
+    def rename_tensor(tensor, name):
+        return Tensor(
+            tensor.ndim,
+            other=tensor.source.other,
+            shape_options=tensor.shape_options,
+            name=name,
+        )
+
+    input_tensors = tuple(
+        rename_tensor(tensor, f"{tensor.name}_0") for tensor in input_kernel.tensors
+    )
+    other_tensors = tuple(
+        rename_tensor(tensor, f"{tensor.name}_1") for tensor in other_kernel.tensors
+    )
+
+    input_tensors_arranged = input_arrangement(*input_tensors)
+    other_tensors_arranged = other_arrangement(*other_tensors)
+
+    input_tensor_positions = tuple(mapping.values())
+    other_tensor_positions = tuple(mapping.keys())
+
+    block_size_mapping = {}
+
+    for input_tensor_position, other_tensor_position in zip(
+        input_tensor_positions, other_tensor_positions
+    ):
+        for input_block_size, other_block_size in zip(
+            input_tensors_arranged[input_tensor_position].innermost().shape,
+            other_tensors_arranged[other_tensor_position].innermost().shape,
+        ):
+            block_size_mapping[other_block_size] = input_block_size
+
+    for tensor in other_tensors_arranged:
+        _replace_history(tensor, block_size_mapping)
+
+    base, suffix = _get_fusion_base_and_history_suffix(
+        input_tensors_arranged[input_tensor_positions[0]],
+        other_tensors_arranged[other_tensor_positions[0]],
+    )
+
+    if base is None:
+        return None, None
+
+    for input_tensor_position, other_tensor_position in zip(
+        input_tensor_positions[1:], other_tensor_positions[1:]
+    ):
+        base_, suffix_ = _get_fusion_base_and_history_suffix(
+            input_tensors_arranged[input_tensor_position],
+            other_tensors_arranged[other_tensor_position],
+        )
+
+        if base_ != base or suffix_ != suffix:
+            return None, None
+
+    records_on_tensors = []
+    tensors = []
+
+    def _get_records_on_tensor(tensor):
+        records = []
+
+        curr = tensor
+
+        while isinstance(curr, type(tensor)):
+            records.append(list(curr._history))
+
+            curr = curr.dtype
+
+        return records
+
+    for input_tensor_position, (input_tensor, input_tensor_arranged) in enumerate(
+        zip(input_tensors, input_tensors_arranged)
+    ):
+        records_on_tensor = _get_records_on_tensor(input_tensor_arranged)
+
+        if base == other_tensors_arranged[other_tensor_positions[0]]:
+            records_on_tensor[0].extend(suffix)
+
+        records_on_tensors.append(records_on_tensor)
+        tensors.append(input_tensor)
+
+    for other_tensor_position, (other_tensor, other_tensor_arranged) in enumerate(
+        zip(other_tensors, other_tensors_arranged)
+    ):
+        records_on_tensor = _get_records_on_tensor(other_tensor_arranged)
+
+        if base == input_tensors_arranged[input_tensor_positions[0]]:
+            records_on_tensor[0].extend(suffix)
+
+        records_on_tensors.append(records_on_tensor)
+        tensors.append(other_tensor)
+
+    def arrangement(*tensors):
+        tensors_arranged = []
+
+        for records_on_tensor, tensor in zip(records_on_tensors, tensors):
+            records_on_level_iter = iter(records_on_tensor)
+
+            prev = None
+            curr = tensor
+
+            while isinstance(curr, type(tensor)):
+                records_on_level = next(records_on_level_iter)
+
+                for func, args, kwargs in records_on_level:
+                    curr = func(curr, *args, **kwargs)
+
+                if prev is not None:
+                    prev.dtype = curr
+                else:
+                    tensors_arranged.append(curr)
+
+                prev = curr
+                curr = curr.dtype
+
+        return tuple(tensors_arranged)
+
+    return arrangement, tuple(tensors)
+
+
+def _fuse_application_pair(input_kernel, other_kernel):
+    input_application = input_kernel.application
+    other_application = other_kernel.application
+
+    input_params = inspect.signature(input_application).parameters
+    other_params = inspect.signature(other_application).parameters
+
+    count = 0
+
+    def _make_param():
+        nonlocal count
+
+        param = naming.auto_generate(f"parameter_{count}")
+        count += 1
+
+        return param
+
+    input_param_names = ", ".join(_make_param() for _ in input_params)
+    other_param_names = ", ".join(_make_param() for _ in other_params)
+
+    param_names = f"{input_param_names}, {other_param_names}"
+
+    input_module = inspect.getmodule(input_application)
+    other_module = inspect.getmodule(other_application)
+
+    _APPLICATION_NAME = "application"
+
+    application_source = f"""import {input_module.__name__}
+import {other_module.__name__}
+
+
+def {_APPLICATION_NAME}({param_names}):
+    {input_module.__name__}.{input_application.__name__}({input_param_names})
+    {other_module.__name__}.{other_application.__name__}({other_param_names})
+"""
+
+    source_file = str(cache_source(application_source))
+
+    module = import_from_path(source_file, source_file)
+    module_vars = vars(module)
+
+    application = module_vars[_APPLICATION_NAME]
+
+    return application
+
+
+def _get_fusion_base_and_history_suffix(input, other):
+    base = _get_fusion_base(input, other)
+
+    if base is None:
+        return None, None
+
+    if base != input:
+        input, other = other, input
+
+    suffix = tuple(input._history[len(other._history) :])
+
+    return base, suffix
+
+
+def _get_fusion_base(input, other):
+    for input_record, other_record in zip(input._history, other._history):
+        if input_record != other_record:
+            return None
+
+    return max(input, other, key=lambda tensor: len(tensor._history))
+
+
+def _replace_history(tensor, mapping):
+    curr = tensor
+
+    while isinstance(curr, type(tensor)):
+        history = []
+
+        for record in curr._history:
+            record = _replace_record(record, mapping)
+
+            history.append(record)
+
+        curr._history = tuple(history)
+
+        curr = curr.dtype
+
+
+def _replace_record(record, mapping):
+    return (record[0], _replace(record[1], mapping), _replace(record[2], mapping))
+
+
+def _replace(object, mapping):
+    if isinstance(object, (list, tuple, set)):
+        return type(object)(_replace(item, mapping) for item in object)
+
+    if isinstance(object, dict):
+        return {
+            _replace(key, mapping): _replace(value, mapping)
+            for key, value in object.items()
+        }
+
+    if object in mapping:
+        return mapping[object]
+
+    if isinstance(object, Symbol):
+        for old, new in mapping.items():
+            object = object.find_and_replace(old, new)
+
+        return object
+
+    return object
