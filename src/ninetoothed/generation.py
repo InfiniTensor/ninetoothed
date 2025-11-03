@@ -105,7 +105,7 @@ class CodeGenerator(ast.NodeTransformer):
 
         self._caller = caller
 
-        self._num_wraps = num_warps
+        self._num_warps = num_warps
 
         self._num_stages = num_stages
 
@@ -408,10 +408,10 @@ class CodeGenerator(ast.NodeTransformer):
             else:
                 block_size_configs.append({})
 
-        if isinstance(self._num_wraps, collections.abc.Iterable):
-            num_warps_configs = self._num_wraps
+        if isinstance(self._num_warps, collections.abc.Iterable):
+            num_warps_configs = self._num_warps
         else:
-            num_warps_configs = (self._num_wraps,)
+            num_warps_configs = (self._num_warps,)
 
         if isinstance(self._num_stages, collections.abc.Iterable):
             num_stages_configs = self._num_stages
@@ -565,7 +565,7 @@ class CodeGenerator(ast.NodeTransformer):
                         keywords=[
                             ast.keyword(
                                 arg="num_warps",
-                                value=ast.Constant(value=self._num_wraps),
+                                value=ast.Constant(value=self._num_warps),
                             ),
                             ast.keyword(
                                 arg="num_stages",
