@@ -139,9 +139,6 @@ class Symbol:
     def __mul__(self, other):
         other = type(self)(other)
 
-        if self == 0 or other == 0:
-            return type(self)(0)
-
         if self == 1:
             return other
 
