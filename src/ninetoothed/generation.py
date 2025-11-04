@@ -1080,9 +1080,6 @@ class _BinOpSimplifier(ast.NodeTransformer):
             left = Symbol(node.left)
             right = Symbol(node.right)
 
-            if left == 0 or right == 0:
-                return Symbol(0).node
-
             if left == 1:
                 return node.right
 
