@@ -144,23 +144,32 @@ def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
     for tensor in other_tensors_arranged:
         _replace_history(tensor, block_size_mapping)
 
-    base, suffix = _get_fusion_base_and_history_suffix(
-        input_tensors_arranged[input_tensor_positions[0]],
-        other_tensors_arranged[other_tensor_positions[0]],
+    (input_prefix, input_suffix), (other_prefix, other_suffix) = (
+        _get_fusion_prefix_and_suffix(
+            input_tensors_arranged[input_tensor_positions[0]],
+            other_tensors_arranged[other_tensor_positions[0]],
+        )
     )
 
-    if base is None:
+    if input_prefix is None:
         return None, None
 
     for input_tensor_position, other_tensor_position in zip(
         input_tensor_positions[1:], other_tensor_positions[1:]
     ):
-        base_, suffix_ = _get_fusion_base_and_history_suffix(
-            input_tensors_arranged[input_tensor_position],
-            other_tensors_arranged[other_tensor_position],
+        (input_prefix_, input_suffix_), (other_prefix_, other_suffix_) = (
+            _get_fusion_prefix_and_suffix(
+                input_tensors_arranged[input_tensor_position],
+                other_tensors_arranged[other_tensor_position],
+            )
         )
 
-        if base_ != base or suffix_ != suffix:
+        if (
+            input_prefix_ != input_prefix
+            or input_suffix_ != input_suffix
+            or other_prefix_ != other_prefix
+            or other_suffix_ != other_suffix
+        ):
             return None, None
 
     records_on_tensors = []
@@ -183,8 +192,11 @@ def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
     ):
         records_on_tensor = _get_records_on_tensor(input_tensor_arranged)
 
-        if base == other_tensors_arranged[other_tensor_positions[0]]:
-            records_on_tensor[0].extend(suffix)
+        records_on_tensor[0] = (
+            type(records_on_tensor[0])(input_prefix)
+            + records_on_tensor[0]
+            + type(records_on_tensor[0])(input_suffix)
+        )
 
         records_on_tensors.append(records_on_tensor)
         tensors.append(input_tensor)
@@ -194,8 +206,11 @@ def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
     ):
         records_on_tensor = _get_records_on_tensor(other_tensor_arranged)
 
-        if base == input_tensors_arranged[input_tensor_positions[0]]:
-            records_on_tensor[0].extend(suffix)
+        records_on_tensor[0] = (
+            type(records_on_tensor[0])(other_prefix)
+            + records_on_tensor[0]
+            + type(records_on_tensor[0])(other_suffix)
+        )
 
         records_on_tensors.append(records_on_tensor)
         tensors.append(other_tensor)
@@ -274,26 +289,28 @@ def {_APPLICATION_NAME}({param_names}):
     return application
 
 
-def _get_fusion_base_and_history_suffix(input, other):
-    base = _get_fusion_base(input, other)
+def _get_fusion_prefix_and_suffix(input, other):
+    if (fusion_position := _get_fusion_position(input, other)) is not None:
+        prefix = tuple(input._history[:-fusion_position])
+        suffix = tuple(other._history[fusion_position:])
 
-    if base is None:
-        return None, None
+        return ((), suffix), (prefix, ())
 
-    if base != input:
-        input, other = other, input
+    if (fusion_position := _get_fusion_position(other, input)) is not None:
+        prefix = tuple(other._history[:-fusion_position])
+        suffix = tuple(input._history[fusion_position:])
 
-    suffix = tuple(input._history[len(other._history) :])
+        return (prefix, ()), ((), suffix)
 
-    return base, suffix
+    return (None, None), (None, None)
 
 
-def _get_fusion_base(input, other):
-    for input_record, other_record in zip(input._history, other._history):
-        if input_record != other_record:
-            return None
+def _get_fusion_position(input, other):
+    for k in range(1, len(input._history) + 1):
+        if tuple(input._history)[-k:] == tuple(other._history)[:k]:
+            return k
 
-    return max(input, other, key=lambda tensor: len(tensor._history))
+    return None
 
 
 def _replace_history(tensor, mapping):
