@@ -254,6 +254,39 @@ class Tensor:
         return output
 
     @_meta_operation
+    def unsqueeze(self, dim):
+        """Inserts a singleton dimension in the tensor.
+
+        :param dim: The dimension to be unsqueezed.
+        :return: The unsqueezed tensor.
+        """
+
+        # TODO: Add error handling.
+        new_shape = list(self.shape)
+        new_shape.insert(dim, 1)
+
+        new_target_dims = list(self.target_dims)
+        new_target_dims.insert(dim, None)
+
+        self._inputs.append([])
+
+        def _offsets(indices):
+            return (tuple(index for i, index in enumerate(indices) if i != dim),)
+
+        output = type(self)(
+            shape=new_shape,
+            dtype=self.dtype,
+            source=self.source,
+            target_dims=new_target_dims,
+            _offsets=_offsets,
+            _outputs=[self._inputs[0]],
+        )
+
+        self._levels.append([output])
+
+        return output
+
+    @_meta_operation
     def squeeze(self, dim):
         """Removes the specified singleton dimensions of the tensor.
 
