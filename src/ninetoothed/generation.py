@@ -143,7 +143,7 @@ class CodeGenerator(ast.NodeTransformer):
             node.body.append(
                 ast.parse(
                     f"{self._func_name_with_auto_tuning} = {func_with_auto_tuning}"
-                )
+                ).body[0]
             )
 
         node.body.append(self._launch)
@@ -992,7 +992,7 @@ class _Inliner(ast.NodeTransformer):
 
         def _find_function_definition(source):
             finder = _FunctionDefFinder(func.__name__)
-            finder.visit(ast.parse(source))
+            finder.visit(ast.parse(source).body[0])
 
             return finder.result
 
