@@ -1,3 +1,4 @@
+import functools
 import importlib
 import sys
 
@@ -127,6 +128,8 @@ class _Handle:
         self._kernel = kernel
         self._launch = launch
         self._source = source
+
+        functools.wraps(self._launch)(self)
 
     def __call__(self, *args, **kwargs):
         return self._launch(*args, **kwargs)
