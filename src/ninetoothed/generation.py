@@ -226,6 +226,9 @@ class CodeGenerator(ast.NodeTransformer):
         return node
 
     def visit_Call(self, node):
+        def _data_ptr(tensor):
+            return Symbol(tensor.source.pointer_string()).node
+
         def _offsets(tensor, dim=None):
             if dim is None:
                 return tensor._last_generated_overall_offsets.node
@@ -250,7 +253,7 @@ class CodeGenerator(ast.NodeTransformer):
         args = node.args
 
         if isinstance(func, ast.Attribute):
-            if func.attr == "offsets":
+            if func.attr in ("data_ptr", "offsets"):
                 value = func.value
 
                 if self._in_context(value):
@@ -260,6 +263,10 @@ class CodeGenerator(ast.NodeTransformer):
 
                 self.visit(value)
 
+            if func.attr == "data_ptr":
+                return _data_ptr(tensor)
+
+            if func.attr == "offsets":
                 # TODO: Add error handling.
                 return _offsets(tensor, ast.literal_eval(args[0]) if args else None)
 
