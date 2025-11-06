@@ -50,3 +50,14 @@ def test_auto_tuning_generation(
             assert "num_warps=" in contents and "num_stages=" in contents
         else:
             assert "application_with_auto_tuning" in contents
+
+
+@skip_if_cuda_not_available
+def test_arrangement_returning_a_single_tensor():
+    def arrangement(x):
+        return x.tile((ninetoothed.block_size(),))
+
+    def application(x):
+        x
+
+    ninetoothed.make(arrangement, application, (Tensor(1),))
