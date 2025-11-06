@@ -31,7 +31,8 @@ def make(
     """
 
     params = inspect.signature(application).parameters
-    types = tuple(arrangement(*tensors))
+    types = arrangement(*tensors)
+    types = types if isinstance(types, tuple) else (types,)
     annotations = {param: type for param, type in zip(params, types)}
     application.__annotations__ = annotations
 
