@@ -107,6 +107,11 @@ class JIT:
             source_file,
         )
 
+        if self._caller == "torch":
+            import torch
+
+            handle = torch.compiler.allow_in_graph(handle)
+
         handle.num_warps = self._num_warps
         handle.num_stages = self._num_stages
         handle.max_num_configs = self._max_num_configs
@@ -132,4 +137,15 @@ class _Handle:
         functools.wraps(self._launch)(self)
 
     def __call__(self, *args, **kwargs):
-        return self._launch(*args, **kwargs)
+        try:
+            return self._launch(*args, **kwargs)
+        except RuntimeError as err:
+            if "FakeTensor" in str(err):
+                return
+
+            raise err
+        except TypeError as err:
+            if "SymInt" in str(err):
+                return
+
+            raise err
