@@ -231,8 +231,8 @@ class Tensor:
         def _offsets(indices):
             return (
                 tuple(
-                    index if new_size == -1 or new_size == self.shape[i] else 0 * index
-                    for i, (index, new_size) in enumerate(zip(indices, shape))
+                    index if new_size == -1 or new_size == size else 0 * index
+                    for index, size, new_size in zip(indices, self.shape, shape)
                 ),
             )
 
