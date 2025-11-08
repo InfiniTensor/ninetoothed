@@ -29,23 +29,19 @@ def test_unsqueeze():
         ),
     )
 
-    # The following code is intentionally disabled because there is
-    # currently a bug related to the masking mechanism.
-    # TODO: Enable the following code after resolving the issue.
-    if False:
-        x_unsqueezed_expanded_tiled = x_unsqueezed_expanded.tile(
-            (block_size_m, block_size_n)
-        )
+    x_unsqueezed_expanded_tiled = x_unsqueezed_expanded.tile(
+        (block_size_m, block_size_n)
+    )
 
-        assert np.array_equal(
-            x_unsqueezed_expanded_tiled.eval(subs),
-            np.array(
-                [
-                    [[[0, 1, 2], [0, 1, 2]], [[3, 4, -1], [3, 4, -1]]],
-                    [[[0, 1, 2], [-1, -1, -1]], [[3, 4, -1], [-1, -1, -1]]],
-                ]
-            ),
-        )
+    assert np.array_equal(
+        x_unsqueezed_expanded_tiled.eval(subs),
+        np.array(
+            [
+                [[[0, 1, 2], [0, 1, 2]], [[3, 4, -1], [3, 4, -1]]],
+                [[[0, 1, 2], [-1, -1, -1]], [[3, 4, -1], [-1, -1, -1]]],
+            ]
+        ),
+    )
 
     x_tiled_unsqueezed = x.tile((block_size_n,)).unsqueeze(0)
 
