@@ -707,7 +707,7 @@ class CodeGenerator(ast.NodeTransformer):
             start += curr.ndim
             curr = curr.dtype
 
-        offsets = CodeGenerator._generate_offsets(tensor, indices)
+        offsets, mask = CodeGenerator._generate_offsets_and_mask(tensor, indices)
 
         tensor._last_generated_offsets = offsets
 
@@ -718,25 +718,13 @@ class CodeGenerator(ast.NodeTransformer):
 
         tensor._last_generated_overall_offsets = overall_offsets
 
-        mask = functools.reduce(
-            lambda x, y: x & y,
-            (
-                offsets[source_dim] < tensor.source.shape[source_dim]
-                for source_dim in range(tensor.source.ndim)
-            ),
-        ) & functools.reduce(
-            lambda x, y: x & y,
-            (
-                indices[dim - tensor.innermost().ndim] < tensor.innermost().shape[dim]
-                for dim in range(tensor.innermost().ndim)
-            ),
-        )
-
         return overall_offsets, mask
 
     @staticmethod
-    def _generate_offsets(tensor, indices):
+    def _generate_offsets_and_mask(tensor, indices):
         offsets = [Symbol(0) for _ in range(tensor.source.ndim)]
+
+        tensor.source._mask = Symbol(True)
 
         curr = tensor
         start = 0
@@ -764,7 +752,7 @@ class CodeGenerator(ast.NodeTransformer):
 
             curr = curr.dtype
 
-        return offsets
+        return offsets, tensor.source._mask
 
     @staticmethod
     def _generate_innermost_indices(tensor, use_power_of_2_sizes=True):

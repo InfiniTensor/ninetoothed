@@ -474,10 +474,14 @@ class Tensor:
         return output
 
     def offsets(self):
-        for output_, output in zip(
-            self._outputs,
-            self._offsets(tuple(sum(indices) for indices in zip(*self._inputs))),
-        ):
+        indices = tuple(sum(indices) for indices in zip(*self._inputs))
+
+        outputs = self._offsets(indices)
+
+        for index, size in zip(indices, self.shape):
+            self.source._mask &= Symbol(index) < size
+
+        for output_, output in zip(self._outputs, outputs):
             output_.clear()
             output_.extend(output)
 
