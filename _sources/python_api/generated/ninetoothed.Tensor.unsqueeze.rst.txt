@@ -1,0 +1,6 @@
+﻿ninetoothed.Tensor.unsqueeze
+============================
+
+.. currentmodule:: ninetoothed
+
+.. automethod:: Tensor.unsqueeze

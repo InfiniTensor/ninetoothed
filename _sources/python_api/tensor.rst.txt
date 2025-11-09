@@ -12,6 +12,7 @@ Meta-Operations
 
    ninetoothed.Tensor.tile
    ninetoothed.Tensor.expand
+   ninetoothed.Tensor.unsqueeze
    ninetoothed.Tensor.squeeze
    ninetoothed.Tensor.permute
    ninetoothed.Tensor.flatten
