@@ -14,6 +14,7 @@ class Tensor:
     :param ndim: The number of dimensions of the tensor.
     :param shape: The shape of the tensor.
     :param dtype: The element type of the tensor.
+    :param jagged_dim: The jagged dimension of the tensor.
     :param other: The values for out-of-bounds positions.
     :param shape_options: The options for configuring shape symbols.
     :param name: The name of the tensor.
@@ -28,6 +29,7 @@ class Tensor:
         ndim=None,
         shape=None,
         dtype=None,
+        jagged_dim=None,
         other=None,
         shape_options=None,
         constexpr=None,
@@ -39,6 +41,8 @@ class Tensor:
         _outputs=None,
     ):
         self.dtype = dtype
+
+        self.jagged_dim = jagged_dim
 
         if name is not None:
             self.name = name
@@ -500,7 +504,17 @@ class Tensor:
                 for value in itertools.chain(self.shape, strides)
                 if isinstance(value, Symbol)
                 for name in value.names()
+                if not type(self).seq_len_pattern().fullmatch(str(name))
             }
+            | (
+                {
+                    Symbol(self.source.values_string()),
+                    Symbol(self.source.offsets_string()),
+                    Symbol(self.source.max_seq_len_string()),
+                }
+                if self.jagged_dim is not None
+                else set()
+            )
             | (self.dtype.names() if isinstance(self.dtype, type(self)) else set())
             | (self.source.names() if self.source is not self else set())
         )
@@ -512,13 +526,34 @@ class Tensor:
         return self.dtype.innermost()
 
     def pointer_string(self):
+        if self.jagged_dim is not None:
+            return self.values_string()
+
         return naming.auto_generate(f"{self.name}_pointer")
 
     def size_string(self, dim):
+        if dim == self.jagged_dim:
+            return self.seq_len_string()
+
         return naming.auto_generate(f"{self.name}_size_{dim}")
 
     def stride_string(self, dim):
+        if self.jagged_dim is not None and dim == 0:
+            return 0
+
         return naming.auto_generate(f"{self.name}_stride_{dim}")
+
+    def values_string(self):
+        return naming.auto_generate(f"{self.name}_values")
+
+    def offsets_string(self):
+        return naming.auto_generate(f"{self.name}_offsets")
+
+    def max_seq_len_string(self):
+        return naming.auto_generate(f"{self.name}_max_seq_len")
+
+    def seq_len_string(self):
+        return naming.auto_generate(f"{self.name}_seq_len")
 
     def size(self, dim=None):
         if dim is None:
@@ -562,6 +597,30 @@ class Tensor:
     def stride_pattern():
         return re.compile(
             naming.auto_generate(rf"({_identifier_pattern_raw_string()})_(stride)_(.+)")
+        )
+
+    @staticmethod
+    def values_pattern():
+        return re.compile(
+            naming.auto_generate(rf"({_identifier_pattern_raw_string()})_(values)")
+        )
+
+    @staticmethod
+    def offsets_pattern():
+        return re.compile(
+            naming.auto_generate(rf"({_identifier_pattern_raw_string()})_(offsets)")
+        )
+
+    @staticmethod
+    def max_seq_len_pattern():
+        return re.compile(
+            naming.auto_generate(rf"({_identifier_pattern_raw_string()})_(max_seq_len)")
+        )
+
+    @staticmethod
+    def seq_len_pattern():
+        return re.compile(
+            naming.auto_generate(rf"({_identifier_pattern_raw_string()})_(seq_len)")
         )
 
     @staticmethod
