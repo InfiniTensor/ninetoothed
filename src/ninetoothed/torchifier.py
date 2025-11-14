@@ -24,6 +24,18 @@ class Torchifier(ast.NodeTransformer):
         source = Tensor.size_pattern().sub(repl, source)
         source = Tensor.stride_pattern().sub(repl, source)
 
+        def repl(match):
+            return f"{match.group(1)}.{match.group(2)}()"
+
+        source = Tensor.values_pattern().sub(repl, source)
+        source = Tensor.offsets_pattern().sub(repl, source)
+
+        def repl(match):
+            return f"{match.group(1)}.offsets().diff().max().item()"
+
+        source = Tensor.max_seq_len_pattern().sub(repl, source)
+        source = Tensor.seq_len_pattern().sub(repl, source)
+
         if source != node.id:
             return ast.parse(source, mode="eval").body
 

@@ -668,6 +668,26 @@ class CodeGenerator(ast.NodeTransformer):
             self._invariants[name] = index
             indices[dim] = name
 
+        if tensor.source.jagged_dim is not None:
+            seq_len_name = Symbol(tensor.source.seq_len_string())
+            max_seq_len_name = Symbol(tensor.source.max_seq_len_string())
+
+            for size in tensor.shape:
+                size.find_and_replace(seq_len_name, max_seq_len_name)
+
+            offsets_name = Symbol(tensor.source.offsets_string())
+            batch_dim_index_name = type(self)._name_for_index(tensor, 0)
+            seq_start_name = type(self)._name_for_seq_start(tensor)
+            seq_end_name = type(self)._name_for_seq_end(tensor)
+
+            self._invariants[seq_start_name] = call(
+                "load", offsets_name + batch_dim_index_name
+            )
+            self._invariants[seq_end_name] = call(
+                "load", offsets_name + batch_dim_index_name + 1
+            )
+            self._invariants[seq_len_name] = seq_end_name - seq_start_name
+
         return tuple(indices)
 
     @staticmethod
@@ -698,6 +718,11 @@ class CodeGenerator(ast.NodeTransformer):
             offsets[source_dim] * Symbol(tensor.source.stride_string(source_dim))
             for source_dim in range(tensor.source.ndim)
         )
+
+        if tensor.source.jagged_dim is not None:
+            overall_offsets += CodeGenerator._name_for_seq_start(tensor) * Symbol(
+                tensor.source.stride_string(tensor.source.jagged_dim)
+            )
 
         tensor._last_generated_overall_offsets = overall_offsets
 
@@ -773,6 +798,14 @@ class CodeGenerator(ast.NodeTransformer):
     @staticmethod
     def _name_for_offsets(tensor, source_dim, target_dim):
         return Symbol(f"{tensor.source.name}_offsets_{source_dim}_{target_dim}")
+
+    @staticmethod
+    def _name_for_seq_start(tensor):
+        return Symbol(f"{tensor.source.name}_seq_start")
+
+    @staticmethod
+    def _name_for_seq_end(tensor):
+        return Symbol(f"{tensor.source.name}_seq_end")
 
     @staticmethod
     def _name_for_index(tensor, dim):
