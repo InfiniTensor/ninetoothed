@@ -690,23 +690,6 @@ class CodeGenerator(ast.NodeTransformer):
     def _generate_overall_offsets_and_mask(tensor, indices):
         indices = list(indices)
 
-        curr = tensor
-        start = 0
-
-        while isinstance(curr, type(tensor)):
-            for i, target_dim in enumerate(curr.target_dims):
-                index = indices[start + i]
-
-                if isinstance(index.node, ast.Constant):
-                    continue
-
-                indices[start + i] = index[
-                    CodeGenerator._generate_slices(tensor, target_dim)
-                ]
-
-            start += curr.ndim
-            curr = curr.dtype
-
         offsets, mask = CodeGenerator._generate_offsets_and_mask(tensor, indices)
 
         tensor._last_generated_offsets = offsets
@@ -769,11 +752,17 @@ class CodeGenerator(ast.NodeTransformer):
 
         indices = []
 
-        for size in tensor.innermost().shape:
+        for size, target_dim in zip(
+            tensor.innermost().shape, tensor.innermost().target_dims
+        ):
             if use_power_of_2_sizes:
                 size = _NextPowerOfTwoMaker().visit(Symbol(copy.deepcopy(size)).node)
 
-            indices.append(call("arange", 0, size))
+            indices.append(
+                call("arange", 0, size)[
+                    CodeGenerator._generate_slices(tensor, target_dim)
+                ]
+            )
 
         return tuple(indices)
 
