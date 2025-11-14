@@ -1,6 +1,7 @@
 import functools
 
 import pytest
+import torch
 
 import ninetoothed
 import tests.test_matmul as matmul
@@ -61,3 +62,56 @@ def test_arrangement_returning_a_single_tensor():
         x
 
     ninetoothed.make(arrangement, application, (Tensor(1),))
+
+
+@skip_if_cuda_not_available
+@pytest.mark.parametrize("device", ("cuda",))
+@pytest.mark.parametrize("num_indices", (10,))
+@pytest.mark.parametrize("num_cols", (128,))
+@pytest.mark.parametrize("num_rows", (1024,))
+def test_squeezing_the_innermost_level(num_rows, num_cols, num_indices, device):
+    torch.manual_seed(0)
+
+    def arrangement(input, indices, output):
+        input_arranged = input.tile((1, -1)).squeeze(1)
+        input_arranged.dtype = input_arranged.dtype.squeeze(0)
+
+        indices_arranged = indices.tile((1,))
+
+        output_arranged = (
+            output.tile((1, -1))
+            .tile((-1, -1))
+            .squeeze(0)
+            .expand((input_arranged.shape[0],))
+        )
+        output_arranged.dtype = output_arranged.dtype.squeeze(1)
+        output_arranged.dtype.dtype = output_arranged.dtype.dtype.squeeze(0)
+
+        return input_arranged, indices_arranged, output_arranged
+
+    def application(input, index, output):
+        row = index
+
+        output[row] = input
+
+    shape_options = {"constexpr": True}
+
+    tensors = (
+        Tensor(2, shape_options=shape_options),
+        Tensor(1, shape_options=shape_options),
+        Tensor(2, shape_options=shape_options),
+    )
+
+    kernel = ninetoothed.make(arrangement, application, tensors)
+
+    input = torch.randn((num_indices, num_cols), device=device)
+    indices = torch.randint(0, num_rows, (num_indices,), device=device)
+    output = torch.empty((num_rows, num_cols), device=device)
+    expected = output.clone()
+
+    kernel(input, indices, output)
+
+    for i in range(num_indices):
+        expected[indices[i], :] = input[i, :]
+
+    assert output.shape == expected.shape and torch.allclose(output, expected)
