@@ -494,7 +494,7 @@ class Tensor:
             return {Symbol(self.source.name)}
 
         strides = tuple(
-            Symbol(self.source.stride_string(dim)) for dim in range(self.ndim)
+            Symbol(self.source.stride_string(dim)) for dim in range(self.source.ndim)
         )
 
         return (

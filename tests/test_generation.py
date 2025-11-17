@@ -115,3 +115,17 @@ def test_squeezing_the_innermost_level(num_rows, num_cols, num_indices, device):
         expected[indices[i], :] = input[i, :]
 
     assert output.shape == expected.shape and torch.allclose(output, expected)
+
+
+@skip_if_cuda_not_available
+@pytest.mark.parametrize("device", ("cuda",))
+def test_unsqueezing_the_outermost_level(device):
+    def arrangement(x):
+        return x.tile((ninetoothed.block_size(),)).unsqueeze(0)
+
+    def application(x):
+        x
+
+    kernel = ninetoothed.make(arrangement, application, (Tensor(1),))
+
+    kernel(torch.randn((0,), device=device))
