@@ -5,12 +5,13 @@ import ninetoothed
 from ninetoothed import Tensor
 
 
+@pytest.mark.parametrize("shape_options", (None, {"constexpr": True}))
 @pytest.mark.parametrize("subs_before_eval", (False, True))
 @pytest.mark.parametrize("use_tensor_in_subs", (False, True))
-def test_eval(use_tensor_in_subs, subs_before_eval):
+def test_eval(use_tensor_in_subs, subs_before_eval, shape_options):
     assert (Tensor(shape=(2, 3)).eval() == np.array([[0, 1, 2], [3, 4, 5]])).all()
 
-    x = Tensor(2)
+    x = Tensor(2, shape_options=shape_options)
 
     block_size_m = ninetoothed.block_size()
     block_size_n = ninetoothed.block_size()
