@@ -131,7 +131,7 @@ def _generate_replacements(subs):
             shape = new.shape if isinstance(new, Tensor) else new["shape"]
 
             for dim, size in enumerate(shape):
-                replacements[old.size_string(dim)] = str(size)
+                replacements[str(old.shape[dim])] = str(size)
 
             for dim, stride in enumerate(Tensor._calculate_default_strides(shape)):
                 replacements[old.stride_string(dim)] = str(stride)
