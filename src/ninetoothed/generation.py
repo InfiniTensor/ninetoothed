@@ -32,7 +32,7 @@ class CodeGenerator(ast.NodeTransformer):
         device = triton.runtime.driver.active.get_current_device()
         properties = triton.runtime.driver.active.utils.get_device_properties(device)
 
-        self._min_num_elements = 16
+        self._min_num_elements = 1
 
         if "max_num_regs" in properties:
             max_innermost_size = 4 * properties["max_num_regs"]
