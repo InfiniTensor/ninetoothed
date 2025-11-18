@@ -5,18 +5,13 @@ import functools
 import hashlib
 import inspect
 import itertools
-import json
 import math
-import os
 import pathlib
 import subprocess
-import tempfile
 import textwrap
-import time
 
 import sympy
 import triton
-import triton.language as tl
 from triton.language.extra import libdevice
 
 import ninetoothed.naming as naming
@@ -34,29 +29,17 @@ class CodeGenerator(ast.NodeTransformer):
     def __init__(self):
         super().__init__()
 
-        cache_file = CACHE_DIR / "code_generator_cache.json"
+        device = triton.runtime.driver.active.get_current_device()
+        properties = triton.runtime.driver.active.utils.get_device_properties(device)
 
-        log2_min_num_elements = 4
+        self._min_num_elements = 16
 
-        if cache_file.exists():
-            with open(cache_file) as f:
-                cache = json.load(f)
-
-            log2_max_num_elements = cache["log2_max_num_elements"]
+        if "max_num_regs" in properties:
+            max_innermost_size = 4 * properties["max_num_regs"]
         else:
-            log2_max_num_elements = _determine_log2_max_num_elements_per_block(
-                log2_min_num_elements
-            )
+            max_innermost_size = 2**18
 
-            cache = {"log2_max_num_elements": log2_max_num_elements}
-
-            with open(cache_file, "w") as f:
-                json.dump(cache, f, indent=4)
-                f.write("\n")
-
-        self._min_num_elements = 2**log2_min_num_elements
-
-        self._max_num_elements = 2**log2_max_num_elements
+        self._max_num_elements = max_innermost_size // 8
 
     def __call__(
         self,
@@ -1161,75 +1144,3 @@ class _FunctionDefFinder(ast.NodeVisitor):
             self.result = node
 
         self.generic_visit(node)
-
-
-def _determine_log2_max_num_elements_per_block(
-    min_exponent, max_exponent=30, num_iterations=3
-):
-    _profile_pseudo_add_kernel(1)
-
-    for n in range(min_exponent, max_exponent + 1):
-        elapsed_time = 0
-
-        for _ in range(num_iterations):
-            elapsed_time += _profile_pseudo_add_kernel(2**n)
-
-        average_elapsed_time = elapsed_time / num_iterations
-
-        if average_elapsed_time >= 1:
-            return n - 1
-
-
-def _profile_pseudo_add_kernel(block_size):
-    with tempfile.TemporaryDirectory() as temporary_cache_dir:
-        cache_dir = os.environ.get("TRITON_CACHE_DIR")
-
-        os.environ["TRITON_CACHE_DIR"] = temporary_cache_dir
-
-        start_time = time.time()
-
-        _run_pseudo_add_kernel(block_size)
-
-        end_time = time.time()
-
-        elapsed_time = end_time - start_time
-
-        if cache_dir is not None:
-            os.environ["TRITON_CACHE_DIR"] = cache_dir
-        else:
-            os.environ.pop("TRITON_CACHE_DIR")
-
-        return elapsed_time
-
-
-def _run_pseudo_add_kernel(block_size):
-    @triton.jit
-    def kernel(a_ptr, b_ptr, c_ptr, num_elements, BLOCK_SIZE: tl.constexpr):
-        pid = tl.program_id(0)
-
-        offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-        mask = offs < num_elements
-
-        a = tl.load(a_ptr + offs, mask=mask)
-        b = tl.load(b_ptr + offs, mask=mask)
-
-        c = a + b
-
-        tl.store(c_ptr + offs, c, mask=mask)
-
-    num_elements = 0
-    shape = (num_elements,)
-    dtype = tl.float32
-
-    a = Tensor(shape=shape, dtype=dtype)
-    b = Tensor(shape=shape, dtype=dtype)
-    c = Tensor(shape=shape, dtype=dtype)
-
-    def data_ptr():
-        return 0
-
-    a.data_ptr = data_ptr
-    b.data_ptr = data_ptr
-    c.data_ptr = data_ptr
-
-    kernel[(1,)](a, b, c, num_elements, block_size)
