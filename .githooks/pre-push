@@ -1,0 +1,37 @@
+#!/bin/bash
+
+current_branch=$(git symbolic-ref --short HEAD 2>/dev/null)
+
+# Check if we're on a valid branch
+if [ -z "$current_branch" ]; then
+    echo "❌ Error: Not on a valid branch" >&2
+    exit 1
+fi
+
+# Check if branch name uses kebab-case with lowercase letters, numbers and hyphens
+if ! echo "$current_branch" | grep -qE '^[a-z0-9]+(-[a-z0-9]+)*$'; then
+    echo "❌ Error: Branch name must use kebab-case (lowercase letters, numbers, and hyphens only)" >&2
+    echo "" >&2
+    echo "Valid examples:" >&2
+    echo "  ✓ feature-user-authentication" >&2
+    echo "  ✓ fix-123-memory-leak" >&2
+    echo "  ✓ chore-update-deps" >&2
+    echo "" >&2
+    echo "Invalid examples:" >&2
+    echo "  ✗ Feature-User-Auth" >&2
+    echo "  ✗ fix_123_memory_leak" >&2
+    echo "  ✗ my_branch" >&2
+    echo "" >&2
+    echo "Your branch: '$current_branch'" >&2
+    echo "Use: git branch -m <new-name>" >&2
+    exit 1
+fi
+
+# Check branch name length
+if [ ${#current_branch} -gt 50 ]; then
+    echo "❌ Error: Branch name is too long (${#current_branch} > 50 characters)" >&2
+    echo "Please use a shorter branch name" >&2
+    exit 1
+fi
+
+echo "✅ Branch name validation passed" >&2
