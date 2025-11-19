@@ -1,4 +1,4 @@
-from tests.skippers import skip_if_cuda_not_available
+from tests.utils import skip_if_cuda_not_available
 
 
 @skip_if_cuda_not_available

@@ -6,7 +6,7 @@ import torch
 import tests.test_addmm as addmm
 from ninetoothed import Tensor
 from ninetoothed.debugging import simulate_arrangement
-from tests.skippers import skip_if_cuda_not_available
+from tests.utils import skip_if_cuda_not_available
 
 
 @skip_if_cuda_not_available

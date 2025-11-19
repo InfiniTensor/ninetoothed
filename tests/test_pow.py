@@ -3,7 +3,7 @@ import torch
 import ninetoothed
 from ninetoothed import Tensor, block_size
 from ninetoothed.language import libdevice
-from tests.skippers import skip_if_cuda_not_available
+from tests.utils import skip_if_cuda_not_available
 
 
 def arrangement(input, exponent, output, BLOCK_SIZE=block_size()):

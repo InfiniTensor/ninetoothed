@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import ninetoothed
 import ninetoothed.language as ntl
 from ninetoothed import Tensor
-from tests.skippers import skip_if_cuda_not_available
+from tests.utils import skip_if_cuda_not_available
 
 BLOCK_SIZE_M = ninetoothed.block_size(lower_bound=64, upper_bound=128)
 BLOCK_SIZE_N = ninetoothed.block_size(lower_bound=32, upper_bound=64)

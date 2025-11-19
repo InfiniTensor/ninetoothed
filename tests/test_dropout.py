@@ -5,7 +5,7 @@ import torch
 import ninetoothed
 import ninetoothed.language as ntl
 from ninetoothed import Tensor, block_size
-from tests.skippers import skip_if_cuda_not_available
+from tests.utils import skip_if_cuda_not_available
 
 
 def arrangement(input, p, seed, output, BLOCK_SIZE=block_size()):

@@ -6,7 +6,7 @@ import ninetoothed
 import ninetoothed.language as ntl
 import tests.test_matmul as matmul
 from ninetoothed import Tensor
-from tests.skippers import skip_if_cuda_not_available, skip_if_float8_e5m2_not_supported
+from tests.utils import skip_if_cuda_not_available, skip_if_float8_e5m2_not_supported
 
 
 def arrangement(

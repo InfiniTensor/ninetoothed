@@ -5,7 +5,7 @@ import torch
 
 import ninetoothed
 from ninetoothed import Symbol, Tensor
-from tests.skippers import skip_if_cuda_not_available
+from tests.utils import skip_if_cuda_not_available
 
 BLOCK_SIZE = Symbol("block_size", constexpr=True)
 

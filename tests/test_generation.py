@@ -6,7 +6,7 @@ import torch
 import ninetoothed
 import tests.test_matmul as matmul
 from ninetoothed import Tensor
-from tests.skippers import skip_if_cuda_not_available
+from tests.utils import skip_if_cuda_not_available
 
 
 @skip_if_cuda_not_available
