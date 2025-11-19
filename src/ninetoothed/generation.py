@@ -36,6 +36,8 @@ class CodeGenerator(ast.NodeTransformer):
 
         if "max_num_regs" in properties:
             max_innermost_size = 4 * properties["max_num_regs"]
+        elif "max_nram_size" in properties:
+            max_innermost_size = properties["max_nram_size"]
         else:
             max_innermost_size = 2**18
 
