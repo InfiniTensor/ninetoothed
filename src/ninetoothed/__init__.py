@@ -1,3 +1,5 @@
+from importlib.metadata import PackageNotFoundError, version
+
 from ninetoothed.dtype import (
     bfloat16,
     float16,
@@ -18,6 +20,11 @@ from ninetoothed.jit import jit
 from ninetoothed.make import make
 from ninetoothed.symbol import Symbol, block_size
 from ninetoothed.tensor import Tensor
+
+try:
+    __version__ = version("ninetoothed")
+except PackageNotFoundError:
+    __version__ = "0.22.0"
 
 __all__ = [
     "Symbol",
