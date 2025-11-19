@@ -1,18 +1,18 @@
-#!/bin/bash
+#!/bin/sh
 
-# Extract the first line of commit message (subject line)
-COMMIT_MSG_FILE=$1
-COMMIT_MSG=$(head -n1 "$COMMIT_MSG_FILE")
+# Extract the first line of commit message (subject line).
+commit_msg_file=$1
+commit_msg=$(head -n1 "$commit_msg_file")
 
-# Validate commit message is not empty
-if [ -z "$COMMIT_MSG" ]; then
-    echo "❌ Error: Commit message cannot be empty" >&2
+# Validate commit message is not empty.
+if [ -z "$commit_msg" ]; then
+    echo "❌ Error: Commit message cannot be empty." >&2
     exit 1
 fi
 
-# Check if subject starts with uppercase letter
-if ! echo "$COMMIT_MSG" | grep -q '^[A-Z]'; then
-    echo "❌ Error: Commit message must start with an uppercase letter" >&2
+# Check if subject starts with uppercase letter.
+if ! echo "$commit_msg" | grep -q '^[A-Z]'; then
+    echo "❌ Error: Commit message must start with an uppercase letter." >&2
     echo "" >&2
     echo "Valid examples:" >&2
     echo "  ✓ 'Add new feature'" >&2
@@ -22,14 +22,14 @@ if ! echo "$COMMIT_MSG" | grep -q '^[A-Z]'; then
     echo "  ✗ 'add new feature'" >&2
     echo "  ✗ 'fix authentication bug'" >&2
     echo "" >&2
-    echo "Your message: \"$COMMIT_MSG\"" >&2
+    echo "Your message: \"$commit_msg\"." >&2
     exit 1
 fi
 
-# Check if subject ends with punctuation
-LAST_CHAR=$(echo "$COMMIT_MSG" | sed 's/.*\(.\)$/\1/')
-if echo "$LAST_CHAR" | grep -q '[.,;:!?]'; then
-    echo "❌ Error: Commit message should not end with punctuation" >&2
+# Check if subject ends with punctuation.
+last_char=$(echo "$commit_msg" | sed 's/.*\(.\)$/\1/')
+if echo "$last_char" | grep -q '[.,;:!?]'; then
+    echo "❌ Error: Commit message should not end with punctuation." >&2
     echo "" >&2
     echo "Valid examples:" >&2
     echo "  ✓ 'Add new feature'" >&2
@@ -39,15 +39,13 @@ if echo "$LAST_CHAR" | grep -q '[.,;:!?]'; then
     echo "  ✗ 'Add new feature.'" >&2
     echo "  ✗ 'Fix authentication bug!'" >&2
     echo "" >&2
-    echo "Your message: \"$COMMIT_MSG\"" >&2
+    echo "Your message: \"$commit_msg\"." >&2
     exit 1
 fi
 
-# Validate imperative mood (avoid past tense)
-if echo "$COMMIT_MSG" | grep -qiE "\b(added|fixed|changed|modified|removed|updated|implemented|created|improved)\b"; then
-    echo "❌ Error: Commit message must use imperative mood" >&2
-    echo "" >&2
-    echo "Use imperative mood as if giving a command:" >&2
+# Validate imperative mood (avoid past tense).
+if echo "$commit_msg" | grep -qiE "\b(added|fixed|changed|modified|removed|updated|implemented|created|improved)\b"; then
+    echo "❌ Error: Commit message must use imperative mood." >&2
     echo "" >&2
     echo "Valid (imperative):" >&2
     echo "  ✓ 'Add user authentication'" >&2
@@ -61,29 +59,29 @@ if echo "$COMMIT_MSG" | grep -qiE "\b(added|fixed|changed|modified|removed|updat
     echo "  ✗ 'Updated dependencies'" >&2
     echo "  ✗ 'Refactored database module'" >&2
     echo "" >&2
-    echo "Your message: \"$COMMIT_MSG\"" >&2
+    echo "Your message: \"$commit_msg\"." >&2
     exit 1
 fi
 
-echo "✅ Commit message validation passed" >&2
+echo "✅ Commit message validation passed." >&2
 
-# Ruff checks
+# Ruff checks.
 if command -v ruff > /dev/null; then
     echo "Running Ruff checks..." >&2
     if ! ruff check; then
-        echo "❌ Error: Ruff check failed" >&2
+        echo "❌ Error: Ruff check failed." >&2
         exit 1
     fi
     
     echo "Formatting code with Ruff..." >&2
-    if ! ruff format; then
-        echo "❌ Error: Ruff formatting failed" >&2
+    if ! ruff format --check; then
+        echo "❌ Error: Code formatting check failed." >&2
         exit 1
     fi
 else
-    echo "❌ Error: Ruff not found" >&2
-    echo "Please install with: uv pip install ruff" >&2
+    echo "❌ Error: Ruff not found." >&2
+    echo "Install with: 'uv pip install ruff'." >&2
     exit 1
 fi
 
-echo "✅ Code formatting completed" >&2
+echo "✅ Code formatting completed." >&2
