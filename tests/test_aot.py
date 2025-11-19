@@ -2,6 +2,7 @@ import ctypes
 import functools
 import subprocess
 
+import pytest
 import torch
 import torch.nn.functional as F
 
@@ -12,200 +13,237 @@ import tests.test_attention as attention
 import tests.test_conv2d as conv2d
 import tests.test_matmul as matmul
 from ninetoothed import Tensor
-from tests.skippers import skip_if_cuda_not_available
+from tests.utils import get_available_devices
 
 
-@skip_if_cuda_not_available
-class TestCUDA:
-    @classmethod
-    def setup_class(cls):
-        torch.manual_seed(0)
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize(
+    "dtype, ninetoothed_dtype", ((torch.bfloat16, ninetoothed.bfloat16),)
+)
+@pytest.mark.parametrize("size", (45327,))
+def test_add(size, dtype, device, ninetoothed_dtype):
+    torch.manual_seed(0)
 
-    def test_add(self):
-        def _arrangement(input, other, output):
-            def _arrange(tensor):
-                return tensor.tile((256,))
+    def _arrangement(input, other, output):
+        def _arrange(tensor):
+            return tensor.tile((256,))
 
-            return _arrange(input), _arrange(other), _arrange(output)
+        return _arrange(input), _arrange(other), _arrange(output)
 
-        def _application(input, other, output):
-            output = input + other  # noqa: F841
+    def _application(input, other, output):
+        output = input + other  # noqa: F841
 
-        tensors = tuple(Tensor(1, dtype=ninetoothed.bfloat16) for _ in range(3))
-        caller = "cuda"
-        kernel_name = "add"
-        output_dir = ninetoothed.generation.CACHE_DIR
+    tensors = tuple(Tensor(1, dtype=ninetoothed_dtype) for _ in range(3))
+    caller = device
+    kernel_name = "add"
+    output_dir = ninetoothed.generation.CACHE_DIR
 
-        launch_func = _generate_launch_func(
-            _arrangement,
-            _application,
-            tensors,
-            caller=caller,
-            kernel_name=kernel_name,
-            output_dir=output_dir,
-        )
+    launch_func = _generate_launch_func(
+        _arrangement,
+        _application,
+        tensors,
+        caller=caller,
+        kernel_name=kernel_name,
+        output_dir=output_dir,
+    )
 
-        shape = (45327,)
-        dtype = torch.bfloat16
-        device = caller
+    shape = (size,)
 
-        input = torch.randn(shape, dtype=dtype, device=device)
-        other = torch.randn(shape, dtype=dtype, device=device)
-        output = torch.empty_like(input)
+    input = torch.randn(shape, dtype=dtype, device=device)
+    other = torch.randn(shape, dtype=dtype, device=device)
+    output = torch.empty_like(input)
 
-        _run_launch_func(launch_func, input, other, output)
+    _run_launch_func(launch_func, input, other, output)
 
-        assert torch.allclose(output, torch.add(input, other))
+    expected = torch.add(input, other)
 
-    def test_addmm(self):
-        arrangement = functools.partial(
-            addmm.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64
-        )
-        application = addmm.application
-        tensors = tuple(
-            Tensor(ndim, dtype=ninetoothed.float16) for ndim in (2, 2, 2, 0, 0, 2)
-        )
-        caller = "cuda"
-        kernel_name = "addmm"
-        output_dir = ninetoothed.generation.CACHE_DIR
+    assert torch.allclose(output, expected)
 
-        launch_func = _generate_launch_func(
-            arrangement,
-            application,
-            tensors,
-            caller=caller,
-            kernel_name=kernel_name,
-            output_dir=output_dir,
-        )
 
-        shape = (512, 512)
-        dtype = torch.float16
-        device = caller
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize(
+    "dtype, ninetoothed_dtype, atol", ((torch.float16, ninetoothed.float16, 0.075),)
+)
+@pytest.mark.parametrize("k", (512,))
+@pytest.mark.parametrize("n", (512,))
+@pytest.mark.parametrize("m", (512,))
+def test_addmm(m, n, k, dtype, device, ninetoothed_dtype, atol):
+    torch.manual_seed(0)
 
-        input = torch.randn(shape, dtype=dtype, device=device)
-        mat1 = torch.randn(shape, dtype=dtype, device=device)
-        mat2 = torch.randn(shape, dtype=dtype, device=device)
-        beta = torch.randn((), dtype=dtype)
-        alpha = torch.randn((), dtype=dtype)
-        output = torch.empty(
-            (mat1.shape[0], mat2.shape[1]), dtype=mat1.dtype, device=mat1.device
-        )
+    arrangement = functools.partial(
+        addmm.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64
+    )
+    application = addmm.application
+    tensors = tuple(
+        Tensor(ndim, dtype=ninetoothed_dtype) for ndim in (2, 2, 2, 0, 0, 2)
+    )
+    caller = device
+    kernel_name = "addmm"
+    output_dir = ninetoothed.generation.CACHE_DIR
 
-        _run_launch_func(launch_func, input, mat1, mat2, beta, alpha, output)
+    launch_func = _generate_launch_func(
+        arrangement,
+        application,
+        tensors,
+        caller=caller,
+        kernel_name=kernel_name,
+        output_dir=output_dir,
+    )
 
-        assert torch.allclose(
-            output, torch.addmm(input, mat1, mat2, beta=beta, alpha=alpha), atol=0.075
-        )
+    input = torch.randn((m, n), dtype=dtype, device=device)
+    mat1 = torch.randn((m, k), dtype=dtype, device=device)
+    mat2 = torch.randn((k, n), dtype=dtype, device=device)
+    beta = torch.randn((), dtype=dtype)
+    alpha = torch.randn((), dtype=dtype)
+    output = torch.empty(
+        (mat1.shape[0], mat2.shape[1]), dtype=mat1.dtype, device=mat1.device
+    )
 
-    def test_attention(self):
-        emb_dim = 64
+    _run_launch_func(launch_func, input, mat1, mat2, beta, alpha, output)
 
-        arrangement = functools.partial(
-            attention.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64
-        )
-        application = attention.application
-        query_, key_, value_, output_ = tuple(
-            Tensor(4, dtype=ninetoothed.float16) for _ in range(4)
-        )
-        for tensor in (query_, key_, value_, output_):
-            tensor.shape = tensor.shape[:-1] + (emb_dim,)
-        is_causal_ = Tensor(0, constexpr=True, value=1)
-        tensors = (query_, key_, value_, is_causal_, output_)
-        caller = "cuda"
-        kernel_name = "attention"
-        output_dir = ninetoothed.generation.CACHE_DIR
+    expected = torch.addmm(input, mat1, mat2, beta=beta, alpha=alpha)
 
-        launch_func = _generate_launch_func(
-            arrangement,
-            application,
-            tensors,
-            caller=caller,
-            kernel_name=kernel_name,
-            output_dir=output_dir,
-        )
+    assert torch.allclose(output, expected, atol=atol)
 
-        shape = (2, 4, 1024, emb_dim)
-        dtype = torch.float16
-        device = caller
 
-        query = torch.randn(shape, dtype=dtype, device=device)
-        key = torch.randn(shape, dtype=dtype, device=device)
-        value = torch.randn(shape, dtype=dtype, device=device)
-        is_causal = torch.tensor(True)
-        output = torch.empty(shape, dtype=dtype, device=device)
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize(
+    "dtype, ninetoothed_dtype, atol", ((torch.float16, ninetoothed.float16, 0.01),)
+)
+@pytest.mark.parametrize("emb_dim", (64,))
+@pytest.mark.parametrize("seq_len", (1024,))
+@pytest.mark.parametrize("num_heads", (4,))
+@pytest.mark.parametrize("batch_size", (2,))
+def test_attention(
+    batch_size, num_heads, seq_len, emb_dim, dtype, device, ninetoothed_dtype, atol
+):
+    torch.manual_seed(0)
 
-        _run_launch_func(launch_func, query, key, value, is_causal, output)
+    arrangement = functools.partial(
+        attention.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64
+    )
+    application = attention.application
+    query_, key_, value_, output_ = tuple(
+        Tensor(4, dtype=ninetoothed_dtype) for _ in range(4)
+    )
+    for tensor in (query_, key_, value_, output_):
+        tensor.shape = tensor.shape[:-1] + (emb_dim,)
+    is_causal_ = Tensor(0, constexpr=True, value=1)
+    tensors = (query_, key_, value_, is_causal_, output_)
+    caller = device
+    kernel_name = "attention"
+    output_dir = ninetoothed.generation.CACHE_DIR
 
-        assert torch.allclose(
-            output,
-            F.scaled_dot_product_attention(query, key, value, is_causal=True, scale=1),
-            atol=0.01,
-        )
+    launch_func = _generate_launch_func(
+        arrangement,
+        application,
+        tensors,
+        caller=caller,
+        kernel_name=kernel_name,
+        output_dir=output_dir,
+    )
 
-    def test_matmul(self):
-        arrangement = functools.partial(
-            matmul.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64
-        )
-        application = matmul.application
-        tensors = tuple(Tensor(2, dtype=ninetoothed.float16) for _ in range(3))
-        caller = "cuda"
-        kernel_name = "matmul"
-        output_dir = ninetoothed.generation.CACHE_DIR
+    shape = (batch_size, num_heads, seq_len, emb_dim)
 
-        launch_func = _generate_launch_func(
-            arrangement,
-            application,
-            tensors,
-            caller=caller,
-            kernel_name=kernel_name,
-            output_dir=output_dir,
-        )
+    query = torch.randn(shape, dtype=dtype, device=device)
+    key = torch.randn(shape, dtype=dtype, device=device)
+    value = torch.randn(shape, dtype=dtype, device=device)
+    is_causal = torch.tensor(True)
+    output = torch.empty(shape, dtype=dtype, device=device)
 
-        shape = (512, 512)
-        dtype = torch.float16
-        device = caller
+    _run_launch_func(launch_func, query, key, value, is_causal, output)
 
-        lhs = torch.randn(shape, dtype=dtype, device=device)
-        rhs = torch.randn(shape, dtype=dtype, device=device)
-        output = torch.empty((lhs.shape[0], rhs.shape[1]), dtype=dtype, device=device)
+    expected = F.scaled_dot_product_attention(
+        query, key, value, is_causal=True, scale=1
+    )
 
-        _run_launch_func(launch_func, lhs, rhs, output)
+    assert torch.allclose(output, expected, atol=atol)
 
-        assert torch.allclose(output, torch.matmul(lhs, rhs))
 
-    def test_conv2d(self):
-        arrangement = functools.partial(
-            conv2d.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64
-        )
-        application = matmul.application
-        tensors = tuple(Tensor(4, dtype=ninetoothed.float16) for _ in range(3))
-        caller = "cuda"
-        kernel_name = "conv2d"
-        output_dir = ninetoothed.generation.CACHE_DIR
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize(
+    "dtype, ninetoothed_dtype", ((torch.float16, ninetoothed.float16),)
+)
+@pytest.mark.parametrize("k", (512,))
+@pytest.mark.parametrize("n", (512,))
+@pytest.mark.parametrize("m", (512,))
+def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
+    torch.manual_seed(0)
 
-        launch_func = _generate_launch_func(
-            arrangement,
-            application,
-            tensors,
-            caller=caller,
-            kernel_name=kernel_name,
-            output_dir=output_dir,
-        )
+    arrangement = functools.partial(
+        matmul.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64
+    )
+    application = matmul.application
+    tensors = tuple(Tensor(2, dtype=ninetoothed_dtype) for _ in range(3))
+    caller = device
+    kernel_name = "matmul"
+    output_dir = ninetoothed.generation.CACHE_DIR
 
-        n, c, h, w = 4, 64, 16, 16
-        k, _, r, s = 512, c, 3, 3
-        p = h - r + 1
-        q = w - s + 1
-        dtype = torch.float16
-        device = caller
+    launch_func = _generate_launch_func(
+        arrangement,
+        application,
+        tensors,
+        caller=caller,
+        kernel_name=kernel_name,
+        output_dir=output_dir,
+    )
 
-        input = torch.randn(n, c, h, w, dtype=dtype, device=device)
-        filter = torch.randn(k, c, r, s, dtype=dtype, device=device)
-        output = torch.empty(n, k, p, q, dtype=dtype, device=device)
+    lhs = torch.randn((m, k), dtype=dtype, device=device)
+    rhs = torch.randn((k, n), dtype=dtype, device=device)
+    output = torch.empty((lhs.shape[0], rhs.shape[1]), dtype=dtype, device=device)
 
-        _run_launch_func(launch_func, input, filter, output)
+    _run_launch_func(launch_func, lhs, rhs, output)
 
-        assert torch.allclose(output, F.conv2d(input, filter), atol=0.001, rtol=0.001)
+    expected = torch.matmul(lhs, rhs)
+
+    assert torch.allclose(output, expected)
+
+
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize(
+    "dtype, ninetoothed_dtype, rtol, atol",
+    ((torch.float16, ninetoothed.float16, 0.001, 0.001),),
+)
+@pytest.mark.parametrize("s", (3,))
+@pytest.mark.parametrize("r", (3,))
+@pytest.mark.parametrize("k", (512,))
+@pytest.mark.parametrize("w", (16,))
+@pytest.mark.parametrize("h", (16,))
+@pytest.mark.parametrize("c", (64,))
+@pytest.mark.parametrize("n", (4,))
+def test_conv2d(n, c, h, w, k, r, s, dtype, device, ninetoothed_dtype, rtol, atol):
+    torch.manual_seed(0)
+
+    arrangement = functools.partial(
+        conv2d.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64
+    )
+    application = matmul.application
+    tensors = tuple(Tensor(4, dtype=ninetoothed_dtype) for _ in range(3))
+    caller = device
+    kernel_name = "conv2d"
+    output_dir = ninetoothed.generation.CACHE_DIR
+
+    launch_func = _generate_launch_func(
+        arrangement,
+        application,
+        tensors,
+        caller=caller,
+        kernel_name=kernel_name,
+        output_dir=output_dir,
+    )
+
+    p = h - r + 1
+    q = w - s + 1
+
+    input = torch.randn(n, c, h, w, dtype=dtype, device=device)
+    filter = torch.randn(k, c, r, s, dtype=dtype, device=device)
+    output = torch.empty(n, k, p, q, dtype=dtype, device=device)
+
+    _run_launch_func(launch_func, input, filter, output)
+
+    expected = F.conv2d(input, filter)
+
+    assert torch.allclose(output, expected, rtol=rtol, atol=atol)
 
 
 class _ArgumentTensor(ctypes.Structure):

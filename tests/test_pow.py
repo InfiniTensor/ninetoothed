@@ -1,9 +1,10 @@
+import pytest
 import torch
 
 import ninetoothed
 from ninetoothed import Tensor, block_size
 from ninetoothed.language import libdevice
-from tests.skippers import skip_if_cuda_not_available
+from tests.utils import get_available_devices
 
 
 def arrangement(input, exponent, output, BLOCK_SIZE=block_size()):
@@ -30,21 +31,16 @@ def pow(input, exponent):
     return output
 
 
-@skip_if_cuda_not_available
-class TestCUDA:
-    @classmethod
-    def setup_class(cls):
-        torch.manual_seed(0)
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("dtype", (torch.float32,))
+@pytest.mark.parametrize("size", (44925,))
+def test(size, dtype, device):
+    torch.manual_seed(0)
 
-        size = 44925
+    input = torch.rand(size, dtype=dtype, device=device)
+    exponent = torch.rand(size, dtype=dtype, device=device)
 
-        cls.input = torch.randn(size, device="cuda")
-        cls.exponent = torch.randn(size, device="cuda")
+    output = pow(input, exponent)
+    expected = torch.pow(input, exponent)
 
-    def test_fp32(self):
-        input = type(self).input.to(torch.float32)
-        exponent = type(self).exponent.to(torch.float32)
-
-        assert torch.allclose(
-            pow(input, exponent), torch.pow(input, exponent), equal_nan=True
-        )
+    assert torch.allclose(output, expected, equal_nan=True)

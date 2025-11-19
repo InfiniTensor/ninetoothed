@@ -1,9 +1,10 @@
+import pytest
 import torch
 
 import ninetoothed
 import ninetoothed.language as ntl
 from ninetoothed import Symbol, Tensor
-from tests.skippers import skip_if_cuda_not_available, skip_if_float8_e5m2_not_supported
+from tests.utils import get_available_devices
 
 BLOCK_SIZE_M = Symbol("BLOCK_SIZE_M", meta=True)
 BLOCK_SIZE_N = Symbol("BLOCK_SIZE_N", meta=True)
@@ -58,30 +59,32 @@ def matmul(lhs, rhs):
     return output
 
 
-@skip_if_cuda_not_available
-class TestCUDA:
-    @classmethod
-    def setup_class(cls):
-        torch.manual_seed(0)
+_FLOAT8_E5M2_CONFIG = (
+    ((torch.float8_e5m2, 0.125),) if hasattr(torch, "float8_e5m2") else ()
+)
 
-        shape = (512, 512)
 
-        cls.lhs = torch.randn(shape, device="cuda")
-        cls.rhs = torch.randn(shape, device="cuda")
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("dtype, atol", ((torch.float16, 1e-8),) + _FLOAT8_E5M2_CONFIG)
+@pytest.mark.parametrize("k", (512,))
+@pytest.mark.parametrize("n", (512,))
+@pytest.mark.parametrize("m", (512,))
+def test(m, n, k, dtype, device, atol):
+    torch.manual_seed(0)
 
-    def test_fp16(self):
-        lhs = type(self).lhs.to(torch.float16)
-        rhs = type(self).rhs.to(torch.float16)
+    randn_dtype = dtype if dtype != torch.float8_e5m2 else torch.float16
 
-        assert torch.allclose(matmul(lhs, rhs), torch.matmul(lhs, rhs))
+    input = torch.randn((m, k), dtype=randn_dtype, device=device)
+    other = torch.randn((k, n), dtype=randn_dtype, device=device)
 
-    @skip_if_float8_e5m2_not_supported
-    def test_fp8(self):
-        lhs = type(self).lhs.to(torch.float8_e5m2)
-        rhs = type(self).rhs.T.to(torch.float8_e5m2)
+    if dtype == torch.float8_e5m2:
+        input = input.to(dtype)
+        other = other.T.to(dtype)
 
-        assert torch.allclose(
-            matmul(lhs, rhs),
-            torch.matmul(lhs.to(torch.float16), rhs.to(torch.float16)),
-            atol=0.125,
-        )
+        output = matmul(input, other)
+        expected = torch.matmul(input.to(torch.float16), other.to(torch.float16))
+    else:
+        output = matmul(input, other)
+        expected = torch.matmul(input, other)
+
+    assert torch.allclose(output, expected, atol=atol)

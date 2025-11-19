@@ -6,17 +6,17 @@ import torch
 import ninetoothed
 import tests.test_matmul as matmul
 from ninetoothed import Tensor
-from tests.skippers import skip_if_cuda_not_available
+from tests.utils import get_available_devices
 
 
-@skip_if_cuda_not_available
+@pytest.mark.parametrize("_device", get_available_devices())
 @pytest.mark.parametrize("num_stages", (None, 3, (1, 3)))
 @pytest.mark.parametrize("num_warps", (None, 4, (4, 8)))
 @pytest.mark.parametrize("block_size_k", (ninetoothed.block_size(), 64))
 @pytest.mark.parametrize("block_size_n", (ninetoothed.block_size(), 64))
 @pytest.mark.parametrize("block_size_m", (ninetoothed.block_size(), 64))
 def test_auto_tuning_generation(
-    block_size_m, block_size_n, block_size_k, num_warps, num_stages
+    block_size_m, block_size_n, block_size_k, num_warps, num_stages, _device
 ):
     auto_tuning_should_be_disabled = (
         isinstance(block_size_m, int)
@@ -53,8 +53,8 @@ def test_auto_tuning_generation(
             assert "application_with_auto_tuning" in contents
 
 
-@skip_if_cuda_not_available
-def test_arrangement_returning_a_single_tensor():
+@pytest.mark.parametrize("_device", get_available_devices())
+def test_arrangement_returning_a_single_tensor(_device):
     def arrangement(x):
         return x.tile((ninetoothed.block_size(),))
 
@@ -64,8 +64,7 @@ def test_arrangement_returning_a_single_tensor():
     ninetoothed.make(arrangement, application, (Tensor(1),))
 
 
-@skip_if_cuda_not_available
-@pytest.mark.parametrize("device", ("cuda",))
+@pytest.mark.parametrize("device", get_available_devices())
 @pytest.mark.parametrize("num_indices", (10,))
 @pytest.mark.parametrize("num_cols", (128,))
 @pytest.mark.parametrize("num_rows", (1024,))
@@ -117,8 +116,7 @@ def test_squeezing_the_innermost_level(num_rows, num_cols, num_indices, device):
     assert output.shape == expected.shape and torch.allclose(output, expected)
 
 
-@skip_if_cuda_not_available
-@pytest.mark.parametrize("device", ("cuda",))
+@pytest.mark.parametrize("device", get_available_devices())
 def test_unsqueezing_the_outermost_level(device):
     def arrangement(x):
         return x.tile((ninetoothed.block_size(),)).unsqueeze(0)

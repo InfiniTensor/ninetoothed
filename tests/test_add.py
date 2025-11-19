@@ -1,8 +1,9 @@
+import pytest
 import torch
 
 import ninetoothed
 from ninetoothed import Symbol, Tensor
-from tests.skippers import skip_if_cuda_not_available
+from tests.utils import get_available_devices
 
 
 def add(lhs, rhs):
@@ -23,19 +24,16 @@ def add(lhs, rhs):
     return output
 
 
-@skip_if_cuda_not_available
-class TestCUDA:
-    @classmethod
-    def setup_class(cls):
-        torch.manual_seed(0)
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("dtype", (torch.float32,))
+@pytest.mark.parametrize("size", (98432,))
+def test(size, dtype, device):
+    torch.manual_seed(0)
 
-        size = 98432
+    input = torch.rand(size, dtype=dtype, device=device)
+    other = torch.rand(size, dtype=dtype, device=device)
 
-        cls.lhs = torch.rand(size, device="cuda")
-        cls.rhs = torch.rand(size, device="cuda")
+    output = add(input, other)
+    expected = input + other
 
-    def test_fp32(self):
-        lhs = type(self).lhs.to(torch.float32)
-        rhs = type(self).rhs.to(torch.float32)
-
-        assert torch.allclose(add(lhs, rhs), lhs + rhs)
+    assert torch.allclose(output, expected)

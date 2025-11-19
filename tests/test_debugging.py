@@ -1,16 +1,20 @@
 import functools
 import itertools
 
+import pytest
 import torch
 
 import tests.test_addmm as addmm
 from ninetoothed import Tensor
 from ninetoothed.debugging import simulate_arrangement
-from tests.skippers import skip_if_cuda_not_available
+from tests.utils import get_available_devices
 
 
-@skip_if_cuda_not_available
-def test_addmm():
+@pytest.mark.parametrize("device", get_available_devices())
+def test_addmm(device):
+    if device != "cuda":
+        pytest.skip("`ninetoothed.debugging` only supports CUDA")
+
     m = 3
     n = 4
     k = 5

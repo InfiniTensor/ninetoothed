@@ -1,12 +1,13 @@
 import functools
 
+import pytest
 import torch
 import torch.nn.functional as F
 
 import ninetoothed
 import tests.test_matmul as matmul
 from ninetoothed import Tensor
-from tests.skippers import skip_if_cuda_not_available
+from tests.utils import get_available_devices
 
 
 def arrangement(
@@ -56,22 +57,22 @@ def conv2d(input, filter):
     return output
 
 
-@skip_if_cuda_not_available
-class TestCUDA:
-    @classmethod
-    def setup_class(cls):
-        torch.manual_seed(0)
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("dtype, rtol, atol", ((torch.float16, 0.001, 0.001),))
+@pytest.mark.parametrize("s", (3,))
+@pytest.mark.parametrize("r", (3,))
+@pytest.mark.parametrize("k", (512,))
+@pytest.mark.parametrize("w", (16,))
+@pytest.mark.parametrize("h", (16,))
+@pytest.mark.parametrize("c", (64,))
+@pytest.mark.parametrize("n", (4,))
+def test(n, c, h, w, k, r, s, dtype, device, rtol, atol):
+    torch.manual_seed(0)
 
-        n, c, h, w = 4, 64, 16, 16
-        k, _, r, s = 512, c, 3, 3
+    input = torch.rand((n, c, h, w), dtype=dtype, device=device)
+    weight = torch.rand((k, c, r, s), dtype=dtype, device=device)
 
-        cls.input = torch.randn(n, c, h, w, device="cuda")
-        cls.filter = torch.randn(k, c, r, s, device="cuda")
+    output = conv2d(input, weight)
+    expected = F.conv2d(input, weight)
 
-    def test_fp16(self):
-        input = type(self).input.to(torch.float16)
-        filter = type(self).filter.to(torch.float16)
-
-        assert torch.allclose(
-            conv2d(input, filter), F.conv2d(input, filter), atol=0.001, rtol=0.001
-        )
+    assert torch.allclose(output, expected, rtol=rtol, atol=atol)

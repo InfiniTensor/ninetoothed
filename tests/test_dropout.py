@@ -1,11 +1,12 @@
 import random
 
+import pytest
 import torch
 
 import ninetoothed
 import ninetoothed.language as ntl
 from ninetoothed import Tensor, block_size
-from tests.skippers import skip_if_cuda_not_available
+from tests.utils import get_available_devices
 
 
 def arrangement(input, p, seed, output, BLOCK_SIZE=block_size()):
@@ -28,27 +29,22 @@ def dropout(input, p=0.5):
     return output
 
 
-@skip_if_cuda_not_available
-class TestCUDA:
-    @classmethod
-    def setup_class(cls):
-        random.seed(0)
-        torch.manual_seed(0)
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("dtype", (torch.float16,))
+@pytest.mark.parametrize("size", (349,))
+def test(size, dtype, device):
+    random.seed(0)
+    torch.manual_seed(0)
 
-        size = 349
+    input = torch.randn(size, dtype=dtype, device=device)
+    p = 0.3
 
-        cls.input = torch.randn(size, device="cuda")
+    output = dropout(input, p=p)
 
-    def test_fp16(self):
-        input = type(self).input.to(torch.float16)
-        p = 0.3
+    assert input.shape == output.shape
 
-        output = dropout(input, p=p)
+    non_zero_ratio = output.nonzero().numel() / input.numel()
 
-        assert input.shape == output.shape
+    assert abs(non_zero_ratio - (1 - p)) < 0.05
 
-        non_zero_ratio = output.nonzero().numel() / input.numel()
-
-        assert abs(non_zero_ratio - (1 - p)) < 0.05
-
-        assert torch.allclose(output[output != 0], input[output != 0] / (1 - p))
+    assert torch.allclose(output[output != 0], input[output != 0] / (1 - p))

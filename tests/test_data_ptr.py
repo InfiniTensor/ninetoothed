@@ -1,9 +1,10 @@
+import pytest
 import torch
 
 import ninetoothed
 import ninetoothed.language as ntl
 from ninetoothed import Tensor
-from tests.skippers import skip_if_cuda_not_available
+from tests.utils import get_available_devices
 
 
 def arrangement(input, output, BLOCK_SIZE=1024):
@@ -29,13 +30,12 @@ def sum(input):
     return output[0]
 
 
-@skip_if_cuda_not_available
-def test_data_ptr():
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("size", (64180,))
+def test_data_ptr(size, device):
     torch.manual_seed(0)
 
-    size = 64180
-
-    input = torch.randn(size, device="cuda")
+    input = torch.randn(size, device=device)
 
     output = sum(input)
 
