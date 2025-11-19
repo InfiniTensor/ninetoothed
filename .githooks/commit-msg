@@ -1,0 +1,87 @@
+#!/bin/sh
+
+# Extract the first line of commit message (subject line).
+commit_msg_file=$1
+commit_msg=$(head -n1 "$commit_msg_file")
+
+# Validate commit message is not empty.
+if [ -z "$commit_msg" ]; then
+    echo "❌ Error: Commit message cannot be empty." >&2
+    exit 1
+fi
+
+# Check if subject starts with uppercase letter.
+if ! echo "$commit_msg" | grep -q '^[A-Z]'; then
+    echo "❌ Error: Commit message must start with an uppercase letter." >&2
+    echo "" >&2
+    echo "Valid examples:" >&2
+    echo "  ✓ 'Add new feature'" >&2
+    echo "  ✓ 'Fix authentication bug'" >&2
+    echo "" >&2
+    echo "Invalid examples:" >&2
+    echo "  ✗ 'add new feature'" >&2
+    echo "  ✗ 'fix authentication bug'" >&2
+    echo "" >&2
+    echo "Your message: \"$commit_msg\"." >&2
+    exit 1
+fi
+
+# Check if subject ends with punctuation.
+last_char=$(echo "$commit_msg" | sed 's/.*\(.\)$/\1/')
+if echo "$last_char" | grep -q '[.,;:!?]'; then
+    echo "❌ Error: Commit message should not end with punctuation." >&2
+    echo "" >&2
+    echo "Valid examples:" >&2
+    echo "  ✓ 'Add new feature'" >&2
+    echo "  ✓ 'Fix authentication bug'" >&2
+    echo "" >&2
+    echo "Invalid examples:" >&2
+    echo "  ✗ 'Add new feature.'" >&2
+    echo "  ✗ 'Fix authentication bug!'" >&2
+    echo "" >&2
+    echo "Your message: \"$commit_msg\"." >&2
+    exit 1
+fi
+
+# Validate imperative mood (avoid past tense).
+if echo "$commit_msg" | grep -qiE "\b(added|fixed|changed|modified|removed|updated|implemented|created|improved)\b"; then
+    echo "❌ Error: Commit message must use imperative mood." >&2
+    echo "" >&2
+    echo "Valid (imperative):" >&2
+    echo "  ✓ 'Add user authentication'" >&2
+    echo "  ✓ 'Fix memory leak'" >&2
+    echo "  ✓ 'Update dependencies'" >&2
+    echo "  ✓ 'Refactor database module'" >&2
+    echo "" >&2
+    echo "Invalid (past tense):" >&2
+    echo "  ✗ 'Added user authentication'" >&2
+    echo "  ✗ 'Fixed memory leak'" >&2
+    echo "  ✗ 'Updated dependencies'" >&2
+    echo "  ✗ 'Refactored database module'" >&2
+    echo "" >&2
+    echo "Your message: \"$commit_msg\"." >&2
+    exit 1
+fi
+
+echo "✅ Commit message validation passed." >&2
+
+# Ruff checks.
+if command -v ruff > /dev/null; then
+    echo "Running Ruff checks..." >&2
+    if ! ruff check; then
+        echo "❌ Error: Ruff check failed." >&2
+        exit 1
+    fi
+    
+    echo "Formatting code with Ruff..." >&2
+    if ! ruff format --check; then
+        echo "❌ Error: Code formatting check failed." >&2
+        exit 1
+    fi
+else
+    echo "❌ Error: Ruff not found." >&2
+    echo "Install with: 'uv pip install ruff'." >&2
+    exit 1
+fi
+
+echo "✅ Code formatting completed." >&2
