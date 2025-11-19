@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ninetoothed"
-version = "0.22.0"
+dynamic = ["version"]
 authors = [{ name = "Jiacheng Huang", email = "huangjiacheng0709@outlook.com" }]
 description = "A domain-specific language based on Triton but providing higher-level abstraction."
 readme = "README.md"
@@ -24,6 +24,9 @@ Issues = "https://github.com/InfiniTensor/ninetoothed/issues"
 debugging = ["torch>=2.4.0"]
 visualization = ["matplotlib>=3.9.0", "ninetoothed[debugging]"]
 all = ["ninetoothed[debugging]", "ninetoothed[visualization]"]
+
+[tool.hatch.version]
+path = "src/ninetoothed/_version.py"
 
 [tool.ruff]
 src = [".", "src", "tests"]

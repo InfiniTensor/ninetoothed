@@ -1,3 +1,4 @@
+hatch
 jupyter
 jupytext
 matplotlib
