@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import ninetoothed
 import ninetoothed.language as ntl
 from ninetoothed import Tensor
-from tests.utils import skip_if_cuda_not_available
+from tests.utils import get_available_devices
 
 BLOCK_SIZE_M = ninetoothed.block_size(lower_bound=64, upper_bound=128)
 BLOCK_SIZE_N = ninetoothed.block_size(lower_bound=32, upper_bound=64)
@@ -96,39 +96,24 @@ def attention(q, k, v, is_causal=False):
     return o
 
 
-@skip_if_cuda_not_available
-class TestCUDA:
-    shapes = ((2, 4, 1024, 64), (2, 4, 1, 64))
+@pytest.mark.parametrize("is_causal", (False, True))
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize(
+    "dtype, rtol, atol", ((torch.float32, 0.025, 0.025), (torch.float16, 0.01, 0.01))
+)
+@pytest.mark.parametrize("emb_dim", (64,))
+@pytest.mark.parametrize("seq_len", (1024, 1))
+@pytest.mark.parametrize("num_heads", (4,))
+@pytest.mark.parametrize("batch_size", (2,))
+def test(batch_size, num_heads, seq_len, emb_dim, dtype, device, is_causal, rtol, atol):
+    torch.manual_seed(0)
 
-    dtypes = (torch.float32, torch.float16)
+    q, k, v = (
+        torch.randn(batch_size, num_heads, seq_len, emb_dim, dtype=dtype, device=device)
+        for _ in range(3)
+    )
 
-    is_causal_values = (False, True)
+    output = attention(q, k, v, is_causal=is_causal)
+    expected = F.scaled_dot_product_attention(q, k, v, is_causal=is_causal, scale=1)
 
-    @classmethod
-    def setup_class(cls):
-        torch.manual_seed(0)
-
-        cls.args = {
-            shape: tuple(torch.randn(shape, device="cuda") for _ in range(3))
-            for shape in cls.shapes
-        }
-
-    @pytest.mark.parametrize("is_causal", is_causal_values)
-    @pytest.mark.parametrize("dtype", dtypes)
-    @pytest.mark.parametrize("shape", shapes)
-    def test(self, shape, dtype, is_causal):
-        q, k, v = (arg.to(dtype) for arg in type(self).args[shape])
-
-        if dtype == torch.float32:
-            atol = 0.025
-            rtol = 0.025
-        elif dtype == torch.float16:
-            atol = 0.01
-            rtol = 0.01
-
-        assert torch.allclose(
-            attention(q, k, v, is_causal=is_causal),
-            F.scaled_dot_product_attention(q, k, v, is_causal=is_causal, scale=1),
-            atol=atol,
-            rtol=rtol,
-        )
+    assert torch.allclose(output, expected, rtol=rtol, atol=atol)

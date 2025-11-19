@@ -1,7 +1,8 @@
+import pytest
 import torch
 
 from ninetoothed import Tensor, block_size, make
-from tests.utils import skip_if_cuda_not_available
+from tests.utils import get_available_devices
 
 BLOCK_SIZE = block_size()
 
@@ -14,9 +15,9 @@ def application(x):
     x
 
 
-@skip_if_cuda_not_available
-def test_expand():
-    x = torch.empty((0,), device="cuda")
+@pytest.mark.parametrize("device", get_available_devices())
+def test_expand(device):
+    x = torch.empty((0,), device=device)
 
     kernel = make(arrangement, application, (Tensor(1),))
 

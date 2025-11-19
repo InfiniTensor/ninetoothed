@@ -1,9 +1,10 @@
+import pytest
 import torch
 
 import ninetoothed
 import ninetoothed.language as ntl
 from ninetoothed import Symbol, Tensor
-from tests.utils import skip_if_cuda_not_available
+from tests.utils import get_available_devices
 
 
 def softmax(input):
@@ -26,15 +27,16 @@ def softmax(input):
     return output
 
 
-@skip_if_cuda_not_available
-class TestCUDA:
-    @classmethod
-    def setup_class(cls):
-        torch.manual_seed(0)
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("dtype", (torch.float32,))
+@pytest.mark.parametrize("n", (781,))
+@pytest.mark.parametrize("m", (1823,))
+def test(m, n, dtype, device):
+    torch.manual_seed(0)
 
-        cls.input = torch.randn(1823, 781, device="cuda")
+    input = torch.rand((m, n), dtype=dtype, device=device)
 
-    def test_fp32(self):
-        input = type(self).input.to(torch.float32)
+    output = softmax(input)
+    expected = torch.softmax(input, dim=-1)
 
-        assert torch.allclose(softmax(input), torch.softmax(input, axis=-1))
+    assert torch.allclose(output, expected)

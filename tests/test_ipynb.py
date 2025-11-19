@@ -1,8 +1,13 @@
-from tests.utils import skip_if_cuda_not_available
+import pytest
+
+from tests.utils import get_available_devices
 
 
-@skip_if_cuda_not_available
-def test_ipynb():
+@pytest.mark.parametrize("device", get_available_devices())
+def test_ipynb(device):
+    if device != "cuda":
+        pytest.skip("this test only supports CUDA")
+
     import inspect
     import os
     import subprocess

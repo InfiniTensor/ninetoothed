@@ -1,12 +1,13 @@
 import functools
 
+import pytest
 import torch
 import torch.nn.functional as F
 
 import ninetoothed
 import ninetoothed.language as ntl
 from ninetoothed import Symbol, Tensor
-from tests.utils import skip_if_cuda_not_available
+from tests.utils import get_available_devices
 
 
 def arrangement(input, output, ceil_mode=False):
@@ -63,29 +64,22 @@ def max_pool2d(input, window_shape, ceil_mode=False):
     return output
 
 
-@skip_if_cuda_not_available
-class TestCUDA:
-    @classmethod
-    def setup_class(cls):
-        torch.manual_seed(0)
+@pytest.mark.parametrize("ceil_mode", (False, True))
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("dtype", (torch.float16,))
+@pytest.mark.parametrize("s", (3,))
+@pytest.mark.parametrize("r", (3,))
+@pytest.mark.parametrize("w", (64,))
+@pytest.mark.parametrize("h", (64,))
+@pytest.mark.parametrize("c", (3,))
+@pytest.mark.parametrize("n", (32,))
+def test(n, c, h, w, r, s, dtype, device, ceil_mode):
+    torch.manual_seed(0)
 
-        cls.input = torch.randn(32, 3, 64, 64, device="cuda")
-        cls.window_shape = (3, 3)
+    input = torch.randn((n, c, h, w), dtype=dtype, device=device)
+    window_shape = (r, s)
 
-    def test_fp16_ceil(self):
-        input = type(self).input.to(torch.float16)
-        window_shape = type(self).window_shape
+    output = max_pool2d(input, window_shape, ceil_mode=ceil_mode)
+    expected = F.max_pool2d(input, window_shape, ceil_mode=ceil_mode)
 
-        assert torch.allclose(
-            max_pool2d(input, window_shape, ceil_mode=True),
-            F.max_pool2d(input, window_shape, ceil_mode=True),
-        )
-
-    def test_fp16_floor(self):
-        input = type(self).input.to(torch.float16)
-        window_shape = type(self).window_shape
-
-        assert torch.allclose(
-            max_pool2d(input, window_shape, ceil_mode=False),
-            F.max_pool2d(input, window_shape, ceil_mode=False),
-        )
+    assert torch.allclose(output, expected)

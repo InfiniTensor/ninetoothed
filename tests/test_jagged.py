@@ -5,7 +5,7 @@ import torch
 
 import ninetoothed
 from ninetoothed import Symbol, Tensor
-from tests.utils import skip_if_cuda_not_available
+from tests.utils import get_available_devices
 
 BLOCK_SIZE = Symbol("block_size", constexpr=True)
 
@@ -41,8 +41,7 @@ def to_padded_tensor(input, padding, jagged_dim, block_size=32):
     return output
 
 
-@skip_if_cuda_not_available
-@pytest.mark.parametrize("device", ("cuda",))
+@pytest.mark.parametrize("device", get_available_devices())
 @pytest.mark.parametrize("padding", (-1,))
 @pytest.mark.parametrize("num_batches", (2, 3, 7, 16))
 @pytest.mark.parametrize("jagged_dim", (1, 2))
