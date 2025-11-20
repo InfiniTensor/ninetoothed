@@ -19,7 +19,10 @@ from ninetoothed.make import make
 from ninetoothed.symbol import Symbol, block_size
 from ninetoothed.tensor import Tensor
 
+from ._version import __version__
+
 __all__ = [
+    "__version__",
     "Symbol",
     "Tensor",
     "bfloat16",
