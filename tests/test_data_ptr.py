@@ -19,7 +19,7 @@ def application(input, output):
 
 
 def sum(input):
-    output = torch.empty(1, dtype=input.dtype, device=input.device)
+    output = torch.zeros(1, dtype=input.dtype, device=input.device)
 
     tensors = (Tensor(1), Tensor(1, shape_options={"constexpr": True}))
 
