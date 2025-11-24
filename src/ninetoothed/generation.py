@@ -756,7 +756,7 @@ class CodeGenerator(ast.NodeTransformer):
                 if not naming.is_meta(name):
                     next_power_of_2_name = naming.make_next_power_of_2(name)
 
-                    return ast.Name(id=next_power_of_2_name, ctx=ast.Load())
+                    return Symbol(next_power_of_2_name).node
 
                 return self.generic_visit(node)
 
