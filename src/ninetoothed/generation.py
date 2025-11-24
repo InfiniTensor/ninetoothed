@@ -162,11 +162,6 @@ class CodeGenerator(ast.NodeTransformer):
         for target, value in reversed(self._invariants.items()):
             node.body.insert(0, ast.Assign(targets=[target.node], value=value.node))
 
-        return node
-
-    def visit_arguments(self, node):
-        self.generic_visit(node)
-
         symbols = {
             name.node.id: name
             for arg in self._args
@@ -177,9 +172,9 @@ class CodeGenerator(ast.NodeTransformer):
         meta_names = {name for name in names if naming.is_meta(name)}
         non_meta_names = {name for name in names if name not in meta_names}
         non_meta_names |= {
-            naming.make_next_power_of_2(name)
-            for name in non_meta_names
-            if naming.is_constexpr(name)
+            name.node.id
+            for name in Symbol(node).names()
+            if naming.is_next_power_of_2(name.node.id)
         }
 
         self._symbols = symbols
@@ -187,7 +182,7 @@ class CodeGenerator(ast.NodeTransformer):
         non_meta_names = sorted(non_meta_names)
         meta_names = sorted(meta_names)
 
-        node.args = [
+        node.args.args = [
             ast.arg(arg=name)
             if not naming.is_constexpr(name)
             else ast.arg(arg=name, annotation=attribute("constexpr").node)
