@@ -1,4 +1,5 @@
 import functools
+import math
 
 import pytest
 import torch
@@ -127,3 +128,26 @@ def test_unsqueezing_the_outermost_level(device):
     kernel = ninetoothed.make(arrangement, application, (Tensor(1),))
 
     kernel(torch.randn((0,), device=device))
+
+
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("size", (1086,))
+def test_non_int_constexpr(size, device):
+    def arrangement(input, other, output, block_size=ninetoothed.block_size()):
+        return input.tile((block_size,)), other, output.tile((block_size,))
+
+    def application(input, other, output):
+        output = input + other  # noqa: F841
+
+    tensors = (Tensor(1), Tensor(0, constexpr=True), Tensor(1))
+
+    kernel = ninetoothed.make(arrangement, application, tensors)
+
+    input = torch.randn((size,), device=device)
+    other = math.pi
+    output = torch.empty_like(input)
+    expected = input + other
+
+    kernel(input, other, output)
+
+    assert output.shape == expected.shape and torch.allclose(output, expected)
