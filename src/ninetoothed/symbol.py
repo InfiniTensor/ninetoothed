@@ -204,7 +204,8 @@ class Symbol:
             def visit_Name(self, node):
                 self.generic_visit(node)
 
-                self.names.add(node.symbol)
+                if hasattr(node, "symbol"):
+                    self.names.add(node.symbol)
 
         name_collector = NameCollector()
 
