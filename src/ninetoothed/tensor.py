@@ -129,7 +129,7 @@ class Tensor:
             result = func(self, *args, **kwargs)
 
             result._history.extend(self._history)
-            result._history.append((func, args, kwargs))
+            result._history.append((wrapper, args, kwargs))
 
             return result
 
