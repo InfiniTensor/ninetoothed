@@ -279,9 +279,9 @@ def {_APPLICATION_NAME}({param_names}):
     {other_module.__name__}.{other_application.__name__}({other_param_names})
 """
 
-    source_file = str(cache_source(application_source))
+    source_file = cache_source(application_source)
 
-    module = import_from_path(source_file, source_file)
+    module = import_from_path(source_file.stem, source_file)
     module_vars = vars(module)
 
     application = module_vars[_APPLICATION_NAME]
