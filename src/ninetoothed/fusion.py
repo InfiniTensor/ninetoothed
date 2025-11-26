@@ -26,7 +26,7 @@ class Node:
         self.kwargs = kwargs
 
 
-def fuse(graph_module, _example_inputs):
+def fuser(graph_module, _example_inputs):
     graph = graph_module.graph
 
     ninetoothed_nodes = []
