@@ -14,6 +14,7 @@ from ninetoothed.dtype import (
 )
 from ninetoothed.eval import _eval as eval
 from ninetoothed.eval import _subs as subs
+from ninetoothed.fusion import fuse
 from ninetoothed.jit import jit
 from ninetoothed.make import make
 from ninetoothed.symbol import Symbol, block_size
@@ -33,6 +34,7 @@ __all__ = [
     "int64",
     "eval",
     "subs",
+    "fuse",
     "jit",
     "make",
     "uint8",

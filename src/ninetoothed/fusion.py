@@ -1,5 +1,8 @@
+import functools
 import inspect
+import itertools
 
+import ninetoothed.jit
 import ninetoothed.naming as naming
 from ninetoothed.generation import cache_source
 from ninetoothed.jit import import_from_path
@@ -21,6 +24,62 @@ class Node:
         self.args = args
 
         self.kwargs = kwargs
+
+
+def fuse(graph_module, _example_inputs):
+    graph = graph_module.graph
+
+    ninetoothed_nodes = []
+    past_args = set()
+
+    def _is_hoistable(node):
+        if hasattr(node.target, "__name__") and node.target.__name__ in (
+            "empty",
+            "empty_like",
+        ):
+            return True
+
+        for arg in _iterate_recursively(
+            itertools.chain(node.args, node.kwargs.values())
+        ):
+            if arg in past_args:
+                return False
+
+        return True
+
+    def _fuse_nodes(nodes):
+        if len(nodes) == 1:
+            return Node(nodes[0].kernel, args=nodes[0].args, kwargs=nodes[0].kwargs)
+
+        return functools.reduce(_fuse_node_pair, nodes)
+
+    for node in graph.nodes:
+        if isinstance(node.target, ninetoothed.jit.__globals__["_Handle"]):
+            ninetoothed_node = Node(node.target, args=node.args, kwargs=node.kwargs)
+            ninetoothed_nodes.append(ninetoothed_node)
+            past_args.update(
+                _iterate_recursively(itertools.chain(node.args, node.kwargs.values()))
+            )
+            graph.erase_node(node)
+
+            continue
+
+        if not _is_hoistable(node):
+            if ninetoothed_nodes:
+                with graph.inserting_before(node):
+                    ninetoothed_node = _fuse_nodes(ninetoothed_nodes)
+                    graph.call_function(
+                        ninetoothed_node.kernel,
+                        args=ninetoothed_node.args,
+                        kwargs=ninetoothed_node.kwargs,
+                    )
+
+                ninetoothed_nodes = []
+                past_args = set()
+
+            continue
+
+    return graph_module.forward
 
 
 def _fuse_node_pair(input_node, other_node):
@@ -353,3 +412,24 @@ def _replace(object, mapping):
         return object
 
     return object
+
+
+def _iterate_recursively(object):
+    if isinstance(object, (str, bytes)):
+        yield object
+
+        return
+
+    if isinstance(object, dict):
+        for value in object.values():
+            yield from _iterate_recursively(value)
+
+        return
+
+    try:
+        for item in object:
+            yield from _iterate_recursively(item)
+
+        return
+    except TypeError:
+        yield object
