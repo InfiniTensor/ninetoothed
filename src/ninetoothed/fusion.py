@@ -198,9 +198,27 @@ def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
             input_tensors_arranged[input_tensor_position].innermost().shape,
             other_tensors_arranged[other_tensor_position].innermost().shape,
         ):
-            block_size_mapping[other_block_size] = input_block_size
+            for block_size in (input_block_size, other_block_size):
+                if not (
+                    Symbol.is_name(block_size) and naming.is_meta(block_size.node.id)
+                ):
+                    return None, None
 
-    for tensor in other_tensors_arranged:
+            new_lower_bound = max(
+                input_block_size.lower_bound, other_block_size.lower_bound
+            )
+            new_upper_bound = min(
+                input_block_size.upper_bound, other_block_size.upper_bound
+            )
+
+            new_block_size = ninetoothed.block_size(
+                lower_bound=new_lower_bound, upper_bound=new_upper_bound
+            )
+
+            block_size_mapping[input_block_size] = new_block_size
+            block_size_mapping[other_block_size] = new_block_size
+
+    for tensor in itertools.chain(input_tensors_arranged, other_tensors_arranged):
         _replace_history(tensor, block_size_mapping)
 
     (input_prefix, input_suffix), (other_prefix, other_suffix) = (
