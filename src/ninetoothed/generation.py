@@ -243,6 +243,8 @@ class CodeGenerator(ast.NodeTransformer):
                     tensor = self._context[value.id]
                 elif isinstance(value, ast.Subscript) and self._in_context(value.value):
                     tensor = self._context[value.value.id]
+                else:
+                    tensor = self.visit(value)
 
                 self.visit(value)
 
