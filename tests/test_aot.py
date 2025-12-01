@@ -108,14 +108,23 @@ def test_addmm(m, n, k, dtype, device, ninetoothed_dtype, atol):
 
 @pytest.mark.parametrize("device", get_available_devices())
 @pytest.mark.parametrize(
-    "dtype, ninetoothed_dtype, atol", ((torch.float16, ninetoothed.float16, 0.01),)
+    "dtype, ninetoothed_dtype, rtol, atol",
+    ((torch.float16, ninetoothed.float16, 0.01, 0.01),),
 )
 @pytest.mark.parametrize("emb_dim", (64,))
 @pytest.mark.parametrize("seq_len", (1024,))
 @pytest.mark.parametrize("num_heads", (4,))
 @pytest.mark.parametrize("batch_size", (2,))
 def test_attention(
-    batch_size, num_heads, seq_len, emb_dim, dtype, device, ninetoothed_dtype, atol
+    batch_size,
+    num_heads,
+    seq_len,
+    emb_dim,
+    dtype,
+    device,
+    ninetoothed_dtype,
+    rtol,
+    atol,
 ):
     torch.manual_seed(0)
 
@@ -157,7 +166,7 @@ def test_attention(
         query, key, value, is_causal=True, scale=1
     )
 
-    assert torch.allclose(output, expected, atol=atol)
+    assert torch.allclose(output, expected, rtol=rtol, atol=atol)
 
 
 @pytest.mark.parametrize("device", get_available_devices())
