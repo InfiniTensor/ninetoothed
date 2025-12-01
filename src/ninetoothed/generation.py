@@ -229,11 +229,14 @@ class CodeGenerator(ast.NodeTransformer):
 
             return _TupleSliceRemover().visit(offsets[dim].node)
 
+        def _stride(tensor, dim):
+            return Symbol(tensor.source.stride_string(dim)).node
+
         func = node.func
         args = node.args
 
         if isinstance(func, ast.Attribute):
-            if func.attr in ("data_ptr", "offsets"):
+            if func.attr in ("data_ptr", "offsets", "stride"):
                 value = func.value
 
                 if self._in_context(value):
@@ -249,6 +252,10 @@ class CodeGenerator(ast.NodeTransformer):
             if func.attr == "offsets":
                 # TODO: Add error handling.
                 return _offsets(tensor, ast.literal_eval(args[0]) if args else None)
+
+            if func.attr == "stride":
+                # TODO: Add error handling.
+                return _stride(tensor, ast.literal_eval(args[0]))
 
         self.generic_visit(node)
 
