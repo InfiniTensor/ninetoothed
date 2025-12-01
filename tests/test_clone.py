@@ -28,7 +28,15 @@ def application_1(input, output):
     )
 
 
-applications = (application, application_1)
+def application_2(input, output):
+    output = input.source[input.offsets(0)[:, None], input.offsets(1)[None, :]]  # noqa: F841
+
+
+def application_3(input, output):
+    output.source[output.offsets(0)[:, None], output.offsets(1)[None, :]] = input
+
+
+applications = (application, application_1, application_2, application_3)
 
 
 def clone(input, *, impl_id=0):
