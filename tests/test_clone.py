@@ -22,9 +22,9 @@ def application(input, output):
 
 def application_1(input, output):
     output = ntl.load(  # noqa: F841
-        input.data_ptr()
-        + input.offsets(0)[:, None] * input.stride(0)
-        + input.offsets(1)[None, :] * input.stride(1)
+        input.source.data_ptr()
+        + input.offsets(0)[:, None] * input.source.stride(0)
+        + input.offsets(1)[None, :] * input.source.stride(1)
     )
 
 
