@@ -15,7 +15,7 @@ def arrangement(input, output, BLOCK_SIZE=1024):
 
 
 def application(input, output):
-    ntl.atomic_add(output.data_ptr(), ntl.sum(input))
+    ntl.atomic_add(output.source.data_ptr(), ntl.sum(input))
 
 
 def sum(input):

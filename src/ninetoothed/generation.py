@@ -207,6 +207,8 @@ class CodeGenerator(ast.NodeTransformer):
 
     def visit_Call(self, node):
         def _data_ptr(tensor):
+            assert tensor is tensor.source, "Expected a source tensor."
+
             return Symbol(tensor.source.pointer_string()).node
 
         def _offsets(tensor, dim=None):
@@ -230,6 +232,8 @@ class CodeGenerator(ast.NodeTransformer):
             return _TupleSliceRemover().visit(offsets[dim].node)
 
         def _stride(tensor, dim):
+            assert tensor is tensor.source, "Expected a source tensor."
+
             return Symbol(tensor.source.stride_string(dim)).node
 
         func = node.func
@@ -243,6 +247,8 @@ class CodeGenerator(ast.NodeTransformer):
                     tensor = self._context[value.id]
                 elif isinstance(value, ast.Subscript) and self._in_context(value.value):
                     tensor = self._context[value.value.id]
+                else:
+                    tensor = self.visit(value)
 
                 self.visit(value)
 
