@@ -268,18 +268,30 @@ class CodeGenerator(ast.NodeTransformer):
         return node
 
     def visit_Subscript(self, node):
-        if self._in_context(node.value) and isinstance(node.ctx, ast.Load):
-            value = self._context[node.value.id]
+        def _generate_load():
+            return self._generate_load(
+                tensor,
+                indices=node.slice.elts
+                if isinstance(node.slice, ast.Tuple)
+                else (node.slice,),
+            )
 
-            if isinstance(value, Tensor):
-                return self._generate_load(
-                    value,
-                    indices=node.slice.elts
-                    if isinstance(node.slice, ast.Tuple)
-                    else (node.slice,),
-                )
+        if not isinstance(node.ctx, ast.Load):
+            self.generic_visit(node)
+
+            return node
+
+        if self._in_context(node.value) and isinstance(
+            tensor := self._context[node.value.id], Tensor
+        ):
+            return _generate_load()
 
         self.generic_visit(node)
+
+        if isinstance(tensor := node.value, Tensor):
+            assert tensor is tensor.source, "Expected a source tensor."
+
+            return _generate_load()
 
         return node
 
@@ -325,23 +337,30 @@ class CodeGenerator(ast.NodeTransformer):
                 return ast.Expr(
                     self._generate_store(self._context[target.id], node.value)
                 )
-            elif (
-                isinstance(target, ast.Subscript)
-                and self._in_context(target.value)
-                and isinstance(target.ctx, ast.Store)
-            ):
-                value = self._context[target.value.id]
 
-                if isinstance(value, Tensor):
-                    return ast.Expr(
-                        self._generate_store(
-                            value,
-                            self.visit(node.value),
-                            indices=target.slice.elts
-                            if isinstance(target.slice, ast.Tuple)
-                            else (target.slice,),
-                        )
-                    )
+            def _generate_store():
+                return self._generate_store(
+                    tensor,
+                    self.visit(node.value),
+                    indices=target.slice.elts
+                    if isinstance(target.slice, ast.Tuple)
+                    else (target.slice,),
+                )
+
+            if isinstance(target, ast.Subscript) and isinstance(target.ctx, ast.Store):
+                if self._in_context(target.value) and isinstance(
+                    tensor := self._context[target.value.id], Tensor
+                ):
+                    return ast.Expr(_generate_store())
+
+                self.generic_visit(node)
+
+                if isinstance(tensor := target.value, Tensor):
+                    assert tensor is tensor.source, "Expected a source tensor."
+
+                    return ast.Expr(_generate_store())
+
+                return node
 
         self.generic_visit(node)
 
@@ -631,7 +650,10 @@ class CodeGenerator(ast.NodeTransformer):
         return call("store", pointers, value, mask=mask).node
 
     def _generate_pointers_and_mask(self, tensor, indices):
-        indices = [Symbol(index) for index in self._complete_indices(tensor, indices)]
+        if tensor is not tensor.source:
+            indices = self._complete_indices(tensor, indices)
+
+        indices = tuple(Symbol(index) for index in indices)
 
         name_for_pointers = type(self)._name_for_pointers(tensor)
         self._invariants[name_for_pointers] = Symbol(tensor.source.pointer_string())
