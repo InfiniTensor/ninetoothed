@@ -49,9 +49,14 @@ def fuser(graph_module, _example_inputs):
 
     def _fuse_nodes(nodes):
         if len(nodes) == 1:
-            return Node(nodes[0].kernel, args=nodes[0].args, kwargs=nodes[0].kwargs)
+            return (Node(nodes[0].kernel, args=nodes[0].args, kwargs=nodes[0].kwargs),)
 
-        return functools.reduce(_fuse_node_pair, nodes)
+        fused = functools.reduce(_fuse_node_pair, nodes)
+
+        if fused is None:
+            return nodes
+
+        return (fused,)
 
     for node in graph.nodes:
         if isinstance(node.target, ninetoothed.jit.__globals__["_Handle"]):
@@ -67,12 +72,12 @@ def fuser(graph_module, _example_inputs):
         if not _is_hoistable(node):
             if ninetoothed_nodes:
                 with graph.inserting_before(node):
-                    ninetoothed_node = _fuse_nodes(ninetoothed_nodes)
-                    graph.call_function(
-                        ninetoothed_node.kernel,
-                        args=ninetoothed_node.args,
-                        kwargs=ninetoothed_node.kwargs,
-                    )
+                    for ninetoothed_node in _fuse_nodes(ninetoothed_nodes):
+                        graph.call_function(
+                            ninetoothed_node.kernel,
+                            args=ninetoothed_node.args,
+                            kwargs=ninetoothed_node.kwargs,
+                        )
 
                 ninetoothed_nodes = []
                 past_args = set()
