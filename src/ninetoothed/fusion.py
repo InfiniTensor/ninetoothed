@@ -355,29 +355,35 @@ def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
 
 
 def _fuse_application_pair(input_kernel, other_kernel):
-    input_application = input_kernel.application
-    other_application = other_kernel.application
-
-    input_params = inspect.signature(input_application).parameters
-    other_params = inspect.signature(other_application).parameters
-
     count = 0
 
-    def _make_param():
-        nonlocal count
+    def _generate_invocation_info(application):
+        def _make_param():
+            nonlocal count
 
-        param = naming.auto_generate(f"parameter_{count}")
-        count += 1
+            param = naming.auto_generate(f"parameter_{count}")
+            count += 1
 
-        return param
+            return param
 
-    input_param_names = ", ".join(_make_param() for _ in input_params)
-    other_param_names = ", ".join(_make_param() for _ in other_params)
+        params = inspect.signature(application).parameters
+
+        param_names = ", ".join(_make_param() for _ in params)
+
+        module = inspect.getmodule(application)
+
+        invocation_source = f"{module.__name__}.{application.__name__}({param_names})"
+
+        return param_names, module, invocation_source
+
+    input_param_names, input_module, input_invocation_source = (
+        _generate_invocation_info(input_kernel.application)
+    )
+    other_param_names, other_module, other_invocation_source = (
+        _generate_invocation_info(other_kernel.application)
+    )
 
     param_names = f"{input_param_names}, {other_param_names}"
-
-    input_module = inspect.getmodule(input_application)
-    other_module = inspect.getmodule(other_application)
 
     _APPLICATION_NAME = "application"
 
@@ -386,8 +392,8 @@ import {other_module.__name__}
 
 
 def {_APPLICATION_NAME}({param_names}):
-    {input_module.__name__}.{input_application.__name__}({input_param_names})
-    {other_module.__name__}.{other_application.__name__}({other_param_names})
+    {input_invocation_source}
+    {other_invocation_source}
 """
 
     source_file = cache_source(application_source)
