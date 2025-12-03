@@ -834,7 +834,7 @@ class Tritonizer(ast.NodeTransformer):
 
 def cache_source(source):
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
-    cache_file = CACHE_DIR / f"{digest}.py"
+    cache_file = CACHE_DIR / f"_{digest}.py"
 
     if not cache_file.exists():
         with open(cache_file, "w", encoding="utf-8") as f:
