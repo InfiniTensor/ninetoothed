@@ -87,6 +87,17 @@ def fuser(graph_module, _example_inputs):
     return graph_module.forward
 
 
+class _FusionInfo:
+    def __init__(self, input_prefix, input_suffix, other_prefix, other_suffix):
+        self.input_prefix = input_prefix
+
+        self.input_suffix = input_suffix
+
+        self.other_prefix = other_prefix
+
+        self.other_suffix = other_suffix
+
+
 def _fuse_node_pair(input_node, other_node):
     if input_node.kwargs or other_node.kwargs:
         return None
@@ -226,25 +237,31 @@ def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
     for tensor in itertools.chain(input_tensors_arranged, other_tensors_arranged):
         _replace_history(tensor, block_size_mapping)
 
-    (input_prefix, input_suffix), (other_prefix, other_suffix) = (
-        _get_fusion_prefix_and_suffix(
-            input_tensors_arranged[input_tensor_positions[0]],
-            other_tensors_arranged[other_tensor_positions[0]],
-        )
+    fusion_info = _get_fusion_info(
+        input_tensors_arranged[input_tensor_positions[0]],
+        other_tensors_arranged[other_tensor_positions[0]],
     )
 
-    if input_prefix is None:
+    if fusion_info is None:
         return None, None
+
+    input_prefix = fusion_info.input_prefix
+    input_suffix = fusion_info.input_suffix
+    other_prefix = fusion_info.other_prefix
+    other_suffix = fusion_info.other_suffix
 
     for input_tensor_position, other_tensor_position in zip(
         input_tensor_positions[1:], other_tensor_positions[1:]
     ):
-        (input_prefix_, input_suffix_), (other_prefix_, other_suffix_) = (
-            _get_fusion_prefix_and_suffix(
-                input_tensors_arranged[input_tensor_position],
-                other_tensors_arranged[other_tensor_position],
-            )
+        fusion_info_ = _get_fusion_prefix_and_suffix(
+            input_tensors_arranged[input_tensor_position],
+            other_tensors_arranged[other_tensor_position],
         )
+
+        input_prefix_ = fusion_info_.input_prefix
+        input_suffix_ = fusion_info_.input_suffix
+        other_prefix_ = fusion_info_.other_prefix
+        other_suffix_ = fusion_info_.other_suffix
 
         if (
             input_prefix_ != input_prefix
@@ -381,6 +398,17 @@ def {_APPLICATION_NAME}({param_names}):
     application = module_vars[_APPLICATION_NAME]
 
     return application
+
+
+def _get_fusion_info(input, other):
+    (input_prefix, input_suffix), (other_prefix, other_suffix) = (
+        _get_fusion_prefix_and_suffix(input, other)
+    )
+
+    if input_prefix is None:
+        return None
+
+    return _FusionInfo(input_prefix, input_suffix, other_prefix, other_suffix)
 
 
 def _get_fusion_prefix_and_suffix(input, other):
