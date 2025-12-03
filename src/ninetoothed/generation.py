@@ -959,6 +959,37 @@ class _Inliner(ast.NodeTransformer):
             def visit_Name(self, node):
                 return self._mapping.get(node.id, node)
 
+            def visit_Attribute(self, node):
+                self.generic_visit(node)
+
+                if isinstance(node.value, ast.Subscript):
+                    return ast.Attribute(
+                        value=ast.Attribute(value=node.value.value, attr="dtype"),
+                        attr=node.attr,
+                        ctx=node.ctx,
+                    )
+
+                return node
+
+            def visit_Subscript(self, node):
+                self.generic_visit(node)
+
+                def _get_slice_elements(slice):
+                    return slice.elts if isinstance(slice, ast.Tuple) else [slice]
+
+                if isinstance(node.value, ast.Subscript):
+                    return ast.Subscript(
+                        value=node.value.value,
+                        slice=ast.Tuple(
+                            elts=_get_slice_elements(node.value.slice)
+                            + _get_slice_elements(node.slice),
+                            ctx=ast.Load(),
+                        ),
+                        ctx=node.ctx,
+                    )
+
+                return node
+
         class _LocalVariableRenamer(ast.NodeTransformer):
             def __init__(self, prefix, local_vars):
                 self._prefix = prefix
