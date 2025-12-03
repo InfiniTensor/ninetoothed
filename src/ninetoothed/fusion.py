@@ -280,6 +280,12 @@ def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
             + type(records_on_tensor[0])(input_suffix)
         )
 
+        for func, _, _ in itertools.chain(input_prefix, input_suffix):
+            if func is not Tensor.tile:
+                continue
+
+            records_on_tensor.insert(1, ())
+
         records_on_tensors.append(records_on_tensor)
         tensors.append(input_tensor)
 
@@ -293,6 +299,12 @@ def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
             + records_on_tensor[0]
             + type(records_on_tensor[0])(other_suffix)
         )
+
+        for func, _, _ in itertools.chain(other_prefix, other_suffix):
+            if func is not Tensor.tile:
+                continue
+
+            records_on_tensor.insert(1, ())
 
         records_on_tensors.append(records_on_tensor)
         tensors.append(other_tensor)
