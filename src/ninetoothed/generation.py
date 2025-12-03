@@ -276,7 +276,7 @@ class CodeGenerator(ast.NodeTransformer):
                 else (node.slice,),
             )
 
-        if not isinstance(node.ctx, ast.Load):
+        if not hasattr(node, "ctx") or not isinstance(node.ctx, ast.Load):
             self.generic_visit(node)
 
             return node
