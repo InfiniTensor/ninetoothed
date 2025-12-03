@@ -207,7 +207,17 @@ def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
     input_tensor_positions = tuple(mapping.values())
     other_tensor_positions = tuple(mapping.keys())
 
-    block_size_mapping = {}
+    mapping = {}
+
+    for old_tensor, new_tensor in itertools.chain(
+        zip(input_kernel.tensors, input_tensors),
+        zip(other_kernel.tensors, other_tensors),
+    ):
+        old_names = sorted(old_tensor.names(), key=str)
+        new_names = sorted(new_tensor.names(), key=str)
+
+        for old_name, new_name in zip(old_names, new_names):
+            mapping[old_name] = new_name
 
     for input_tensor_position, other_tensor_position in zip(
         input_tensor_positions, other_tensor_positions
@@ -233,11 +243,11 @@ def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
                 lower_bound=new_lower_bound, upper_bound=new_upper_bound
             )
 
-            block_size_mapping[input_block_size] = new_block_size
-            block_size_mapping[other_block_size] = new_block_size
+            mapping[input_block_size] = new_block_size
+            mapping[other_block_size] = new_block_size
 
     for tensor in itertools.chain(input_tensors_arranged, other_tensors_arranged):
-        _replace_history(tensor, block_size_mapping)
+        _replace_history(tensor, mapping)
 
     fusion_info = _get_fusion_info(
         input_tensors_arranged[input_tensor_positions[0]],
