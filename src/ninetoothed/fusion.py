@@ -388,8 +388,11 @@ def _get_fusion_prefix_and_suffix(input, other):
 
 
 def _get_fusion_position(input, other):
-    for k in range(1, len(input._history) + 1):
-        if tuple(input._history)[-k:] == tuple(other._history)[:k]:
+    input_history = tuple(input._history)
+    other_history = tuple(other._history)
+
+    for k in range(min(len(input_history), len(other_history)), 0, -1):
+        if input_history[-k:] == other_history[:k]:
             return k
 
     return None
