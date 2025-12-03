@@ -127,12 +127,14 @@ def _fuse_node_pair(input_node, other_node):
 
 
 def _fuse_kernel_pair(input_kernel, other_kernel, mapping):
-    arrangement, tensors = _fuse_arrangement_pair(input_kernel, other_kernel, mapping)
+    arrangement, tensors, fusion_info = _fuse_arrangement_pair(
+        input_kernel, other_kernel, mapping
+    )
 
     if arrangement is None:
         return None
 
-    application = _fuse_application_pair(input_kernel, other_kernel)
+    application = _fuse_application_pair(input_kernel, other_kernel, fusion_info)
 
     if application is None:
         return None
@@ -351,13 +353,15 @@ def _fuse_arrangement_pair(input_kernel, other_kernel, mapping):
 
         return tuple(tensors_arranged)
 
-    return arrangement, tuple(tensors)
+    return arrangement, tuple(tensors), fusion_info
 
 
-def _fuse_application_pair(input_kernel, other_kernel):
+def _fuse_application_pair(input_kernel, other_kernel, fusion_info):
     count = 0
 
-    def _generate_invocation_info(application):
+    def _generate_invocation_info(application, prefix, suffix, indent=4):
+        indentation = " " * indent
+
         def _make_param():
             nonlocal count
 
@@ -368,20 +372,78 @@ def _fuse_application_pair(input_kernel, other_kernel):
 
         params = inspect.signature(application).parameters
 
-        param_names = ", ".join(_make_param() for _ in params)
+        arg_names = [_make_param() for _ in params]
+
+        param_names = ", ".join(arg_names)
+
+        tile_func_count = 0
+
+        for func, args, kwargs in itertools.chain(prefix, suffix):
+            if func is not Tensor.tile:
+                continue
+
+            if len(args) != 1 or kwargs:
+                return None, None, None
+
+            tile_shape = args[0]
+
+            if (
+                any(tile_size not in (1, -1) for tile_size in tile_shape)
+                or sum(1 if tile_size == -1 else 0 for tile_size in tile_shape) != 1
+            ):
+                return None, None, None
+
+            tile_func_count += 1
+
+            if tile_func_count > 1:
+                return None, None, None
+
+        def _generate_for_loop_source():
+            reduction_dim = tile_shape.index(-1)
+
+            index_name = naming.auto_generate(f"index_{count}")
+            range_stop = f"{arg_names[0]}.shape[{reduction_dim}]"
+
+            tensor_indexing = ", ".join(
+                index_name if dim == reduction_dim else "0"
+                for dim in range(len(tile_shape))
+            )
+
+            for i, arg_name in enumerate(arg_names):
+                arg_names[i] = f"{arg_name}[{tensor_indexing}]"
+
+            return f"for {index_name} in range({range_stop})"
 
         module = inspect.getmodule(application)
 
-        invocation_source = f"{module.__name__}.{application.__name__}({param_names})"
+        invocation_source = ""
+
+        if tile_func_count != 0:
+            invocation_source += f"{_generate_for_loop_source()}:\n{indentation * 2}"
+
+        invocation_source += (
+            f"{module.__name__}.{application.__name__}({', '.join(arg_names)})"
+        )
 
         return param_names, module, invocation_source
 
     input_param_names, input_module, input_invocation_source = (
-        _generate_invocation_info(input_kernel.application)
+        _generate_invocation_info(
+            input_kernel.application, fusion_info.input_prefix, fusion_info.input_suffix
+        )
     )
+
+    if input_param_names is None:
+        return None
+
     other_param_names, other_module, other_invocation_source = (
-        _generate_invocation_info(other_kernel.application)
+        _generate_invocation_info(
+            other_kernel.application, fusion_info.other_prefix, fusion_info.other_suffix
+        )
     )
+
+    if other_param_names is None:
+        return None
 
     param_names = f"{input_param_names}, {other_param_names}"
 
