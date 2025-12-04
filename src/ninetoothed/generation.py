@@ -7,6 +7,7 @@ import inspect
 import itertools
 import math
 import pathlib
+import re
 import subprocess
 import textwrap
 
@@ -18,7 +19,7 @@ import ninetoothed.naming as naming
 from ninetoothed.cudaifier import Cudaifier
 from ninetoothed.language import attribute, call
 from ninetoothed.symbol import Symbol
-from ninetoothed.tensor import Tensor
+from ninetoothed.tensor import Tensor, _identifier_pattern_raw_string
 from ninetoothed.torchifier import Torchifier
 
 CACHE_DIR = pathlib.Path.home() / ".ninetoothed"
@@ -797,6 +798,90 @@ class CodeGenerator(ast.NodeTransformer):
     @staticmethod
     def _name_for_index(tensor, dim):
         return Symbol(f"{tensor.source.name}_index_{dim}")
+
+    @staticmethod
+    def _generate_name_mapping_from_tensors(tensors):
+        return CodeGenerator._generate_name_mapping_from_shapes(
+            tuple(tensor.shape for tensor in tensors)
+        )
+
+    @staticmethod
+    def _generate_name_mapping_from_shapes(shapes):
+        if len(shapes) < 2:
+            return {}
+
+        all_mapping = collections.defaultdict(set)
+
+        for input_shape, other_shape in itertools.combinations(shapes, 2):
+            mapping = CodeGenerator._generate_name_mapping_from_shape_pair(
+                input_shape, other_shape
+            )
+
+            for key, value in mapping.items():
+                all_mapping[key] |= value
+
+        return all_mapping
+
+    @staticmethod
+    def _generate_name_mapping_from_shape_pair(input, other):
+        def _convert_shape_to_string_tuple(shape):
+            return tuple(str(size) for size in shape)
+
+        return CodeGenerator._generate_name_mapping_from_tuple_pair(
+            _convert_shape_to_string_tuple(input), _convert_shape_to_string_tuple(other)
+        )
+
+    @staticmethod
+    def _generate_name_mapping_from_tuple_pair(input, other):
+        all_mapping = collections.defaultdict(set)
+
+        for input_string, other_string in zip(input, other):
+            mapping = CodeGenerator._generate_name_mapping_from_string_pair(
+                input_string, other_string
+            )
+
+            for key, value in mapping.items():
+                all_mapping[key].add(value)
+
+        return all_mapping
+
+    @staticmethod
+    def _generate_name_mapping_from_string_pair(input, other):
+        name_pattern = _identifier_pattern_raw_string()
+
+        input_names = set(re.findall(name_pattern, input))
+        other_names = set(re.findall(name_pattern, other))
+        names = input_names | other_names
+
+        local_dict = {name: sympy.Symbol(name) for name in names}
+
+        input_expr = sympy.simplify(eval(input, {}, local_dict))
+        other_expr = sympy.simplify(eval(other, {}, local_dict))
+
+        input_free_symbols = input_expr.free_symbols
+        other_free_symbols = other_expr.free_symbols
+
+        common_free_symbols = input_free_symbols & other_free_symbols
+
+        input_unique_symbols = list(input_free_symbols - common_free_symbols)
+        other_unique_symbols = list(other_free_symbols - common_free_symbols)
+
+        mapping = {}
+
+        if len(input_unique_symbols) == 1 and len(other_unique_symbols) == 1:
+            input_unique_symbol = input_unique_symbols[0]
+            other_unique_symbol = other_unique_symbols[0]
+
+            substituted_expr = input_expr.subs(input_unique_symbol, other_unique_symbol)
+
+            if sympy.simplify(substituted_expr - other_expr) == 0:
+                input_unique_string = str(input_unique_symbol)
+                other_unique_string = str(other_unique_symbol)
+
+                mapping[input_unique_string] = other_unique_string
+                mapping[other_unique_string] = input_unique_string
+
+        return mapping
 
 
 class Tritonizer(ast.NodeTransformer):
