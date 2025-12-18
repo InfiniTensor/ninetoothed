@@ -1,3 +1,4 @@
+import functools
 import random
 
 import pytest
@@ -7,17 +8,32 @@ import ninetoothed
 from ninetoothed import Symbol, Tensor
 from tests.utils import get_available_devices
 
-BLOCK_SIZE = Symbol("block_size", constexpr=True)
 
+class ToPaddedTensor:
+    BLOCK_SIZE = Symbol("block_size", constexpr=True)
 
-def arrangement(input, output, block_size=BLOCK_SIZE):
-    tile_shape = (1,) + tuple(block_size for _ in range(1, input.ndim))
+    @staticmethod
+    def arrangement(input, output, block_size=BLOCK_SIZE):
+        tile_shape = (1,) + tuple(block_size for _ in range(1, input.ndim))
 
-    return input.tile(tile_shape), output.tile(tile_shape)
+        return input.tile(tile_shape), output.tile(tile_shape)
 
+    @staticmethod
+    def application(input, output):
+        output = input  # noqa: F841
 
-def application(input, output):
-    output = input  # noqa: F841
+    @staticmethod
+    def premake(ndim, padding, jagged_dim, block_size=None):
+        if block_size is not None:
+            arrangement = functools.partial(
+                ToPaddedTensor.arrangement, block_size=block_size
+            )
+        else:
+            arrangement = ToPaddedTensor.arrangement
+
+        tensors = (Tensor(ndim, jagged_dim=jagged_dim, other=padding), Tensor(ndim))
+
+        return arrangement, ToPaddedTensor.application, tensors
 
 
 def to_padded_tensor(input, padding, jagged_dim, block_size=32):
@@ -29,12 +45,7 @@ def to_padded_tensor(input, padding, jagged_dim, block_size=32):
 
     output = torch.empty(output_shape, dtype=input.dtype, device=input.device)
 
-    tensors = (
-        Tensor(input.ndim, jagged_dim=jagged_dim, other=padding),
-        Tensor(output.ndim),
-    )
-
-    kernel = ninetoothed.make(arrangement, application, tensors)
+    kernel = ninetoothed.make(*ToPaddedTensor.premake(input.ndim, padding, jagged_dim))
 
     kernel(input, output, block_size=block_size)
 
