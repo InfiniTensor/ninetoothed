@@ -539,7 +539,9 @@ class CodeGenerator(ast.NodeTransformer):
         arg_names += [
             param
             for param in non_next_power_of_2_constexpr_params_without_prefixes
-            if not Tensor.size_pattern().fullmatch(param) and param not in arg_names
+            if not Tensor.size_pattern().fullmatch(param)
+            and not Tensor.seq_len_pattern().fullmatch(param)
+            and param not in arg_names
         ]
 
         launch = ast.FunctionDef(

@@ -504,7 +504,6 @@ class Tensor:
                 for value in itertools.chain(self.shape, strides)
                 if isinstance(value, Symbol)
                 for name in value.names()
-                if not type(self).seq_len_pattern().fullmatch(str(name))
             }
             | (
                 {
