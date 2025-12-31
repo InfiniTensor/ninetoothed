@@ -1,3 +1,4 @@
+from ninetoothed.build import build
 from ninetoothed.dtype import (
     bfloat16,
     float16,
@@ -24,6 +25,7 @@ __all__ = [
     "Tensor",
     "bfloat16",
     "block_size",
+    "build",
     "float16",
     "float32",
     "float64",
