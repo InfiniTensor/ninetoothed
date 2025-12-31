@@ -5,8 +5,8 @@ import subprocess
 import tempfile
 import uuid
 
+import ninetoothed.dtype
 import ninetoothed.naming as naming
-from ninetoothed.dtype import int64
 from ninetoothed.generation import CACHE_DIR, CodeGenerator
 from ninetoothed.tensor import Tensor
 from ninetoothed.utils import calculate_default_configs
@@ -83,9 +83,9 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
 
             param_types.append(f"*{dtype}")
         elif Tensor.size_pattern().fullmatch(param):
-            param_types.append(int64)
+            param_types.append(ninetoothed.dtype.int64)
         elif Tensor.stride_pattern().fullmatch(param):
-            param_types.append(int64)
+            param_types.append(ninetoothed.dtype.int64)
         else:
             source_name = param
             tensor = _find_tensor_by_source_name(tensors, source_name)
@@ -139,16 +139,37 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     return output_contents
 
 
-_HEADER_CONTENT = """#ifndef NINETOOTHED_H
+_DTYPE_MAPPING = {
+    ninetoothed.dtype.int8: "NINETOOTHED_INT8",
+    ninetoothed.dtype.int16: "NINETOOTHED_INT16",
+    ninetoothed.dtype.int32: "NINETOOTHED_INT32",
+    ninetoothed.dtype.int64: "NINETOOTHED_INT64",
+    ninetoothed.dtype.uint8: "NINETOOTHED_UINT8",
+    ninetoothed.dtype.uint16: "NINETOOTHED_UINT16",
+    ninetoothed.dtype.uint32: "NINETOOTHED_UINT32",
+    ninetoothed.dtype.uint64: "NINETOOTHED_UINT64",
+    ninetoothed.dtype.float16: "NINETOOTHED_FLOAT16",
+    ninetoothed.dtype.bfloat16: "NINETOOTHED_BFLOAT16",
+    ninetoothed.dtype.float32: "NINETOOTHED_FLOAT32",
+    ninetoothed.dtype.float64: "NINETOOTHED_FLOAT64",
+}
+
+_DATA_TYPE_BODY_CONTENT = ",\n    ".join(_DTYPE_MAPPING.values())
+
+_HEADER_CONTENT = f"""#ifndef NINETOOTHED_H
 #define NINETOOTHED_H
 
 #include <stdint.h>
 
-typedef struct {
+enum NineToothedDataType {{
+    {_DATA_TYPE_BODY_CONTENT}
+}};
+
+typedef struct {{
     void *data;
     uint64_t *shape;
     int64_t *strides;
-} NineToothedTensor;
+}} NineToothedTensor;
 
 typedef void *NineToothedStream;
 
