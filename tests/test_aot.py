@@ -269,8 +269,6 @@ def _run_launch_func(launch_func, *tensors):
     with torch.cuda.stream(stream):
         launch_func(ctypes.c_void_p(stream.cuda_stream), *arg_tensors)
 
-    stream.synchronize()
-
 
 def _generate_launch_func(
     arrangement, application, tensors, caller, kernel_name, output_dir
