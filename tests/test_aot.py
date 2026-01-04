@@ -286,8 +286,6 @@ def _generate_launch_func(
     library = _load_library(kernel_name, output_dir)
     launch_func_name = f"launch_{kernel_name}"
     launch_func = getattr(library, launch_func_name)
-    launch_func.argtypes = (ctypes.c_void_p,) + tuple(_ArgumentTensor for _ in tensors)
-    launch_func.restype = ctypes.c_int
 
     return launch_func
 
