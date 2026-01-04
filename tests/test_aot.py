@@ -38,7 +38,7 @@ def test_add(size, dtype, device, ninetoothed_dtype):
     kernel_name = "add"
     output_dir = ninetoothed.generation.CACHE_DIR
 
-    launch_func = _generate_launch_func(
+    ninetoothed.make(
         _arrangement,
         _application,
         tensors,
@@ -46,6 +46,8 @@ def test_add(size, dtype, device, ninetoothed_dtype):
         kernel_name=kernel_name,
         output_dir=output_dir,
     )
+
+    launch_func = _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
 
     shape = (size,)
 
@@ -79,7 +81,7 @@ def test_addmm(m, n, k, dtype, device, ninetoothed_dtype, atol):
     kernel_name = "addmm"
     output_dir = ninetoothed.generation.CACHE_DIR
 
-    launch_func = _generate_launch_func(
+    ninetoothed.make(
         arrangement,
         application,
         tensors,
@@ -87,6 +89,8 @@ def test_addmm(m, n, k, dtype, device, ninetoothed_dtype, atol):
         kernel_name=kernel_name,
         output_dir=output_dir,
     )
+
+    launch_func = _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
 
     input = torch.randn((m, n), dtype=dtype, device=device)
     mat1 = torch.randn((m, k), dtype=dtype, device=device)
@@ -139,7 +143,7 @@ def test_attention(
     kernel_name = "attention"
     output_dir = ninetoothed.generation.CACHE_DIR
 
-    launch_func = _generate_launch_func(
+    ninetoothed.make(
         arrangement,
         application,
         tensors,
@@ -147,6 +151,8 @@ def test_attention(
         kernel_name=kernel_name,
         output_dir=output_dir,
     )
+
+    launch_func = _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
 
     shape = (batch_size, num_heads, seq_len, emb_dim)
 
@@ -182,7 +188,7 @@ def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
     kernel_name = "matmul"
     output_dir = ninetoothed.generation.CACHE_DIR
 
-    launch_func = _generate_launch_func(
+    ninetoothed.make(
         arrangement,
         application,
         tensors,
@@ -190,6 +196,8 @@ def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
         kernel_name=kernel_name,
         output_dir=output_dir,
     )
+
+    launch_func = _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
 
     lhs = torch.randn((m, k), dtype=dtype, device=device)
     rhs = torch.randn((k, n), dtype=dtype, device=device)
@@ -224,7 +232,7 @@ def test_conv2d(n, c, h, w, k, r, s, dtype, device, ninetoothed_dtype, rtol, ato
     kernel_name = "conv2d"
     output_dir = ninetoothed.generation.CACHE_DIR
 
-    launch_func = _generate_launch_func(
+    ninetoothed.make(
         arrangement,
         application,
         tensors,
@@ -232,6 +240,8 @@ def test_conv2d(n, c, h, w, k, r, s, dtype, device, ninetoothed_dtype, rtol, ato
         kernel_name=kernel_name,
         output_dir=output_dir,
     )
+
+    launch_func = _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
 
     p = h - r + 1
     q = w - s + 1
@@ -275,19 +285,8 @@ def _run_launch_func(launch_func, *args, **kwargs):
         launch_func(ctypes.c_void_p(stream.cuda_stream), *arguments)
 
 
-def _generate_launch_func(
-    arrangement, application, tensors, caller, kernel_name, output_dir
-):
+def _generate_launch_func(kernel_name, output_dir):
     output_dir = pathlib.Path(output_dir)
-
-    ninetoothed.make(
-        arrangement,
-        application,
-        tensors,
-        caller=caller,
-        kernel_name=kernel_name,
-        output_dir=output_dir,
-    )
 
     _compile_library(kernel_name, output_dir)
     library = _load_library(kernel_name, output_dir)
