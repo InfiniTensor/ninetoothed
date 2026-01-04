@@ -301,8 +301,7 @@ def _compile_library(kernel_name, output_dir):
         "-lcuda",
         "-o",
         output_dir / f"{kernel_name}.so",
-        output_dir / f"{kernel_name}.c",
-    ]
+    ] + list(output_dir.glob(f"{kernel_name}*.c"))
 
     subprocess.run(command, check=True)
 
