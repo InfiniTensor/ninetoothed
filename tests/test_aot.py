@@ -1,5 +1,6 @@
 import ctypes
 import functools
+import itertools
 import subprocess
 
 import pytest
@@ -261,13 +262,16 @@ class _ArgumentTensor(ctypes.Structure):
         return _ArgumentTensor(data, shape, strides)
 
 
-def _run_launch_func(launch_func, *tensors):
+def _run_launch_func(launch_func, *args, **kwargs):
     stream = torch.cuda.Stream()
 
-    arg_tensors = tuple(_ArgumentTensor.from_torch_tensor(tensor) for tensor in tensors)
+    arguments = tuple(
+        _ArgumentTensor.from_torch_tensor(arg) if isinstance(arg, torch.Tensor) else arg
+        for arg in itertools.chain(args, kwargs.values())
+    )
 
     with torch.cuda.stream(stream):
-        launch_func(ctypes.c_void_p(stream.cuda_stream), *arg_tensors)
+        launch_func(ctypes.c_void_p(stream.cuda_stream), *arguments)
 
 
 def _generate_launch_func(
