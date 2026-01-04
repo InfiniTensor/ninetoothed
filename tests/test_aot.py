@@ -1,6 +1,7 @@
 import ctypes
 import functools
 import itertools
+import pathlib
 import subprocess
 
 import pytest
@@ -277,6 +278,8 @@ def _run_launch_func(launch_func, *args, **kwargs):
 def _generate_launch_func(
     arrangement, application, tensors, caller, kernel_name, output_dir
 ):
+    output_dir = pathlib.Path(output_dir)
+
     ninetoothed.make(
         arrangement,
         application,
