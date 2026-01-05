@@ -74,8 +74,6 @@ def max_pool2d(input, window_shape, ceil_mode=False):
 @pytest.mark.parametrize("c", (3,))
 @pytest.mark.parametrize("n", (32,))
 def test(n, c, h, w, r, s, dtype, device, ceil_mode):
-    torch.manual_seed(0)
-
     input = torch.randn((n, c, h, w), dtype=dtype, device=device)
     window_shape = (r, s)
 

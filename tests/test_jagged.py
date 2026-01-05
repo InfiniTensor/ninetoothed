@@ -58,9 +58,6 @@ def to_padded_tensor(input, padding, jagged_dim, block_size=32):
 @pytest.mark.parametrize("jagged_dim", (1, 2))
 @pytest.mark.parametrize("ndim", (3,))
 def test_to_padded_tensor(ndim, jagged_dim, num_batches, padding, device):
-    random.seed(0)
-    torch.manual_seed(0)
-
     def _random_size(lower_bound=1, upper_bound=1024):
         return random.randint(lower_bound, upper_bound)
 
@@ -128,9 +125,6 @@ def copy(dst, src, jagged_dim, block_size=32):
 @pytest.mark.parametrize("jagged_dim", (1, 2))
 @pytest.mark.parametrize("ndim", (3,))
 def test_expand(ndim, jagged_dim, num_batches, device):
-    random.seed(0)
-    torch.manual_seed(0)
-
     def _random_size(lower_bound=1, upper_bound=1024):
         return random.randint(lower_bound, upper_bound)
 

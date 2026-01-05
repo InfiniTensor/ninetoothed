@@ -22,8 +22,6 @@ from tests.utils import get_available_devices
 )
 @pytest.mark.parametrize("size", (45327,))
 def test_add(size, dtype, device, ninetoothed_dtype):
-    torch.manual_seed(0)
-
     def _arrangement(input, other, output):
         def _arrange(tensor):
             return tensor.tile((256,))
@@ -68,8 +66,6 @@ def test_add(size, dtype, device, ninetoothed_dtype):
 @pytest.mark.parametrize("n", (512,))
 @pytest.mark.parametrize("m", (512,))
 def test_addmm(m, n, k, dtype, device, ninetoothed_dtype, atol):
-    torch.manual_seed(0)
-
     arrangement = functools.partial(
         addmm.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64
     )
@@ -126,8 +122,6 @@ def test_attention(
     rtol,
     atol,
 ):
-    torch.manual_seed(0)
-
     arrangement = functools.partial(
         attention.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64
     )
@@ -177,8 +171,6 @@ def test_attention(
 @pytest.mark.parametrize("n", (512,))
 @pytest.mark.parametrize("m", (512,))
 def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
-    torch.manual_seed(0)
-
     arrangement = functools.partial(
         matmul.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64
     )
@@ -221,8 +213,6 @@ def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
 @pytest.mark.parametrize("c", (64,))
 @pytest.mark.parametrize("n", (4,))
 def test_conv2d(n, c, h, w, k, r, s, dtype, device, ninetoothed_dtype, rtol, atol):
-    torch.manual_seed(0)
-
     arrangement = functools.partial(
         conv2d.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64
     )

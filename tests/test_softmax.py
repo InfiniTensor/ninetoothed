@@ -32,8 +32,6 @@ def softmax(input):
 @pytest.mark.parametrize("n", (781,))
 @pytest.mark.parametrize("m", (1823,))
 def test(m, n, dtype, device):
-    torch.manual_seed(0)
-
     input = torch.rand((m, n), dtype=dtype, device=device)
 
     output = softmax(input)

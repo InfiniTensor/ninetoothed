@@ -106,8 +106,6 @@ def attention(q, k, v, is_causal=False):
 @pytest.mark.parametrize("num_heads", (4,))
 @pytest.mark.parametrize("batch_size", (2,))
 def test(batch_size, num_heads, seq_len, emb_dim, dtype, device, is_causal, rtol, atol):
-    torch.manual_seed(0)
-
     q, k, v = (
         torch.randn(batch_size, num_heads, seq_len, emb_dim, dtype=dtype, device=device)
         for _ in range(3)

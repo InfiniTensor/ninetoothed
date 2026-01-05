@@ -33,9 +33,6 @@ def dropout(input, p=0.5):
 @pytest.mark.parametrize("dtype", (torch.float16,))
 @pytest.mark.parametrize("size", (349,))
 def test(size, dtype, device):
-    random.seed(0)
-    torch.manual_seed(0)
-
     input = torch.randn(size, dtype=dtype, device=device)
     p = 0.3
 

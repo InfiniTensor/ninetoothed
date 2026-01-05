@@ -56,8 +56,6 @@ def clone(input, *, impl_id=0):
 @pytest.mark.parametrize("size_m, stride_m", ((641, 700),))
 @pytest.mark.parametrize("impl_id", range(len(applications)))
 def test_clone(impl_id, size_m, size_n, stride_m, stride_n, device):
-    torch.manual_seed(0)
-
     shape = (size_m, size_n)
     strides = (stride_m, stride_n)
 

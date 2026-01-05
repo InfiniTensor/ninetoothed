@@ -33,8 +33,6 @@ def sum(input):
 @pytest.mark.parametrize("device", get_available_devices())
 @pytest.mark.parametrize("size", (64180,))
 def test_data_ptr(size, device):
-    torch.manual_seed(0)
-
     input = torch.randn(size, device=device)
 
     output = sum(input)

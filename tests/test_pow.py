@@ -35,8 +35,6 @@ def pow(input, exponent):
 @pytest.mark.parametrize("dtype", (torch.float32,))
 @pytest.mark.parametrize("size", (44925,))
 def test(size, dtype, device):
-    torch.manual_seed(0)
-
     input = torch.rand(size, dtype=dtype, device=device)
     exponent = torch.rand(size, dtype=dtype, device=device)
 
