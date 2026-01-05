@@ -210,6 +210,7 @@ def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
     assert torch.allclose(output, expected)
 
 
+@pytest.mark.parametrize("shape_options", (None, {"constexpr": True}))
 @pytest.mark.parametrize("device", get_available_devices())
 @pytest.mark.parametrize(
     "dtype, ninetoothed_dtype, rtol, atol",
@@ -222,12 +223,17 @@ def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
 @pytest.mark.parametrize("h", (16,))
 @pytest.mark.parametrize("c", (64,))
 @pytest.mark.parametrize("n", (4,))
-def test_conv2d(n, c, h, w, k, r, s, dtype, device, ninetoothed_dtype, rtol, atol):
+def test_conv2d(
+    n, c, h, w, k, r, s, dtype, device, shape_options, ninetoothed_dtype, rtol, atol
+):
     arrangement = functools.partial(
         conv2d.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64
     )
     application = matmul.application
-    tensors = tuple(Tensor(4, dtype=ninetoothed_dtype) for _ in range(3))
+    tensors = tuple(
+        Tensor(4, dtype=ninetoothed_dtype, shape_options=shape_options)
+        for _ in range(3)
+    )
     caller = device
     kernel_name = "conv2d"
     output_dir = ninetoothed.generation.CACHE_DIR
