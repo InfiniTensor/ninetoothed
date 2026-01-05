@@ -70,8 +70,6 @@ def test_arrangement_returning_a_single_tensor(_device):
 @pytest.mark.parametrize("num_cols", (128,))
 @pytest.mark.parametrize("num_rows", (1024,))
 def test_squeezing_the_innermost_level(num_rows, num_cols, num_indices, device):
-    torch.manual_seed(0)
-
     def arrangement(input, indices, output):
         input_arranged = input.tile((1, -1)).squeeze(1)
         input_arranged.dtype = input_arranged.dtype.squeeze(0)

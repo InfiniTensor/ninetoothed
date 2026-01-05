@@ -62,9 +62,6 @@ def addmm(input, mat1, mat2, beta=1, alpha=1):
 @pytest.mark.parametrize("n", (512,))
 @pytest.mark.parametrize("m", (512,))
 def test(m, n, k, dtype, device, atol):
-    random.seed(0)
-    torch.manual_seed(0)
-
     randn_dtype = dtype if dtype != torch.float8_e5m2 else torch.float16
 
     input = torch.randn((m, n), dtype=randn_dtype, device=device)

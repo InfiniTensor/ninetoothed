@@ -28,8 +28,6 @@ def add(lhs, rhs):
 @pytest.mark.parametrize("dtype", (torch.float32,))
 @pytest.mark.parametrize("size", (98432,))
 def test(size, dtype, device):
-    torch.manual_seed(0)
-
     input = torch.rand(size, dtype=dtype, device=device)
     other = torch.rand(size, dtype=dtype, device=device)
 

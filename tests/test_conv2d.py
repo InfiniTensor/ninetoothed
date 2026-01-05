@@ -67,8 +67,6 @@ def conv2d(input, filter):
 @pytest.mark.parametrize("c", (64,))
 @pytest.mark.parametrize("n", (4,))
 def test(n, c, h, w, k, r, s, dtype, device, rtol, atol):
-    torch.manual_seed(0)
-
     input = torch.rand((n, c, h, w), dtype=dtype, device=device)
     weight = torch.rand((k, c, r, s), dtype=dtype, device=device)
 

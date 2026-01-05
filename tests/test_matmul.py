@@ -70,8 +70,6 @@ _FLOAT8_E5M2_CONFIG = (
 @pytest.mark.parametrize("n", (512,))
 @pytest.mark.parametrize("m", (512,))
 def test(m, n, k, dtype, device, atol):
-    torch.manual_seed(0)
-
     randn_dtype = dtype if dtype != torch.float8_e5m2 else torch.float16
 
     input = torch.randn((m, k), dtype=randn_dtype, device=device)
