@@ -226,14 +226,22 @@ def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
 def test_conv2d(
     n, c, h, w, k, r, s, dtype, device, shape_options, ninetoothed_dtype, rtol, atol
 ):
-    arrangement = functools.partial(
-        conv2d.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64
-    )
-    application = matmul.application
-    tensors = tuple(
-        Tensor(4, dtype=ninetoothed_dtype, shape_options=shape_options)
-        for _ in range(3)
-    )
+    def _premake(block_size_m=64, block_size_n=64, block_size_k=64):
+        arrangement = functools.partial(
+            conv2d.arrangement,
+            BLOCK_SIZE_M=block_size_m,
+            BLOCK_SIZE_N=block_size_n,
+            BLOCK_SIZE_K=block_size_k,
+        )
+        application = matmul.application
+        tensors = tuple(
+            Tensor(4, dtype=ninetoothed_dtype, shape_options=shape_options)
+            for _ in range(3)
+        )
+
+        return arrangement, application, tensors
+
+    arrangement, application, tensors = _premake()
     caller = device
     kernel_name = "conv2d"
     output_dir = ninetoothed.generation.CACHE_DIR
