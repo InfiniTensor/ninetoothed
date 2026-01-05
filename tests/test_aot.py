@@ -35,7 +35,7 @@ def test_add(size, dtype, device, ninetoothed_dtype):
 
     tensors = tuple(Tensor(1, dtype=ninetoothed_dtype) for _ in range(3))
     caller = device
-    kernel_name = "add"
+    kernel_name = f"add{_generate_kernel_name_suffix()}"
     output_dir = ninetoothed.generation.CACHE_DIR
 
     ninetoothed.make(
@@ -78,7 +78,7 @@ def test_addmm(m, n, k, dtype, device, ninetoothed_dtype, atol):
         Tensor(ndim, dtype=ninetoothed_dtype) for ndim in (2, 2, 2, 0, 0, 2)
     )
     caller = device
-    kernel_name = "addmm"
+    kernel_name = f"addmm{_generate_kernel_name_suffix()}"
     output_dir = ninetoothed.generation.CACHE_DIR
 
     ninetoothed.make(
@@ -140,7 +140,7 @@ def test_attention(
     is_causal_ = Tensor(0, constexpr=True, value=1)
     tensors = (query_, key_, value_, is_causal_, output_)
     caller = device
-    kernel_name = "attention"
+    kernel_name = f"attention{_generate_kernel_name_suffix()}"
     output_dir = ninetoothed.generation.CACHE_DIR
 
     ninetoothed.make(
@@ -185,7 +185,7 @@ def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
     application = matmul.application
     tensors = tuple(Tensor(2, dtype=ninetoothed_dtype) for _ in range(3))
     caller = device
-    kernel_name = "matmul"
+    kernel_name = f"matmul{_generate_kernel_name_suffix()}"
     output_dir = ninetoothed.generation.CACHE_DIR
 
     ninetoothed.make(
@@ -243,7 +243,7 @@ def test_conv2d(
 
     arrangement, application, tensors = _premake()
     caller = device
-    kernel_name = "conv2d"
+    kernel_name = f"conv2d{_generate_kernel_name_suffix()}"
     output_dir = ninetoothed.generation.CACHE_DIR
 
     ninetoothed.make(
@@ -326,3 +326,13 @@ def _compile_library(kernel_name, output_dir):
 
 def _load_library(kernel_name, kernel_dir):
     return ctypes.CDLL(kernel_dir / f"{kernel_name}.so")
+
+
+def _generate_kernel_name_suffix():
+    count = _generate_kernel_name_suffix._kernel_count
+    _generate_kernel_name_suffix._kernel_count += 1
+
+    return f"_{count}"
+
+
+_generate_kernel_name_suffix._kernel_count = 0
