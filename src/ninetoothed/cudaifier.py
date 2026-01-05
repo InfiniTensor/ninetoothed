@@ -11,7 +11,10 @@ class Cudaifier(ast.NodeTransformer):
         source = node.id
 
         if naming.is_constexpr(source):
-            return node
+            if not Tensor.size_pattern().fullmatch(source):
+                return node
+
+            source = naming.remove_prefixes(source)
 
         def repl(match):
             return f"{match.group(1)}.data"
