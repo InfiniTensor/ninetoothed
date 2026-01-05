@@ -17,12 +17,14 @@ from ninetoothed.eval import _eval as eval
 from ninetoothed.eval import _subs as subs
 from ninetoothed.jit import jit
 from ninetoothed.make import make
+from ninetoothed.nt_tuner import NtTuner
 from ninetoothed.symbol import Symbol, block_size
 from ninetoothed.tensor import Tensor
 
 __all__ = [
     "Symbol",
     "Tensor",
+    "NtTuner",
     "bfloat16",
     "block_size",
     "build",
