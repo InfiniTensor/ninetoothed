@@ -477,6 +477,102 @@ class Tensor:
 
         return output
 
+    @_meta_operation
+    def slice(self, dim, start, stop=None, step=1):
+        if step is None:
+            step = 1
+
+        if dim < 0:
+            dim += self.ndim
+
+        size = self.shape[dim]
+
+        if step > 0:
+            if start is None:
+                start = 0
+            elif isinstance(start, int) and start < 0:
+                start += size
+
+            if stop is None:
+                stop = size
+            elif isinstance(stop, int) and stop < 0:
+                stop += size
+        else:
+            if start is None:
+                start = size - 1
+            elif isinstance(start, int) and start < 0:
+                start += size
+
+            if stop is None:
+                stop = -1
+            elif isinstance(stop, int) and stop < -1:
+                stop += size
+
+        new_shape = list(self.shape)
+        new_size = (stop - start + step - (1 if step > 0 else -1)) // step
+        new_shape[dim] = new_size
+
+        self._inputs.append([])
+
+        def _offsets(indices):
+            original_indices = list(indices)
+            original_indices[dim] = start + indices[dim] * step
+            return (tuple(original_indices),)
+
+        output = type(self)(
+            shape=new_shape,
+            source=self.source,
+            dtype=self.dtype,
+            target_dims=self.target_dims,
+            _offsets=_offsets,
+            _outputs=[self._inputs[-1]],
+        )
+
+        self._levels.append([output])
+
+        return output
+
+    def __len__(self):
+        return math.prod(self.shape)
+    
+    def __getitem__(self, key):
+        if not isinstance(key, tuple):
+            key = (key, )
+        num_none = key.count(None)
+        num_ellipsis = key.count(...)
+
+        if num_ellipsis > 1:
+            raise ValueError("Only one Ellipsis is allowed")
+        
+        num_effective = len(key) - num_none - num_ellipsis
+        if num_effective > self.ndim:
+            raise IndexError(f"Index {key} is out of bounds for tensor of shape {self.shape}")
+
+        expanded_key = []
+        for k in key:
+            if k is Ellipsis:
+                expanded_key.extend([slice(None)] * (self.ndim - num_effective))
+            else:
+                expanded_key.append(k)
+        key = expanded_key
+
+        res = self
+        curr_dim = 0
+        for k in key:
+            if k is None:
+                # a[None], a[None, ...], a[..., None], add a new dimension
+                res = res.unsqueeze(curr_dim)
+                curr_dim += 1
+            elif isinstance(k, (int)):
+                res = res.slice(curr_dim, k, k + 1).squeeze(curr_dim)
+            elif isinstance(k, slice):
+                res = res.slice(curr_dim, k.start, k.stop, k.step if k.step is not None else 1)
+                curr_dim += 1
+            else:
+                raise TypeError(f"Index {k} must be an integer, slice or None, not {type(k).__name__}")
+        return res
+
+
     def offsets(self):
         indices = tuple(sum(indices) for indices in zip(*self._inputs))
 
