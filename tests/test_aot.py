@@ -223,8 +223,22 @@ def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
 @pytest.mark.parametrize("h", (16,))
 @pytest.mark.parametrize("c", (64,))
 @pytest.mark.parametrize("n", (4,))
+@pytest.mark.parametrize("test_build", (False, True))
 def test_conv2d(
-    n, c, h, w, k, r, s, dtype, device, shape_options, ninetoothed_dtype, rtol, atol
+    test_build,
+    n,
+    c,
+    h,
+    w,
+    k,
+    r,
+    s,
+    dtype,
+    device,
+    shape_options,
+    ninetoothed_dtype,
+    rtol,
+    atol,
 ):
     def _premake(block_size_m=64, block_size_n=64, block_size_k=64):
         arrangement = functools.partial(
@@ -241,19 +255,34 @@ def test_conv2d(
 
         return arrangement, application, tensors
 
-    arrangement, application, tensors = _premake()
     caller = device
     kernel_name = f"conv2d{_generate_kernel_name_suffix()}"
     output_dir = ninetoothed.generation.CACHE_DIR
 
-    ninetoothed.make(
-        arrangement,
-        application,
-        tensors,
-        caller=caller,
-        kernel_name=kernel_name,
-        output_dir=output_dir,
-    )
+    if test_build:
+        configs = (
+            ((), {"block_size_m": 64, "block_size_n": 64, "block_size_k": 64}, {}),
+            ((), {"block_size_m": 128, "block_size_n": 32, "block_size_k": 64}, {}),
+        )
+
+        ninetoothed.build(
+            _premake,
+            configs,
+            caller=caller,
+            kernel_name=kernel_name,
+            output_dir=output_dir,
+        )
+    else:
+        arrangement, application, tensors = _premake()
+
+        ninetoothed.make(
+            arrangement,
+            application,
+            tensors,
+            caller=caller,
+            kernel_name=kernel_name,
+            output_dir=output_dir,
+        )
 
     launch_func = _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
 
@@ -264,7 +293,12 @@ def test_conv2d(
     filter = torch.randn(k, c, r, s, dtype=dtype, device=device)
     output = torch.empty(n, k, p, q, dtype=dtype, device=device)
 
-    _run_launch_func(launch_func, input, filter, output)
+    if test_build:
+        config = configs[0][1].values()
+    else:
+        config = ()
+
+    _run_launch_func(launch_func, input, filter, output, *config)
 
     expected = F.conv2d(input, filter)
 
