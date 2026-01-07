@@ -27,14 +27,19 @@ from tests.utils import get_available_devices
     ],
 )
 def test_getitem(shape, indices, device, dtype):
-    a = Tensor(shape=shape, dtype=dtype)
+    # Initializes the symbolic tensor.
+    input = Tensor(shape=shape, dtype=dtype)
 
     # Reference calculation using Numpy.
-    a_ref = np.arange(np.prod(shape)).reshape(shape).astype(np.float32)
-    expected = a_ref[indices]
+    # Note: We use Numpy because Torch might not support negative steps in some versions/devices.
+    input_ref = np.arange(np.prod(shape)).reshape(shape).astype(np.float32)
+    expected = input_ref[indices]
 
-    b = a[indices]
+    # Symbolic slicing.
+    output = input[indices]
 
-    result = b.eval()
+    # Symbolic evaluation (returns numpy array).
+    result = output.eval()
 
+    # Validates the result.
     assert np.allclose(result, expected)

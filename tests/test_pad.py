@@ -86,7 +86,7 @@ def pad_kernel(input, pad, mode="constant", value=None):
     ],
 )
 def test_pad_basic(shape, pad, mode, value, device, dtype, atol):
-    input = torch.randn(shape, device=device, dtype=dtype)
+    input = torch.randn(shape, dtype=dtype, device=device)
     output_expected = F.pad(input, pad, mode, value)
     output = pad_kernel(input, pad, mode, value)
     assert torch.allclose(output, output_expected, atol=atol)
