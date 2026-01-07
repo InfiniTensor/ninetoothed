@@ -479,6 +479,14 @@ class Tensor:
 
     @_meta_operation
     def slice(self, dim, start, stop=None, step=1):
+        """Slices the tensor along the specified dimension.
+
+        :param dim: The dimension to slice.
+        :param start: The starting index of the slice.
+        :param stop: The ending index of the slice.
+        :param step: The step size of the slice.
+        :return: The sliced tensor.
+        """
         if step is None:
             step = 1
 
@@ -536,6 +544,11 @@ class Tensor:
         return math.prod(self.shape)
     
     def __getitem__(self, key):
+        """Returns a sliced or indexed tensor using the specified key.
+
+        :param key: The index, slice, or tuple of indices and slices.
+        :return: The sliced or indexed tensor.
+        """
         if not isinstance(key, tuple):
             key = (key, )
         num_none = key.count(None)
