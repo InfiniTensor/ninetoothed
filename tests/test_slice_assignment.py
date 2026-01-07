@@ -1,16 +1,18 @@
-import ninetoothed as nt
 import torch
 
-def assign(lhs, rhs, BLOCK_SIZE):
+import ninetoothed as nt
 
+
+def assign(lhs, rhs, BLOCK_SIZE):
     @nt.jit
     def add_kernel(
         lhs: nt.Tensor(1)[:BLOCK_SIZE],
         rhs: nt.Tensor(1)[:BLOCK_SIZE],
     ):
-        lhs = rhs
+        lhs = rhs  # noqa: F841
 
     add_kernel(lhs, rhs)
+
 
 if __name__ == "__main__":
     DEV = "cuda"

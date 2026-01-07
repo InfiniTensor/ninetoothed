@@ -1,9 +1,10 @@
+import os
+
+import pytest
 import torch
 import torch.nn.functional as F
-import pytest
+
 import ninetoothed as nt
-from typing import Dict, Tuple
-import os
 
 
 def analyze_pad_config(x, pad, mode):
@@ -49,7 +50,7 @@ def arrangement(
 
 
 def application(lhs, rhs):
-    lhs = rhs
+    lhs = rhs  # noqa: F841
 
 
 kernel = {}

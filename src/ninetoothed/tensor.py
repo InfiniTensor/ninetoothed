@@ -542,7 +542,7 @@ class Tensor:
 
     def __len__(self):
         return math.prod(self.shape)
-    
+
     def __getitem__(self, key):
         """Returns a sliced or indexed tensor using the specified key.
 
@@ -550,16 +550,18 @@ class Tensor:
         :return: The sliced or indexed tensor.
         """
         if not isinstance(key, tuple):
-            key = (key, )
+            key = (key,)
         num_none = key.count(None)
         num_ellipsis = key.count(...)
 
         if num_ellipsis > 1:
             raise ValueError("Only one Ellipsis is allowed")
-        
+
         num_effective = len(key) - num_none - num_ellipsis
         if num_effective > self.ndim:
-            raise IndexError(f"Index {key} is out of bounds for tensor of shape {self.shape}")
+            raise IndexError(
+                f"Index {key} is out of bounds for tensor of shape {self.shape}"
+            )
 
         expanded_key = []
         for k in key:
@@ -579,12 +581,15 @@ class Tensor:
             elif isinstance(k, (int)):
                 res = res.slice(curr_dim, k, k + 1).squeeze(curr_dim)
             elif isinstance(k, slice):
-                res = res.slice(curr_dim, k.start, k.stop, k.step if k.step is not None else 1)
+                res = res.slice(
+                    curr_dim, k.start, k.stop, k.step if k.step is not None else 1
+                )
                 curr_dim += 1
             else:
-                raise TypeError(f"Index {k} must be an integer, slice or None, not {type(k).__name__}")
+                raise TypeError(
+                    f"Index {k} must be an integer, slice or None, not {type(k).__name__}"
+                )
         return res
-
 
     def offsets(self):
         indices = tuple(sum(indices) for indices in zip(*self._inputs))
