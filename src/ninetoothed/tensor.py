@@ -126,18 +126,22 @@ class Tensor:
 
         if not isinstance(indices, tuple):
             indices = (indices,)
+
         num_nones = indices.count(None)
         num_ellipses = indices.count(...)
 
         if num_ellipses > 1:
             raise ValueError("Only one `Ellipsis` is allowed.")
+
         num_effective_indices = len(indices) - num_nones - num_ellipses
+
         if num_effective_indices > self.ndim:
             raise IndexError(
                 f"Index `{indices}` is out of bounds for tensor of shape `{self.shape}`."
             )
 
         expanded_indices = []
+
         for index in indices:
             if index is Ellipsis:
                 expanded_indices.extend(
@@ -145,16 +149,17 @@ class Tensor:
                 )
             else:
                 expanded_indices.append(index)
+
         indices = expanded_indices
 
         output = self
         curr_dim = 0
+
         for index in indices:
             if index is None:
-                # Adds a new dimension for `None` indexing.
                 output = output.unsqueeze(curr_dim)
                 curr_dim += 1
-            elif isinstance(index, (int)):
+            elif isinstance(index, int):
                 output = output._slice_dim(curr_dim, index, index + 1).squeeze(curr_dim)
             elif isinstance(index, slice):
                 output = output._slice_dim(
@@ -163,8 +168,9 @@ class Tensor:
                 curr_dim += 1
             else:
                 raise TypeError(
-                    f"Index `{index}` must be an integer, `slice`, or `None`, not `{type(index).__name__}`."
+                    f"Index `{index}` must be an `int`, `slice`, or `None`, not `{type(index).__name__}`."
                 )
+
         return output
 
     @staticmethod
@@ -631,7 +637,7 @@ class Tensor:
         self._target_dims = tuple(value)
 
     @_meta_operation
-    def _slice_dim(self, dim, start, stop=None, step=1):
+    def _slice_dim(self, dim, start, stop=None, step=None):
         """Slices the tensor along the specified dimension.
 
         :param dim: The dimension to slice.
@@ -641,21 +647,19 @@ class Tensor:
         :return: The sliced tensor.
         """
 
-        if step is None:
-            step = 1
-
         if dim < 0:
             dim += self.ndim
 
+        if step is None:
+            step = 1
+
         size = self.shape[dim]
 
-        # Handles `None` as default values.
         if start is None:
             start = 0 if step > 0 else size - 1
         if stop is None:
             stop = size if step > 0 else -1
 
-        # Handles negative indices by adding the dimension size.
         if isinstance(start, int) and start < 0:
             start += size
         if isinstance(stop, int) and (stop < 0 if step > 0 else stop < -1):
@@ -670,6 +674,7 @@ class Tensor:
         def _offsets(indices):
             original_indices = list(indices)
             original_indices[dim] = start + indices[dim] * step
+
             return (tuple(original_indices),)
 
         output = type(self)(
