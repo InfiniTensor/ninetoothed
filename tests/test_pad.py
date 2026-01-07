@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from ninetoothed import Tensor, make
+from tests.utils import get_available_devices
 
 
 def _analyze_pad_config(input, pad, mode):
@@ -68,6 +69,8 @@ def pad_kernel(x, pad, mode="constant", value=0):
     return y
 
 
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("dtype, atol", [(torch.float32, 1e-8), (torch.float16, 1e-3)])
 @pytest.mark.parametrize("mode", ["constant"])
 @pytest.mark.parametrize(
     "value", [0, 1, -1, float("-inf"), torch.pi, torch.sqrt(torch.tensor(2026))]
@@ -81,8 +84,8 @@ def pad_kernel(x, pad, mode="constant", value=0):
         ((2, 3), (-1, -1, 0, 0)),
     ],
 )
-def test_pad_basic(shape, pad, mode, value):
-    input = torch.randn(shape, device="cuda", dtype=torch.float32)
+def test_pad_basic(shape, pad, mode, value, device, dtype, atol):
+    input = torch.randn(shape, device=device, dtype=dtype)
     output_expected = F.pad(input, pad, mode, value)
     y = pad_kernel(input, pad, mode, value)
-    assert torch.allclose(y, output_expected)
+    assert torch.allclose(y, output_expected, atol=atol)

@@ -1,79 +1,40 @@
 import numpy as np
 import pytest
+import torch
 
 from ninetoothed import Tensor
+from tests.utils import get_available_devices
 
 
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
 @pytest.mark.parametrize(
-    "key",
+    "shape, indices",
     [
-        slice(None, None, None),
-        slice(0, -1, -1),
-        slice(0, -1, -1),
-        slice(0, -1, 2),
-        slice(1, None, 2),
+        # Basic slicing
+        ((3, 4, 2), slice(None, None, None)),
+        ((3, 4, 2), slice(0, -1, 2)),
+        ((2, 3, 4, 5), slice(1, None, 2)),
+        # Multi-dimensional slicing
+        ((3, 4, 2), (slice(None), 1, slice(None))),
+        ((3, 4, 2), (1, slice(None), None)),
+        ((3, 4, 2), (slice(None, None, -1), 0, slice(1, -1))),
+        ((3, 4, 2), (Ellipsis, 1)),
+        ((3, 4, 2), (None, slice(None), 1, slice(None))),
+        # Special cases
+        ((3, 4, 2), (slice(None), 1, slice(None))),
+        ((6, 5), (slice(2, 4, None), slice(1, 4, None))),
     ],
 )
-@pytest.mark.parametrize(
-    "shape",
-    [
-        (3, 4, 2),
-        (2, 3, 4, 5),
-    ],
-)
-def test_slice(shape: tuple, key: slice):
-    # Initializes the tensor and reference array.
-    a = Tensor(shape=shape)
-    a_ref = np.arange(0, np.prod(shape)).reshape(shape)
+def test_getitem(shape, indices, device, dtype):
+    a = Tensor(shape=shape, dtype=dtype)
 
-    # Performs slicing.
-    b = a[key]
-    b_ref = a_ref[key]
+    # Reference calculation using Numpy.
+    a_ref = np.arange(np.prod(shape)).reshape(shape).astype(np.float32)
+    expected = a_ref[indices]
 
-    # Validates the result.
-    assert np.allclose(b.eval(), b_ref)
+    b = a[indices]
 
+    result = b.eval()
 
-@pytest.mark.parametrize(
-    "key",
-    [
-        (slice(None), 1, slice(None)),
-        (1, slice(None), None),
-        (slice(None, None, -1), 0, slice(1, -1)),
-        (Ellipsis, 1),
-        (None, slice(None), 1, slice(None)),
-    ],
-)
-@pytest.mark.parametrize("shape", [(3, 4, 2)])
-def test_multi_dim_slice(shape: tuple, key):
-    # Initializes the tensor and reference array.
-    a = Tensor(shape=shape)
-    a_ref = np.arange(0, np.prod(shape)).reshape(shape)
-
-    # Performs multi-dimensional slicing.
-    b = a[key]
-    b_ref = a_ref[key]
-
-    # Validates the result.
-    assert np.allclose(b.eval(), b_ref)
-
-
-def test_case_special_1():
-    a = Tensor(shape=(3, 4, 2))
-    a_ref = np.arange(0, np.prod(a.shape)).reshape(a.shape)
-
-    b = a[:, 1, :]
-    b_ref = a_ref[:, 1, :]
-
-    assert np.allclose(b.eval(), b_ref)
-
-
-def test_case_special_2():
-    new_slice = (slice(2, 4, None), slice(1, 4, None))
-    a = Tensor(shape=(6, 5))
-    a_ref = np.arange(0, np.prod(a.shape)).reshape(a.shape)
-
-    b = a[new_slice]
-    b_ref = a_ref[new_slice]
-
-    assert np.allclose(b.eval(), b_ref)
+    assert np.allclose(result, expected)
