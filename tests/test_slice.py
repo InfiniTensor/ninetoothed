@@ -42,4 +42,14 @@ def test_case_1():
 
     assert np.allclose(b.eval(), b_ref)
 
+    
+def test_case_2():
+    new_slice = (slice(2, 4, None), slice(1, 4, None))
+    a = Tensor(shape=(6, 5))
+    a_ref = np.arange(0, np.prod(a.shape)).reshape(a.shape)
+
+    b = a[new_slice]
+    b_ref = a_ref[new_slice]
+
+    assert np.allclose(b.eval(), b_ref)
 
