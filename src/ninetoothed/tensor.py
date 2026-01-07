@@ -118,10 +118,10 @@ class Tensor:
         type(self).num_instances += 1
 
     def __getitem__(self, indices):
-        """Returns a sliced or indexed tensor using the specified key.
+        """Returns an indexed tensor using the specified ``indices``.
 
-        :param indices: The index, slice, or tuple of indices and slices.
-        :return: The sliced or indexed tensor.
+        :param indices: The indices of the elements to extract.
+        :return: The indexed tensor.
         """
 
         if not isinstance(indices, tuple):
