@@ -3,7 +3,6 @@ import torch.nn.functional as F
 import pytest
 import ninetoothed as nt
 from typing import Dict, Tuple
-import xxhash
 import os
 
 
@@ -64,7 +63,7 @@ def pad_kernel(x, pad, mode="constant", value=0):
 
     # create kernel
     kernel_config = (ndim, slice_l, slice_r)
-    kernel_hash = xxhash.xxh32(str(kernel_config)).intdigest()
+    kernel_hash = str(kernel_config)
     if kernel.get(kernel_hash, None) is None:
         t_kernel = nt.make(
             arrangement,
