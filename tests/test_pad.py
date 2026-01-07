@@ -6,6 +6,7 @@ from typing import Dict, Tuple
 import xxhash
 import os
 
+
 def analyze_pad_config(x, pad, mode):
     assert mode == "constant", "Only support constant padding"
     ndim = x.ndim
@@ -30,12 +31,14 @@ def analyze_pad_config(x, pad, mode):
     slice_r = tuple(slice_r)
     return new_shape, slice_l, slice_r
 
+
 def fake_pad(x, pad, mode="constant", value=0):
     # torch implementation
     new_shape, slice_l, slice_r = analyze_pad_config(x, pad, mode)
     y = torch.full(new_shape, value, device=x.device, dtype=x.dtype)
     y[slice_l] = x[slice_r]
     return y
+
 
 def arrangement(
     lhs,
@@ -52,6 +55,7 @@ def application(lhs, rhs):
 
 kernel = {}
 
+
 def pad_kernel(x, pad, mode="constant", value=0):
     # analyze pad config
     new_shape, slice_l, slice_r = analyze_pad_config(x, pad, mode)
@@ -66,8 +70,12 @@ def pad_kernel(x, pad, mode="constant", value=0):
             arrangement,
             application,
             (
-                nt.Tensor(ndim, shape_options={"upper_bound": 128}),
-                nt.Tensor(ndim, shape_options={"upper_bound": 128}),
+                nt.Tensor(
+                    ndim,
+                ),
+                nt.Tensor(
+                    ndim,
+                ),
                 slice_l,
                 slice_r,
             ),
@@ -78,11 +86,13 @@ def pad_kernel(x, pad, mode="constant", value=0):
 
     return y
 
+
 def nt_pad(x, pad, mode="constant", value=0):
     if os.getenv("DEBUG", "0") == "1":
         print("fake pad!")
         return fake_pad(x, pad, mode, value)
     return pad_kernel(x, pad, mode, value)
+
 
 @pytest.mark.parametrize(
     "mode",
@@ -90,12 +100,12 @@ def nt_pad(x, pad, mode="constant", value=0):
 )
 @pytest.mark.parametrize(
     "value",
-    [0, 1, -1],
+    [0, 1, -1, float("-inf"), torch.pi, torch.sqrt(torch.tensor(2026))],
 )
 @pytest.mark.parametrize(
     "shape, pad",
     [
-        ((2, 3), (1, 2, 0, 1)),
+        ((2026, 120712), (-100, 20, 9999, -100)),
         ((2, 3), (1, 1, 1, 2)),
         ((2, 3, 4), (1, 3, 1, 0, 0, 0)),
         ((2, 3), (-1, -1, 0, 0)),
