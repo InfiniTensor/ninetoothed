@@ -42,13 +42,14 @@ def application(input, output):
 kernel_cache = {}
 
 
-def pad_kernel(x, pad, mode="constant", value=0):
-    # Analyzes the padding configuration.
-    output_shape, input_slice, output_slice = _analyze_pad_config(x, pad, mode)
-    ndim = x.ndim
-    y = torch.full(output_shape, value, dtype=x.dtype, device=x.device)
+def pad_kernel(input, pad, mode="constant", value=None):
+    # This function implements the padding kernel. Parameters refer to the PyTorch documentation.
+    # https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.pad.html
+    output_shape, input_slice, output_slice = _analyze_pad_config(input, pad, mode)
+    ndim = input.ndim
+    value = 0 if value is None else value
+    output = torch.full(output_shape, value, dtype=input.dtype, device=input.device)
 
-    # Creates or retrieves the kernel.
     kernel_config = (ndim, input_slice, output_slice)
     kernel_hash = str(kernel_config)
     if kernel_cache.get(kernel_hash, None) is None:
@@ -64,9 +65,9 @@ def pad_kernel(x, pad, mode="constant", value=0):
         )
         kernel_cache[kernel_hash] = new_kernel
 
-    kernel_cache[kernel_hash](x, y)
+    kernel_cache[kernel_hash](input, output)
 
-    return y
+    return output
 
 
 @pytest.mark.parametrize("device", get_available_devices())
@@ -87,5 +88,5 @@ def pad_kernel(x, pad, mode="constant", value=0):
 def test_pad_basic(shape, pad, mode, value, device, dtype, atol):
     input = torch.randn(shape, device=device, dtype=dtype)
     output_expected = F.pad(input, pad, mode, value)
-    y = pad_kernel(input, pad, mode, value)
-    assert torch.allclose(y, output_expected, atol=atol)
+    output = pad_kernel(input, pad, mode, value)
+    assert torch.allclose(output, output_expected, atol=atol)
