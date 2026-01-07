@@ -17,26 +17,20 @@ from ninetoothed import Tensor
 @pytest.mark.parametrize(
     "shape",
     [
-        (
-            3,
-            4,
-            2,
-        ),
-        (
-            2,
-            3,
-            4,
-            5,
-        ),
+        (3, 4, 2),
+        (2, 3, 4, 5),
     ],
 )
 def test_slice(shape: tuple, key: slice):
+    # Initializes the tensor and reference array.
     a = Tensor(shape=shape)
     a_ref = np.arange(0, np.prod(shape)).reshape(shape)
 
+    # Performs slicing.
     b = a[key]
     b_ref = a_ref[key]
 
+    # Validates the result.
     assert np.allclose(b.eval(), b_ref)
 
 
@@ -50,27 +44,21 @@ def test_slice(shape: tuple, key: slice):
         (None, slice(None), 1, slice(None)),
     ],
 )
-@pytest.mark.parametrize(
-    "shape",
-    [
-        (
-            3,
-            4,
-            2,
-        )
-    ],
-)
+@pytest.mark.parametrize("shape", [(3, 4, 2)])
 def test_multi_dim_slice(shape: tuple, key):
+    # Initializes the tensor and reference array.
     a = Tensor(shape=shape)
     a_ref = np.arange(0, np.prod(shape)).reshape(shape)
 
+    # Performs multi-dimensional slicing.
     b = a[key]
     b_ref = a_ref[key]
 
+    # Validates the result.
     assert np.allclose(b.eval(), b_ref)
 
 
-def test_case_1():
+def test_case_special_1():
     a = Tensor(shape=(3, 4, 2))
     a_ref = np.arange(0, np.prod(a.shape)).reshape(a.shape)
 
@@ -80,7 +68,7 @@ def test_case_1():
     assert np.allclose(b.eval(), b_ref)
 
 
-def test_case_2():
+def test_case_special_2():
     new_slice = (slice(2, 4, None), slice(1, 4, None))
     a = Tensor(shape=(6, 5))
     a_ref = np.arange(0, np.prod(a.shape)).reshape(a.shape)

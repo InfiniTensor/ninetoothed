@@ -123,17 +123,18 @@ class Tensor:
         :param indices: The index, slice, or tuple of indices and slices.
         :return: The sliced or indexed tensor.
         """
+
         if not isinstance(indices, tuple):
             indices = (indices,)
         num_nones = indices.count(None)
         num_ellipses = indices.count(...)
 
         if num_ellipses > 1:
-            raise ValueError("Only one Ellipsis is allowed")
+            raise ValueError("Only one `Ellipsis` is allowed.")
         num_effective_indices = len(indices) - num_nones - num_ellipses
         if num_effective_indices > self.ndim:
             raise IndexError(
-                f"Index {indices} is out of bounds for tensor of shape {self.shape}"
+                f"Index `{indices}` is out of bounds for tensor of shape `{self.shape}`."
             )
 
         expanded_indices = []
@@ -146,28 +147,25 @@ class Tensor:
                 expanded_indices.append(index)
         indices = expanded_indices
 
-        res = self
+        output = self
         curr_dim = 0
         for index in indices:
             if index is None:
-                # a[None], a[None, ...], a[..., None], add a new dimension
-                res = res.unsqueeze(curr_dim)
+                # Adds a new dimension for `None` indexing.
+                output = output.unsqueeze(curr_dim)
                 curr_dim += 1
             elif isinstance(index, (int)):
-                res = res._slice_dim(curr_dim, index, index + 1).squeeze(curr_dim)
+                output = output._slice_dim(curr_dim, index, index + 1).squeeze(curr_dim)
             elif isinstance(index, slice):
-                res = res._slice_dim(
-                    curr_dim,
-                    index.start,
-                    index.stop,
-                    index.step if index.step is not None else 1,
+                output = output._slice_dim(
+                    curr_dim, index.start, index.stop, index.step
                 )
                 curr_dim += 1
             else:
                 raise TypeError(
-                    f"Index {index} must be an integer, slice or None, not {type(index).__name__}"
+                    f"Index `{index}` must be an integer, `slice`, or `None`, not `{type(index).__name__}`."
                 )
-        return res
+        return output
 
     @staticmethod
     def _meta_operation(func):
@@ -642,6 +640,7 @@ class Tensor:
         :param step: The step size of the slice.
         :return: The sliced tensor.
         """
+
         if step is None:
             step = 1
 
@@ -650,13 +649,13 @@ class Tensor:
 
         size = self.shape[dim]
 
-        # Handle None defaults
+        # Handles `None` as default values.
         if start is None:
             start = 0 if step > 0 else size - 1
         if stop is None:
             stop = size if step > 0 else -1
 
-        # Handle negative indices
+        # Handles negative indices by adding the dimension size.
         if isinstance(start, int) and start < 0:
             start += size
         if isinstance(stop, int) and (stop < 0 if step > 0 else stop < -1):
