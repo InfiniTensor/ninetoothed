@@ -26,14 +26,14 @@ def pad(input, pad, mode="constant", value=None):
 
     ndim = input.ndim
     kernel_config = (ndim, input_slices, output_slices)
-    kernel_hash = str(kernel_config)
+    kernel_key = str(kernel_config)
 
-    if kernel_hash not in _kernel_cache:
+    if kernel_key not in _kernel_cache:
         tensors = (Tensor(ndim), Tensor(ndim), input_slices, output_slices)
 
-        _kernel_cache[kernel_hash] = make(arrangement, application, tensors)
+        _kernel_cache[kernel_key] = make(arrangement, application, tensors)
 
-    _kernel_cache[kernel_hash](input, output)
+    _kernel_cache[kernel_key](input, output)
 
     return output
 
