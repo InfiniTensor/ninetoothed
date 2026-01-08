@@ -117,6 +117,62 @@ class Tensor:
 
         type(self).num_instances += 1
 
+    def __getitem__(self, indices):
+        """Returns an indexed tensor using the specified ``indices``.
+
+        :param indices: The indices of the elements to extract.
+        :return: The indexed tensor.
+        """
+
+        if not isinstance(indices, tuple):
+            indices = (indices,)
+
+        num_nones = indices.count(None)
+        num_ellipses = indices.count(...)
+
+        if num_ellipses > 1:
+            raise ValueError("Only one `Ellipsis` is allowed.")
+
+        num_effective_indices = len(indices) - num_nones - num_ellipses
+
+        if num_effective_indices > self.ndim:
+            raise IndexError(
+                f"Index `{indices}` is out of bounds for tensor of shape `{self.shape}`."
+            )
+
+        expanded_indices = []
+
+        for index in indices:
+            if index is Ellipsis:
+                expanded_indices.extend(
+                    [slice(None)] * (self.ndim - num_effective_indices)
+                )
+            else:
+                expanded_indices.append(index)
+
+        indices = expanded_indices
+
+        output = self
+        curr_dim = 0
+
+        for index in indices:
+            if index is None:
+                output = output.unsqueeze(curr_dim)
+                curr_dim += 1
+            elif isinstance(index, int):
+                output = output._slice_dim(curr_dim, index, index + 1).squeeze(curr_dim)
+            elif isinstance(index, slice):
+                output = output._slice_dim(
+                    curr_dim, index.start, index.stop, index.step
+                )
+                curr_dim += 1
+            else:
+                raise TypeError(
+                    f"Index `{index}` must be an `int`, `slice`, or `None`, not `{type(index).__name__}`."
+                )
+
+        return output
+
     @staticmethod
     def _meta_operation(func):
         @functools.wraps(func)
@@ -579,6 +635,60 @@ class Tensor:
     @target_dims.setter
     def target_dims(self, value):
         self._target_dims = tuple(value)
+
+    @_meta_operation
+    def _slice_dim(self, dim, start, stop=None, step=None):
+        """Slices the tensor along the specified dimension.
+
+        :param dim: The dimension to slice.
+        :param start: The starting index of the slice.
+        :param stop: The ending index of the slice.
+        :param step: The step size of the slice.
+        :return: The sliced tensor.
+        """
+
+        if dim < 0:
+            dim += self.ndim
+
+        if step is None:
+            step = 1
+
+        size = self.shape[dim]
+
+        if start is None:
+            start = 0 if step > 0 else size - 1
+        if stop is None:
+            stop = size if step > 0 else -1
+
+        if isinstance(start, int) and start < 0:
+            start += size
+        if isinstance(stop, int) and (stop < 0 if step > 0 else stop < -1):
+            stop += size
+
+        new_shape = list(self.shape)
+        new_size = (stop - start + step - (1 if step > 0 else -1)) // step
+        new_shape[dim] = new_size
+
+        self._inputs.append([])
+
+        def _offsets(indices):
+            original_indices = list(indices)
+            original_indices[dim] = start + indices[dim] * step
+
+            return (tuple(original_indices),)
+
+        output = type(self)(
+            shape=new_shape,
+            source=self.source,
+            dtype=self.dtype,
+            target_dims=self.target_dims,
+            _offsets=_offsets,
+            _outputs=[self._inputs[0]],
+        )
+
+        self._levels.append([output])
+
+        return output
 
     @staticmethod
     def pointer_pattern():
