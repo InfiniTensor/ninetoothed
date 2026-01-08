@@ -15,7 +15,7 @@ from ninetoothed import Tensor
         ((3, 4, 2), (slice(None), 1, slice(None))),
         ((3, 4, 2), (1, slice(None), None)),
         ((3, 4, 2), (slice(None, None, -1), 0, slice(1, -1))),
-        ((3, 4, 2), (Ellipsis, 1)),
+        ((3, 4, 2), (..., 1)),
         ((3, 4, 2), (None, slice(None), 1, slice(None))),
         # Special cases.
         ((3, 4, 2), (slice(None), 1, slice(None))),
