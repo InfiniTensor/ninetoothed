@@ -6,8 +6,8 @@ from ninetoothed import Tensor, make
 from tests.utils import get_available_devices
 
 
-def arrangement(input, output, input_slice, output_slice):
-    return input[input_slice], output[output_slice]
+def arrangement(input, output, input_slices, output_slices):
+    return input[input_slices], output[output_slices]
 
 
 def application(input, output):
@@ -19,17 +19,17 @@ def pad(input, pad, mode="constant", value=None):
     # Please refer to
     # [torch.nn.functional.pad](https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.pad.html)
     # for more details.
-    output_shape, input_slice, output_slice = _analyze_pad_config(input, pad, mode)
+    output_shape, input_slices, output_slices = _analyze_pad_config(input, pad, mode)
 
     value = 0 if value is None else value
     output = torch.full(output_shape, value, dtype=input.dtype, device=input.device)
 
     ndim = input.ndim
-    kernel_config = (ndim, input_slice, output_slice)
+    kernel_config = (ndim, input_slices, output_slices)
     kernel_hash = str(kernel_config)
 
     if kernel_hash not in _kernel_cache:
-        tensors = (Tensor(ndim), Tensor(ndim), input_slice, output_slice)
+        tensors = (Tensor(ndim), Tensor(ndim), input_slices, output_slices)
 
         _kernel_cache[kernel_hash] = make(arrangement, application, tensors)
 
@@ -72,24 +72,24 @@ def _analyze_pad_config(input, pad, mode):
     ndim = input.ndim
     input_shape = list(input.shape)
     output_shape = list(input.shape)
-    input_slice = []
-    output_slice = []
+    input_slices = []
+    output_slices = []
 
     for i in range(ndim):
         left = pad[2 * (ndim - 1 - i)]
         right = pad[2 * (ndim - 1 - i) + 1]
         output_shape[i] += left + right
 
-        start_input = max(0, -left)
-        end_input = min(input_shape[i], input_shape[i] + right)
+        input_start = max(0, -left)
+        input_end = min(input_shape[i], input_shape[i] + right)
 
-        start_output = max(0, left)
-        end_output = output_shape[i] - max(0, right)
+        output_start = max(0, left)
+        output_end = output_shape[i] - max(0, right)
 
-        input_slice.append(slice(start_input, end_input))
-        output_slice.append(slice(start_output, end_output))
+        input_slices.append(slice(input_start, input_end))
+        output_slices.append(slice(output_start, output_end))
 
-    input_slice = tuple(input_slice)
-    output_slice = tuple(output_slice)
+    input_slices = tuple(input_slices)
+    output_slices = tuple(output_slices)
 
-    return output_shape, input_slice, output_slice
+    return output_shape, input_slices, output_slices
