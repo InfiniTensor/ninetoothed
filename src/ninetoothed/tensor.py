@@ -683,7 +683,7 @@ class Tensor:
             dtype=self.dtype,
             target_dims=self.target_dims,
             _offsets=_offsets,
-            _outputs=[self._inputs[-1]],
+            _outputs=[self._inputs[0]],
         )
 
         self._levels.append([output])
