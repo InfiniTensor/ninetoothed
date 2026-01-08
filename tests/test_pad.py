@@ -6,44 +6,12 @@ from ninetoothed import Tensor, make
 from tests.utils import get_available_devices
 
 
-def _analyze_pad_config(input, pad, mode):
-    assert mode == "constant", 'Only `"constant"` padding mode is supported.'
-
-    ndim = input.ndim
-    input_shape = list(input.shape)
-    output_shape = list(input.shape)
-    input_slice = []
-    output_slice = []
-
-    for i in range(ndim):
-        left = pad[2 * (ndim - 1 - i)]
-        right = pad[2 * (ndim - 1 - i) + 1]
-        output_shape[i] += left + right
-
-        start_input = max(0, -left)
-        end_input = min(input_shape[i], input_shape[i] + right)
-
-        start_output = max(0, left)
-        end_output = output_shape[i] - max(0, right)
-
-        input_slice.append(slice(start_input, end_input))
-        output_slice.append(slice(start_output, end_output))
-
-    input_slice = tuple(input_slice)
-    output_slice = tuple(output_slice)
-
-    return output_shape, input_slice, output_slice
-
-
 def arrangement(input, output, input_slice, output_slice):
     return input[input_slice], output[output_slice]
 
 
 def application(input, output):
     output = input  # noqa: F841
-
-
-_kernel_cache = {}
 
 
 def pad(input, pad, mode="constant", value=None):
@@ -93,3 +61,35 @@ def test_pad(shape, pad_, mode, value, dtype, device, atol):
     expected = F.pad(input, pad_, mode, value)
 
     assert torch.allclose(output, expected, atol=atol)
+
+
+_kernel_cache = {}
+
+
+def _analyze_pad_config(input, pad, mode):
+    assert mode == "constant", 'Only `"constant"` padding mode is supported.'
+
+    ndim = input.ndim
+    input_shape = list(input.shape)
+    output_shape = list(input.shape)
+    input_slice = []
+    output_slice = []
+
+    for i in range(ndim):
+        left = pad[2 * (ndim - 1 - i)]
+        right = pad[2 * (ndim - 1 - i) + 1]
+        output_shape[i] += left + right
+
+        start_input = max(0, -left)
+        end_input = min(input_shape[i], input_shape[i] + right)
+
+        start_output = max(0, left)
+        end_output = output_shape[i] - max(0, right)
+
+        input_slice.append(slice(start_input, end_input))
+        output_slice.append(slice(start_output, end_output))
+
+    input_slice = tuple(input_slice)
+    output_slice = tuple(output_slice)
+
+    return output_shape, input_slice, output_slice
