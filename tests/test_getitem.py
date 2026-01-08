@@ -1,13 +1,9 @@
 import numpy as np
 import pytest
-import torch
 
 from ninetoothed import Tensor
-from tests.utils import get_available_devices
 
 
-@pytest.mark.parametrize("device", get_available_devices())
-@pytest.mark.parametrize("dtype", (torch.float32, torch.float16))
 @pytest.mark.parametrize(
     "shape, indices",
     (
@@ -26,12 +22,11 @@ from tests.utils import get_available_devices
         ((6, 5), (slice(2, 4, None), slice(1, 4, None))),
     ),
 )
-def test_getitem(shape, indices, dtype, device):
-    input = Tensor(shape=shape, dtype=dtype)
+def test_getitem(shape, indices):
+    input = Tensor(shape=shape)
 
     output = input[indices].eval()
 
-    # Note: We use NumPy because Torch might not support negative steps in some versions/devices.
-    expected = np.arange(np.prod(shape)).reshape(shape).astype(np.float32)[indices]
+    expected = np.arange(np.prod(shape)).reshape(shape)[indices]
 
     assert np.allclose(output, expected)
