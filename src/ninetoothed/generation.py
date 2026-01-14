@@ -62,7 +62,7 @@ class CodeGenerator(ast.NodeTransformer):
 
             func_def = ast.parse(ast.unparse(func_def))
 
-            module = ast.Module(body=[func_def], type_ignores=[])
+            module = func_def
 
             if inliner.libdevice_used:
                 libdevice_alias = ast.alias(
