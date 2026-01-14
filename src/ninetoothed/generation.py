@@ -59,8 +59,6 @@ class CodeGenerator(ast.NodeTransformer):
             inliner = _Inliner(func.__globals__)
             inliner.visit(func_def)
 
-            module = ast.Module(body=[func_def], type_ignores=[])
-
             if inliner.libdevice_used:
                 libdevice_alias = ast.alias(
                     name="libdevice", asname=inliner.LIBDEVICE_ALIAS
@@ -71,9 +69,9 @@ class CodeGenerator(ast.NodeTransformer):
                     level=0,
                 )
 
-                module.body.insert(0, libdevice_import)
+                func_def.body.insert(0, libdevice_import)
 
-            return module
+            return func_def
 
         def _find_dependencies(func):
             dependencies = set()
