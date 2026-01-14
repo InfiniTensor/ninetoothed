@@ -172,6 +172,27 @@ class Symbol:
             ast.Compare(left=self._node, ops=[ast.Lt()], comparators=[other._node])
         )
 
+    def __le__(self, other):
+        other = type(self)(other)
+
+        return type(self)(
+            ast.Compare(left=self._node, ops=[ast.LtE()], comparators=[other._node])
+        )
+
+    def __gt__(self, other):
+        other = type(self)(other)
+
+        return type(self)(
+            ast.Compare(left=self._node, ops=[ast.Gt()], comparators=[other._node])
+        )
+
+    def __ge__(self, other):
+        other = type(self)(other)
+
+        return type(self)(
+            ast.Compare(left=self._node, ops=[ast.GtE()], comparators=[other._node])
+        )
+
     def __and__(self, other):
         other = type(self)(other)
 

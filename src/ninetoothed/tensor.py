@@ -533,6 +533,63 @@ class Tensor:
 
         return output
 
+    @_meta_operation
+    def pad(self, pad_config):
+        """Pads the tensor with the specified padding configuration.
+
+        :param pad_config: The padding configuration, following PyTorch's
+            `F.pad` format (left, right, top, bottom, ...).
+        :return: The padded tensor.
+        """
+
+        # TODO: Support more modes like PyTorch F.pad.
+
+        # handle ((left, right), (top, bottom), ...) -> (left, right, top, bottom, ...)
+        if any(isinstance(pad, (tuple, list)) for pad in pad_config):
+            pad_config = [pad for pair in pad_config for pad in pair]
+
+        nd = self.ndim
+        pad_list = list(pad_config)
+        if len(pad_list) < 2 * nd:
+            pad_list += [0] * (2 * nd - len(pad_list))
+
+        new_shape = list(self.shape)
+        pads = []  # List of (low_pad, high_pad) for each dimension
+
+        for i in range(nd):
+            # PyTorch padding order: last dim first.
+            # So dim i uses pad_list[2*(nd-1-i)] and pad_list[2*(nd-1-i)+1].
+            low = pad_list[2 * (nd - 1 - i)]
+            high = pad_list[2 * (nd - 1 - i) + 1]
+            new_shape[i] += low + high
+            pads.append((low, high))
+
+        self._inputs.append([])
+
+        def _offsets(indices):
+            original_indices = []
+            for i in range(nd):
+                low, _ = pads[i]
+                orig_idx = indices[i] - low
+                original_indices.append(orig_idx)
+                # Update mask to handle padding regions (out-of-bounds mapping to -1 in eval)
+                self.source._mask &= Symbol(orig_idx) >= 0
+
+            return (tuple(original_indices),)
+
+        output = type(self)(
+            shape=new_shape,
+            source=self.source,
+            dtype=self.dtype,
+            target_dims=self.target_dims,
+            _offsets=_offsets,
+            _outputs=[self._inputs[0]],
+        )
+
+        self._levels.append([output])
+
+        return output
+
     def offsets(self):
         indices = tuple(sum(indices) for indices in zip(*self._inputs))
 
