@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 
 import ninetoothed
+import tests.test_conv2d as conv2d
 import tests.test_matmul as matmul
 from ninetoothed import Tensor
 from tests.utils import get_available_devices
@@ -22,23 +23,9 @@ def arrangement(
     pad_h, pad_w = padding
     input_padded = input.pad((pad_w, pad_w, pad_h, pad_h))
 
-    input_tiled = input_padded.tile((1, *filter.shape[1:]), strides=(-1, -1, 1, 1))
-    input_squeezed = input_tiled.squeeze(1)
-    input_squeezed.dtype = input_squeezed.dtype.squeeze(0)
-    input_raveled = input_squeezed.ravel()
-    input_flattened = input_raveled.flatten(end_dim=3).flatten(start_dim=1)
-
-    filter_flattened = filter.flatten(start_dim=1)
-    filter_permuted = filter_flattened.permute((1, 0))
-
-    output_flattened = output.permute((0, 2, 3, 1)).flatten(end_dim=3)
-
-    return functools.partial(
-        matmul.arrangement,
-        BLOCK_SIZE_M=BLOCK_SIZE_M,
-        BLOCK_SIZE_N=BLOCK_SIZE_N,
-        BLOCK_SIZE_K=BLOCK_SIZE_K,
-    )(input_flattened, filter_permuted, output_flattened)
+    return conv2d.arrangement(
+        input_padded, filter, output, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K
+    )
 
 
 def conv2d_pad(input, filter, padding=(0, 0)):
@@ -54,7 +41,7 @@ def conv2d_pad(input, filter, padding=(0, 0)):
         functools.partial(arrangement, padding=padding),
         matmul.application,
         (Tensor(4), Tensor(4, shape_options={"constexpr": True}), Tensor(4)),
-        max_num_configs=50,
+        max_num_configs=2,
     )
 
     conv2d_kernel(input, filter, output)
