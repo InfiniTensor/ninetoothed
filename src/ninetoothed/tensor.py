@@ -533,13 +533,44 @@ class Tensor:
 
         return output
 
+    @_meta_operation
+    def pad(self, pad):
+        """Pads the tensor with the specified padding.
+
+        :param pad: The amount of padding applied to the tensor.
+        :return: The padded tensor.
+        """
+
+        new_shape = tuple(size + sum(pad_i) for size, pad_i in zip(self.shape, pad))
+
+        self._inputs.append([])
+
+        def _offsets(indices):
+            return (tuple(index - pad_i[0] for index, pad_i in zip(indices, pad)),)
+
+        output = type(self)(
+            shape=new_shape,
+            dtype=self.dtype,
+            source=self.source,
+            target_dims=self.target_dims,
+            _offsets=_offsets,
+            _outputs=[self._inputs[0]],
+        )
+
+        self._levels.append([output])
+
+        return output
+
     def offsets(self):
         indices = tuple(sum(indices) for indices in zip(*self._inputs))
 
         outputs = self._offsets(indices)
 
         for index, size in zip(indices, self.shape):
-            self.source._mask &= Symbol(index) < size
+            index = Symbol(index)
+
+            self.source._mask &= index < size
+            self.source._mask &= index >= 0
 
         for output_, output in zip(self._outputs, outputs):
             output_.clear()

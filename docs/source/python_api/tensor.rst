@@ -17,6 +17,7 @@ Meta-Operations
    ninetoothed.Tensor.permute
    ninetoothed.Tensor.flatten
    ninetoothed.Tensor.ravel
+   ninetoothed.Tensor.pad
 
 Evaluation
 ----------
