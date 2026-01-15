@@ -1,5 +1,7 @@
+import concurrent.futures
 import functools
 import inspect
+import multiprocessing
 import pathlib
 
 import ninetoothed
@@ -32,19 +34,30 @@ def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
     combinations = []
     launches = []
 
-    for config in configs:
-        header, param_names, combination, launch = _make(
-            premake,
-            config,
-            caller=caller,
-            kernel_name=kernel_name,
-            output_dir=output_dir,
-        )
+    with concurrent.futures.ProcessPoolExecutor(
+        mp_context=multiprocessing.get_context("spawn")
+    ) as executor:
+        futures = []
 
-        headers.append(header)
-        all_param_names.append(param_names)
-        combinations.append(combination)
-        launches.append(launch)
+        for config in configs:
+            future = executor.submit(
+                _make,
+                premake,
+                config,
+                caller=caller,
+                kernel_name=kernel_name,
+                output_dir=output_dir,
+            )
+
+            futures.append(future)
+
+        for future in concurrent.futures.as_completed(futures):
+            header, param_names, combination, launch = future.result()
+
+            headers.append(header)
+            all_param_names.append(param_names)
+            combinations.append(combination)
+            launches.append(launch)
 
     includes = "\n".join(f'#include "{header}"' for header in headers)
 
