@@ -15,6 +15,7 @@ import tests.test_attention as attention
 import tests.test_conv2d as conv2d
 import tests.test_matmul as matmul
 from ninetoothed import Tensor
+from ninetoothed.aot import _DTYPE_MAPPING
 from tests.utils import get_available_devices
 
 
@@ -210,7 +211,7 @@ def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
     assert torch.allclose(output, expected)
 
 
-@pytest.mark.parametrize("shape_options", (None, {"constexpr": True}))
+@pytest.mark.parametrize("constexpr_shapes", (False, True))
 @pytest.mark.parametrize("device", get_available_devices())
 @pytest.mark.parametrize(
     "dtype, ninetoothed_dtype, rtol, atol",
@@ -235,25 +236,14 @@ def test_conv2d(
     s,
     dtype,
     device,
-    shape_options,
+    constexpr_shapes,
     ninetoothed_dtype,
     rtol,
     atol,
 ):
-    def _premake(block_size_m=64, block_size_n=64, block_size_k=64):
-        arrangement = functools.partial(
-            conv2d.arrangement,
-            BLOCK_SIZE_M=block_size_m,
-            BLOCK_SIZE_N=block_size_n,
-            BLOCK_SIZE_K=block_size_k,
-        )
-        application = matmul.application
-        tensors = tuple(
-            Tensor(4, dtype=ninetoothed_dtype, shape_options=shape_options)
-            for _ in range(3)
-        )
-
-        return arrangement, application, tensors
+    premake = functools.partial(
+        conv2d.premake, dtype=ninetoothed_dtype, constexpr_shapes=constexpr_shapes
+    )
 
     caller = device
     kernel_name = f"conv2d{_generate_kernel_name_suffix()}"
@@ -266,14 +256,14 @@ def test_conv2d(
         )
 
         ninetoothed.build(
-            _premake,
+            premake,
             configs,
             caller=caller,
             kernel_name=kernel_name,
             output_dir=output_dir,
         )
     else:
-        arrangement, application, tensors = _premake()
+        arrangement, application, tensors = premake()
 
         ninetoothed.make(
             arrangement,
@@ -294,7 +284,10 @@ def test_conv2d(
     output = torch.empty(n, k, p, q, dtype=dtype, device=device)
 
     if test_build:
-        config = configs[0][1].values()
+        config = (
+            tuple(_DTYPE_MAPPING.keys()).index(ninetoothed_dtype),
+            constexpr_shapes,
+        ) + tuple(configs[0][1].values())
     else:
         config = ()
 

@@ -48,6 +48,32 @@ def arrangement(
     )(input_flattened, filter_permuted, output_flattened)
 
 
+def premake(
+    dtype=None,
+    constexpr_shapes=False,
+    block_size_m=64,
+    block_size_n=64,
+    block_size_k=64,
+):
+    if constexpr_shapes:
+        shape_options = {"constexpr": True}
+    else:
+        shape_options = None
+
+    arrangement_ = functools.partial(
+        arrangement,
+        BLOCK_SIZE_M=block_size_m,
+        BLOCK_SIZE_N=block_size_n,
+        BLOCK_SIZE_K=block_size_k,
+    )
+    application = matmul.application
+    tensors = tuple(
+        Tensor(4, dtype=dtype, shape_options=shape_options) for _ in range(3)
+    )
+
+    return arrangement_, application, tensors
+
+
 def conv2d(input, filter, padding=0):
     if isinstance(padding, int):
         padding = (padding, padding)
