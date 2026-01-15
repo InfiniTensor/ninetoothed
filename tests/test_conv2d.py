@@ -21,7 +21,7 @@ def arrangement(
     pad_h = Symbol("pad_h", constexpr=True)
     pad_w = Symbol("pad_w", constexpr=True)
 
-    input_padded = input.pad((pad_w, pad_w, pad_h, pad_h))
+    input_padded = input.pad(((0, 0), (0, 0), (pad_h, pad_h), (pad_w, pad_w)))
     input_tiled = input_padded.tile((1, *filter.shape[1:]), strides=(-1, -1, 1, 1))
     input_squeezed = input_tiled.squeeze(1)
     input_squeezed.dtype = input_squeezed.dtype.squeeze(0)
