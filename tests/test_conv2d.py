@@ -14,14 +14,19 @@ def arrangement(
     input,
     filter,
     output,
+    enable_padding=False,
     BLOCK_SIZE_M=matmul.BLOCK_SIZE_M,
     BLOCK_SIZE_N=matmul.BLOCK_SIZE_N,
     BLOCK_SIZE_K=matmul.BLOCK_SIZE_K,
 ):
-    pad_h = Symbol("pad_h", constexpr=True)
-    pad_w = Symbol("pad_w", constexpr=True)
+    if enable_padding:
+        pad_h = Symbol("pad_h", constexpr=True)
+        pad_w = Symbol("pad_w", constexpr=True)
 
-    input_padded = input.pad(((0, 0), (0, 0), (pad_h, pad_h), (pad_w, pad_w)))
+        input_padded = input.pad(((0, 0), (0, 0), (pad_h, pad_h), (pad_w, pad_w)))
+    else:
+        input_padded = input
+
     input_tiled = input_padded.tile((1, *filter.shape[1:]), strides=(-1, -1, 1, 1))
     input_squeezed = input_tiled.squeeze(1)
     input_squeezed.dtype = input_squeezed.dtype.squeeze(0)
@@ -55,7 +60,7 @@ def conv2d(input, filter, padding=0):
     output = torch.empty((n, k, p, q), device=input.device, dtype=input.dtype)
 
     conv2d_kernel = ninetoothed.make(
-        arrangement,
+        functools.partial(arrangement, enable_padding=True),
         matmul.application,
         (Tensor(4), Tensor(4, shape_options={"constexpr": True}), Tensor(4)),
         max_num_configs=50,
