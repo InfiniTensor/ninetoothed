@@ -20,10 +20,12 @@ def arrangement(
     BLOCK_SIZE_K=matmul.BLOCK_SIZE_K,
 ):
     if enable_padding:
-        pad_h = Symbol("pad_h", constexpr=True)
-        pad_w = Symbol("pad_w", constexpr=True)
+        padding_h = Symbol("padding_h", constexpr=True)
+        padding_w = Symbol("padding_w", constexpr=True)
 
-        input_padded = input.pad(((0, 0), (0, 0), (pad_h, pad_h), (pad_w, pad_w)))
+        pad = ((0, 0), (0, 0), (padding_h, padding_h), (padding_w, padding_w))
+
+        input_padded = input.pad(pad)
     else:
         input_padded = input
 
@@ -50,12 +52,12 @@ def conv2d(input, filter, padding=0):
     if isinstance(padding, int):
         padding = (padding, padding)
 
-    pad_h, pad_w = padding
+    padding_h, padding_w = padding
 
     n, _, h, w = input.shape
     k, _, r, s = filter.shape
-    p = h + 2 * pad_h - r + 1
-    q = w + 2 * pad_w - s + 1
+    p = h + 2 * padding_h - r + 1
+    q = w + 2 * padding_w - s + 1
 
     output = torch.empty((n, k, p, q), device=input.device, dtype=input.dtype)
 
@@ -66,7 +68,7 @@ def conv2d(input, filter, padding=0):
         max_num_configs=50,
     )
 
-    conv2d_kernel(input, filter, output, pad_h=pad_h, pad_w=pad_w)
+    conv2d_kernel(input, filter, output, padding_h=padding_h, padding_w=padding_w)
 
     return output
 
