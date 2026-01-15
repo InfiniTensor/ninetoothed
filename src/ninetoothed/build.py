@@ -3,7 +3,7 @@ import inspect
 import pathlib
 
 import ninetoothed
-from ninetoothed.aot import _DTYPE_MAPPING, _HEADER_PATH
+from ninetoothed.aot import _DTYPE_MAPPING, _HEADER_PATH, _MACRO_MAPPING
 
 
 def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
@@ -103,6 +103,9 @@ def _make(premake, config, caller, kernel_name, output_dir):
     combination |= compilation_configs
 
     for name, value in combination.items():
+        if isinstance(value, bool):
+            combination[name] = _MACRO_MAPPING[value][0]
+
         if value in _DTYPE_MAPPING:
             combination[name] = _DTYPE_MAPPING[value]
 
