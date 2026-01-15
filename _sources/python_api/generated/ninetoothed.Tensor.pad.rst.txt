@@ -1,0 +1,6 @@
+﻿ninetoothed.Tensor.pad
+======================
+
+.. currentmodule:: ninetoothed
+
+.. automethod:: Tensor.pad
