@@ -1,9 +1,11 @@
+import concurrent.futures
 import functools
 import inspect
+import multiprocessing
 import pathlib
 
 import ninetoothed
-from ninetoothed.aot import _DTYPE_MAPPING, _HEADER_PATH
+from ninetoothed.aot import _DTYPE_MAPPING, _HEADER_PATH, _MACRO_MAPPING
 
 
 def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
@@ -32,42 +34,30 @@ def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
     combinations = []
     launches = []
 
-    for args, kwargs, compilation_configs in configs:
-        arrangement, application, tensors = premake(*args, **kwargs)
+    with concurrent.futures.ProcessPoolExecutor(
+        mp_context=multiprocessing.get_context("spawn")
+    ) as executor:
+        futures = []
 
-        premake_signature = inspect.signature(premake)
-        bound_arguments = premake_signature.bind(*args, **kwargs)
-        bound_arguments.apply_defaults()
-        combination = bound_arguments.arguments
-        combination = {f"{name}_": value for name, value in combination.items()}
-        combination |= compilation_configs
+        for config in configs:
+            future = executor.submit(
+                _make,
+                premake,
+                config,
+                caller=caller,
+                kernel_name=kernel_name,
+                output_dir=output_dir,
+            )
 
-        for name, value in combination.items():
-            if value in _DTYPE_MAPPING:
-                combination[name] = _DTYPE_MAPPING[value]
+            futures.append(future)
 
-        kernel_name_ = f"{kernel_name}_{_generate_suffix(combination.values())}"
+        for future in concurrent.futures.as_completed(futures):
+            header, param_names, combination, launch = future.result()
 
-        ninetoothed.make(
-            arrangement,
-            application,
-            tensors,
-            caller=caller,
-            kernel_name=kernel_name_,
-            output_dir=output_dir,
-            **compilation_configs,
-        )
-
-        header = output_dir / f"{kernel_name_}.h"
-        application_signature = inspect.signature(application)
-        param_names = ("stream",) + tuple(application_signature.parameters.keys())
-        launch = f"""    if ({_generate_condition(combination)})
-        return launch_{kernel_name_}({", ".join(param_names)});"""
-
-        headers.append(header)
-        all_param_names.append(param_names)
-        combinations.append(combination)
-        launches.append(launch)
+            headers.append(header)
+            all_param_names.append(param_names)
+            combinations.append(combination)
+            launches.append(launch)
 
     includes = "\n".join(f'#include "{header}"' for header in headers)
 
@@ -111,6 +101,46 @@ def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
 
     (output_dir / source_file_name).write_text(source_content)
     (output_dir / header_file_name).write_text(header_content)
+
+
+def _make(premake, config, caller, kernel_name, output_dir):
+    args, kwargs, compilation_configs = config
+
+    arrangement, application, tensors = premake(*args, **kwargs)
+
+    premake_signature = inspect.signature(premake)
+    bound_arguments = premake_signature.bind(*args, **kwargs)
+    bound_arguments.apply_defaults()
+    combination = bound_arguments.arguments
+    combination = {f"{name}_": value for name, value in combination.items()}
+    combination |= compilation_configs
+
+    for name, value in combination.items():
+        if isinstance(value, bool):
+            combination[name] = _MACRO_MAPPING[value][0]
+
+        if value in _DTYPE_MAPPING:
+            combination[name] = _DTYPE_MAPPING[value]
+
+    kernel_name_ = f"{kernel_name}_{_generate_suffix(combination.values())}"
+
+    ninetoothed.make(
+        arrangement,
+        application,
+        tensors,
+        caller=caller,
+        kernel_name=kernel_name_,
+        output_dir=output_dir,
+        **compilation_configs,
+    )
+
+    header = output_dir / f"{kernel_name_}.h"
+    application_signature = inspect.signature(application)
+    param_names = ("stream",) + tuple(application_signature.parameters.keys())
+    launch = f"""    if ({_generate_condition(combination)})
+        return launch_{kernel_name_}({", ".join(param_names)});"""
+
+    return header, param_names, combination, launch
 
 
 def _generate_condition(combination):

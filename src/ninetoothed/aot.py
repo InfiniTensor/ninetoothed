@@ -139,6 +139,8 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     return output_contents
 
 
+_MACRO_MAPPING = {True: ("NINETOOTHED_TRUE", 1), False: ("NINETOOTHED_FALSE", 0)}
+
 _DTYPE_MAPPING = {
     ninetoothed.dtype.int8: "NINETOOTHED_INT8",
     ninetoothed.dtype.int16: "NINETOOTHED_INT16",
@@ -154,12 +156,19 @@ _DTYPE_MAPPING = {
     ninetoothed.dtype.float64: "NINETOOTHED_FLOAT64",
 }
 
+_MACRO_CONTENT = "\n\n".join(
+    f"#define {identifier} {replacement}"
+    for identifier, replacement in _MACRO_MAPPING.values()
+)
+
 _DATA_TYPE_BODY_CONTENT = ",\n    ".join(_DTYPE_MAPPING.values())
 
 _HEADER_CONTENT = f"""#ifndef NINETOOTHED_H
 #define NINETOOTHED_H
 
 #include <stdint.h>
+
+{_MACRO_CONTENT}
 
 enum NineToothedDataType {{
     {_DATA_TYPE_BODY_CONTENT}
