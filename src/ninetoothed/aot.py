@@ -33,7 +33,7 @@ def aot(
     output_contents = _aot(func, caller, kernel_name, num_warps, num_stages)
 
     for output_name, output_content in output_contents.items():
-        output_path = output_dir / f"{kernel_name}{output_name[-2:]}"
+        output_path = output_dir / f"{kernel_name}{pathlib.Path(output_name).suffix}"
 
         with open(output_path, "w") as f:
             f.write(output_content)
