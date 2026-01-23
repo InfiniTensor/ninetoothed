@@ -163,6 +163,41 @@ _MACRO_CONTENT = "\n\n".join(
 
 _DATA_TYPE_BODY_CONTENT = ",\n    ".join(_DTYPE_MAPPING.values())
 
+_THREAD_SAFE_UNORDERED_MAP_CONTENT = """#include <mutex>
+#include <shared_mutex>
+#include <unordered_map>
+
+template<typename Key, typename Value>
+class ThreadSafeUnorderedMap {
+public:
+    Value& operator[](const Key& key) {
+        {
+            std::shared_lock lock{mutex};
+
+            auto iter = map.find(key);
+
+            if (iter != map.end()) {
+                return iter->second;
+            }
+        }
+
+        std::unique_lock lock{mutex};
+
+        auto iter = map.find(key);
+
+        if (iter == map.end()) {
+            iter = map.emplace(key, Value{}).first;
+        }
+
+        return iter->second;
+    }
+
+private:
+    std::unordered_map<Key, Value> map;
+
+    mutable std::shared_mutex mutex;
+};"""
+
 _HEADER_CONTENT = f"""#ifndef NINETOOTHED_H
 #define NINETOOTHED_H
 
@@ -183,6 +218,10 @@ typedef struct {{
 typedef void *NineToothedStream;
 
 typedef int NineToothedResult;
+
+#ifdef __cplusplus
+{_THREAD_SAFE_UNORDERED_MAP_CONTENT}
+#endif
 
 #endif // NINETOOTHED_H
 """
