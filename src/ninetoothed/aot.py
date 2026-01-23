@@ -3,6 +3,7 @@ import pathlib
 import re
 import subprocess
 import tempfile
+import textwrap
 import uuid
 
 import ninetoothed.dtype
@@ -33,7 +34,7 @@ def aot(
     output_contents = _aot(func, caller, kernel_name, num_warps, num_stages)
 
     for output_name, output_content in output_contents.items():
-        output_path = output_dir / f"{kernel_name}{output_name[-2:]}"
+        output_path = output_dir / f"{kernel_name}{pathlib.Path(output_name).suffix}"
 
         with open(output_path, "w") as f:
             f.write(output_content)
@@ -121,14 +122,19 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     pattern = rf"\({', '.join(rf'(.*) {param}' for param in param_strings)}\)"
     c_param_type_strings = re.search(pattern, c_header_file).groups()
 
+    kernel_name_with_hash = f"{kernel_name}_{signature_hash}"
+
     unparser = _Unparser(c_param_type_strings)
 
     launch_func_unparsed = unparser.unparse(launch_func)
+    launch_func_unparsed_lines = launch_func_unparsed.splitlines()
+    launch_func_unparsed_lines.insert(1, f"{_INDENTATION}cuCtxGetId(NULL, &ctx_id);\n")
+    launch_func_unparsed_lines.insert(1, f"{_INDENTATION}unsigned long long ctx_id;")
+    launch_func_unparsed = "\n".join(launch_func_unparsed_lines)
     launch_func_unparsed = launch_func_unparsed.replace(
-        func.__name__, f"{kernel_name}_{signature_hash}"
+        func.__name__, f"kernels[ctx_id].{kernel_name_with_hash}"
     )
 
-    c_source_file = f"{c_source_file}\n{launch_func_unparsed}\n"
     c_source_file = c_source_file.replace("<stdint.h>", f'"{_HEADER_PATH}"')
     output_contents[c_source_file_name] = c_source_file
 
@@ -136,8 +142,27 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     c_header_file = c_header_file.replace("<stdint.h>", f'"{_HEADER_PATH}"')
     output_contents[c_header_file_name] = c_header_file
 
+    kernel_start = c_source_file.find("//")
+    kernel_end = len(c_source_file)
+    cpp_source_file = (
+        c_source_file[:kernel_start]
+        + f"namespace {kernel_name_with_hash} {{\n"
+        + "struct Kernel {\n"
+        + textwrap.indent(c_source_file[kernel_start:kernel_end], _INDENTATION)
+        + "};\n"
+        + textwrap.indent(c_source_file[kernel_end:], _INDENTATION)
+        + "}\n"
+        + f"\nstatic ThreadSafeUnorderedMap<unsigned long long, {kernel_name_with_hash}::Kernel> kernels;\n"
+        + f'\nextern "C" {launch_func_unparsed}\n'
+    )
+    cpp_source_file_name = f"{kernel_name}.{signature_hash}.cpp"
+    output_contents[cpp_source_file_name] = cpp_source_file
+    output_contents.pop(c_source_file_name)
+
     return output_contents
 
+
+_INDENTATION = "    "
 
 _MACRO_MAPPING = {True: ("NINETOOTHED_TRUE", 1), False: ("NINETOOTHED_FALSE", 0)}
 
@@ -163,6 +188,41 @@ _MACRO_CONTENT = "\n\n".join(
 
 _DATA_TYPE_BODY_CONTENT = ",\n    ".join(_DTYPE_MAPPING.values())
 
+_THREAD_SAFE_UNORDERED_MAP_CONTENT = """#include <mutex>
+#include <shared_mutex>
+#include <unordered_map>
+
+template<typename Key, typename Value>
+class ThreadSafeUnorderedMap {
+public:
+    Value& operator[](const Key& key) {
+        {
+            std::shared_lock lock{mutex};
+
+            auto iter = map.find(key);
+
+            if (iter != map.end()) {
+                return iter->second;
+            }
+        }
+
+        std::unique_lock lock{mutex};
+
+        auto iter = map.find(key);
+
+        if (iter == map.end()) {
+            iter = map.emplace(key, Value{}).first;
+        }
+
+        return iter->second;
+    }
+
+private:
+    std::unordered_map<Key, Value> map;
+
+    mutable std::shared_mutex mutex;
+};"""
+
 _HEADER_CONTENT = f"""#ifndef NINETOOTHED_H
 #define NINETOOTHED_H
 
@@ -183,6 +243,10 @@ typedef struct {{
 typedef void *NineToothedStream;
 
 typedef int NineToothedResult;
+
+#ifdef __cplusplus
+{_THREAD_SAFE_UNORDERED_MAP_CONTENT}
+#endif
 
 #endif // NINETOOTHED_H
 """

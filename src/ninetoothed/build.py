@@ -80,7 +80,7 @@ def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
         f"{type} {param}" for param, type in zip(param_names, param_types)
     )
 
-    source_file_name = f"{kernel_name}.c"
+    source_file_name = f"{kernel_name}.cpp"
     header_file_name = f"{kernel_name}.h"
 
     func_sig = f"NineToothedResult launch_{kernel_name}({param_decls})"
@@ -88,7 +88,7 @@ def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
     joined_launches = "\n".join(launches)
 
     op_decl = f'#ifdef __cplusplus\nextern "C" {func_sig};\n#else\n{func_sig};\n#endif'
-    op_def = f"""{func_sig} {{
+    op_def = f"""extern "C" {func_sig} {{
 {joined_launches}
     return 1;
 }}"""

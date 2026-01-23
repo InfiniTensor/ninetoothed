@@ -24,7 +24,8 @@ from tests.utils import get_available_devices
     "dtype, ninetoothed_dtype", ((torch.bfloat16, ninetoothed.bfloat16),)
 )
 @pytest.mark.parametrize("size", (45327,))
-def test_add(size, dtype, device, ninetoothed_dtype):
+@pytest.mark.parametrize("test_multi_device", (False, True))
+def test_add(test_multi_device, size, dtype, device, ninetoothed_dtype):
     def _arrangement(input, other, output):
         def _arrange(tensor):
             return tensor.tile((256,))
@@ -52,15 +53,25 @@ def test_add(size, dtype, device, ninetoothed_dtype):
 
     shape = (size,)
 
-    input = torch.randn(shape, dtype=dtype, device=device)
-    other = torch.randn(shape, dtype=dtype, device=device)
-    output = torch.empty_like(input)
+    if test_multi_device:
+        if torch.cuda.device_count() < 2:
+            pytest.skip("multi-device testing requires at least 2 devices")
 
-    _run_launch_func(launch_func, input, other, output)
+        devices = (f"{device}:0", f"{device}:1")
+    else:
+        devices = (device,)
 
-    expected = torch.add(input, other)
+    for device in devices:
+        with torch.cuda.Stream(device=device):
+            input = torch.randn(shape, dtype=dtype, device=device)
+            other = torch.randn(shape, dtype=dtype, device=device)
+            output = torch.empty_like(input)
 
-    assert torch.allclose(output, expected)
+            _run_launch_func(launch_func, input, other, output)
+
+            expected = torch.add(input, other)
+
+            assert torch.allclose(output, expected)
 
 
 @pytest.mark.parametrize("device", get_available_devices())
@@ -346,7 +357,7 @@ def _compile_library(kernel_name, output_dir):
         "-lcuda",
         "-o",
         output_dir / f"{kernel_name}.so",
-    ] + list(output_dir.glob(f"{kernel_name}*.c"))
+    ] + list(output_dir.glob(f"{kernel_name}*.cpp"))
 
     subprocess.run(command, check=True)
 
