@@ -128,13 +128,17 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
         func.__name__, f"{kernel_name}_{signature_hash}"
     )
 
-    c_source_file = f"{c_source_file}\n{launch_func_unparsed}\n"
     c_source_file = c_source_file.replace("<stdint.h>", f'"{_HEADER_PATH}"')
     output_contents[c_source_file_name] = c_source_file
 
     c_header_file = f'{c_header_file}\n#ifdef __cplusplus\nextern "C" {unparser.header};\n#else\n{unparser.header};\n#endif\n'
     c_header_file = c_header_file.replace("<stdint.h>", f'"{_HEADER_PATH}"')
     output_contents[c_header_file_name] = c_header_file
+
+    cpp_source_file = f'{c_source_file}\nextern "C" {launch_func_unparsed}\n'
+    cpp_source_file_name = f"{kernel_name}.{signature_hash}.cpp"
+    output_contents[cpp_source_file_name] = cpp_source_file
+    output_contents.pop(c_source_file_name)
 
     return output_contents
 
