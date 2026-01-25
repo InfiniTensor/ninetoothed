@@ -17,6 +17,7 @@ from triton.language.extra import libdevice
 import ninetoothed.naming as naming
 from ninetoothed.cudaifier import Cudaifier
 from ninetoothed.language import attribute, call
+from ninetoothed.licm import LICMTransformer
 from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
@@ -101,6 +102,7 @@ class CodeGenerator(ast.NodeTransformer):
         tree = _get_tree(func)
 
         self.visit(tree)
+        LICMTransformer().visit(tree)
         Tritonizer().visit(tree)
         _BinOpSimplifier().visit(tree)
         ast.fix_missing_locations(tree)
