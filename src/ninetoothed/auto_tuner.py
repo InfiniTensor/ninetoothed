@@ -17,11 +17,11 @@ class AutoTuner:
     """
 
     def __init__(self, funcs, keys):
-        self.funcs = funcs
-        self.keys = keys
-        self.best_func = {}
-        self.all_times = {}
-        self.cache_results = True
+        self._funcs = funcs
+        self._keys = keys
+        self._best_func = {}
+        self._all_times = {}
+        self._cache_results = True
 
     def check_disk_cache(self, tuning_key, bench_fn):
         """Check disk cache for previously computed timings.
@@ -44,36 +44,36 @@ class AutoTuner:
                     data = json.load(cached_data)
                     best_func_idx = data.get("best_func_idx")
                     if best_func_idx is not None and 0 <= best_func_idx < len(
-                        self.funcs
+                        self._funcs
                     ):
-                        self.best_func[tuning_key] = self.funcs[best_func_idx]
+                        self._best_func[tuning_key] = self._funcs[best_func_idx]
 
                     timings = data.get("timings", {})
                     print("INFO: used disk cache for NtTuner")
                     for key_str, timing in timings.items():
                         idx = int(key_str)
-                        if 0 <= idx < len(self.keys):
-                            self.all_times[tuple([self.keys[idx]])] = timing
+                        if 0 <= idx < len(self._keys):
+                            self._all_times[tuple([self._keys[idx]])] = timing
                 return True
             except (json.JSONDecodeError, KeyError, ValueError):
                 pass
 
         bench_fn()
 
-        best_func = self.best_func.get(tuning_key)
+        best_func = self._best_func.get(tuning_key)
         if best_func is not None:
             best_func_idx = None
-            for idx, func in enumerate(self.funcs):
+            for idx, func in enumerate(self._funcs):
                 if func is best_func:
                     best_func_idx = idx
                     break
 
             if best_func_idx is not None:
                 timings = {}
-                for idx, key in enumerate(self.keys):
+                for idx, key in enumerate(self._keys):
                     func_key = tuple([key])
-                    if func_key in self.all_times:
-                        timings[str(idx)] = self.all_times[func_key]
+                    if func_key in self._all_times:
+                        timings[str(idx)] = self._all_times[func_key]
 
                 data = {
                     "tuning_key": str(tuning_key),
@@ -111,37 +111,37 @@ class AutoTuner:
         return "_".join(key_parts) if key_parts else "default"
 
     def run(self, *args, **kwargs):
-        if len(self.funcs) > 1:
+        if len(self._funcs) > 1:
             param_key = self._make_param_key(args, kwargs)
-            keys = tuple(list(self.keys) + [param_key])
+            keys = tuple(list(self._keys) + [param_key])
 
-            if keys not in self.best_func:
+            if keys not in self._best_func:
 
                 def benchmark():
                     best_time = float("inf")
                     best_func = None
 
-                    for idx, func in enumerate(self.funcs):
-                        key = tuple([self.keys[idx], param_key])
+                    for idx, func in enumerate(self._funcs):
+                        key = tuple([self._keys[idx], param_key])
 
-                        if key in self.all_times:
-                            func_time = self.all_times[key]
+                        if key in self._all_times:
+                            func_time = self._all_times[key]
                         else:
                             func_time = testing.do_bench(lambda: func(*args, **kwargs))
-                            self.all_times[key] = func_time
+                            self._all_times[key] = func_time
 
                         if func_time < best_time:
                             best_time = func_time
                             best_func = func
 
-                    self.best_func[keys] = best_func
+                    self._best_func[keys] = best_func
 
-                if self.cache_results:
+                if self._cache_results:
                     self.check_disk_cache(keys, benchmark)
                 else:
                     benchmark()
 
-            return self.best_func[keys](*args, **kwargs)
+            return self._best_func[keys](*args, **kwargs)
 
         else:
-            return self.funcs[0](*args, **kwargs)
+            return self._funcs[0](*args, **kwargs)
