@@ -23,7 +23,7 @@ class AutoTuner:
         self._all_times = {}
         self._cache_results = True
 
-    def check_disk_cache(self, tuning_key, bench_fn):
+    def _check_disk_cache(self, tuning_key, bench_fn):
         """Check disk cache for previously computed timings.
 
         :param tuning_key: Tuple of keys identifying the configuration.
@@ -137,7 +137,7 @@ class AutoTuner:
                     self._best_func[keys] = best_func
 
                 if self._cache_results:
-                    self.check_disk_cache(keys, benchmark)
+                    self._check_disk_cache(keys, benchmark)
                 else:
                     benchmark()
 
