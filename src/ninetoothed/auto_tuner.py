@@ -10,98 +10,78 @@ from ninetoothed.generation import CACHE_DIR
 class AutoTuner:
     def __init__(self, funcs, keys):
         self._funcs = funcs
+
         self._keys = keys
-        self._best_func = {}
-        self._timings = {}
-        self._cache_results = True
+
+        self._func_to_key = {func: key for func, key in zip(self._funcs, self._keys)}
+
         self._cache_dir = (
             _AUTO_TUNING_CACHE_DIR
             / f"{_project_key()}_triton_{triton.__version__.replace('.', '_')}"
         )
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
+        auto_tuner_key = tuple(self._keys)
+        cache_key = hashlib.sha256(str(auto_tuner_key).encode("utf-8")).hexdigest()
+        self._cache_path = self._cache_dir / f"{cache_key}.json"
+
+        if self._cache_path.exists():
+            self._timings = json.loads(self._cache_path.read_text())
+        else:
+            self._timings = {key: {} for key in self._keys}
+
+        self._best_func = {}
+
     def run(self, *args, **kwargs):
-        if len(self._funcs) > 1:
-            arg_key = self._make_arg_key(args, kwargs)
-
-            if arg_key not in self._best_func:
-
-                def benchmark():
-                    best_time = float("inf")
-                    best_func = None
-
-                    for idx, func in enumerate(self._funcs):
-                        key = tuple([self._keys[idx], arg_key])
-
-                        if key in self._timings:
-                            func_time = self._timings[key]
-                        else:
-                            func_time = triton.testing.do_bench(
-                                lambda: func(*args, **kwargs)
-                            )
-                            self._timings[key] = func_time
-
-                        if func_time < best_time:
-                            best_time = func_time
-                            best_func = func
-
-                    self._best_func[arg_key] = best_func
-
-                if self._cache_results:
-                    self._check_disk_cache(arg_key, benchmark)
-                else:
-                    benchmark()
-
+        if (arg_key := self._make_arg_key(args, kwargs)) in self._best_func:
             return self._best_func[arg_key](*args, **kwargs)
 
-        else:
-            return self._funcs[0](*args, **kwargs)
+        timings = self._get_timings(args, kwargs)
 
-    def _check_disk_cache(self, arg_key, bench_fn):
-        tuning_key = tuple(list(self._keys) + [arg_key])
-        cache_key = hashlib.sha256(str(tuning_key).encode("utf-8")).hexdigest()
+        best_timing = min(timings)
+        best_timing_index = timings.index(best_timing)
+        best_func = self._funcs[best_timing_index]
+
+        self._best_func[arg_key] = best_func
+
+        return best_func(*args, **kwargs)
+
+    def _get_timings(self, args, kwargs):
+        if (arg_key := self._make_arg_key(args, kwargs)) in self._timings:
+            return self._timings[arg_key]
+
+        timings = [self._get_timing(func, args, kwargs) for func in self._funcs]
+
+        self._timings[arg_key] = timings
+
+        self._cache_path.write_text(json.dumps(self._timings))
+
+        return timings
+
+    def _get_timing(self, func, args, kwargs):
+        func_key = self._func_to_key[func]
+
+        data = self._timings[func_key]
+
+        if (arg_key := self._make_arg_key(args, kwargs)) in data:
+            return data[arg_key]
+
+        cache_key = hashlib.sha256(str(func_key).encode("utf-8")).hexdigest()
         cache_path = self._cache_dir / f"{cache_key}.json"
 
         if cache_path.exists():
-            data = json.loads(cache_path.read_text())
-            best_func_idx = data.get("best_func_idx")
-            if best_func_idx is not None and 0 <= best_func_idx < len(self._funcs):
-                self._best_func[arg_key] = self._funcs[best_func_idx]
+            data |= json.loads(cache_path.read_text())
 
-            timings = data.get("timings", {})
+        if arg_key in data:
+            return data[arg_key]
 
-            for key_str, timing in timings.items():
-                idx = int(key_str)
-                if 0 <= idx < len(self._keys):
-                    self._timings[tuple([self._keys[idx]])] = timing
+        timing = triton.testing.do_bench(lambda: func(*args, **kwargs))
 
-            return True
+        data[arg_key] = timing
 
-        bench_fn()
+        cache_path.write_text(json.dumps(data))
 
-        best_func = self._best_func.get(arg_key)
-        if best_func is not None:
-            best_func_idx = None
-            for idx, func in enumerate(self._funcs):
-                if func is best_func:
-                    best_func_idx = idx
-                    break
-
-            if best_func_idx is not None:
-                timings = {}
-                for idx, key in enumerate(self._keys):
-                    func_key = tuple([key])
-                    if func_key in self._timings:
-                        timings[str(idx)] = self._timings[func_key]
-
-                data = {
-                    "tuning_key": str(tuning_key),
-                    "best_func_idx": best_func_idx,
-                    "timings": timings,
-                }
-                cache_path.write_text(json.dumps(data))
-
-        return False
+        return timing
 
     def _make_arg_key(self, args, kwargs):
         key_parts = []
