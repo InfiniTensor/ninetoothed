@@ -10,7 +10,7 @@ class AutoTuner:
         self._funcs = funcs
         self._keys = keys
         self._best_func = {}
-        self._all_times = {}
+        self._timings = {}
         self._cache_results = True
 
     def run(self, *args, **kwargs):
@@ -27,11 +27,11 @@ class AutoTuner:
                     for idx, func in enumerate(self._funcs):
                         key = tuple([self._keys[idx], param_key])
 
-                        if key in self._all_times:
-                            func_time = self._all_times[key]
+                        if key in self._timings:
+                            func_time = self._timings[key]
                         else:
                             func_time = testing.do_bench(lambda: func(*args, **kwargs))
-                            self._all_times[key] = func_time
+                            self._timings[key] = func_time
 
                         if func_time < best_time:
                             best_time = func_time
@@ -71,7 +71,7 @@ class AutoTuner:
                     for key_str, timing in timings.items():
                         idx = int(key_str)
                         if 0 <= idx < len(self._keys):
-                            self._all_times[tuple([self._keys[idx]])] = timing
+                            self._timings[tuple([self._keys[idx]])] = timing
                 return True
             except (json.JSONDecodeError, KeyError, ValueError):
                 pass
@@ -90,8 +90,8 @@ class AutoTuner:
                 timings = {}
                 for idx, key in enumerate(self._keys):
                     func_key = tuple([key])
-                    if func_key in self._all_times:
-                        timings[str(idx)] = self._all_times[func_key]
+                    if func_key in self._timings:
+                        timings[str(idx)] = self._timings[func_key]
 
                 data = {
                     "tuning_key": str(tuning_key),
