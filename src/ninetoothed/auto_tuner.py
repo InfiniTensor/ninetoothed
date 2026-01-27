@@ -23,6 +23,42 @@ class AutoTuner:
         self._all_times = {}
         self._cache_results = True
 
+    def run(self, *args, **kwargs):
+        if len(self._funcs) > 1:
+            param_key = self._make_param_key(args, kwargs)
+            keys = tuple(list(self._keys) + [param_key])
+
+            if keys not in self._best_func:
+
+                def benchmark():
+                    best_time = float("inf")
+                    best_func = None
+
+                    for idx, func in enumerate(self._funcs):
+                        key = tuple([self._keys[idx], param_key])
+
+                        if key in self._all_times:
+                            func_time = self._all_times[key]
+                        else:
+                            func_time = testing.do_bench(lambda: func(*args, **kwargs))
+                            self._all_times[key] = func_time
+
+                        if func_time < best_time:
+                            best_time = func_time
+                            best_func = func
+
+                    self._best_func[keys] = best_func
+
+                if self._cache_results:
+                    self._check_disk_cache(keys, benchmark)
+                else:
+                    benchmark()
+
+            return self._best_func[keys](*args, **kwargs)
+
+        else:
+            return self._funcs[0](*args, **kwargs)
+
     def _check_disk_cache(self, tuning_key, bench_fn):
         """Check disk cache for previously computed timings.
 
@@ -109,39 +145,3 @@ class AutoTuner:
                 key_parts.append(f"{k}_{v}")
 
         return "_".join(key_parts) if key_parts else "default"
-
-    def run(self, *args, **kwargs):
-        if len(self._funcs) > 1:
-            param_key = self._make_param_key(args, kwargs)
-            keys = tuple(list(self._keys) + [param_key])
-
-            if keys not in self._best_func:
-
-                def benchmark():
-                    best_time = float("inf")
-                    best_func = None
-
-                    for idx, func in enumerate(self._funcs):
-                        key = tuple([self._keys[idx], param_key])
-
-                        if key in self._all_times:
-                            func_time = self._all_times[key]
-                        else:
-                            func_time = testing.do_bench(lambda: func(*args, **kwargs))
-                            self._all_times[key] = func_time
-
-                        if func_time < best_time:
-                            best_time = func_time
-                            best_func = func
-
-                    self._best_func[keys] = best_func
-
-                if self._cache_results:
-                    self._check_disk_cache(keys, benchmark)
-                else:
-                    benchmark()
-
-            return self._best_func[keys](*args, **kwargs)
-
-        else:
-            return self._funcs[0](*args, **kwargs)
