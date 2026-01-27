@@ -23,9 +23,8 @@ class AutoTuner:
     def run(self, *args, **kwargs):
         if len(self._funcs) > 1:
             arg_key = self._make_arg_key(args, kwargs)
-            keys = tuple(list(self._keys) + [arg_key])
 
-            if keys not in self._best_func:
+            if arg_key not in self._best_func:
 
                 def benchmark():
                     best_time = float("inf")
@@ -46,19 +45,20 @@ class AutoTuner:
                             best_time = func_time
                             best_func = func
 
-                    self._best_func[keys] = best_func
+                    self._best_func[arg_key] = best_func
 
                 if self._cache_results:
-                    self._check_disk_cache(keys, benchmark)
+                    self._check_disk_cache(arg_key, benchmark)
                 else:
                     benchmark()
 
-            return self._best_func[keys](*args, **kwargs)
+            return self._best_func[arg_key](*args, **kwargs)
 
         else:
             return self._funcs[0](*args, **kwargs)
 
-    def _check_disk_cache(self, tuning_key, bench_fn):
+    def _check_disk_cache(self, arg_key, bench_fn):
+        tuning_key = tuple(list(self._keys) + [arg_key])
         cache_key = hashlib.sha256(str(tuning_key).encode("utf-8")).hexdigest()
         cache_path = self._cache_dir / f"{cache_key}.json"
 
@@ -66,7 +66,7 @@ class AutoTuner:
             data = json.loads(cache_path.read_text())
             best_func_idx = data.get("best_func_idx")
             if best_func_idx is not None and 0 <= best_func_idx < len(self._funcs):
-                self._best_func[tuning_key] = self._funcs[best_func_idx]
+                self._best_func[arg_key] = self._funcs[best_func_idx]
 
             timings = data.get("timings", {})
 
@@ -79,7 +79,7 @@ class AutoTuner:
 
         bench_fn()
 
-        best_func = self._best_func.get(tuning_key)
+        best_func = self._best_func.get(arg_key)
         if best_func is not None:
             best_func_idx = None
             for idx, func in enumerate(self._funcs):
