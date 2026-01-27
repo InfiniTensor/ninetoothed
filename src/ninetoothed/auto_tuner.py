@@ -32,6 +32,9 @@ class AutoTuner:
 
         self._best_func = {}
 
+    def __call__(self, *args, **kwargs):
+        return self.run(*args, **kwargs)
+
     def run(self, *args, **kwargs):
         if (arg_key := type(self)._make_arg_key(args, kwargs)) in self._best_func:
             return self._best_func[arg_key](*args, **kwargs)
