@@ -22,8 +22,8 @@ class AutoTuner:
 
     def run(self, *args, **kwargs):
         if len(self._funcs) > 1:
-            param_key = self._make_param_key(args, kwargs)
-            keys = tuple(list(self._keys) + [param_key])
+            arg_key = self._make_arg_key(args, kwargs)
+            keys = tuple(list(self._keys) + [arg_key])
 
             if keys not in self._best_func:
 
@@ -32,7 +32,7 @@ class AutoTuner:
                     best_func = None
 
                     for idx, func in enumerate(self._funcs):
-                        key = tuple([self._keys[idx], param_key])
+                        key = tuple([self._keys[idx], arg_key])
 
                         if key in self._timings:
                             func_time = self._timings[key]
@@ -103,7 +103,7 @@ class AutoTuner:
 
         return False
 
-    def _make_param_key(self, args, kwargs):
+    def _make_arg_key(self, args, kwargs):
         key_parts = []
 
         for arg in args:
