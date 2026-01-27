@@ -2,7 +2,7 @@ import torch
 import triton
 import triton.language as tl
 
-from ninetoothed import AutoTuner
+from ninetoothed.auto_tuner import AutoTuner
 
 if __name__ == "__main__":
 
