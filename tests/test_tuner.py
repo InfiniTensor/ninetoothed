@@ -2,7 +2,7 @@ import torch
 import triton
 import triton.language as tl
 
-from ninetoothed import NtTuner
+from ninetoothed import AutoTuner
 
 if __name__ == "__main__":
 
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     y = torch.rand(size, device=device, dtype=torch.float32)
     z = torch.empty_like(x)
 
-    tuner = NtTuner(funcs=[func_1, func_2], keys=["add1_1024*512", "add2_1024*512"])
+    tuner = AutoTuner(funcs=[func_1, func_2], keys=["add1_1024*512", "add2_1024*512"])
     tuner.run(x, y, z)
     expected = x + y
     print(z)

@@ -1,4 +1,4 @@
-from ninetoothed.auto_tuner import NtTuner
+from ninetoothed.auto_tuner import AutoTuner
 from ninetoothed.build import build
 from ninetoothed.dtype import (
     bfloat16,
@@ -22,9 +22,9 @@ from ninetoothed.symbol import Symbol, block_size
 from ninetoothed.tensor import Tensor
 
 __all__ = [
+    "AutoTuner",
     "Symbol",
     "Tensor",
-    "NtTuner",
     "bfloat16",
     "block_size",
     "build",

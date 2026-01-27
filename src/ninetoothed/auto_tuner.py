@@ -5,7 +5,7 @@ import triton.testing as testing
 from triton.runtime.cache import get_cache_manager, triton_key
 
 
-class NtTuner:
+class AutoTuner:
     """An auto-tuner that selects the best function based on execution time.
 
     :param funcs: List of candidate functions.
