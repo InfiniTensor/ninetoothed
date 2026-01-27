@@ -6,16 +6,6 @@ from triton.runtime.cache import get_cache_manager, triton_key
 
 
 class AutoTuner:
-    """An auto-tuner that selects the best function based on execution time.
-
-    :param funcs: List of candidate functions.
-    :param keys: List of keys corresponding to each function.
-
-    Example:
-        tuner = NtTuner([func1, func2], ['func1', 'func2'])
-        result = tuner.run(arg1, arg2)
-    """
-
     def __init__(self, funcs, keys):
         self._funcs = funcs
         self._keys = keys
@@ -60,14 +50,6 @@ class AutoTuner:
             return self._funcs[0](*args, **kwargs)
 
     def _check_disk_cache(self, tuning_key, bench_fn):
-        """Check disk cache for previously computed timings.
-
-        :param tuning_key: Tuple of keys identifying the configuration.
-        :param bench_fn: Benchmark function to execute if cache miss.
-        :return: True if cache hit, False if cache miss.
-        """
-
-        # -- TODO: improve key generation: with version、 hardware info, etc.
         cache_key_str = f"{triton_key()}-{str(tuning_key)}"
         cache_key = hashlib.sha256(cache_key_str.encode("utf-8")).hexdigest()
         cache = get_cache_manager(cache_key)
@@ -121,13 +103,6 @@ class AutoTuner:
         return False
 
     def _make_param_key(self, args, kwargs):
-        """Create a unique key based on function parameters.
-
-        :param args: Positional arguments.
-        :param kwargs: Keyword arguments.
-        :return: A string key representing the parameters.
-        """
-
         key_parts = []
 
         for arg in args:
