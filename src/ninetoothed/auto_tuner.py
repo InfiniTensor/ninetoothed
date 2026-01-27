@@ -33,7 +33,7 @@ class AutoTuner:
         self._best_func = {}
 
     def run(self, *args, **kwargs):
-        if (arg_key := self._make_arg_key(args, kwargs)) in self._best_func:
+        if (arg_key := type(self)._make_arg_key(args, kwargs)) in self._best_func:
             return self._best_func[arg_key](*args, **kwargs)
 
         timings = self._get_timings(args, kwargs)
@@ -47,7 +47,7 @@ class AutoTuner:
         return best_func(*args, **kwargs)
 
     def _get_timings(self, args, kwargs):
-        if (arg_key := self._make_arg_key(args, kwargs)) in self._timings:
+        if (arg_key := type(self)._make_arg_key(args, kwargs)) in self._timings:
             return self._timings[arg_key]
 
         timings = [self._get_timing(func, args, kwargs) for func in self._funcs]
@@ -63,7 +63,7 @@ class AutoTuner:
 
         data = self._timings[func_key]
 
-        if (arg_key := self._make_arg_key(args, kwargs)) in data:
+        if (arg_key := type(self)._make_arg_key(args, kwargs)) in data:
             return data[arg_key]
 
         cache_key = hashlib.sha256(str(func_key).encode("utf-8")).hexdigest()
@@ -83,24 +83,29 @@ class AutoTuner:
 
         return timing
 
-    def _make_arg_key(self, args, kwargs):
+    @staticmethod
+    def _make_arg_key(args, kwargs):
         key_parts = []
 
-        for arg in args:
+        def _make_key(arg):
             if hasattr(arg, "shape") and hasattr(arg, "dtype"):
-                key_parts.append(f"shape{tuple(arg.shape)}")
-                key_parts.append(f"dtype{str(arg.dtype).split('.')[-1]}")
-            elif isinstance(arg, (int, float, str, bool)):
-                key_parts.append(f"{type(arg).__name__}{arg}")
+                return AutoTuner._make_tensor_key(arg)
 
-        for k, v in sorted(kwargs.items()):
-            if hasattr(v, "shape") and hasattr(v, "dtype"):
-                key_parts.append(f"{k}_shape{tuple(v.shape)}")
-                key_parts.append(f"{k}_dtype{str(v.dtype).split('.')[-1]}")
-            elif isinstance(v, (int, float, str, bool)):
-                key_parts.append(f"{k}_{v}")
+            return str(arg)
 
-        return "_".join(key_parts) if key_parts else "default"
+        for arg in args:
+            key_parts.append(_make_key(arg))
+
+        for key, arg in sorted(kwargs.items()):
+            key_parts.append(f"{key}={_make_key(arg)}")
+
+        arg_key = ", ".join(key_parts)
+
+        return arg_key
+
+    @staticmethod
+    def _make_tensor_key(tensor):
+        return f"tensor(shape={tuple(tensor.shape)}, dtype={str(tensor.dtype).split('.')[-1]})"
 
 
 _AUTO_TUNING_CACHE_DIR = CACHE_DIR / "auto_tuning"
