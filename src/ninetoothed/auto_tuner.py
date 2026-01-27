@@ -3,7 +3,8 @@ import json
 import os
 
 import triton
-from triton.runtime.cache import get_cache_manager, triton_key
+
+from ninetoothed.generation import CACHE_DIR
 
 
 class AutoTuner:
@@ -13,6 +14,11 @@ class AutoTuner:
         self._best_func = {}
         self._timings = {}
         self._cache_results = True
+        self._cache_dir = (
+            _AUTO_TUNING_CACHE_DIR
+            / f"{_project_key()}_triton_{triton.__version__.replace('.', '_')}"
+        )
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     def run(self, *args, **kwargs):
         if len(self._funcs) > 1:
@@ -53,31 +59,23 @@ class AutoTuner:
             return self._funcs[0](*args, **kwargs)
 
     def _check_disk_cache(self, tuning_key, bench_fn):
-        cache_key_str = f"{triton_key()}-{str(tuning_key)}"
-        cache_key = hashlib.sha256(cache_key_str.encode("utf-8")).hexdigest()
-        cache = get_cache_manager(cache_key)
-        file_name = "nt_tuner.autotune.json"
-        path = cache.get_file(file_name)
+        cache_key = hashlib.sha256(str(tuning_key).encode("utf-8")).hexdigest()
+        cache_path = self._cache_dir / f"{cache_key}.json"
 
-        if path:
-            try:
-                with open(path, "r") as cached_data:
-                    data = json.load(cached_data)
-                    best_func_idx = data.get("best_func_idx")
-                    if best_func_idx is not None and 0 <= best_func_idx < len(
-                        self._funcs
-                    ):
-                        self._best_func[tuning_key] = self._funcs[best_func_idx]
+        if cache_path.exists():
+            data = json.loads(cache_path.read_text())
+            best_func_idx = data.get("best_func_idx")
+            if best_func_idx is not None and 0 <= best_func_idx < len(self._funcs):
+                self._best_func[tuning_key] = self._funcs[best_func_idx]
 
-                    timings = data.get("timings", {})
+            timings = data.get("timings", {})
 
-                    for key_str, timing in timings.items():
-                        idx = int(key_str)
-                        if 0 <= idx < len(self._keys):
-                            self._timings[tuple([self._keys[idx]])] = timing
-                return True
-            except (json.JSONDecodeError, KeyError, ValueError):
-                pass
+            for key_str, timing in timings.items():
+                idx = int(key_str)
+                if 0 <= idx < len(self._keys):
+                    self._timings[tuple([self._keys[idx]])] = timing
+
+            return True
 
         bench_fn()
 
@@ -101,7 +99,7 @@ class AutoTuner:
                     "best_func_idx": best_func_idx,
                     "timings": timings,
                 }
-                cache.put(json.dumps(data), file_name, binary=False)
+                cache_path.write_text(json.dumps(data))
 
         return False
 
@@ -124,6 +122,8 @@ class AutoTuner:
 
         return "_".join(key_parts) if key_parts else "default"
 
+
+_AUTO_TUNING_CACHE_DIR = CACHE_DIR / "auto_tuning"
 
 _FILE_PATH = os.path.abspath(__file__)
 
