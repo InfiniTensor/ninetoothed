@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 
 import triton
 from triton.runtime.cache import get_cache_manager, triton_key
@@ -122,3 +123,35 @@ class AutoTuner:
                 key_parts.append(f"{k}_{v}")
 
         return "_".join(key_parts) if key_parts else "default"
+
+
+_FILE_PATH = os.path.abspath(__file__)
+
+_PARENT_DIR = os.path.dirname(_FILE_PATH)
+
+
+def _project_key():
+    consolidated_hash = hashlib.sha256()
+
+    for dirpath, dirnames, filenames in os.walk(_PARENT_DIR):
+        dirnames.sort()
+        filenames.sort()
+
+        for filename in filenames:
+            file_path = os.path.join(dirpath, filename)
+
+            if (
+                not os.path.isfile(file_path)
+                or os.path.splitext(file_path)[1] == ".pyc"
+            ):
+                continue
+
+            file_hash = _calculate_file_hash(file_path)
+            consolidated_hash.update(file_hash.encode("utf-8"))
+
+    return consolidated_hash.hexdigest()
+
+
+def _calculate_file_hash(file_path):
+    with open(file_path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
