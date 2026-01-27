@@ -67,7 +67,7 @@ class AutoTuner:
                         self._best_func[tuning_key] = self._funcs[best_func_idx]
 
                     timings = data.get("timings", {})
-                    print("INFO: used disk cache for NtTuner")
+
                     for key_str, timing in timings.items():
                         idx = int(key_str)
                         if 0 <= idx < len(self._keys):
