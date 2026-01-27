@@ -1,7 +1,7 @@
 import hashlib
 import json
 
-import triton.testing as testing
+import triton
 from triton.runtime.cache import get_cache_manager, triton_key
 
 
@@ -30,7 +30,9 @@ class AutoTuner:
                         if key in self._timings:
                             func_time = self._timings[key]
                         else:
-                            func_time = testing.do_bench(lambda: func(*args, **kwargs))
+                            func_time = triton.testing.do_bench(
+                                lambda: func(*args, **kwargs)
+                            )
                             self._timings[key] = func_time
 
                         if func_time < best_time:
