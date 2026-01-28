@@ -67,7 +67,7 @@ def test_add(test_multi_device, size, dtype, device, ninetoothed_dtype):
             other = torch.randn(shape, dtype=dtype, device=device)
             output = torch.empty_like(input)
 
-            _run_launch_func(launch_func, input, other, output)
+            launch_func(input, other, output)
 
             expected = torch.add(input, other)
 
@@ -113,7 +113,7 @@ def test_addmm(m, n, k, dtype, device, ninetoothed_dtype, atol):
         (mat1.shape[0], mat2.shape[1]), dtype=mat1.dtype, device=mat1.device
     )
 
-    _run_launch_func(launch_func, input, mat1, mat2, beta, alpha, output)
+    launch_func(input, mat1, mat2, beta, alpha, output)
 
     expected = torch.addmm(input, mat1, mat2, beta=beta, alpha=alpha)
 
@@ -174,7 +174,7 @@ def test_attention(
     is_causal = torch.tensor(True)
     output = torch.empty(shape, dtype=dtype, device=device)
 
-    _run_launch_func(launch_func, query, key, value, is_causal, output)
+    launch_func(query, key, value, is_causal, output)
 
     expected = F.scaled_dot_product_attention(
         query, key, value, is_causal=True, scale=1
@@ -215,7 +215,7 @@ def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
     rhs = torch.randn((k, n), dtype=dtype, device=device)
     output = torch.empty((lhs.shape[0], rhs.shape[1]), dtype=dtype, device=device)
 
-    _run_launch_func(launch_func, lhs, rhs, output)
+    launch_func(lhs, rhs, output)
 
     expected = torch.matmul(lhs, rhs)
 
@@ -302,7 +302,7 @@ def test_conv2d(
     else:
         config = ()
 
-    _run_launch_func(launch_func, input, filter, output, *config)
+    launch_func(input, filter, output, *config)
 
     expected = F.conv2d(input, filter)
 
@@ -325,18 +325,6 @@ class _ArgumentTensor(ctypes.Structure):
         return _ArgumentTensor(data, shape, strides)
 
 
-def _run_launch_func(launch_func, *args, **kwargs):
-    stream = torch.cuda.Stream()
-
-    arguments = tuple(
-        _ArgumentTensor.from_torch_tensor(arg) if isinstance(arg, torch.Tensor) else arg
-        for arg in itertools.chain(args, kwargs.values())
-    )
-
-    with torch.cuda.stream(stream):
-        launch_func(ctypes.c_void_p(stream.cuda_stream), *arguments)
-
-
 def _generate_launch_func(kernel_name, output_dir):
     output_dir = pathlib.Path(output_dir)
 
@@ -345,7 +333,20 @@ def _generate_launch_func(kernel_name, output_dir):
     launch_func_name = f"launch_{kernel_name}"
     launch_func = getattr(library, launch_func_name)
 
-    return launch_func
+    def _run_launch_func(*args, **kwargs):
+        stream = torch.cuda.Stream()
+
+        arguments = tuple(
+            _ArgumentTensor.from_torch_tensor(arg)
+            if isinstance(arg, torch.Tensor)
+            else arg
+            for arg in itertools.chain(args, kwargs.values())
+        )
+
+        with torch.cuda.stream(stream):
+            launch_func(ctypes.c_void_p(stream.cuda_stream), *arguments)
+
+    return _run_launch_func
 
 
 def _compile_library(kernel_name, output_dir):
