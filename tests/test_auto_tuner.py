@@ -3,11 +3,13 @@ import time
 import pytest
 
 from ninetoothed.auto_tuner import AutoTuner
+from tests.utils import get_available_devices
 
 
+@pytest.mark.parametrize("_", get_available_devices())
 @pytest.mark.parametrize("kwargs", ({"a": 2, "b": 4}, {"a": 2, "b": 4, "c": 6, "d": 8}))
 @pytest.mark.parametrize("args", ((1,), (1, 3, 5)))
-def test_auto_tuner(args, kwargs):
+def test_auto_tuner(args, kwargs, _):
     auto_tuner = AutoTuner((_foo, _bar), (_foo.__name__, _bar.__name__))
 
     assert not auto_tuner._get_func_cache_path(_foo).exists()
