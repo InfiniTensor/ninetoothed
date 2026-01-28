@@ -5,7 +5,12 @@ import multiprocessing
 import pathlib
 
 import ninetoothed
-from ninetoothed.aot import _DTYPE_MAPPING, _HEADER_PATH, _MACRO_MAPPING
+from ninetoothed.aot import (
+    _DTYPE_MAPPING,
+    _HEADER_PATH,
+    _MACRO_MAPPING,
+    _generate_launch_func,
+)
 
 
 def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
@@ -101,6 +106,8 @@ def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
 
     (output_dir / source_file_name).write_text(source_content)
     (output_dir / header_file_name).write_text(header_content)
+
+    return _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
 
 
 def _make(premake, config, caller, kernel_name, output_dir):
