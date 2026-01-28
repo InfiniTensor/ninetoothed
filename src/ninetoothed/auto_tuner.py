@@ -66,8 +66,7 @@ class AutoTuner:
         if (arg_key := type(self)._make_arg_key(args, kwargs)) in data:
             return data[arg_key]
 
-        cache_key = hashlib.sha256(str(func_key).encode("utf-8")).hexdigest()
-        cache_path = self._cache_dir / f"{cache_key}.json"
+        cache_path = self._get_func_cache_path(func)
 
         if cache_path.exists():
             data |= json.loads(cache_path.read_text())
@@ -82,6 +81,13 @@ class AutoTuner:
         cache_path.write_text(json.dumps(data))
 
         return timing
+
+    def _get_func_cache_path(self, func):
+        func_key = self._func_to_key[func]
+        cache_key = hashlib.sha256(str(func_key).encode("utf-8")).hexdigest()
+        cache_path = self._cache_dir / f"{cache_key}.json"
+
+        return cache_path
 
     @staticmethod
     def _make_arg_key(args, kwargs):
