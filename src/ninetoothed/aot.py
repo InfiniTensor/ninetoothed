@@ -424,12 +424,17 @@ def _generate_launch_func(kernel_name, output_dir):
     def _run_launch_func(*args, **kwargs):
         stream = torch.cuda.Stream()
 
-        arguments = tuple(
-            _ArgumentTensor.from_torch_tensor(arg)
-            if isinstance(arg, torch.Tensor)
-            else arg
-            for arg in itertools.chain(args, kwargs.values())
-        )
+        arguments = []
+
+        for arg in itertools.chain(args, kwargs.values()):
+            if isinstance(arg, torch.Tensor):
+                argument = _ArgumentTensor.from_torch_tensor(arg)
+            elif isinstance(arg, str) and arg in _DTYPE_MAPPING:
+                argument = tuple(_DTYPE_MAPPING.keys()).index(arg)
+            else:
+                argument = arg
+
+            arguments.append(argument)
 
         with torch.cuda.stream(stream):
             launch_func(ctypes.c_void_p(stream.cuda_stream), *arguments)

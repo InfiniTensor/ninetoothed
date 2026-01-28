@@ -11,7 +11,6 @@ import tests.test_attention as attention
 import tests.test_conv2d as conv2d
 import tests.test_matmul as matmul
 from ninetoothed import Tensor
-from ninetoothed.aot import _DTYPE_MAPPING
 from tests.utils import get_available_devices
 
 
@@ -281,10 +280,7 @@ def test_conv2d(
     output = torch.empty(n, k, p, q, dtype=dtype, device=device)
 
     if test_build:
-        config = (
-            tuple(_DTYPE_MAPPING.keys()).index(ninetoothed_dtype),
-            constexpr_shapes,
-        ) + tuple(configs[0][1].values())
+        config = (ninetoothed_dtype, constexpr_shapes) + tuple(configs[0][1].values())
     else:
         config = ()
 
