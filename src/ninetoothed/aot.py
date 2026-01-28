@@ -41,6 +41,8 @@ def aot(
         with open(output_path, "w") as f:
             f.write(output_content)
 
+    return _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
+
 
 def _aot(func, caller, kernel_name, num_warps, num_stages):
     def _find_tensor_by_source_name(tensors, name):
