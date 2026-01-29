@@ -437,7 +437,10 @@ def _generate_launch_func(kernel_name, output_dir):
             arguments.append(argument)
 
         with torch.cuda.stream(stream):
-            launch_func(ctypes.c_void_p(stream.cuda_stream), *arguments)
+            result = launch_func(ctypes.c_void_p(stream.cuda_stream), *arguments)
+
+            if result != 0:
+                raise RuntimeError(f"Kernel launch failed with error code: {result}.")
 
     return _run_launch_func
 
