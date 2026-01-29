@@ -368,7 +368,10 @@ class _ArgumentTensor(ctypes.Structure):
         shape = (ctypes.c_uint64 * len(tensor.shape))(*tensor.shape)
         strides = (ctypes.c_int64 * len(tensor.stride()))(*tensor.stride())
 
-        return _ArgumentTensor(data, shape, strides)
+        arg_tensor = _ArgumentTensor(data, shape, strides)
+        arg_tensor._torch_tensor = tensor
+
+        return arg_tensor
 
 
 def _compile(path, name, signature, grid, num_warps, num_stages):
