@@ -425,8 +425,6 @@ def _generate_launch_func(kernel_name, output_dir):
     launch_func = getattr(library, launch_func_name)
 
     def _run_launch_func(*args, **kwargs):
-        stream = torch.cuda.Stream()
-
         arguments = []
 
         for arg in itertools.chain(args, kwargs.values()):
@@ -439,11 +437,12 @@ def _generate_launch_func(kernel_name, output_dir):
 
             arguments.append(argument)
 
-        with torch.cuda.stream(stream):
-            result = launch_func(ctypes.c_void_p(stream.cuda_stream), *arguments)
+        result = launch_func(
+            ctypes.c_void_p(torch.cuda.current_stream().cuda_stream), *arguments
+        )
 
-            if result != 0:
-                raise RuntimeError(f"Kernel launch failed with error code: {result}.")
+        if result != 0:
+            raise RuntimeError(f"Kernel launch failed with error code: {result}.")
 
     return _run_launch_func
 
