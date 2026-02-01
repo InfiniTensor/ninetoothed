@@ -34,10 +34,9 @@ def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
 
     output_dir = pathlib.Path(output_dir)
 
-    headers = []
+    kernel_names = []
     all_param_names = []
     combinations = []
-    launches = []
 
     with concurrent.futures.ProcessPoolExecutor(
         mp_context=multiprocessing.get_context("spawn")
@@ -57,36 +56,50 @@ def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
             futures.append(future)
 
         for future in concurrent.futures.as_completed(futures):
-            header, param_names, combination, launch = future.result()
+            kernel_name_, param_names, combination = future.result()
 
-            headers.append(header)
+            kernel_names.append(kernel_name_)
             all_param_names.append(param_names)
             combinations.append(combination)
-            launches.append(launch)
 
-    includes = "\n".join(f'#include "{header}"' for header in headers)
-
-    param_names = list(
+    tensor_param_names = tuple(
         functools.reduce(
             lambda x, y: dict.fromkeys(x) | dict.fromkeys(y),
             sorted(all_param_names, key=len, reverse=True),
             {},
         )
     )
-    param_types = [
-        "NineToothedStream",
-    ] + ["NineToothedTensor" for _ in range(len(param_names) - 1)]
+    tensor_param_types = tuple("NineToothedTensor" for _ in tensor_param_names)
 
-    for param_name in functools.reduce(lambda x, y: x | y, combinations, {}):
-        param_names.append(param_name)
-        param_types.append("int")
+    non_tensor_param_names = tuple(
+        functools.reduce(lambda x, y: x | y, combinations, {})
+    )
+    non_tensor_param_types = tuple("int" for _ in non_tensor_param_names)
+
+    param_names = ("stream",) + tensor_param_names + non_tensor_param_names
+    param_types = ("NineToothedStream",) + tensor_param_types + non_tensor_param_types
 
     param_decls = ", ".join(
         f"{type} {param}" for param, type in zip(param_names, param_types)
     )
 
+    headers = []
+    launches = []
+
+    for kernel_name_, param_names_, combination in zip(
+        kernel_names, all_param_names, combinations
+    ):
+        header = output_dir / f"{kernel_name_}.h"
+        launch = f"""    if ({_generate_condition(combination)})
+        return launch_{kernel_name_}({", ".join((param_names[0],) + param_names_)});"""
+
+        headers.append(header)
+        launches.append(launch)
+
     source_file_name = f"{kernel_name}.cpp"
     header_file_name = f"{kernel_name}.h"
+
+    includes = "\n".join(f'#include "{header}"' for header in headers)
 
     func_sig = f"NineToothedResult launch_{kernel_name}({param_decls})"
 
@@ -141,13 +154,10 @@ def _make(premake, config, caller, kernel_name, output_dir):
         **compilation_configs,
     )
 
-    header = output_dir / f"{kernel_name_}.h"
     application_signature = inspect.signature(application)
-    param_names = ("stream",) + tuple(application_signature.parameters.keys())
-    launch = f"""    if ({_generate_condition(combination)})
-        return launch_{kernel_name_}({", ".join(param_names)});"""
+    param_names = tuple(application_signature.parameters.keys())
 
-    return header, param_names, combination, launch
+    return kernel_name_, param_names, combination
 
 
 def _generate_condition(combination):
