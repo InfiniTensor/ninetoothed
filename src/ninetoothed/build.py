@@ -1,19 +1,33 @@
 import concurrent.futures
+import csv
 import functools
 import inspect
+import itertools
 import multiprocessing
 import pathlib
+import textwrap
 
 import ninetoothed
 from ninetoothed.aot import (
     _DTYPE_MAPPING,
     _HEADER_PATH,
+    _INDENTATION,
     _MACRO_MAPPING,
     _generate_launch_func,
 )
+from ninetoothed.auto_tuner import AutoTuner
+from ninetoothed.tensor import Symbol
 
 
-def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
+def build(
+    premake,
+    configs,
+    *,
+    meta_parameters=None,
+    caller=None,
+    kernel_name=None,
+    output_dir=None,
+):
     """Build a kernel from a ``premake`` function and ``configs``.
 
     :param premake: A callable that returns the ``arrangement``,
@@ -24,6 +38,8 @@ def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
         ``args`` and ``kwargs`` are passed to ``premake``, and
         ``compilation_configs`` contains compilation configurations for
         ``ninetoothed.make`` (e.g., ``num_warps`` and ``num_stages``).
+    :param meta_parameters: An iterable of meta-parameters that should
+        be auto-tuned.
     :param caller: Who will call the compute kernel.
     :param kernel_name: The name for the generated kernel.
     :param output_dir: The directory to store the generated files.
@@ -37,6 +53,7 @@ def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
     kernel_names = []
     all_param_names = []
     combinations = []
+    all_tensors = []
 
     with concurrent.futures.ProcessPoolExecutor(
         mp_context=multiprocessing.get_context("spawn")
@@ -55,12 +72,16 @@ def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
 
             futures.append(future)
 
+        configs = []
+
         for future in concurrent.futures.as_completed(futures):
-            kernel_name_, param_names, combination = future.result()
+            kernel_name_, param_names, combination, config, tensors = future.result()
 
             kernel_names.append(kernel_name_)
             all_param_names.append(param_names)
             combinations.append(combination)
+            configs.append(config)
+            all_tensors.append(tensors)
 
     tensor_param_names = tuple(
         functools.reduce(
@@ -79,9 +100,7 @@ def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
     param_names = ("stream",) + tensor_param_names + non_tensor_param_names
     param_types = ("NineToothedStream",) + tensor_param_types + non_tensor_param_types
 
-    param_decls = ", ".join(
-        f"{type} {param}" for param, type in zip(param_names, param_types)
-    )
+    param_decls = _generate_declaration_expressions(param_types, param_names)
 
     headers = []
     launches = []
@@ -120,7 +139,222 @@ def build(premake, configs, *, caller=None, kernel_name=None, output_dir=None):
     (output_dir / source_file_name).write_text(source_content)
     (output_dir / header_file_name).write_text(header_content)
 
+    kernel = _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
+
+    if meta_parameters is not None:
+        config_to_best_meta_arguments = _auto_tune(
+            kernel,
+            configs,
+            all_tensors,
+            meta_parameters,
+            caller=caller,
+            kernel_name=kernel_name,
+            output_dir=output_dir,
+        )
+
+        return _generate_kernel_with_auto_tuning(
+            config_to_best_meta_arguments,
+            non_tensor_param_names,
+            kernel_name=kernel_name,
+            output_dir=output_dir,
+        )
+
+    return kernel
+
+
+_DEFAULT_SIZES = tuple(2**i for i in range(10))
+
+
+class _MetaTensor:
+    def __init__(self, shape, dtype):
+        self.shape = []
+
+        for size in shape:
+            if isinstance(size, Symbol):
+                self.shape.append(None)
+            else:
+                self.shape.append(size)
+
+        self.dtype = dtype
+
+
+def _generate_kernel_with_auto_tuning(
+    config_to_best_meta_arguments, non_tensor_param_names, *, kernel_name, output_dir
+):
+    num_non_meta_premake_params = len(tuple(config_to_best_meta_arguments.keys())[0])
+
+    meta_param_names = non_tensor_param_names[num_non_meta_premake_params:]
+    meta_param_types = tuple("int" for _ in meta_param_names)
+
+    meta_param_decl_stmts = textwrap.indent(
+        _generate_declaration_statements(meta_param_types, meta_param_names),
+        _INDENTATION,
+    )
+
+    meta_param_assignment_branches = []
+
+    for config, best_meta_args in config_to_best_meta_arguments.items():
+        condition = _generate_condition(
+            {name: value for name, value in zip(non_tensor_param_names, config)}
+        )
+
+        assignments = textwrap.indent(
+            _generate_assignment_statements(meta_param_names, best_meta_args),
+            _INDENTATION,
+        )
+
+        meta_param_assignment_branches.append(
+            textwrap.indent(f"if ({condition}) {{\n{assignments}\n}}", _INDENTATION)
+        )
+
+    meta_param_initialization = f"{meta_param_decl_stmts}\n" + "\n".join(
+        meta_param_assignment_branches
+    )
+
+    meta_param_decl_exprs = _generate_declaration_expressions(
+        meta_param_types, meta_param_names
+    )
+
+    source_file_name = f"{kernel_name}.cpp"
+    header_file_name = f"{kernel_name}.h"
+
+    source_path = output_dir / source_file_name
+    header_path = output_dir / header_file_name
+
+    source_content = source_path.read_text().replace(
+        f", {meta_param_decl_exprs}) {{", f") {{\n{meta_param_initialization}"
+    )
+    header_content = header_path.read_text().replace(f", {meta_param_decl_exprs}", "")
+
+    source_path.write_text(source_content)
+    header_path.write_text(header_content)
+
     return _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
+
+
+def _auto_tune(
+    kernel, configs, all_tensors, meta_parameters, *, caller, kernel_name, output_dir
+):
+    key = str(output_dir / kernel_name)
+
+    auto_tuner = AutoTuner(funcs=(kernel,), keys=(key,))
+
+    for config, tensors in zip(configs, all_tensors):
+        _warm_up(auto_tuner, config, tensors, caller=caller)
+
+    config_to_all_meta_arguments = {}
+
+    for config in configs:
+        args, kwargs, compilation_configs = config
+
+        meta_args = {
+            param: kwargs[param] for param in meta_parameters if param in kwargs
+        } | compilation_configs
+
+        kwargs_ = {key: value for key, value in kwargs.items() if key not in meta_args}
+
+        config_ = (args, tuple(kwargs_.items()))
+
+        if config_ not in config_to_all_meta_arguments:
+            config_to_all_meta_arguments[config_] = []
+
+        config_to_all_meta_arguments[config_].append(meta_args)
+
+    config_to_best_meta_arguments = {}
+
+    for config, all_meta_arguments in config_to_all_meta_arguments.items():
+        args, kwargs_items = config
+
+        config_ = (*args, *(item[1] for item in kwargs_items))
+        all_meta_arguments_ = tuple(
+            tuple(meta_args.values()) for meta_args in all_meta_arguments
+        )
+
+        meta_args_to_timing = {}
+
+        for meta_args in all_meta_arguments_:
+            arg_key = auto_tuner._make_arg_key((*config_, *meta_args), {})
+
+            for key, timing in auto_tuner._timings.items():
+                if arg_key not in key:
+                    continue
+
+                meta_args_to_timing[meta_args] = timing
+
+                break
+
+        best_meta_arguments = sorted(
+            meta_args_to_timing.items(), key=lambda item: item[1]
+        )[0][0]
+
+        config_ = tuple(
+            arg
+            if arg not in _DTYPE_MAPPING
+            else tuple(_DTYPE_MAPPING.keys()).index(arg)
+            for arg in config_
+        )
+
+        config_to_best_meta_arguments[config_] = best_meta_arguments
+
+    with open(output_dir / f"{kernel_name}.csv", "w") as f:
+        csv.writer(f).writerows(
+            itertools.chain.from_iterable(config_to_best_meta_arguments.items())
+        )
+
+    return config_to_best_meta_arguments
+
+
+def _warm_up(kernel, config, meta_tensors, *, caller):
+    import torch
+
+    dtype_mapping = {
+        ninetoothed.int8: torch.int8,
+        ninetoothed.int16: torch.int16,
+        ninetoothed.int32: torch.int32,
+        ninetoothed.int64: torch.int64,
+        ninetoothed.uint8: torch.uint8,
+        ninetoothed.uint16: torch.uint16,
+        ninetoothed.uint32: torch.uint32,
+        ninetoothed.uint64: torch.uint64,
+        ninetoothed.float16: torch.float16,
+        ninetoothed.bfloat16: torch.bfloat16,
+        ninetoothed.float32: torch.float32,
+        ninetoothed.float64: torch.float64,
+    }
+
+    args, kwargs, compilation_configs = config
+
+    all_shapes = []
+
+    for meta_tensor in meta_tensors:
+        all_sizes = []
+
+        for size in meta_tensor.shape:
+            if size is None:
+                all_sizes.append(_DEFAULT_SIZES)
+            else:
+                all_sizes.append((size,))
+
+        shapes = tuple(itertools.product(*all_sizes))
+
+        all_shapes.append(shapes)
+
+    for shapes in tuple(itertools.product(*all_shapes)):
+        tensors = []
+
+        for meta_tensor, shape in zip(meta_tensors, shapes):
+            dtype = dtype_mapping[meta_tensor.dtype]
+
+            if len(shape) == 0:
+                device = None
+            else:
+                device = caller
+
+            tensor = torch.empty(shape, dtype=dtype, device=device)
+
+            tensors.append(tensor)
+
+        kernel(*tensors, *args, *kwargs.values(), *compilation_configs.values())
 
 
 def _make(premake, config, caller, kernel_name, output_dir):
@@ -156,8 +390,31 @@ def _make(premake, config, caller, kernel_name, output_dir):
 
     application_signature = inspect.signature(application)
     param_names = tuple(application_signature.parameters.keys())
+    tensors = tuple(
+        _MetaTensor(shape=tensor.shape, dtype=tensor.dtype) for tensor in tensors
+    )
 
-    return kernel_name_, param_names, combination
+    return kernel_name_, param_names, combination, config, tensors
+
+
+def _generate_declaration_statements(types, names):
+    return "\n".join(
+        f"{_generate_declaration(type, name)};" for type, name in zip(types, names)
+    )
+
+
+def _generate_assignment_statements(names, values):
+    return "\n".join(f"{name} = {value};" for name, value in zip(names, values))
+
+
+def _generate_declaration_expressions(types, names):
+    return ", ".join(
+        _generate_declaration(type, name) for type, name in zip(types, names)
+    )
+
+
+def _generate_declaration(type, name):
+    return f"{type} {name}"
 
 
 def _generate_condition(combination):
