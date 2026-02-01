@@ -3,6 +3,7 @@ import ctypes
 import itertools
 import pathlib
 import re
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -462,4 +463,15 @@ def _compile_library(kernel_name, output_dir):
 
 
 def _load_library(kernel_name, kernel_dir):
-    return ctypes.CDLL(kernel_dir / f"{kernel_name}.so")
+    suffix = ".so"
+
+    original_path = kernel_dir / f"{kernel_name}{suffix}"
+
+    with tempfile.NamedTemporaryFile(suffix=suffix) as temp_file:
+        temp_path = temp_file.name
+
+        shutil.copy(original_path, temp_path)
+
+        library = ctypes.CDLL(temp_path)
+
+    return library
