@@ -1,5 +1,6 @@
 import concurrent.futures
 import csv
+import enum
 import functools
 import inspect
 import itertools
@@ -288,14 +289,17 @@ def _auto_tune(
             meta_args_to_timing.items(), key=lambda item: item[1]
         )[0][0]
 
-        config_ = tuple(
-            arg
-            if arg not in _DTYPE_MAPPING
-            else tuple(_DTYPE_MAPPING.keys()).index(arg)
-            for arg in config_
-        )
+        int_configs = []
 
-        config_to_best_meta_arguments[config_] = best_meta_arguments
+        for arg in config_:
+            if arg in _DTYPE_MAPPING:
+                arg = tuple(_DTYPE_MAPPING.keys()).index(arg)
+            elif isinstance(arg, enum.Enum):
+                arg = arg.value
+
+            int_configs.append(arg)
+
+        config_to_best_meta_arguments[tuple(int_configs)] = best_meta_arguments
 
     with open(output_dir / f"{kernel_name}.csv", "w") as f:
         csv.writer(f).writerows(
