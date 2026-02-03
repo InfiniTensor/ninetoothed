@@ -108,7 +108,7 @@ def build(
     for kernel_name_, param_names_, combination in zip(
         kernel_names, all_param_names, combinations
     ):
-        header = output_dir / f"{kernel_name_}.h"
+        header = f"{kernel_name_}.h"
         launch = f"""    if ({_generate_condition(combination)})
         return launch_{kernel_name_}({", ".join((param_names[0],) + param_names_)});"""
 
