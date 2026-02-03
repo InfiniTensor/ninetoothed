@@ -454,6 +454,8 @@ def _compile_library(kernel_name, output_dir):
         "-shared",
         "-arch",
         "native",
+        "--threads",
+        "0",
         "-Xcompiler",
         "-fPIC",
         # TODO: Remove the following 2 lines after the return value issue is resolved.
