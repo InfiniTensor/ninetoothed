@@ -289,17 +289,9 @@ def _auto_tune(
             meta_args_to_timing.items(), key=lambda item: item[1]
         )[0][0]
 
-        int_configs = []
+        int_configs = tuple(_arg_to_int(arg) for arg in config_)
 
-        for arg in config_:
-            if arg in _DTYPE_MAPPING:
-                arg = tuple(_DTYPE_MAPPING.keys()).index(arg)
-            elif isinstance(arg, enum.Enum):
-                arg = arg.value
-
-            int_configs.append(arg)
-
-        config_to_best_meta_arguments[tuple(int_configs)] = best_meta_arguments
+        config_to_best_meta_arguments[int_configs] = best_meta_arguments
 
     with open(output_dir / f"{kernel_name}.csv", "w") as f:
         csv.writer(f).writerows(
@@ -431,3 +423,13 @@ def _generate_condition(combination):
 
 def _generate_suffix(values):
     return "_".join(f"{value}" for value in values)
+
+
+def _arg_to_int(arg):
+    if arg in _DTYPE_MAPPING:
+        return tuple(_DTYPE_MAPPING.keys()).index(arg)
+
+    if isinstance(arg, enum.Enum):
+        return arg.value
+
+    return arg
