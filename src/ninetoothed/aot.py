@@ -454,6 +454,9 @@ def _compile_library(kernel_name, output_dir):
         "-shared",
         "-Xcompiler",
         "-fPIC",
+        # TODO: Remove the following 2 lines after the return value issue is resolved.
+        "-Xcompiler",
+        "-Wno-return-type",
         "-lcuda",
         "-o",
         output_dir / f"{kernel_name}.so",
