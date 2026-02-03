@@ -378,7 +378,7 @@ def _make(premake, config, caller, kernel_name, output_dir):
     combination |= compilation_configs
 
     for name, value in combination.items():
-        if isinstance(value, bool):
+        if isinstance(value, bool) or value is None:
             combination[name] = _MACRO_MAPPING[value][0]
 
         if value in _DTYPE_MAPPING:

@@ -169,7 +169,11 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
 
 _INDENTATION = "    "
 
-_MACRO_MAPPING = {True: ("NINETOOTHED_TRUE", 1), False: ("NINETOOTHED_FALSE", 0)}
+_MACRO_MAPPING = {
+    True: ("NINETOOTHED_TRUE", 1),
+    False: ("NINETOOTHED_FALSE", 0),
+    None: ("NINETOOTHED_NONE", 0),
+}
 
 _DTYPE_MAPPING = {
     ninetoothed.dtype.int8: "NINETOOTHED_INT8",
