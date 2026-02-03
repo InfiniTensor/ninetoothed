@@ -452,6 +452,8 @@ def _compile_library(kernel_name, output_dir):
     command = [
         "nvcc",
         "-shared",
+        "-arch",
+        "native",
         "-Xcompiler",
         "-fPIC",
         # TODO: Remove the following 2 lines after the return value issue is resolved.
