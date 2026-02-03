@@ -14,6 +14,7 @@ from ninetoothed.aot import (
     _INDENTATION,
     _MACRO_MAPPING,
     _generate_launch_func,
+    _KernelLaunchError,
 )
 from ninetoothed.auto_tuner import AutoTuner
 from ninetoothed.tensor import Symbol
@@ -354,7 +355,10 @@ def _warm_up(kernel, config, meta_tensors, *, caller):
 
             tensors.append(tensor)
 
-        kernel(*tensors, *args, *kwargs.values(), *compilation_configs.values())
+        try:
+            kernel(*tensors, *args, *kwargs.values(), *compilation_configs.values())
+        except _KernelLaunchError:
+            pass
 
 
 def _make(premake, config, caller, kernel_name, output_dir):
