@@ -375,6 +375,13 @@ class _ArgumentTensor(ctypes.Structure):
         return arg_tensor
 
 
+class _KernelLaunchError(RuntimeError):
+    def __init__(self, error_code):
+        self._message = f"Kernel launch failed with error code: {error_code}."
+
+        super().__init__(self._message)
+
+
 def _compile(path, name, signature, grid, num_warps, num_stages):
     with tempfile.TemporaryDirectory() as temp_dir:
         output_dir = pathlib.Path(temp_dir)
@@ -443,7 +450,7 @@ def _generate_launch_func(kernel_name, output_dir):
         )
 
         if result != 0:
-            raise RuntimeError(f"Kernel launch failed with error code: {result}.")
+            raise _KernelLaunchError(result)
 
     return _run_launch_func
 
