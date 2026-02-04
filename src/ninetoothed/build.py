@@ -370,11 +370,7 @@ def _make(premake, config, caller, kernel_name, output_dir):
     combination |= compilation_configs
 
     for name, value in combination.items():
-        if isinstance(value, bool) or value is None:
-            combination[name] = _MACRO_MAPPING[value][0]
-
-        if value in _DTYPE_MAPPING:
-            combination[name] = _DTYPE_MAPPING[value]
+        combination[name] = _arg_to_int(value)
 
     kernel_name_ = f"{kernel_name}_{_generate_suffix(combination.values())}"
 
@@ -426,6 +422,9 @@ def _generate_suffix(values):
 
 
 def _arg_to_int(arg):
+    if isinstance(arg, bool) or arg is None:
+        return _MACRO_MAPPING[arg][1]
+
     if arg in _DTYPE_MAPPING:
         return tuple(_DTYPE_MAPPING.keys()).index(arg)
 
