@@ -1,6 +1,9 @@
 import ast
+import ctypes
+import itertools
 import pathlib
 import re
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -38,6 +41,8 @@ def aot(
 
         with open(output_path, "w") as f:
             f.write(output_content)
+
+    return _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
 
 
 def _aot(func, caller, kernel_name, num_warps, num_stages):
@@ -351,6 +356,25 @@ class _GridExtractor(ast.NodeTransformer):
         return node
 
 
+class _ArgumentTensor(ctypes.Structure):
+    _fields_ = [
+        ("data", ctypes.c_void_p),
+        ("shape", ctypes.POINTER(ctypes.c_uint64)),
+        ("strides", ctypes.POINTER(ctypes.c_int64)),
+    ]
+
+    @staticmethod
+    def from_torch_tensor(tensor):
+        data = ctypes.c_void_p(tensor.data_ptr())
+        shape = (ctypes.c_uint64 * len(tensor.shape))(*tensor.shape)
+        strides = (ctypes.c_int64 * len(tensor.stride()))(*tensor.stride())
+
+        arg_tensor = _ArgumentTensor(data, shape, strides)
+        arg_tensor._torch_tensor = tensor
+
+        return arg_tensor
+
+
 def _compile(path, name, signature, grid, num_warps, num_stages):
     with tempfile.TemporaryDirectory() as temp_dir:
         output_dir = pathlib.Path(temp_dir)
@@ -389,3 +413,65 @@ def _compile(path, name, signature, grid, num_warps, num_stages):
                 output_contents[file.name.replace(output_name, name)] = f.read()
 
     return signature_hash, output_contents
+
+
+def _generate_launch_func(kernel_name, output_dir):
+    import torch
+
+    output_dir = pathlib.Path(output_dir)
+
+    _compile_library(kernel_name, output_dir)
+    library = _load_library(kernel_name, output_dir)
+    launch_func_name = f"launch_{kernel_name}"
+    launch_func = getattr(library, launch_func_name)
+
+    def _run_launch_func(*args, **kwargs):
+        arguments = []
+
+        for arg in itertools.chain(args, kwargs.values()):
+            if isinstance(arg, torch.Tensor):
+                argument = _ArgumentTensor.from_torch_tensor(arg)
+            elif isinstance(arg, str) and arg in _DTYPE_MAPPING:
+                argument = tuple(_DTYPE_MAPPING.keys()).index(arg)
+            else:
+                argument = arg
+
+            arguments.append(argument)
+
+        result = launch_func(
+            ctypes.c_void_p(torch.cuda.current_stream().cuda_stream), *arguments
+        )
+
+        if result != 0:
+            raise RuntimeError(f"Kernel launch failed with error code: {result}.")
+
+    return _run_launch_func
+
+
+def _compile_library(kernel_name, output_dir):
+    command = [
+        "nvcc",
+        "-shared",
+        "-Xcompiler",
+        "-fPIC",
+        "-lcuda",
+        "-o",
+        output_dir / f"{kernel_name}.so",
+    ] + list(output_dir.glob(f"{kernel_name}*.cpp"))
+
+    subprocess.run(command, check=True)
+
+
+def _load_library(kernel_name, kernel_dir):
+    suffix = ".so"
+
+    original_path = kernel_dir / f"{kernel_name}{suffix}"
+
+    with tempfile.NamedTemporaryFile(suffix=suffix) as temp_file:
+        temp_path = temp_file.name
+
+        shutil.copy(original_path, temp_path)
+
+        library = ctypes.CDLL(temp_path)
+
+    return library

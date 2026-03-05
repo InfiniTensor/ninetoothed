@@ -1,8 +1,4 @@
-import ctypes
 import functools
-import itertools
-import pathlib
-import subprocess
 
 import pytest
 import torch
@@ -15,7 +11,6 @@ import tests.test_attention as attention
 import tests.test_conv2d as conv2d
 import tests.test_matmul as matmul
 from ninetoothed import Tensor
-from ninetoothed.aot import _DTYPE_MAPPING
 from tests.utils import get_available_devices
 
 
@@ -40,7 +35,7 @@ def test_add(test_multi_device, size, dtype, device, ninetoothed_dtype):
     kernel_name = f"add{_generate_kernel_name_suffix()}"
     output_dir = ninetoothed.generation.CACHE_DIR
 
-    ninetoothed.make(
+    kernel = ninetoothed.make(
         _arrangement,
         _application,
         tensors,
@@ -48,8 +43,6 @@ def test_add(test_multi_device, size, dtype, device, ninetoothed_dtype):
         kernel_name=kernel_name,
         output_dir=output_dir,
     )
-
-    launch_func = _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
 
     shape = (size,)
 
@@ -67,7 +60,7 @@ def test_add(test_multi_device, size, dtype, device, ninetoothed_dtype):
             other = torch.randn(shape, dtype=dtype, device=device)
             output = torch.empty_like(input)
 
-            _run_launch_func(launch_func, input, other, output)
+            kernel(input, other, output)
 
             expected = torch.add(input, other)
 
@@ -93,7 +86,7 @@ def test_addmm(m, n, k, dtype, device, ninetoothed_dtype, atol):
     kernel_name = f"addmm{_generate_kernel_name_suffix()}"
     output_dir = ninetoothed.generation.CACHE_DIR
 
-    ninetoothed.make(
+    kernel = ninetoothed.make(
         arrangement,
         application,
         tensors,
@@ -101,8 +94,6 @@ def test_addmm(m, n, k, dtype, device, ninetoothed_dtype, atol):
         kernel_name=kernel_name,
         output_dir=output_dir,
     )
-
-    launch_func = _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
 
     input = torch.randn((m, n), dtype=dtype, device=device)
     mat1 = torch.randn((m, k), dtype=dtype, device=device)
@@ -113,7 +104,7 @@ def test_addmm(m, n, k, dtype, device, ninetoothed_dtype, atol):
         (mat1.shape[0], mat2.shape[1]), dtype=mat1.dtype, device=mat1.device
     )
 
-    _run_launch_func(launch_func, input, mat1, mat2, beta, alpha, output)
+    kernel(input, mat1, mat2, beta, alpha, output)
 
     expected = torch.addmm(input, mat1, mat2, beta=beta, alpha=alpha)
 
@@ -155,7 +146,7 @@ def test_attention(
     kernel_name = f"attention{_generate_kernel_name_suffix()}"
     output_dir = ninetoothed.generation.CACHE_DIR
 
-    ninetoothed.make(
+    kernel = ninetoothed.make(
         arrangement,
         application,
         tensors,
@@ -163,8 +154,6 @@ def test_attention(
         kernel_name=kernel_name,
         output_dir=output_dir,
     )
-
-    launch_func = _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
 
     shape = (batch_size, num_heads, seq_len, emb_dim)
 
@@ -174,7 +163,7 @@ def test_attention(
     is_causal = torch.tensor(True)
     output = torch.empty(shape, dtype=dtype, device=device)
 
-    _run_launch_func(launch_func, query, key, value, is_causal, output)
+    kernel(query, key, value, is_causal, output)
 
     expected = F.scaled_dot_product_attention(
         query, key, value, is_causal=True, scale=1
@@ -200,7 +189,7 @@ def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
     kernel_name = f"matmul{_generate_kernel_name_suffix()}"
     output_dir = ninetoothed.generation.CACHE_DIR
 
-    ninetoothed.make(
+    kernel = ninetoothed.make(
         arrangement,
         application,
         tensors,
@@ -209,13 +198,11 @@ def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
         output_dir=output_dir,
     )
 
-    launch_func = _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
-
     lhs = torch.randn((m, k), dtype=dtype, device=device)
     rhs = torch.randn((k, n), dtype=dtype, device=device)
     output = torch.empty((lhs.shape[0], rhs.shape[1]), dtype=dtype, device=device)
 
-    _run_launch_func(launch_func, lhs, rhs, output)
+    kernel(lhs, rhs, output)
 
     expected = torch.matmul(lhs, rhs)
 
@@ -266,7 +253,7 @@ def test_conv2d(
             ((), {"block_size_m": 128, "block_size_n": 32, "block_size_k": 64}, {}),
         )
 
-        ninetoothed.build(
+        kernel = ninetoothed.build(
             premake,
             configs,
             caller=caller,
@@ -276,7 +263,7 @@ def test_conv2d(
     else:
         arrangement, application, tensors = premake()
 
-        ninetoothed.make(
+        kernel = ninetoothed.make(
             arrangement,
             application,
             tensors,
@@ -284,8 +271,6 @@ def test_conv2d(
             kernel_name=kernel_name,
             output_dir=output_dir,
         )
-
-    launch_func = _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
 
     p = h - r + 1
     q = w - s + 1
@@ -295,75 +280,15 @@ def test_conv2d(
     output = torch.empty(n, k, p, q, dtype=dtype, device=device)
 
     if test_build:
-        config = (
-            tuple(_DTYPE_MAPPING.keys()).index(ninetoothed_dtype),
-            constexpr_shapes,
-        ) + tuple(configs[0][1].values())
+        config = (ninetoothed_dtype, constexpr_shapes) + tuple(configs[0][1].values())
     else:
         config = ()
 
-    _run_launch_func(launch_func, input, filter, output, *config)
+    kernel(input, filter, output, *config)
 
     expected = F.conv2d(input, filter)
 
     assert torch.allclose(output, expected, rtol=rtol, atol=atol)
-
-
-class _ArgumentTensor(ctypes.Structure):
-    _fields_ = [
-        ("data", ctypes.c_void_p),
-        ("shape", ctypes.POINTER(ctypes.c_uint64)),
-        ("strides", ctypes.POINTER(ctypes.c_int64)),
-    ]
-
-    @staticmethod
-    def from_torch_tensor(tensor):
-        data = ctypes.c_void_p(tensor.data_ptr())
-        shape = (ctypes.c_uint64 * len(tensor.shape))(*tensor.shape)
-        strides = (ctypes.c_int64 * len(tensor.stride()))(*tensor.stride())
-
-        return _ArgumentTensor(data, shape, strides)
-
-
-def _run_launch_func(launch_func, *args, **kwargs):
-    stream = torch.cuda.Stream()
-
-    arguments = tuple(
-        _ArgumentTensor.from_torch_tensor(arg) if isinstance(arg, torch.Tensor) else arg
-        for arg in itertools.chain(args, kwargs.values())
-    )
-
-    with torch.cuda.stream(stream):
-        launch_func(ctypes.c_void_p(stream.cuda_stream), *arguments)
-
-
-def _generate_launch_func(kernel_name, output_dir):
-    output_dir = pathlib.Path(output_dir)
-
-    _compile_library(kernel_name, output_dir)
-    library = _load_library(kernel_name, output_dir)
-    launch_func_name = f"launch_{kernel_name}"
-    launch_func = getattr(library, launch_func_name)
-
-    return launch_func
-
-
-def _compile_library(kernel_name, output_dir):
-    command = [
-        "nvcc",
-        "-shared",
-        "-Xcompiler",
-        "-fPIC",
-        "-lcuda",
-        "-o",
-        output_dir / f"{kernel_name}.so",
-    ] + list(output_dir.glob(f"{kernel_name}*.cpp"))
-
-    subprocess.run(command, check=True)
-
-
-def _load_library(kernel_name, kernel_dir):
-    return ctypes.CDLL(kernel_dir / f"{kernel_name}.so")
 
 
 def _generate_kernel_name_suffix():
