@@ -23,7 +23,12 @@ from ninetoothed.torchifier import Torchifier
 
 CACHE_DIR = pathlib.Path.home() / ".ninetoothed"
 CACHE_DIR.mkdir(exist_ok=True)
-
+ASCEND_MAX_AXIS_NUM = None
+try:
+    from triton.backends.ascend.runtime.utils import valid_axis_names
+    ASCEND_MAX_AXIS_NUM = len(valid_axis_names)
+except ImportError:
+    pass
 
 class CodeGenerator(ast.NodeTransformer):
     def __init__(self):
@@ -508,7 +513,7 @@ class CodeGenerator(ast.NodeTransformer):
                             ast.Constant(value=param)
                             for param in params
                             if not Tensor.pointer_pattern().fullmatch(param)
-                        ],
+                        ][:ASCEND_MAX_AXIS_NUM],
                         ctx=ast.Load(),
                     ),
                 ),
