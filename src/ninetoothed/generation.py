@@ -20,15 +20,10 @@ from ninetoothed.language import attribute, call
 from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
+from ninetoothed.ascendifier import Ascendifier
 
 CACHE_DIR = pathlib.Path.home() / ".ninetoothed"
 CACHE_DIR.mkdir(exist_ok=True)
-ASCEND_MAX_AXIS_NUM = None
-try:
-    from triton.backends.ascend.runtime.utils import valid_axis_names
-    ASCEND_MAX_AXIS_NUM = len(valid_axis_names)
-except ImportError:
-    pass
 
 class CodeGenerator(ast.NodeTransformer):
     def __init__(self):
@@ -110,15 +105,30 @@ class CodeGenerator(ast.NodeTransformer):
         _BinOpSimplifier().visit(tree)
         ast.fix_missing_locations(tree)
 
+        npu_tree = copy.deepcopy(tree)
+        Ascendifier().visit(npu_tree)
+        ast.fix_missing_locations(npu_tree)
+
         if prettify:
             name_collector = _SimplifiedNameCollector()
             name_collector.visit(tree)
+            name_collector.visit(npu_tree)
 
-        unparsed = ast.unparse(tree).replace("None:", ":").replace(":None", ":")
         dependencies = _find_dependencies(func)
+        unparsed = ast.unparse(tree).replace("None:", ":").replace(":None", ":")
         source = "\n\n".join((unparsed, dependencies)).strip()
         source = source.replace(func.__name__, kernel_name)
-        source += "\n"
+
+        unparsed_npu = ast.unparse(npu_tree).replace("None:", ":").replace(":None", ":")
+        source_npu = "\n\n".join((unparsed_npu, dependencies)).strip()
+        source_npu = source_npu.replace(func.__name__, kernel_name + "_npu")
+
+        guard_header = "import torch\n_IS_NPU = hasattr(torch, 'npu') and torch.npu.is_available()\n\n"
+        
+        source_cuda_guarded = "if not _IS_NPU:\n" + textwrap.indent(source, "    ")
+        source_npu_guarded = "if _IS_NPU:\n" + textwrap.indent(source_npu, "    ")
+        
+        source = guard_header + source_cuda_guarded + "\n\n" + source_npu_guarded + "\n"
 
         if prettify:
             for original, simplified in name_collector.simplified_names.items():
@@ -513,7 +523,7 @@ class CodeGenerator(ast.NodeTransformer):
                             ast.Constant(value=param)
                             for param in params
                             if not Tensor.pointer_pattern().fullmatch(param)
-                        ][:ASCEND_MAX_AXIS_NUM],
+                        ],
                         ctx=ast.Load(),
                     ),
                 ),
