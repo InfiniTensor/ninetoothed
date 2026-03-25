@@ -34,12 +34,15 @@ class CodeGenerator(ast.NodeTransformer):
 
         self._min_num_elements = 1
 
+        max_innermost_size = properties["max_shared_mem"]
+
         if "max_num_regs" in properties:
-            max_innermost_size = 4 * properties["max_num_regs"]
-        elif "max_nram_size" in properties:
-            max_innermost_size = properties["max_nram_size"]
-        else:
-            max_innermost_size = 2**18
+            max_innermost_size += 4 * properties["max_num_regs"]
+
+        if "max_nram_size" in properties:
+            max_innermost_size += properties["max_nram_size"]
+
+        max_innermost_size = max(max_innermost_size, 2**16)
 
         self._max_num_elements = max_innermost_size // 8
 
