@@ -22,17 +22,37 @@ from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
 from ninetoothed.ascendifier import Ascendifier
 
-CACHE_DIR = pathlib.Path.home() / ".ninetoothed"
-CACHE_DIR.mkdir(exist_ok=True)
+
+def _resolve_cache_dir():
+    for cache_dir in (pathlib.Path.home() / ".ninetoothed", pathlib.Path("/tmp/.ninetoothed")):
+        try:
+            cache_dir.mkdir(exist_ok=True)
+            probe = cache_dir / ".write_probe"
+            probe.write_text("", encoding="utf-8")
+            probe.unlink()
+            return cache_dir
+        except OSError:
+            continue
+
+    raise OSError("Failed to find a writable cache directory for ninetoothed.")
+
+
+CACHE_DIR = _resolve_cache_dir()
 
 class CodeGenerator(ast.NodeTransformer):
     def __init__(self):
         super().__init__()
 
-        device = triton.runtime.driver.active.get_current_device()
-        properties = triton.runtime.driver.active.utils.get_device_properties(device)
-
         self._min_num_elements = 1
+        properties = {}
+
+        try:
+            device = triton.runtime.driver.active.get_current_device()
+            properties = triton.runtime.driver.active.utils.get_device_properties(
+                device
+            )
+        except Exception:
+            properties = {}
 
         if "max_num_regs" in properties:
             max_innermost_size = 4 * properties["max_num_regs"]
@@ -105,29 +125,31 @@ class CodeGenerator(ast.NodeTransformer):
         _BinOpSimplifier().visit(tree)
         ast.fix_missing_locations(tree)
 
+        if prettify:
+            name_collector = _SimplifiedNameCollector()
+            name_collector.visit(tree)
+
         npu_tree = copy.deepcopy(tree)
         Ascendifier().visit(npu_tree)
         ast.fix_missing_locations(npu_tree)
 
         if prettify:
-            name_collector = _SimplifiedNameCollector()
-            name_collector.visit(tree)
             name_collector.visit(npu_tree)
 
         dependencies = _find_dependencies(func)
         unparsed = ast.unparse(tree).replace("None:", ":").replace(":None", ":")
         source = "\n\n".join((unparsed, dependencies)).strip()
         source = source.replace(func.__name__, kernel_name)
-
         unparsed_npu = ast.unparse(npu_tree).replace("None:", ":").replace(":None", ":")
         source_npu = "\n\n".join((unparsed_npu, dependencies)).strip()
         source_npu = source_npu.replace(func.__name__, kernel_name + "_npu")
 
-        guard_header = "import torch\n_IS_NPU = hasattr(torch, 'npu') and torch.npu.is_available()\n\n"
-        
+        guard_header = (
+            "import torch\n"
+            "_IS_NPU = hasattr(torch, 'npu') and torch.npu.is_available()\n\n"
+        )
         source_cuda_guarded = "if not _IS_NPU:\n" + textwrap.indent(source, "    ")
         source_npu_guarded = "if _IS_NPU:\n" + textwrap.indent(source_npu, "    ")
-        
         source = guard_header + source_cuda_guarded + "\n\n" + source_npu_guarded + "\n"
 
         if prettify:
