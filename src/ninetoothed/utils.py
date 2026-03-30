@@ -9,4 +9,4 @@ def calculate_default_configs():
     num_warps = 8
     num_stages = max_shared_mem // 2**15
 
-    return num_warps, num_stages
+    return (4, 8), (1, 2, 3, 4, 5)
