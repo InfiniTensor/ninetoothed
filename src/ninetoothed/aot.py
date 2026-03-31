@@ -133,8 +133,11 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
 
     launch_func_unparsed = unparser.unparse(launch_func)
     launch_func_unparsed_lines = launch_func_unparsed.splitlines()
-    launch_func_unparsed_lines.insert(1, f"{_INDENTATION}cuCtxGetId(NULL, &ctx_id);\n")
-    launch_func_unparsed_lines.insert(1, f"{_INDENTATION}unsigned long long ctx_id;")
+    launch_func_unparsed_lines.insert(
+        1, f"{_INDENTATION}uintptr_t ctx_id = (uintptr_t)ctx;"
+    )
+    launch_func_unparsed_lines.insert(1, f"{_INDENTATION}cuCtxGetCurrent(&ctx);")
+    launch_func_unparsed_lines.insert(1, f"{_INDENTATION}CUcontext ctx = NULL;")
     launch_func_unparsed = "\n".join(launch_func_unparsed_lines)
     launch_func_unparsed = launch_func_unparsed.replace(
         func.__name__, f"kernels[ctx_id].{kernel_name_with_hash}"
@@ -157,7 +160,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
         + "};\n"
         + textwrap.indent(c_source_file[kernel_end:], _INDENTATION)
         + "}\n"
-        + f"\nstatic ThreadSafeUnorderedMap<unsigned long long, {kernel_name_with_hash}::Kernel> kernels;\n"
+        + f"\nstatic ThreadSafeUnorderedMap<uintptr_t, {kernel_name_with_hash}::Kernel> kernels;\n"
         + f'\nextern "C" {launch_func_unparsed}\n'
     )
     cpp_source_file_name = f"{kernel_name}.{signature_hash}.cpp"
