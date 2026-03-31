@@ -55,7 +55,9 @@ def test_add(test_multi_device, size, dtype, device, ninetoothed_dtype):
         devices = (device,)
 
     for device in devices:
-        with torch.cuda.Stream(device=device):
+        stream = torch.cuda.Stream(device=device)
+
+        with torch.cuda.stream(stream):
             input = torch.randn(shape, dtype=dtype, device=device)
             other = torch.randn(shape, dtype=dtype, device=device)
             output = torch.empty_like(input)
