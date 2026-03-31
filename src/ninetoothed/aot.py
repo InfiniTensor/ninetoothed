@@ -1,13 +1,16 @@
 import ast
 import ctypes
 import itertools
+import os
 import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import uuid
+import weakref
 
 import ninetoothed.dtype
 import ninetoothed.naming as naming
@@ -452,29 +455,74 @@ def _generate_launch_func(kernel_name, output_dir):
 
 
 def _compile_library(kernel_name, output_dir):
-    command = [
-        "nvcc",
-        "-shared",
-        "-Xcompiler",
-        "-fPIC",
-        "-lcuda",
+    output_dir = pathlib.Path(output_dir)
+    output_path = _library_path(kernel_name, output_dir)
+    command = (
+        _select_cpp_compiler(),
+        "-std=c++17",
+        *_shared_library_flags(),
         "-o",
-        output_dir / f"{kernel_name}.so",
-    ] + list(output_dir.glob(f"{kernel_name}*.cpp"))
+        os.fspath(output_path),
+        *sorted(os.fspath(path) for path in output_dir.glob(f"{kernel_name}*.cpp")),
+    )
 
     subprocess.run(command, check=True)
 
 
 def _load_library(kernel_name, kernel_dir):
-    suffix = ".so"
+    original_path = _library_path(kernel_name, kernel_dir)
+    suffix = original_path.suffix
 
-    original_path = kernel_dir / f"{kernel_name}{suffix}"
+    descriptor, temp_path = tempfile.mkstemp(suffix=suffix)
+    os.close(descriptor)
+    temp_path = pathlib.Path(temp_path)
 
-    with tempfile.NamedTemporaryFile(suffix=suffix) as temp_file:
-        temp_path = temp_file.name
+    shutil.copy(original_path, temp_path)
+    library = ctypes.CDLL(os.fspath(temp_path))
 
-        shutil.copy(original_path, temp_path)
-
-        library = ctypes.CDLL(temp_path)
+    weakref.finalize(library, temp_path.unlink, missing_ok=True)
 
     return library
+
+
+def _select_cpp_compiler():
+    for variable in ("NINETOOTHED_CXX", "CXX"):
+        compiler = os.environ.get(variable)
+
+        if compiler:
+            return compiler
+
+    for compiler in ("c++", "clang++", "g++"):
+        if shutil.which(compiler) is not None:
+            return compiler
+
+    raise FileNotFoundError(
+        "No suitable host C++ compiler found. Set `NINETOOTHED_CXX` or `CXX` "
+        "to a compiler such as `clang++`."
+    )
+
+
+def _shared_library_flags():
+    if sys.platform == "darwin":
+        return ("-dynamiclib", "-fPIC", "-undefined", "dynamic_lookup")
+
+    flags = ["-shared"]
+
+    if sys.platform != "win32":
+        flags.append("-fPIC")
+
+    return tuple(flags)
+
+
+def _library_path(kernel_name, output_dir):
+    return pathlib.Path(output_dir) / f"{kernel_name}{_shared_library_suffix()}"
+
+
+def _shared_library_suffix():
+    if sys.platform == "win32":
+        return ".dll"
+
+    if sys.platform == "darwin":
+        return ".dylib"
+
+    return ".so"
