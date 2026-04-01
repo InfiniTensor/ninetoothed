@@ -17,6 +17,7 @@ from ninetoothed.eval import _eval as eval
 from ninetoothed.eval import _subs as subs
 from ninetoothed.jit import jit
 from ninetoothed.make import make
+from ninetoothed.parallelize import parallelize
 from ninetoothed.symbol import Symbol, block_size
 from ninetoothed.tensor import Tensor
 
@@ -37,6 +38,7 @@ __all__ = [
     "subs",
     "jit",
     "make",
+    "parallelize",
     "uint8",
     "uint16",
     "uint32",
