@@ -66,6 +66,35 @@ tensors = (Tensor(2), Tensor(2), Tensor(2))
 kernel = ninetoothed.make(arrangement, application, tensors)
 ```
 
+### First-stage serial-to-kernel demo
+
+We can also prototype a much more ergonomic style with `@ninetoothed.parallelize`.
+For now this is intentionally a small demo: it recognizes a couple of canonical
+serial loop nests and lowers them to existing NineToothed kernels.
+
+```python
+import torch
+import ninetoothed
+
+
+@ninetoothed.parallelize
+def add(input, other, output):
+    for i in range(output.shape[0]):
+        output[i] = input[i] + other[i]
+
+
+input = torch.rand(8192, device="cuda")
+other = torch.rand(8192, device="cuda")
+output = torch.empty_like(input)
+
+add(input, other, output)
+```
+
+The goal of this first step is to show the direction: users can start from
+plain serial Python while NineToothed handles tiling and parallelization under
+the hood. Today the demo supports canonical `add` and `mm` loop nests and
+raises `NotImplementedError` for anything else.
+
 ## Useful Links
 
 - [NineToothed Documentation](https://ninetoothed.org/)
