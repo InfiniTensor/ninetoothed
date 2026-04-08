@@ -273,12 +273,13 @@ def _auto_tune(
         )
 
         meta_args_to_timing = {}
+        func_timings = auto_tuner._timings[key]
 
         for meta_args in all_meta_arguments_:
             arg_key = auto_tuner._make_arg_key((*config_, *meta_args), {})
 
-            for key, timing in auto_tuner._timings.items():
-                if arg_key not in key:
+            for full_arg_key, timing in func_timings.items():
+                if not full_arg_key.endswith(arg_key):
                     continue
 
                 meta_args_to_timing[meta_args] = timing
