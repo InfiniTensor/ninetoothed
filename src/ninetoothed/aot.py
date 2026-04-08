@@ -199,6 +199,10 @@ _DATA_TYPE_BODY_CONTENT = ",\n    ".join(_DTYPE_MAPPING.values())
 
 _TEMPLATES_DIR = pathlib.Path(__file__).parent / "templates"
 
+_AUTO_TUNING_CACHE_CONTENT = (
+    (_TEMPLATES_DIR / "auto_tuning_cache.h").read_text().strip()
+)
+
 _THREAD_SAFE_UNORDERED_MAP_CONTENT = (
     (_TEMPLATES_DIR / "thread_safe_unordered_map.h").read_text().strip()
 )
@@ -225,6 +229,8 @@ typedef void *NineToothedStream;
 typedef int NineToothedResult;
 
 #ifdef __cplusplus
+{_AUTO_TUNING_CACHE_CONTENT}
+
 {_THREAD_SAFE_UNORDERED_MAP_CONTENT}
 #endif
 
