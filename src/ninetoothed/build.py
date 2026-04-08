@@ -237,13 +237,6 @@ def _generate_kernel_with_auto_tuning(
 def _auto_tune(
     kernel, configs, all_tensors, meta_parameters, *, caller, kernel_name, output_dir
 ):
-    key = str(output_dir / kernel_name)
-
-    auto_tuner = AutoTuner(funcs=(kernel,), keys=(key,))
-
-    for config, tensors in zip(configs, all_tensors):
-        _warm_up(auto_tuner, config, tensors, caller=caller)
-
     config_to_all_meta_arguments = {}
 
     for config in configs:
@@ -261,6 +254,19 @@ def _auto_tune(
             config_to_all_meta_arguments[config_] = []
 
         config_to_all_meta_arguments[config_].append(meta_args)
+
+    csv_path = output_dir / f"{kernel_name}.csv"
+    cached = _read_auto_tuning_cache(csv_path)
+
+    if cached is not None:
+        return cached
+
+    key = str(output_dir / kernel_name)
+
+    auto_tuner = AutoTuner(funcs=(kernel,), keys=(key,))
+
+    for config, tensors in zip(configs, all_tensors):
+        _warm_up(auto_tuner, config, tensors, caller=caller)
 
     config_to_best_meta_arguments = {}
 
@@ -294,10 +300,7 @@ def _auto_tune(
 
         config_to_best_meta_arguments[int_configs] = best_meta_arguments
 
-    with open(output_dir / f"{kernel_name}.csv", "w") as f:
-        csv.writer(f).writerows(
-            itertools.chain.from_iterable(config_to_best_meta_arguments.items())
-        )
+    _write_auto_tuning_cache(csv_path, config_to_best_meta_arguments)
 
     return config_to_best_meta_arguments
 
@@ -392,6 +395,31 @@ def _make(premake, config, caller, kernel_name, output_dir):
     )
 
     return kernel_name_, param_names, combination, config, tensors
+
+
+def _read_auto_tuning_cache(path):
+    if not path.exists():
+        return None
+
+    config_to_best_meta_arguments = {}
+
+    with open(path) as f:
+        rows = list(csv.reader(f))
+
+    for i in range(0, len(rows), 2):
+        config = tuple(int(value) for value in rows[i])
+        meta_args = tuple(int(value) for value in rows[i + 1])
+
+        config_to_best_meta_arguments[config] = meta_args
+
+    return config_to_best_meta_arguments
+
+
+def _write_auto_tuning_cache(path, config_to_best_meta_arguments):
+    with open(path, "w") as f:
+        csv.writer(f).writerows(
+            itertools.chain.from_iterable(config_to_best_meta_arguments.items())
+        )
 
 
 def _generate_declaration_statements(types, names):
