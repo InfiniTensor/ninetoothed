@@ -49,24 +49,31 @@ class Tensor:
         else:
             self.name = naming.auto_generate(f"tensor_{type(self).num_instances}")
 
-        if ndim is not None:
-            if shape_options is None:
-                shape_options = tuple({} for _ in range(ndim))
+        assert ndim is not None or shape is not None, (
+            "Either `ndim` or `shape` must be provided."
+        )
 
-            if isinstance(shape_options, dict):
-                shape_options = tuple(shape_options for _ in range(ndim))
+        if ndim is None:
+            ndim = len(shape)
 
-            shape_options = tuple(
-                size_options if size_options is not None else {}
-                for size_options in shape_options
-            )
+        if shape is None:
+            shape = tuple(None for _ in range(ndim))
 
-            self.shape = (
-                Symbol(self.size_string(i), **size_options)
-                for i, size_options in zip(range(ndim), shape_options)
-            )
-        else:
-            self.shape = shape
+        if shape_options is None:
+            shape_options = tuple({} for _ in range(ndim))
+
+        if isinstance(shape_options, dict):
+            shape_options = tuple(shape_options for _ in range(ndim))
+
+        shape_options = tuple(
+            size_options if size_options is not None else {}
+            for size_options in shape_options
+        )
+
+        self.shape = (
+            size if size is not None else Symbol(self.size_string(i), **size_options)
+            for i, (size, size_options) in enumerate(zip(shape, shape_options))
+        )
 
         self.other = other
 

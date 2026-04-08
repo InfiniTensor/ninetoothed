@@ -4,6 +4,7 @@ import os
 
 import triton
 
+from ninetoothed.aot import _KernelLaunchError
 from ninetoothed.generation import CACHE_DIR
 
 
@@ -74,7 +75,10 @@ class AutoTuner:
         if arg_key in data:
             return data[arg_key]
 
-        timing = triton.testing.do_bench(lambda: func(*args, **kwargs))
+        try:
+            timing = triton.testing.do_bench(lambda: func(*args, **kwargs))
+        except _KernelLaunchError:
+            timing = float("inf")
 
         data[arg_key] = timing
 

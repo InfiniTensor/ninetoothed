@@ -239,9 +239,20 @@ def test_conv2d(
     rtol,
     atol,
 ):
-    premake = functools.partial(
-        conv2d.premake, dtype=ninetoothed_dtype, constexpr_shapes=constexpr_shapes
-    )
+    if constexpr_shapes:
+        sizes = {"n": n, "c": c, "h": h, "w": w, "k": k, "r": r, "s": s}
+    else:
+        sizes = {
+            "n": None,
+            "c": None,
+            "h": None,
+            "w": None,
+            "k": None,
+            "r": None,
+            "s": None,
+        }
+
+    premake = functools.partial(conv2d.premake, **sizes, dtype=ninetoothed_dtype)
 
     caller = device
     kernel_name = f"conv2d{_generate_kernel_name_suffix()}"
@@ -280,7 +291,7 @@ def test_conv2d(
     output = torch.empty(n, k, p, q, dtype=dtype, device=device)
 
     if test_build:
-        config = (ninetoothed_dtype, constexpr_shapes) + tuple(configs[0][1].values())
+        config = (*sizes.values(), ninetoothed_dtype) + tuple(configs[0][1].values())
     else:
         config = ()
 

@@ -49,17 +49,18 @@ def arrangement(
 
 
 def premake(
+    n=None,
+    c=None,
+    h=None,
+    w=None,
+    k=None,
+    r=None,
+    s=None,
     dtype=None,
-    constexpr_shapes=False,
     block_size_m=64,
     block_size_n=64,
     block_size_k=64,
 ):
-    if constexpr_shapes:
-        shape_options = {"constexpr": True}
-    else:
-        shape_options = None
-
     arrangement_ = functools.partial(
         arrangement,
         BLOCK_SIZE_M=block_size_m,
@@ -67,9 +68,22 @@ def premake(
         BLOCK_SIZE_K=block_size_k,
     )
     application = matmul.application
-    tensors = tuple(
-        Tensor(4, dtype=dtype, shape_options=shape_options) for _ in range(3)
-    )
+
+    if h is not None and r is not None:
+        p = h - r + 1
+    else:
+        p = None
+
+    if w is not None and s is not None:
+        q = w - s + 1
+    else:
+        q = None
+
+    input = Tensor(shape=(n, c, h, w), dtype=dtype)
+    filter = Tensor(shape=(k, c, r, s), dtype=dtype)
+    output = Tensor(shape=(n, k, p, q), dtype=dtype)
+
+    tensors = (input, filter, output)
 
     return arrangement_, application, tensors
 
