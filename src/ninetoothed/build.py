@@ -6,7 +6,6 @@ import inspect
 import itertools
 import multiprocessing
 import pathlib
-import textwrap
 
 import ninetoothed
 from ninetoothed.aot import (
@@ -185,33 +184,21 @@ def _generate_kernel_with_auto_tuning(
 ):
     num_non_meta_premake_params = len(tuple(config_to_best_meta_arguments.keys())[0])
 
+    config_param_names = non_tensor_param_names[:num_non_meta_premake_params]
     meta_param_names = non_tensor_param_names[num_non_meta_premake_params:]
     meta_param_types = tuple("int" for _ in meta_param_names)
 
-    meta_param_decl_stmts = textwrap.indent(
-        _generate_declaration_statements(meta_param_types, meta_param_names),
-        _INDENTATION,
+    csv_path = output_dir / f"{kernel_name}.csv"
+    config_args = ", ".join(f"static_cast<int>({name})" for name in config_param_names)
+    cache_line = (
+        f'{_INDENTATION}static ninetoothed::AutoTuningCache cache{{"{csv_path}"}};'
     )
-
-    meta_param_assignment_branches = []
-
-    for config, best_meta_args in config_to_best_meta_arguments.items():
-        condition = _generate_condition(
-            {name: value for name, value in zip(non_tensor_param_names, config)}
-        )
-
-        assignments = textwrap.indent(
-            _generate_assignment_statements(meta_param_names, best_meta_args),
-            _INDENTATION,
-        )
-
-        meta_param_assignment_branches.append(
-            textwrap.indent(f"if ({condition}) {{\n{assignments}\n}}", _INDENTATION)
-        )
-
-    meta_param_initialization = f"{meta_param_decl_stmts}\n" + "\n".join(
-        meta_param_assignment_branches
+    lookup_line = f"{_INDENTATION}auto meta{{cache.lookup({{{config_args}}})}};"
+    meta_assignments = "\n".join(
+        f"{_INDENTATION}auto {name}{{meta[{i}]}};"
+        for i, name in enumerate(meta_param_names)
     )
+    meta_param_initialization = f"{cache_line}\n{lookup_line}\n{meta_assignments}"
 
     meta_param_decl_exprs = _generate_declaration_expressions(
         meta_param_types, meta_param_names
