@@ -53,6 +53,7 @@ def test_auto_tuning(size, dtype, device, ninetoothed_dtype, rtol, atol):
     kernel_name = "add"
     output_dir = ninetoothed.generation.CACHE_DIR / "test_auto_tuning"
 
+    shutil.rmtree(output_dir, ignore_errors=True)
     output_dir.mkdir()
 
     configs = (
