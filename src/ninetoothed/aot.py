@@ -157,7 +157,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
         + "};\n"
         + textwrap.indent(c_source_file[kernel_end:], _INDENTATION)
         + "}\n"
-        + f"\nstatic ThreadSafeUnorderedMap<unsigned long long, {kernel_name_with_hash}::Kernel> kernels;\n"
+        + f"\nstatic ninetoothed::ThreadSafeUnorderedMap<unsigned long long, {kernel_name_with_hash}::Kernel> kernels;\n"
         + f'\nextern "C" {launch_func_unparsed}\n'
     )
     cpp_source_file_name = f"{kernel_name}.{signature_hash}.cpp"
@@ -197,40 +197,11 @@ _MACRO_CONTENT = "\n\n".join(
 
 _DATA_TYPE_BODY_CONTENT = ",\n    ".join(_DTYPE_MAPPING.values())
 
-_THREAD_SAFE_UNORDERED_MAP_CONTENT = """#include <mutex>
-#include <shared_mutex>
-#include <unordered_map>
+_TEMPLATES_DIR = pathlib.Path(__file__).parent / "templates"
 
-template<typename Key, typename Value>
-class ThreadSafeUnorderedMap {
-public:
-    Value& operator[](const Key& key) {
-        {
-            std::shared_lock lock{mutex};
-
-            auto iter = map.find(key);
-
-            if (iter != map.end()) {
-                return iter->second;
-            }
-        }
-
-        std::unique_lock lock{mutex};
-
-        auto iter = map.find(key);
-
-        if (iter == map.end()) {
-            iter = map.emplace(key, Value{}).first;
-        }
-
-        return iter->second;
-    }
-
-private:
-    std::unordered_map<Key, Value> map;
-
-    mutable std::shared_mutex mutex;
-};"""
+_THREAD_SAFE_UNORDERED_MAP_CONTENT = (
+    (_TEMPLATES_DIR / "thread_safe_unordered_map.h").read_text().strip()
+)
 
 _HEADER_CONTENT = f"""#ifndef NINETOOTHED_H
 #define NINETOOTHED_H
