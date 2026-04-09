@@ -1,7 +1,7 @@
 import importlib
 import sys
 
-from ninetoothed.generation import CodeGenerator
+from ninetoothed.ir.pipeline import IRPipeline
 from ninetoothed.utils import calculate_default_configs
 
 
@@ -14,6 +14,7 @@ def jit(
     num_stages=None,
     max_num_configs=None,
     _prettify=False,
+    _dump_ir=False,
 ):
     """A decorator for generating compute kernels.
 
@@ -25,23 +26,26 @@ def jit(
     :param max_num_configs: The maximum number of auto-tuning
         configurations to use.
     :param _prettify: Whether to prettify the generated code.
+    :param _dump_ir: Whether to print IR dump for each layer.
     :return: A handle to the compute kernel.
 
-    .. note::
-
-        The ``_prettify`` parameter is experimental, which might break
-        the generated code.
     """
 
-    default_num_warps, default_num_stages = calculate_default_configs()
-
-    if num_warps is None:
-        num_warps = default_num_warps
-
-    if num_stages is None:
-        num_stages = default_num_stages
-
     def wrapper(func):
+        nonlocal num_warps, num_stages
+
+        if num_warps is None or num_stages is None:
+            try:
+                default_num_warps, default_num_stages = calculate_default_configs()
+            except Exception:
+                default_num_warps, default_num_stages = (4, 8), (1, 2, 3, 4, 5)
+
+            if num_warps is None:
+                num_warps = default_num_warps
+
+            if num_stages is None:
+                num_stages = default_num_stages
+
         return JIT(
             func,
             caller=caller,
@@ -50,6 +54,7 @@ def jit(
             num_stages=num_stages,
             max_num_configs=max_num_configs,
             _prettify=_prettify,
+            _dump_ir=_dump_ir,
         )()
 
     if func is None:
@@ -68,6 +73,7 @@ class JIT:
         num_stages,
         max_num_configs,
         _prettify=False,
+        _dump_ir=False,
     ):
         self.func = func
 
@@ -86,17 +92,26 @@ class JIT:
 
         self._prettify = _prettify
 
+        self._dump_ir = _dump_ir
+
     def __call__(self):
-        code_generator = CodeGenerator()
-        source_file = code_generator(
-            self.func,
-            self._caller,
-            self._kernel_name,
-            self._num_warps,
-            self._num_stages,
-            self._max_num_configs,
-            self._prettify,
+
+        context = dict(self.func.__annotations__)
+        args = list(context.values())
+
+        pipeline = IRPipeline(
+            context=context,
+            args=args,
+            caller=self._caller,
+            kernel_name=self._kernel_name,
+            num_warps=self._num_warps,
+            num_stages=self._num_stages,
+            max_num_configs=self._max_num_configs,
+            prettify=self._prettify,
+            dump_ir=self._dump_ir,
         )
+        source_file = pipeline.run(self.func)
+
         module = import_from_path(source_file, source_file)
         module_vars = vars(module)
 

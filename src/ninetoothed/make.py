@@ -14,6 +14,7 @@ def make(
     num_warps=None,
     num_stages=None,
     max_num_configs=None,
+    dump_ir=False
 ):
     """Integrate the arrangement and the application of the tensors.
 
@@ -27,6 +28,7 @@ def make(
     :param num_stages: The number of pipeline stages.
     :param max_num_configs: The maximum number of auto-tuning
         configurations to use.
+    :param dump_ir: Whether to print IR dump for each layer.
     :return: A handle to the compute kernel.
     """
 
@@ -44,6 +46,7 @@ def make(
             num_warps=num_warps,
             num_stages=num_stages,
             max_num_configs=max_num_configs,
+            _dump_ir=dump_ir,
         )
 
     return aot(

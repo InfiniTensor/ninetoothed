@@ -11,6 +11,15 @@ import subprocess
 import textwrap
 import astpretty
 
+
+def _safe_pprint(node):
+    """Safely print an AST node as code text."""
+    ast.fix_missing_locations(node)
+    try:
+        print(ast.unparse(node))
+    except Exception:
+        print(ast.dump(node, indent=2))
+
 import sympy
 import triton
 
@@ -52,11 +61,11 @@ class CodeGenerator(ast.NodeTransformer):
         num_stages,
         max_num_configs,
         prettify,
-        use_ir=True,
-        dump_ir=False,
     ):
         def _get_tree(func):
             func_def = ast.parse(textwrap.dedent(inspect.getsource(func)))
+            print("==========================Before _Inliner================================")
+            _safe_pprint(func_def)
 
             inliner = _Inliner(func.__globals__)
             inliner.visit(func_def)
@@ -100,10 +109,11 @@ class CodeGenerator(ast.NodeTransformer):
 
         self._args = list(self._context.values())
 
-        if use_ir:
-            return self._generate_via_ir(func, kernel_name, prettify, dump_ir=dump_ir)
-
         tree = _get_tree(func)
+        print("\n==========================After _Inliner================================")
+
+        _safe_pprint(tree)
+
         self.visit(tree)
         Tritonizer().visit(tree)
         _BinOpSimplifier().visit(tree)
@@ -133,30 +143,6 @@ class CodeGenerator(ast.NodeTransformer):
         self.tensors = self._args
         self.kernel_func = self._func_def
         self.launch_func = self._launch
-
-        return str(cache_file)
-
-    def _generate_via_ir(self, func, kernel_name, prettify, dump_ir=False):
-        """Generate kernel using the IR pipeline instead of AST manipulation."""
-        from ninetoothed.ir.pipeline import IRPipeline
-
-        self._ir_pipeline = IRPipeline(
-            context=self._context,
-            args=self._args,
-            caller=self._caller,
-            kernel_name=kernel_name,
-            num_warps=self._num_warps,
-            num_stages=self._num_stages,
-            max_num_configs=self._max_num_configs,
-            prettify=prettify,
-            dump_ir=dump_ir,
-        )
-
-        cache_file = self._ir_pipeline.run(func)
-
-        self.tensors = self._args
-        self.kernel_func = None
-        self.launch_func = None
 
         return str(cache_file)
 
@@ -389,6 +375,7 @@ class CodeGenerator(ast.NodeTransformer):
         return isinstance(node, ast.Name) and node.id in self._context
 
     def _generate_autotune(self, params, meta):
+        print("[_generate_autotune] >>> Generating auto-tuning configurations for the kernel...")
         inequalities = True
 
         for arg in self._args:
@@ -503,9 +490,10 @@ class CodeGenerator(ast.NodeTransformer):
             ]
 
         if len(configs) <= 1:
+            print("[_generate_autotune] <<< Only 1 config, auto-tune disabled.")
             return None
 
-        return ast.Call(
+        autotune_call = ast.Call(
             func=ast.Attribute(
                 value=ast.Name(id="ninetoothed", ctx=ast.Load()),
                 attr="autotune",
@@ -533,8 +521,12 @@ class CodeGenerator(ast.NodeTransformer):
                 ),
             ],
         )
+        print(f"[_generate_autotune] <<< Generated {len(configs)} auto-tune configs. AST node:")
+        _safe_pprint(autotune_call)
+        return autotune_call
 
     def _generate_launch(self, params, meta):
+        print("[_generate_launch] >>> Generating launch function for kernel invocation...")
         non_next_power_of_2_constexpr_params = [
             param
             for param in params
@@ -627,36 +619,60 @@ class CodeGenerator(ast.NodeTransformer):
         else:
             raise ValueError(f"Unsupported caller: `{self._caller}`.")
 
+        print(f"[_generate_launch] <<< Launch function '{self.launch_func_name}' generated (caller={self._caller}). AST node:")
+        _safe_pprint(launch)
         return launch
 
     def _generate_grid(self):
+        print("[_generate_grid] >>> Generating grid (number of program invocations)...")
         num_elements = functools.reduce(lambda x, y: x * y, self._args[0].shape)
 
         grid = ast.parse(f"lambda meta: ({num_elements},)", mode="eval").body
 
         self.raw_grid = copy.deepcopy(grid)
 
+        print(f"[_generate_grid] <<< Grid generated: num_elements={num_elements}. AST node:")
+        _safe_pprint(grid)
         return grid
 
     def _generate_load(self, tensor, indices=()):
+        print(f"[_generate_load] >>> Generating load for tensor '{tensor.source.name}' (ndim={tensor.ndim}, indices={indices}).")
         if tensor.ndim == 0:
-            return Symbol(tensor.source.name).node
+            result = Symbol(tensor.source.name).node
+            print(f"[_generate_load] <<< 0-dim tensor, returning name node:")
+            _safe_pprint(result)
+            return result
 
         pointers, mask = self._generate_pointers_and_mask(tensor, indices)
         other = type(self)._generate_other(tensor)
 
-        return call("load", pointers, mask=mask, other=other).node
+        result = call("load", pointers, mask=mask, other=other).node
+        print(f"[_generate_load] <<< Load AST node for tensor '{tensor.source.name}':")
+        _safe_pprint(result)
+        return result
 
     def _generate_store(self, tensor, value, indices=()):
+        print(f"[_generate_store] >>> Generating store for tensor '{tensor.source.name}' (ndim={tensor.ndim}, indices={indices}).")
+        print(f"[_generate_store] >>> Store value AST node:")
+        _safe_pprint(value)
         pointers, mask = self._generate_pointers_and_mask(tensor, indices)
 
-        return call("store", pointers, value, mask=mask).node
+        result = call("store", pointers, value, mask=mask).node
+        print(f"[_generate_store] <<< Store AST node for tensor '{tensor.source.name}':")
+        _safe_pprint(result)
+        return result
 
     def _generate_pointers_and_mask(self, tensor, indices):
+        print(f"[_generate_pointers_and_mask] >>> Generating pointers and mask for tensor '{tensor.source.name}' (indices={indices}).")
         if tensor is not tensor.source:
+            print(f"[_generate_pointers_and_mask] tensor is not source, completing indices...")
             indices = self._complete_indices(tensor, indices)
+            print(f"[_generate_pointers_and_mask] Completed indices: {indices}")
 
         indices = tuple(Symbol(index) for index in indices)
+        print(f"[_generate_pointers_and_mask] Symbol-wrapped indices:")
+        for i, idx in enumerate(indices):
+            print(f"  [{i}] {idx}")
 
         name_for_pointers = type(self)._name_for_pointers(tensor)
         self._invariants[name_for_pointers] = Symbol(tensor.source.pointer_string())
@@ -667,6 +683,11 @@ class CodeGenerator(ast.NodeTransformer):
 
         pointers = name_for_pointers + overall_offsets
 
+        print(f"[_generate_pointers_and_mask] <<< Result for tensor '{tensor.source.name}':")
+        print(f"  pointers AST:")
+        _safe_pprint(pointers.node)
+        print(f"  mask AST:")
+        _safe_pprint(mask.node)
         return pointers, mask
 
     def _complete_indices(self, tensor, indices):
@@ -677,6 +698,7 @@ class CodeGenerator(ast.NodeTransformer):
         )
 
     def _generate_pid_indices(self, tensor):
+        print(f"[_generate_pid_indices] >>> Generating program-ID based indices for tensor '{tensor.source.name}' (shape={tensor.shape}).")
         self._invariants[type(self)._NAME_FOR_PID] = call("program_id", 0)
 
         indices = list(Tensor._unravel_index(type(self)._NAME_FOR_PID, tensor.shape))
@@ -706,26 +728,36 @@ class CodeGenerator(ast.NodeTransformer):
             )
             self._invariants[seq_len_name] = seq_end_name - seq_start_name
 
+        print(f"[_generate_pid_indices] <<< PID indices generated for tensor '{tensor.source.name}'. Added invariants:")
+        for inv_name, inv_value in self._invariants.items():
+            print(f"  {inv_name} = {inv_value}")
         return tuple(indices)
 
     @staticmethod
     def _generate_other(tensor):
+        print(f"[_generate_other] >>> Generating 'other' (padding) value for tensor '{tensor.source.name}' (other={tensor.source.other}).")
         other = tensor.source.other
 
         if isinstance(other, float) and not math.isfinite(other):
+            print(f"[_generate_other] <<< Non-finite float, returning \"float('{other}')\".")
             return f"float('{other}')"
 
+        print(f"[_generate_other] <<< Returning other={other}.")
         return other
 
     @staticmethod
     def _generate_slices(tensor, dim):
-        return tuple(
+        print(f"[_generate_slices] >>> Generating slices for tensor '{tensor.source.name}' (target_dim={dim}).")
+        result = tuple(
             slice(None) if target_dim == dim else None
             for target_dim in tensor.innermost().target_dims
         )
+        print(f"[_generate_slices] <<< Slices generated: {result}.")
+        return result
 
     @staticmethod
     def _generate_overall_offsets_and_mask(tensor, indices):
+        print(f"[_generate_overall_offsets_and_mask] >>> Generating overall offsets and mask for tensor '{tensor.source.name}'.")
         indices = list(indices)
 
         offsets, mask = CodeGenerator._generate_offsets_and_mask(tensor, indices)
@@ -744,10 +776,17 @@ class CodeGenerator(ast.NodeTransformer):
 
         tensor._last_generated_overall_offsets = overall_offsets
 
+        print(f"[_generate_overall_offsets_and_mask] <<< Result for tensor '{tensor.source.name}':")
+        print(f"  per-dim offsets: {offsets}")
+        print(f"  overall_offsets AST:")
+        _safe_pprint(overall_offsets.node)
+        print(f"  mask AST:")
+        _safe_pprint(mask.node)
         return overall_offsets, mask
 
     @staticmethod
     def _generate_offsets_and_mask(tensor, indices):
+        print(f"[_generate_offsets_and_mask] >>> Generating per-dimension offsets and mask for tensor '{tensor.source.name}'.")
         offsets = [Symbol(0) for _ in range(tensor.source.ndim)]
 
         tensor.source._mask = Symbol(True)
@@ -778,10 +817,15 @@ class CodeGenerator(ast.NodeTransformer):
 
             curr = curr.dtype
 
+        print(f"[_generate_offsets_and_mask] <<< Offsets and mask generated for tensor '{tensor.source.name}':")
+        for dim, offset in enumerate(offsets):
+            print(f"  offsets[{dim}] = {offset}")
+        print(f"  mask = {tensor.source._mask}")
         return offsets, tensor.source._mask
 
     @staticmethod
     def _generate_innermost_indices(tensor, use_power_of_2_sizes=True):
+        print(f"[_generate_innermost_indices] >>> Generating arange-based indices for tensor '{tensor.source.name}' (use_power_of_2_sizes={use_power_of_2_sizes}).")
         indices = []
 
         for size, target_dim in zip(
@@ -796,6 +840,10 @@ class CodeGenerator(ast.NodeTransformer):
                 ]
             )
 
+        print(f"[_generate_innermost_indices] <<< Innermost indices generated for tensor '{tensor.source.name}' ({len(indices)} indices). AST nodes:")
+        for i, idx in enumerate(indices):
+            print(f"  [{i}]:")
+            _safe_pprint(idx.node)
         return tuple(indices)
 
     @staticmethod
