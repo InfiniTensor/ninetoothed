@@ -5,7 +5,7 @@
 [![Document](https://img.shields.io/badge/Document-ready-blue)](https://ninetoothed.org/)
 [![PyPI Version](https://img.shields.io/pypi/v/ninetoothed?color=cyan)](https://pypi.org/project/ninetoothed/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
-![star](https://atomgit.com/InfiniTensor/InfiniLM/star/badge.svg)
+![star](https://atomgit.com/InfiniTensor/ninetoothed/star/badge.svg)
 
 NineToothed is a Triton-based domain-specific language (DSL). By introducing **tensor-oriented meta-programming (TOM)**, it makes writing high-performance GPU kernels easier.
 
