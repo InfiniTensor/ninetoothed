@@ -143,8 +143,10 @@ def build(
     kernel = _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
 
     if meta_parameters is not None:
+        kernel_before_auto_tuning = kernel
+
         config_to_best_meta_arguments = _auto_tune(
-            kernel,
+            kernel_before_auto_tuning,
             configs,
             all_tensors,
             meta_parameters,
@@ -153,9 +155,19 @@ def build(
             output_dir=output_dir,
         )
 
-        return _generate_kernel_with_auto_tuning(
+        kernel_after_auto_tuning = _generate_kernel_with_auto_tuning(
             config_to_best_meta_arguments,
             non_tensor_param_names,
+            kernel_name=kernel_name,
+            output_dir=output_dir,
+        )
+
+        return _AutoTunedKernel(
+            kernel_after_auto_tuning=kernel_after_auto_tuning,
+            kernel_before_auto_tuning=kernel_before_auto_tuning,
+            configs=configs,
+            meta_parameters=meta_parameters,
+            config_to_best_meta_arguments=config_to_best_meta_arguments,
             kernel_name=kernel_name,
             output_dir=output_dir,
         )
@@ -164,6 +176,112 @@ def build(
 
 
 _DEFAULT_SIZES = tuple(2**i for i in range(10))
+
+_DEFAULT_RE_TUNE_AFTER = 16
+
+
+class _AutoTunedKernel:
+    def __init__(
+        self,
+        kernel_after_auto_tuning,
+        kernel_before_auto_tuning,
+        configs,
+        meta_parameters,
+        config_to_best_meta_arguments,
+        kernel_name,
+        output_dir,
+        re_tune_after=_DEFAULT_RE_TUNE_AFTER,
+    ):
+        self._kernel_after_auto_tuning = kernel_after_auto_tuning
+
+        self._kernel_before_auto_tuning = kernel_before_auto_tuning
+
+        self._kernel_name = kernel_name
+
+        self._output_dir = output_dir
+
+        self._re_tune_after = re_tune_after
+
+        self._num_non_meta_premake_params = len(
+            next(iter(config_to_best_meta_arguments.keys()))
+        )
+
+        meta_values = set()
+
+        for _, kwargs, compilation_configs in configs:
+            meta = {
+                param: kwargs[param] for param in meta_parameters if param in kwargs
+            } | compilation_configs
+
+            meta_values.add(tuple(_arg_to_int(value) for value in meta.values()))
+
+        self._all_meta_values = tuple(meta_values)
+
+        self._known_configs = set(config_to_best_meta_arguments.keys())
+
+        self._new_inputs = []
+
+    def __call__(self, *args, **kwargs):
+        _, _, config_key = self._split_args(args)
+
+        if config_key not in self._known_configs:
+            self._new_inputs.append((args, kwargs))
+
+            if len(self._new_inputs) >= self._re_tune_after:
+                self._re_tune()
+
+        return self._kernel_after_auto_tuning(*args, **kwargs)
+
+    def _re_tune(self):
+        import triton
+
+        csv_path = self._output_dir / f"{self._kernel_name}.csv"
+
+        new_entries = {}
+        seen_config_keys = set()
+
+        for args, _ in self._new_inputs:
+            tensor_args, config_args, config_key = self._split_args(args)
+
+            if config_key in seen_config_keys or config_key in self._known_configs:
+                continue
+
+            seen_config_keys.add(config_key)
+
+            best_time = float("inf")
+            best_meta = self._all_meta_values[0]
+
+            for meta_values in self._all_meta_values:
+                try:
+                    timing = triton.testing.do_bench(
+                        lambda meta_values=meta_values: self._kernel_before_auto_tuning(
+                            *tensor_args, *config_args, *meta_values
+                        )
+                    )
+                except Exception:
+                    timing = float("inf")
+
+                if timing < best_time:
+                    best_time = timing
+                    best_meta = meta_values
+
+            new_entries[config_key] = best_meta
+
+        if new_entries:
+            _append_auto_tuning_cache(csv_path, new_entries)
+            self._known_configs.update(new_entries.keys())
+
+        self._new_inputs.clear()
+
+    def _split_args(self, args):
+        if self._num_non_meta_premake_params <= 0:
+            return args, (), ()
+
+        tensor_args = args[: -self._num_non_meta_premake_params]
+        config_args = args[-self._num_non_meta_premake_params :]
+        config_key = tuple(_arg_to_int(arg) for arg in config_args)
+
+        return tensor_args, config_args, config_key
 
 
 class _MetaTensor:
