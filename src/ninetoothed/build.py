@@ -287,6 +287,7 @@ def _auto_tune(
 
         config_to_best_meta_arguments[int_configs] = best_meta_arguments
 
+    _normalize_meta_arguments(config_to_best_meta_arguments, configs, meta_parameters)
     _write_auto_tuning_cache(csv_path, config_to_best_meta_arguments)
 
     return config_to_best_meta_arguments
@@ -391,11 +392,14 @@ def _read_auto_tuning_cache(path):
     config_to_best_meta_arguments = {}
 
     with open(path) as f:
-        rows = list(csv.reader(f))
+        rows = tuple(csv.reader(f))
 
     for i in range(0, len(rows), 2):
-        config = tuple(int(value) for value in rows[i])
+        config = tuple(int(value) for value in rows[i] if value)
         meta_args = tuple(int(value) for value in rows[i + 1])
+
+        if not config:
+            continue
 
         config_to_best_meta_arguments[config] = meta_args
 
@@ -403,10 +407,63 @@ def _read_auto_tuning_cache(path):
 
 
 def _write_auto_tuning_cache(path, config_to_best_meta_arguments):
+    default_meta = next(iter(config_to_best_meta_arguments.values()))
+
     with open(path, "w") as f:
-        csv.writer(f).writerows(
-            itertools.chain.from_iterable(config_to_best_meta_arguments.items())
-        )
+        writer = csv.writer(f)
+
+        writer.writerow(())
+        writer.writerow(default_meta)
+
+        for config, meta in config_to_best_meta_arguments.items():
+            writer.writerow(config)
+            writer.writerow(meta)
+
+
+def _append_auto_tuning_cache(path, new_entries):
+    with open(path, "a") as f:
+        writer = csv.writer(f)
+
+        for config, meta in new_entries.items():
+            writer.writerow(config)
+            writer.writerow(meta)
+
+
+def _normalize_meta_arguments(config_to_best_meta_arguments, configs, meta_parameters):
+    from ninetoothed.utils import calculate_default_configs
+
+    default_num_warps, default_num_stages = calculate_default_configs()
+    compilation_defaults = {
+        "num_warps": default_num_warps,
+        "num_stages": default_num_stages,
+    }
+
+    all_meta_names = {}
+
+    for config in configs:
+        _, kwargs, compilation_configs = config
+
+        meta_args = {
+            param: kwargs[param] for param in meta_parameters if param in kwargs
+        } | compilation_configs
+
+        for key in meta_args:
+            all_meta_names[key] = None
+
+    expected_len = len(all_meta_names)
+    meta_names = tuple(all_meta_names.keys())
+
+    for int_configs, meta_values in config_to_best_meta_arguments.items():
+        if len(meta_values) >= expected_len:
+            continue
+
+        padded = list(meta_values)
+
+        for i in range(len(meta_values), expected_len):
+            name = meta_names[i]
+            padded.append(compilation_defaults.get(name, 0))
+
+        config_to_best_meta_arguments[int_configs] = tuple(padded)
 
 
 def _generate_declaration_statements(types, names):
