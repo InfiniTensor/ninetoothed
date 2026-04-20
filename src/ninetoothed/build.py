@@ -16,6 +16,7 @@ from ninetoothed.aot import (
     _MACRO_MAPPING,
     _generate_launch_func,
     _KernelLaunchError,
+    _load_launch_func,
 )
 from ninetoothed.auto_tuner import AutoTuner
 from ninetoothed.tensor import Symbol
@@ -51,6 +52,13 @@ def build(
         caller = "cuda"
 
     output_dir = pathlib.Path(output_dir)
+
+    cached = _load_cached(
+        configs, meta_parameters, kernel_name=kernel_name, output_dir=output_dir
+    )
+
+    if cached is not None:
+        return cached
 
     kernel_names = []
     all_param_names = []
@@ -516,6 +524,34 @@ def _make(premake, config, caller, kernel_name, output_dir):
     )
 
     return kernel_name_, param_names, combination, config, tensors
+
+
+def _load_cached(configs, meta_parameters, *, kernel_name, output_dir):
+    so_path = output_dir / f"{kernel_name}.so"
+
+    if not so_path.exists():
+        return None
+
+    if meta_parameters is None:
+        return _load_launch_func(kernel_name=kernel_name, output_dir=output_dir)
+
+    csv_path = output_dir / f"{kernel_name}.csv"
+    config_to_best_meta_arguments = _read_auto_tuning_cache(csv_path)
+
+    if not config_to_best_meta_arguments:
+        return None
+
+    kernel = _load_launch_func(kernel_name=kernel_name, output_dir=output_dir)
+
+    return _AutoTunedKernel(
+        kernel_after_auto_tuning=kernel,
+        kernel_before_auto_tuning=kernel,
+        configs=configs,
+        meta_parameters=meta_parameters,
+        config_to_best_meta_arguments=config_to_best_meta_arguments,
+        kernel_name=kernel_name,
+        output_dir=output_dir,
+    )
 
 
 def _read_auto_tuning_cache(path):
