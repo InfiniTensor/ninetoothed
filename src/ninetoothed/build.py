@@ -6,6 +6,7 @@ import inspect
 import itertools
 import multiprocessing
 import pathlib
+import textwrap
 
 import ninetoothed
 from ninetoothed.aot import (
@@ -300,23 +301,33 @@ class _MetaTensor:
 def _generate_kernel_with_auto_tuning(
     config_to_best_meta_arguments, non_tensor_param_names, *, kernel_name, output_dir
 ):
-    num_non_meta_premake_params = len(tuple(config_to_best_meta_arguments.keys())[0])
+    num_non_meta_premake_params = len(next(iter(config_to_best_meta_arguments)))
 
     config_param_names = non_tensor_param_names[:num_non_meta_premake_params]
     meta_param_names = non_tensor_param_names[num_non_meta_premake_params:]
     meta_param_types = tuple("int" for _ in meta_param_names)
 
-    csv_path = output_dir / f"{kernel_name}.csv"
-    config_args = ", ".join(f"static_cast<int>({name})" for name in config_param_names)
-    cache_line = (
-        f'{_INDENTATION}static ninetoothed::AutoTuningCache cache{{"{csv_path}"}};'
+    declarations = _generate_declaration_statements(meta_param_types, meta_param_names)
+
+    branches = tuple(
+        _generate_dispatch_branch(
+            dict(zip(config_param_names, config)),
+            dict(zip(meta_param_names, meta_arguments)),
+        )
+        for config, meta_arguments in config_to_best_meta_arguments.items()
     )
-    lookup_line = f"{_INDENTATION}auto meta{{cache.lookup({{{config_args}}})}};"
-    meta_assignments = "\n".join(
-        f"{_INDENTATION}auto {name}{{meta[{i}]}};"
-        for i, name in enumerate(meta_param_names)
+
+    dispatch = "\nelse ".join(branches)
+
+    if config_param_names:
+        csv_path = output_dir / f"{kernel_name}.csv"
+        dispatch += "\nelse " + _generate_dispatch_fallback(
+            config_param_names, meta_param_names, csv_path
+        )
+
+    meta_param_initialization = textwrap.indent(
+        f"{declarations}\n{dispatch}", _INDENTATION
     )
-    meta_param_initialization = f"{cache_line}\n{lookup_line}\n{meta_assignments}"
 
     meta_param_decl_exprs = _generate_declaration_expressions(
         meta_param_types, meta_param_names
@@ -606,6 +617,34 @@ def _generate_declaration(type, name):
 
 def _generate_condition(combination):
     return " && ".join(f"{param} == {value}" for param, value in combination.items())
+
+
+def _generate_dispatch_branch(config, meta_arguments):
+    body = textwrap.indent(
+        _generate_assignment_statements(meta_arguments.keys(), meta_arguments.values()),
+        _INDENTATION,
+    )
+
+    if not config:
+        return f"{{\n{body}\n}}"
+
+    return f"if ({_generate_condition(config)}) {{\n{body}\n}}"
+
+
+def _generate_dispatch_fallback(config_param_names, meta_param_names, csv_path):
+    config_arguments = ", ".join(
+        f"static_cast<int>({name})" for name in config_param_names
+    )
+    meta_arguments = tuple(f"meta_arguments[{i}]" for i in range(len(meta_param_names)))
+    body = "\n".join(
+        (
+            f'static ninetoothed::AutoTuningCache cache{{"{csv_path}"}};',
+            f"auto meta_arguments{{cache.lookup({{{config_arguments}}})}};",
+            _generate_assignment_statements(meta_param_names, meta_arguments),
+        )
+    )
+
+    return f"{{\n{textwrap.indent(body, _INDENTATION)}\n}}"
 
 
 def _generate_suffix(values):
