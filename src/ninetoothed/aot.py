@@ -404,11 +404,16 @@ def _compile(path, name, signature, grid, num_warps, num_stages):
 
 
 def _generate_launch_func(kernel_name, output_dir):
-    import torch
-
     output_dir = pathlib.Path(output_dir)
 
     _compile_library(kernel_name, output_dir)
+
+    return _load_launch_func(kernel_name, output_dir)
+
+
+def _load_launch_func(kernel_name, output_dir):
+    import torch
+
     library = _load_library(kernel_name, output_dir)
     launch_func_name = f"launch_{kernel_name}"
     launch_func = getattr(library, launch_func_name)
