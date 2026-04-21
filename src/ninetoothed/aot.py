@@ -355,6 +355,18 @@ class _ArgumentTensor(ctypes.Structure):
 
         return arg_tensor
 
+    @staticmethod
+    def from_scalar(value, ctype):
+        buffer = ctype(value)
+        data = ctypes.cast(ctypes.pointer(buffer), ctypes.c_void_p)
+        shape = (ctypes.c_uint64 * 0)()
+        strides = (ctypes.c_int64 * 0)()
+
+        arg_tensor = _ArgumentTensor(data, shape, strides)
+        arg_tensor._buffer = buffer
+
+        return arg_tensor
+
 
 class _KernelLaunchError(RuntimeError):
     def __init__(self, error_code):
@@ -426,6 +438,8 @@ def _load_launch_func(kernel_name, output_dir):
                 argument = _ArgumentTensor.from_torch_tensor(arg)
             elif isinstance(arg, str) and arg in _DTYPE_MAPPING:
                 argument = tuple(_DTYPE_MAPPING.keys()).index(arg)
+            elif isinstance(arg, float):
+                argument = _ArgumentTensor.from_scalar(arg, ctypes.c_double)
             else:
                 argument = arg
 
