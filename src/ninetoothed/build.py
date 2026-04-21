@@ -176,7 +176,11 @@ def build(
     return kernel
 
 
-_DEFAULT_SIZES = tuple(2**i for i in range(10))
+# TODO: Revisit this value with broader benchmarks. Short experiments on
+# `add` and `silu` showed that very small sizes (e.g., 64) produce
+# unreliable auto-tuning picks, while 256, 1024, and 4096 are all within
+# noise for the cases tested.
+_DEFAULT_SIZES = (256,)
 
 _DEFAULT_RE_TUNE_AFTER = 16
 
