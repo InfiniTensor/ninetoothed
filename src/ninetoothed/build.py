@@ -523,12 +523,9 @@ def _read_auto_tuning_cache(path):
     with open(path) as f:
         rows = tuple(csv.reader(f))
 
-    for i in range(0, len(rows), 2):
+    for i in range(2, len(rows), 2):
         config = tuple(int(value) for value in rows[i] if value)
         meta_args = tuple(int(value) for value in rows[i + 1])
-
-        if not config:
-            continue
 
         config_to_best_meta_arguments[config] = meta_args
 
