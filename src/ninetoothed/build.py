@@ -9,7 +9,7 @@ import pathlib
 
 import ninetoothed
 from ninetoothed.aot import (
-    _DTYPE_MAPPING,
+    _DTYPE_TO_INDEX,
     _HEADER_PATH,
     _INDENTATION,
     _MACRO_MAPPING,
@@ -438,11 +438,14 @@ def _generate_suffix(values):
 
 
 def _arg_to_int(arg):
+    if type(arg) is int:
+        return arg
+
     if isinstance(arg, bool) or arg is None:
         return _MACRO_MAPPING[arg][1]
 
-    if arg in _DTYPE_MAPPING:
-        return tuple(_DTYPE_MAPPING.keys()).index(arg)
+    if arg in _DTYPE_TO_INDEX:
+        return _DTYPE_TO_INDEX[arg]
 
     if isinstance(arg, enum.Enum):
         return arg.value
