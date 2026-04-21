@@ -448,14 +448,15 @@ def _load_launch_func(kernel_name, output_dir):
     from_scalar = _ArgumentTensor.from_scalar
     c_double = ctypes.c_double
     c_void_p = ctypes.c_void_p
-    cuda_current_stream = torch.cuda.current_stream
+    current_device = torch.cuda.current_device
+    get_current_raw_stream = torch._C._cuda_getCurrentRawStream
     Tensor_cls = torch.Tensor
 
     def _run_launch_func(*args):
         arguments = [None] * len(args)
 
         for i, arg in enumerate(args):
-            if type(arg) is Tensor_cls or isinstance(arg, Tensor_cls):
+            if isinstance(arg, Tensor_cls):
                 arguments[i] = from_torch_tensor(arg)
             elif type(arg) is str:
                 arguments[i] = dtype_to_index[arg]
@@ -464,7 +465,8 @@ def _load_launch_func(kernel_name, output_dir):
             else:
                 arguments[i] = arg
 
-        result = launch_func(c_void_p(cuda_current_stream().cuda_stream), *arguments)
+        stream = c_void_p(get_current_raw_stream(current_device()))
+        result = launch_func(stream, *arguments)
 
         if result != 0:
             raise _KernelLaunchError(result)
