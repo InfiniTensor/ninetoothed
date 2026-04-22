@@ -1,5 +1,6 @@
 import ast
 import ctypes
+import itertools
 import pathlib
 import re
 import shutil
@@ -36,7 +37,7 @@ def aot(
     output_contents = _aot(func, caller, kernel_name, num_warps, num_stages)
 
     for output_name, output_content in output_contents.items():
-        output_path = output_dir / f"{kernel_name}{pathlib.Path(output_name).suffix}"
+        output_path = output_dir / output_name
 
         with open(output_path, "w") as f:
             f.write(output_content)
@@ -72,9 +73,119 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     kernel_func = code_generator.kernel_func
     launch_func = code_generator.launch_func
 
+    grid_extractor = _GridExtractor()
+    launch_func = grid_extractor.visit(launch_func)
+    grid_extractor.visit(code_generator.raw_grid)
+    grid = f"{ast.unparse(grid_extractor.grid[0])}, 1, 1"
+
+    launch_arg_names = tuple(arg.arg for arg in launch_func.args.args)
+    variant_specs = _enumerate_stride_specs(
+        launch_arg_names, tensors, _find_tensor_by_source_name
+    )
+
+    output_contents = {}
+
+    for variant_suffix, stride_spec in variant_specs:
+        variant_outputs = _build_stride_variant(
+            source_file,
+            kernel_func,
+            launch_func,
+            tensors,
+            _find_tensor_by_source_name,
+            func,
+            kernel_name=kernel_name,
+            variant_suffix=variant_suffix,
+            grid=grid,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            stride_spec=stride_spec,
+        )
+        output_contents.update(variant_outputs)
+
+    dispatcher_source, dispatcher_header = _generate_stride_dispatcher(
+        kernel_name, launch_arg_names, variant_specs
+    )
+
+    output_contents[f"{kernel_name}.cpp"] = dispatcher_source
+    output_contents[f"{kernel_name}.h"] = dispatcher_header
+
+    return output_contents
+
+
+def _generate_stride_dispatcher(kernel_name, launch_arg_names, variant_specs):
+    tensor_params = ", ".join(f"NineToothedTensor {name}" for name in launch_arg_names)
+    signature_params = (
+        f"NineToothedStream stream, {tensor_params}"
+        if tensor_params
+        else "NineToothedStream stream"
+    )
+    call_args = (
+        f"stream, {', '.join(launch_arg_names)}" if launch_arg_names else "stream"
+    )
+
+    signature = f"NineToothedResult launch_{kernel_name}({signature_params})"
+
+    guard = f"NINETOOTHED_{kernel_name.upper()}_H"
+    header = (
+        f"#ifndef {guard}\n"
+        f"#define {guard}\n\n"
+        f'#include "{_HEADER_PATH}"\n\n'
+        f'#ifdef __cplusplus\nextern "C" {signature};\n'
+        f"#else\n{signature};\n#endif\n\n"
+        f"#endif\n"
+    )
+
+    externs = []
+    branches = []
+
+    for variant_suffix, stride_spec in variant_specs:
+        variant_name = f"launch_{kernel_name}_{variant_suffix}"
+        externs.append(
+            f'extern "C" NineToothedResult {variant_name}({signature_params});'
+        )
+
+        call = f"return {variant_name}({call_args});"
+
+        if stride_spec:
+            check = " && ".join(
+                f"{name}.strides[{dim}] == 1" for name, dim in stride_spec
+            )
+            branches.append(f"{_INDENTATION}if ({check}) {call}")
+        else:
+            branches.append(f"{_INDENTATION}{call}")
+
+    source = (
+        f'#include "{_HEADER_PATH}"\n\n'
+        + "\n".join(externs)
+        + f'\n\nextern "C" {signature} {{\n'
+        + "\n".join(branches)
+        + "\n}\n"
+    )
+
+    return source, header
+
+
+def _build_stride_variant(
+    source_file,
+    kernel_func,
+    launch_func,
+    tensors,
+    find_tensor,
+    func,
+    *,
+    kernel_name,
+    variant_suffix,
+    grid,
+    num_warps,
+    num_stages,
+    stride_spec,
+):
+    spec_set = {(naming.remove_prefixes(name), dim) for name, dim in stride_spec}
+
     param_strings = ["stream"]
     param_types = []
     constexpr_param_indices = []
+    constexpr_strides = []
 
     for arg in kernel_func.args.args:
         param = arg.arg
@@ -83,17 +194,26 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
 
         if match := Tensor.pointer_pattern().fullmatch(param):
             source_name = match.group(1)
-            tensor = _find_tensor_by_source_name(tensors, source_name)
+            tensor = find_tensor(tensors, source_name)
             dtype = tensor.source.dtype
 
-            param_types.append(f"*{dtype}")
+            param_types.append(f"*{dtype}:16")
         elif Tensor.size_pattern().fullmatch(param):
             param_types.append(ninetoothed.dtype.int64)
-        elif Tensor.stride_pattern().fullmatch(param):
-            param_types.append(ninetoothed.dtype.int64)
+        elif match := Tensor.stride_pattern().fullmatch(param):
+            source_name = match.group(1)
+            dim_index = int(match.group(3))
+            bare_source_name = naming.remove_prefixes(source_name)
+
+            if (bare_source_name, dim_index) in spec_set:
+                param_types.append("1")
+                constexpr_param_indices.append(len(param_types) - 1)
+                constexpr_strides.append((source_name, dim_index))
+            else:
+                param_types.append(f"{ninetoothed.dtype.int64}:16")
         else:
             source_name = param
-            tensor = _find_tensor_by_source_name(tensors, source_name)
+            tensor = find_tensor(tensors, source_name)
             dtype = tensor.source.dtype
 
             if tensor.constexpr:
@@ -107,11 +227,6 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     for index in sorted(set(constexpr_param_indices), reverse=True):
         param_strings.pop(index + 1)
         param_types.pop(index)
-
-    grid_extractor = _GridExtractor()
-    launch_func = grid_extractor.visit(launch_func)
-    grid_extractor.visit(code_generator.raw_grid)
-    grid = f"{ast.unparse(grid_extractor.grid[0])}, 1, 1"
 
     signature_hash, output_contents = _compile(
         source_file, kernel_name, signature, grid, num_warps, num_stages
@@ -128,7 +243,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
 
     kernel_name_with_hash = f"{kernel_name}_{signature_hash}"
 
-    unparser = _Unparser(c_param_type_strings)
+    unparser = _Unparser(c_param_type_strings, constexpr_strides)
 
     launch_func_unparsed = unparser.unparse(launch_func)
     launch_func_unparsed_lines = launch_func_unparsed.splitlines()
@@ -136,15 +251,16 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     launch_func_unparsed_lines.insert(1, f"{_INDENTATION}unsigned long long ctx_id;")
     launch_func_unparsed = "\n".join(launch_func_unparsed_lines)
     launch_func_unparsed = launch_func_unparsed.replace(
-        func.__name__, f"kernels[ctx_id].{kernel_name_with_hash}"
+        func.__name__, f"kernels_{variant_suffix}[ctx_id].{kernel_name_with_hash}"
+    )
+    launch_func_unparsed = launch_func_unparsed.replace(
+        f"launch_{kernel_name}(", f"launch_{kernel_name}_{variant_suffix}(", 1
     )
 
     c_source_file = c_source_file.replace("<stdint.h>", f'"{_HEADER_PATH}"')
     output_contents[c_source_file_name] = c_source_file
 
-    c_header_file = f'{c_header_file}\n#ifdef __cplusplus\nextern "C" {unparser.header};\n#else\n{unparser.header};\n#endif\n'
-    c_header_file = c_header_file.replace("<stdint.h>", f'"{_HEADER_PATH}"')
-    output_contents[c_header_file_name] = c_header_file
+    output_contents.pop(c_header_file_name, None)
 
     kernel_start = c_source_file.find("//")
     kernel_end = len(c_source_file)
@@ -156,14 +272,60 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
         + "};\n"
         + textwrap.indent(c_source_file[kernel_end:], _INDENTATION)
         + "}\n"
-        + f"\nstatic ninetoothed::ThreadSafeUnorderedMap<unsigned long long, {kernel_name_with_hash}::Kernel> kernels;\n"
+        + f"\nstatic ninetoothed::ThreadSafeUnorderedMap<unsigned long long, {kernel_name_with_hash}::Kernel> kernels_{variant_suffix};\n"
         + f'\nextern "C" {launch_func_unparsed}\n'
     )
-    cpp_source_file_name = f"{kernel_name}.{signature_hash}.cpp"
+    cpp_source_file_name = f"{kernel_name}.{variant_suffix}.cpp"
     output_contents[cpp_source_file_name] = cpp_source_file
     output_contents.pop(c_source_file_name)
 
     return output_contents
+
+
+def _enumerate_stride_specs(launch_arg_names, tensors, find_tensor):
+    per_tensor_dims = []
+
+    for name in launch_arg_names:
+        tensor = find_tensor(tensors, name)
+
+        if tensor is None or tensor.source.ndim == 0:
+            per_tensor_dims.append((None,))
+        elif tensor.source.ndim == 1:
+            per_tensor_dims.append((0,))
+        else:
+            ndim = tensor.source.ndim
+            per_tensor_dims.append((ndim - 1, ndim - 2))
+
+    innermost = {
+        name: dims[0]
+        for name, dims in zip(launch_arg_names, per_tensor_dims)
+        if dims[0] is not None
+    }
+
+    specs = []
+
+    for combo in itertools.product(*per_tensor_dims):
+        spec = tuple(
+            (name, dim) for name, dim in zip(launch_arg_names, combo) if dim is not None
+        )
+
+        if not spec:
+            continue
+
+        suffix = "s_" + "_".join(str(dim) if dim is not None else "n" for dim in combo)
+        specs.append((suffix, spec))
+
+    specs.append(("generic", ()))
+
+    def _specificity(entry):
+        _, spec = entry
+        num_innermost = sum(1 for name, dim in spec if innermost.get(name) == dim)
+
+        return (-len(spec), -num_innermost)
+
+    specs.sort(key=_specificity)
+
+    return specs
 
 
 _INDENTATION = "    "
@@ -242,8 +404,10 @@ _HEADER_PATH = CACHE_DIR / "ninetoothed.h"
 
 
 class _Unparser:
-    def __init__(self, param_types):
+    def __init__(self, param_types, constexpr_inner_strides=()):
         self._param_types = param_types
+
+        self._constexpr_inner_strides = set(constexpr_inner_strides)
 
     def unparse(self, node):
         method_name = "_unparse_" + node.__class__.__name__
@@ -263,11 +427,7 @@ class _Unparser:
         call = ast.Call(
             func=node.func,
             args=[ast.Name(id="stream", ctx=ast.Load())]
-            + [
-                arg
-                for arg in node.args
-                if not isinstance(arg, ast.Name) or not naming.is_constexpr(arg.id)
-            ],
+            + [arg for arg in node.args if not self._is_excluded(arg)],
             keywords=[],
         )
 
@@ -312,6 +472,24 @@ class _Unparser:
         body = "\n".join(body_lines)
 
         return f"{header} {{\n{body}\n}}"
+
+    def _is_excluded(self, arg):
+        if isinstance(arg, ast.Name) and naming.is_constexpr(arg.id):
+            return True
+
+        if (
+            isinstance(arg, ast.Subscript)
+            and isinstance(arg.value, ast.Attribute)
+            and arg.value.attr == "strides"
+            and isinstance(arg.slice, ast.Constant)
+            and isinstance(arg.value.value, ast.Name)
+        ):
+            return (
+                arg.value.value.id,
+                arg.slice.value,
+            ) in self._constexpr_inner_strides
+
+        return False
 
 
 class _GridExtractor(ast.NodeTransformer):
