@@ -6,6 +6,7 @@ import inspect
 import itertools
 import multiprocessing
 import pathlib
+import textwrap
 
 import ninetoothed
 from ninetoothed.aot import (
@@ -143,8 +144,10 @@ def build(
     kernel = _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
 
     if meta_parameters is not None:
+        kernel_before_auto_tuning = kernel
+
         config_to_best_meta_arguments = _auto_tune(
-            kernel,
+            kernel_before_auto_tuning,
             configs,
             all_tensors,
             meta_parameters,
@@ -153,9 +156,19 @@ def build(
             output_dir=output_dir,
         )
 
-        return _generate_kernel_with_auto_tuning(
+        kernel_after_auto_tuning = _generate_kernel_with_auto_tuning(
             config_to_best_meta_arguments,
             non_tensor_param_names,
+            kernel_name=kernel_name,
+            output_dir=output_dir,
+        )
+
+        return _AutoTunedKernel(
+            kernel_after_auto_tuning=kernel_after_auto_tuning,
+            kernel_before_auto_tuning=kernel_before_auto_tuning,
+            configs=configs,
+            meta_parameters=meta_parameters,
+            config_to_best_meta_arguments=config_to_best_meta_arguments,
             kernel_name=kernel_name,
             output_dir=output_dir,
         )
@@ -163,7 +176,117 @@ def build(
     return kernel
 
 
-_DEFAULT_SIZES = tuple(2**i for i in range(10))
+# TODO: Revisit this value with broader benchmarks. Short experiments on
+# `add` and `silu` showed that very small sizes (e.g., 64) produce
+# unreliable auto-tuning picks, while 256, 1024, and 4096 are all within
+# noise for the cases tested.
+_DEFAULT_SIZES = (256,)
+
+_DEFAULT_RE_TUNE_AFTER = 16
+
+
+class _AutoTunedKernel:
+    def __init__(
+        self,
+        kernel_after_auto_tuning,
+        kernel_before_auto_tuning,
+        configs,
+        meta_parameters,
+        config_to_best_meta_arguments,
+        kernel_name,
+        output_dir,
+        re_tune_after=_DEFAULT_RE_TUNE_AFTER,
+    ):
+        self._kernel_after_auto_tuning = kernel_after_auto_tuning
+
+        self._kernel_before_auto_tuning = kernel_before_auto_tuning
+
+        self._kernel_name = kernel_name
+
+        self._output_dir = output_dir
+
+        self._re_tune_after = re_tune_after
+
+        self._num_non_meta_premake_params = len(
+            next(iter(config_to_best_meta_arguments.keys()))
+        )
+
+        meta_values = set()
+
+        for _, kwargs, compilation_configs in configs:
+            meta = {
+                param: kwargs[param] for param in meta_parameters if param in kwargs
+            } | compilation_configs
+
+            meta_values.add(tuple(_arg_to_int(value) for value in meta.values()))
+
+        self._all_meta_values = tuple(meta_values)
+
+        self._known_configs = set(config_to_best_meta_arguments.keys())
+
+        self._new_inputs = []
+
+    def __call__(self, *args, **kwargs):
+        _, _, config_key = self._split_args(args)
+
+        if config_key not in self._known_configs:
+            self._new_inputs.append((args, kwargs))
+
+            if len(self._new_inputs) >= self._re_tune_after:
+                self._re_tune()
+
+        return self._kernel_after_auto_tuning(*args, **kwargs)
+
+    def _re_tune(self):
+        import triton
+
+        csv_path = self._output_dir / f"{self._kernel_name}.csv"
+
+        new_entries = {}
+        seen_config_keys = set()
+
+        for args, _ in self._new_inputs:
+            tensor_args, config_args, config_key = self._split_args(args)
+
+            if config_key in seen_config_keys or config_key in self._known_configs:
+                continue
+
+            seen_config_keys.add(config_key)
+
+            best_time = float("inf")
+            best_meta = self._all_meta_values[0]
+
+            for meta_values in self._all_meta_values:
+                try:
+                    timing = triton.testing.do_bench(
+                        lambda meta_values=meta_values: self._kernel_before_auto_tuning(
+                            *tensor_args, *config_args, *meta_values
+                        )
+                    )
+                except Exception:
+                    timing = float("inf")
+
+                if timing < best_time:
+                    best_time = timing
+                    best_meta = meta_values
+
+            new_entries[config_key] = best_meta
+
+        if new_entries:
+            _append_auto_tuning_cache(csv_path, new_entries)
+            self._known_configs.update(new_entries.keys())
+
+        self._new_inputs.clear()
+
+    def _split_args(self, args):
+        if self._num_non_meta_premake_params <= 0:
+            return args, (), ()
+
+        tensor_args = args[: -self._num_non_meta_premake_params]
+        config_args = args[-self._num_non_meta_premake_params :]
+        config_key = tuple(_arg_to_int(arg) for arg in config_args)
+
+        return tensor_args, config_args, config_key
 
 
 class _MetaTensor:
@@ -182,23 +305,33 @@ class _MetaTensor:
 def _generate_kernel_with_auto_tuning(
     config_to_best_meta_arguments, non_tensor_param_names, *, kernel_name, output_dir
 ):
-    num_non_meta_premake_params = len(tuple(config_to_best_meta_arguments.keys())[0])
+    num_non_meta_premake_params = len(next(iter(config_to_best_meta_arguments)))
 
     config_param_names = non_tensor_param_names[:num_non_meta_premake_params]
     meta_param_names = non_tensor_param_names[num_non_meta_premake_params:]
     meta_param_types = tuple("int" for _ in meta_param_names)
 
-    csv_path = output_dir / f"{kernel_name}.csv"
-    config_args = ", ".join(f"static_cast<int>({name})" for name in config_param_names)
-    cache_line = (
-        f'{_INDENTATION}static ninetoothed::AutoTuningCache cache{{"{csv_path}"}};'
+    declarations = _generate_declaration_statements(meta_param_types, meta_param_names)
+
+    branches = tuple(
+        _generate_dispatch_branch(
+            dict(zip(config_param_names, config)),
+            dict(zip(meta_param_names, meta_arguments)),
+        )
+        for config, meta_arguments in config_to_best_meta_arguments.items()
     )
-    lookup_line = f"{_INDENTATION}auto meta{{cache.lookup({{{config_args}}})}};"
-    meta_assignments = "\n".join(
-        f"{_INDENTATION}auto {name}{{meta[{i}]}};"
-        for i, name in enumerate(meta_param_names)
+
+    dispatch = "\nelse ".join(branches)
+
+    if config_param_names:
+        csv_path = output_dir / f"{kernel_name}.csv"
+        dispatch += "\nelse " + _generate_dispatch_fallback(
+            config_param_names, meta_param_names, csv_path
+        )
+
+    meta_param_initialization = textwrap.indent(
+        f"{declarations}\n{dispatch}", _INDENTATION
     )
-    meta_param_initialization = f"{cache_line}\n{lookup_line}\n{meta_assignments}"
 
     meta_param_decl_exprs = _generate_declaration_expressions(
         meta_param_types, meta_param_names
@@ -287,6 +420,7 @@ def _auto_tune(
 
         config_to_best_meta_arguments[int_configs] = best_meta_arguments
 
+    _normalize_meta_arguments(config_to_best_meta_arguments, configs, meta_parameters)
     _write_auto_tuning_cache(csv_path, config_to_best_meta_arguments)
 
     return config_to_best_meta_arguments
@@ -391,10 +525,10 @@ def _read_auto_tuning_cache(path):
     config_to_best_meta_arguments = {}
 
     with open(path) as f:
-        rows = list(csv.reader(f))
+        rows = tuple(csv.reader(f))
 
-    for i in range(0, len(rows), 2):
-        config = tuple(int(value) for value in rows[i])
+    for i in range(2, len(rows), 2):
+        config = tuple(int(value) for value in rows[i] if value)
         meta_args = tuple(int(value) for value in rows[i + 1])
 
         config_to_best_meta_arguments[config] = meta_args
@@ -403,10 +537,63 @@ def _read_auto_tuning_cache(path):
 
 
 def _write_auto_tuning_cache(path, config_to_best_meta_arguments):
+    default_meta = next(iter(config_to_best_meta_arguments.values()))
+
     with open(path, "w") as f:
-        csv.writer(f).writerows(
-            itertools.chain.from_iterable(config_to_best_meta_arguments.items())
-        )
+        writer = csv.writer(f)
+
+        writer.writerow(())
+        writer.writerow(default_meta)
+
+        for config, meta in config_to_best_meta_arguments.items():
+            writer.writerow(config)
+            writer.writerow(meta)
+
+
+def _append_auto_tuning_cache(path, new_entries):
+    with open(path, "a") as f:
+        writer = csv.writer(f)
+
+        for config, meta in new_entries.items():
+            writer.writerow(config)
+            writer.writerow(meta)
+
+
+def _normalize_meta_arguments(config_to_best_meta_arguments, configs, meta_parameters):
+    from ninetoothed.utils import calculate_default_configs
+
+    default_num_warps, default_num_stages = calculate_default_configs()
+    compilation_defaults = {
+        "num_warps": default_num_warps,
+        "num_stages": default_num_stages,
+    }
+
+    all_meta_names = {}
+
+    for config in configs:
+        _, kwargs, compilation_configs = config
+
+        meta_args = {
+            param: kwargs[param] for param in meta_parameters if param in kwargs
+        } | compilation_configs
+
+        for key in meta_args:
+            all_meta_names[key] = None
+
+    expected_len = len(all_meta_names)
+    meta_names = tuple(all_meta_names.keys())
+
+    for int_configs, meta_values in config_to_best_meta_arguments.items():
+        if len(meta_values) >= expected_len:
+            continue
+
+        padded = list(meta_values)
+
+        for i in range(len(meta_values), expected_len):
+            name = meta_names[i]
+            padded.append(compilation_defaults.get(name, 0))
+
+        config_to_best_meta_arguments[int_configs] = tuple(padded)
 
 
 def _generate_declaration_statements(types, names):
@@ -431,6 +618,34 @@ def _generate_declaration(type, name):
 
 def _generate_condition(combination):
     return " && ".join(f"{param} == {value}" for param, value in combination.items())
+
+
+def _generate_dispatch_branch(config, meta_arguments):
+    body = textwrap.indent(
+        _generate_assignment_statements(meta_arguments.keys(), meta_arguments.values()),
+        _INDENTATION,
+    )
+
+    if not config:
+        return f"{{\n{body}\n}}"
+
+    return f"if ({_generate_condition(config)}) {{\n{body}\n}}"
+
+
+def _generate_dispatch_fallback(config_param_names, meta_param_names, csv_path):
+    config_arguments = ", ".join(
+        f"static_cast<int>({name})" for name in config_param_names
+    )
+    meta_arguments = tuple(f"meta_arguments[{i}]" for i in range(len(meta_param_names)))
+    body = "\n".join(
+        (
+            f'static ninetoothed::AutoTuningCache cache{{"{csv_path}"}};',
+            f"auto meta_arguments{{cache.lookup({{{config_arguments}}})}};",
+            _generate_assignment_statements(meta_param_names, meta_arguments),
+        )
+    )
+
+    return f"{{\n{textwrap.indent(body, _INDENTATION)}\n}}"
 
 
 def _generate_suffix(values):

@@ -1,3 +1,4 @@
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -11,9 +12,7 @@ public:
     AutoTuningCache(const std::string& path) : path{path} {}
 
     std::vector<int> lookup(const std::vector<int>& config) {
-        if (!loaded) {
-            load();
-        }
+        load();
 
         auto iter = cache.find(config);
 
@@ -21,20 +20,32 @@ public:
             return iter->second;
         }
 
-        return {};
+        return default_meta;
     }
 
 private:
     void load() {
+        auto mtime = std::filesystem::last_write_time(path);
+
+        if (mtime == last_mtime) {
+            return;
+        }
+
+        last_mtime = mtime;
+
+        cache.clear();
+
         std::ifstream file{path};
         std::string config_line;
         std::string meta_line;
 
+        if (std::getline(file, config_line) && std::getline(file, meta_line)) {
+            default_meta = parse(meta_line);
+        }
+
         while (std::getline(file, config_line) && std::getline(file, meta_line)) {
             cache[parse(config_line)] = parse(meta_line);
         }
-
-        loaded = true;
     }
 
     static std::vector<int> parse(const std::string& line) {
@@ -43,17 +54,35 @@ private:
         std::string token;
 
         while (std::getline(ss, token, ',')) {
-            values.push_back(std::stoi(token));
+            auto trimmed = trim(token);
+
+            if (!trimmed.empty()) {
+                values.push_back(std::stoi(trimmed));
+            }
         }
 
         return values;
     }
 
+    static std::string trim(const std::string& s) {
+        auto start = s.find_first_not_of(" \t\r\n");
+
+        if (start == std::string::npos) {
+            return "";
+        }
+
+        auto end = s.find_last_not_of(" \t\r\n");
+
+        return s.substr(start, end - start + 1);
+    }
+
     std::string path;
 
-    bool loaded{false};
-
     std::map<std::vector<int>, std::vector<int>> cache;
+
+    std::vector<int> default_meta;
+
+    std::filesystem::file_time_type last_mtime;
 };
 
 }
