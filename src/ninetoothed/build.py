@@ -333,11 +333,15 @@ class _MetaTensor:
     def __init__(self, shape, dtype):
         self.shape = []
 
+        self.upper_bounds = []
+
         for size in shape:
             if isinstance(size, Symbol):
                 self.shape.append(None)
+                self.upper_bounds.append(getattr(size, "upper_bound", None))
             else:
                 self.shape.append(size)
+                self.upper_bounds.append(None)
 
         self.dtype = dtype
 
@@ -491,9 +495,18 @@ def _warm_up(kernel, config, meta_tensors, *, caller):
     for meta_tensor in meta_tensors:
         all_sizes = []
 
-        for size in meta_tensor.shape:
+        for size, upper_bound in zip(meta_tensor.shape, meta_tensor.upper_bounds):
             if size is None:
-                all_sizes.append(_DEFAULT_SIZES)
+                if upper_bound is not None:
+                    all_sizes.append(
+                        tuple(
+                            dict.fromkeys(
+                                min(upper_bound, size) for size in _DEFAULT_SIZES
+                            )
+                        )
+                    )
+                else:
+                    all_sizes.append(_DEFAULT_SIZES)
             else:
                 all_sizes.append((size,))
 
