@@ -75,6 +75,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     param_strings = ["stream"]
     param_types = []
     constexpr_param_indices = []
+    constexpr_inner_strides = []
 
     for arg in kernel_func.args.args:
         param = arg.arg
@@ -86,11 +87,20 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
             tensor = _find_tensor_by_source_name(tensors, source_name)
             dtype = tensor.source.dtype
 
-            param_types.append(f"*{dtype}")
+            param_types.append(f"*{dtype}:16")
         elif Tensor.size_pattern().fullmatch(param):
             param_types.append(ninetoothed.dtype.int64)
-        elif Tensor.stride_pattern().fullmatch(param):
-            param_types.append(ninetoothed.dtype.int64)
+        elif match := Tensor.stride_pattern().fullmatch(param):
+            source_name = match.group(1)
+            dim_index = int(match.group(3))
+            tensor = _find_tensor_by_source_name(tensors, source_name)
+
+            if dim_index == tensor.source.ndim - 1:
+                param_types.append("1")
+                constexpr_param_indices.append(len(param_types) - 1)
+                constexpr_inner_strides.append((source_name, dim_index))
+            else:
+                param_types.append(f"{ninetoothed.dtype.int64}:16")
         else:
             source_name = param
             tensor = _find_tensor_by_source_name(tensors, source_name)
@@ -128,7 +138,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
 
     kernel_name_with_hash = f"{kernel_name}_{signature_hash}"
 
-    unparser = _Unparser(c_param_type_strings)
+    unparser = _Unparser(c_param_type_strings, constexpr_inner_strides)
 
     launch_func_unparsed = unparser.unparse(launch_func)
     launch_func_unparsed_lines = launch_func_unparsed.splitlines()
@@ -242,8 +252,10 @@ _HEADER_PATH = CACHE_DIR / "ninetoothed.h"
 
 
 class _Unparser:
-    def __init__(self, param_types):
+    def __init__(self, param_types, constexpr_inner_strides=()):
         self._param_types = param_types
+
+        self._constexpr_inner_strides = set(constexpr_inner_strides)
 
     def unparse(self, node):
         method_name = "_unparse_" + node.__class__.__name__
@@ -263,11 +275,7 @@ class _Unparser:
         call = ast.Call(
             func=node.func,
             args=[ast.Name(id="stream", ctx=ast.Load())]
-            + [
-                arg
-                for arg in node.args
-                if not isinstance(arg, ast.Name) or not naming.is_constexpr(arg.id)
-            ],
+            + [arg for arg in node.args if not self._is_excluded(arg)],
             keywords=[],
         )
 
@@ -312,6 +320,24 @@ class _Unparser:
         body = "\n".join(body_lines)
 
         return f"{header} {{\n{body}\n}}"
+
+    def _is_excluded(self, arg):
+        if isinstance(arg, ast.Name) and naming.is_constexpr(arg.id):
+            return True
+
+        if (
+            isinstance(arg, ast.Subscript)
+            and isinstance(arg.value, ast.Attribute)
+            and arg.value.attr == "strides"
+            and isinstance(arg.slice, ast.Constant)
+            and isinstance(arg.value.value, ast.Name)
+        ):
+            return (
+                arg.value.value.id,
+                arg.slice.value,
+            ) in self._constexpr_inner_strides
+
+        return False
 
 
 class _GridExtractor(ast.NodeTransformer):
