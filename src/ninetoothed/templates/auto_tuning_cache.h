@@ -1,3 +1,4 @@
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -24,6 +25,14 @@ public:
 
 private:
     void load() {
+        auto mtime = std::filesystem::last_write_time(path);
+
+        if (mtime == last_mtime) {
+            return;
+        }
+
+        last_mtime = mtime;
+
         cache.clear();
 
         std::ifstream file{path};
@@ -72,6 +81,8 @@ private:
     std::map<std::vector<int>, std::vector<int>> cache;
 
     std::vector<int> default_meta;
+
+    std::filesystem::file_time_type last_mtime;
 };
 
 }
