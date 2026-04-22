@@ -1,5 +1,6 @@
 import ast
 import ctypes
+import itertools
 import pathlib
 import re
 import shutil
@@ -77,41 +78,32 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     grid_extractor.visit(code_generator.raw_grid)
     grid = f"{ast.unparse(grid_extractor.grid[0])}, 1, 1"
 
-    contiguous_outputs = _build_stride_variant(
-        source_file,
-        kernel_func,
-        launch_func,
-        tensors,
-        _find_tensor_by_source_name,
-        func,
-        kernel_name=kernel_name,
-        variant_suffix="contiguous",
-        grid=grid,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        inner_stride_constexpr=True,
-    )
-
-    generic_outputs = _build_stride_variant(
-        source_file,
-        kernel_func,
-        launch_func,
-        tensors,
-        _find_tensor_by_source_name,
-        func,
-        kernel_name=kernel_name,
-        variant_suffix="generic",
-        grid=grid,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        inner_stride_constexpr=False,
-    )
-
-    output_contents = {**contiguous_outputs, **generic_outputs}
-
     launch_arg_names = tuple(arg.arg for arg in launch_func.args.args)
+    variant_specs = _enumerate_stride_specs(
+        launch_arg_names, tensors, _find_tensor_by_source_name
+    )
+
+    output_contents = {}
+
+    for variant_suffix, stride_spec in variant_specs:
+        variant_outputs = _build_stride_variant(
+            source_file,
+            kernel_func,
+            launch_func,
+            tensors,
+            _find_tensor_by_source_name,
+            func,
+            kernel_name=kernel_name,
+            variant_suffix=variant_suffix,
+            grid=grid,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            stride_spec=stride_spec,
+        )
+        output_contents.update(variant_outputs)
+
     dispatcher_source, dispatcher_header = _generate_stride_dispatcher(
-        kernel_name, launch_arg_names, tensors, _find_tensor_by_source_name
+        kernel_name, launch_arg_names, variant_specs
     )
 
     output_contents[f"{kernel_name}.cpp"] = dispatcher_source
@@ -120,21 +112,18 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     return output_contents
 
 
-def _generate_stride_dispatcher(kernel_name, launch_arg_names, tensors, find_tensor):
-    param_list = ", ".join(f"NineToothedTensor {name}" for name in launch_arg_names)
-    call_args = ", ".join(launch_arg_names)
+def _generate_stride_dispatcher(kernel_name, launch_arg_names, variant_specs):
+    tensor_params = ", ".join(f"NineToothedTensor {name}" for name in launch_arg_names)
+    signature_params = (
+        f"NineToothedStream stream, {tensor_params}"
+        if tensor_params
+        else "NineToothedStream stream"
+    )
+    call_args = (
+        f"stream, {', '.join(launch_arg_names)}" if launch_arg_names else "stream"
+    )
 
-    check_exprs = []
-
-    for name in launch_arg_names:
-        tensor = find_tensor(tensors, name)
-
-        if tensor is not None and tensor.source.ndim > 0:
-            check_exprs.append(f"{name}.strides[{tensor.source.ndim - 1}] == 1")
-
-    checks = " && ".join(check_exprs) or "true"
-
-    signature = f"NineToothedResult launch_{kernel_name}(NineToothedStream stream{', ' + param_list if param_list else ''})"
+    signature = f"NineToothedResult launch_{kernel_name}({signature_params})"
 
     guard = f"NINETOOTHED_{kernel_name.upper()}_H"
     header = (
@@ -146,18 +135,31 @@ def _generate_stride_dispatcher(kernel_name, launch_arg_names, tensors, find_ten
         f"#endif\n"
     )
 
+    externs = []
+    branches = []
+
+    for variant_suffix, stride_spec in variant_specs:
+        variant_name = f"launch_{kernel_name}_{variant_suffix}"
+        externs.append(
+            f'extern "C" NineToothedResult {variant_name}({signature_params});'
+        )
+
+        call = f"return {variant_name}({call_args});"
+
+        if stride_spec:
+            check = " && ".join(
+                f"{name}.strides[{dim}] == 1" for name, dim in stride_spec
+            )
+            branches.append(f"{_INDENTATION}if ({check}) {call}")
+        else:
+            branches.append(f"{_INDENTATION}{call}")
+
     source = (
-        f'#include "{_HEADER_PATH}"\n'
-        f'\nextern "C" NineToothedResult launch_{kernel_name}_contiguous(NineToothedStream stream{", " + param_list if param_list else ""});\n'
-        f'extern "C" NineToothedResult launch_{kernel_name}_generic(NineToothedStream stream{", " + param_list if param_list else ""});\n'
-        f'\nextern "C" {signature} {{\n'
-        f"{_INDENTATION}bool contiguous = {checks};\n"
-        f"{_INDENTATION}if (contiguous) {{\n"
-        f"{_INDENTATION}{_INDENTATION}return launch_{kernel_name}_contiguous(stream{', ' + call_args if call_args else ''});\n"
-        f"{_INDENTATION}}} else {{\n"
-        f"{_INDENTATION}{_INDENTATION}return launch_{kernel_name}_generic(stream{', ' + call_args if call_args else ''});\n"
-        f"{_INDENTATION}}}\n"
-        f"}}\n"
+        f'#include "{_HEADER_PATH}"\n\n'
+        + "\n".join(externs)
+        + f'\n\nextern "C" {signature} {{\n'
+        + "\n".join(branches)
+        + "\n}\n"
     )
 
     return source, header
@@ -176,12 +178,14 @@ def _build_stride_variant(
     grid,
     num_warps,
     num_stages,
-    inner_stride_constexpr,
+    stride_spec,
 ):
+    spec_set = {(naming.remove_prefixes(name), dim) for name, dim in stride_spec}
+
     param_strings = ["stream"]
     param_types = []
     constexpr_param_indices = []
-    constexpr_inner_strides = []
+    constexpr_strides = []
 
     for arg in kernel_func.args.args:
         param = arg.arg
@@ -199,12 +203,12 @@ def _build_stride_variant(
         elif match := Tensor.stride_pattern().fullmatch(param):
             source_name = match.group(1)
             dim_index = int(match.group(3))
-            tensor = find_tensor(tensors, source_name)
+            bare_source_name = naming.remove_prefixes(source_name)
 
-            if inner_stride_constexpr and dim_index == tensor.source.ndim - 1:
+            if (bare_source_name, dim_index) in spec_set:
                 param_types.append("1")
                 constexpr_param_indices.append(len(param_types) - 1)
-                constexpr_inner_strides.append((source_name, dim_index))
+                constexpr_strides.append((source_name, dim_index))
             else:
                 param_types.append(f"{ninetoothed.dtype.int64}:16")
         else:
@@ -239,7 +243,7 @@ def _build_stride_variant(
 
     kernel_name_with_hash = f"{kernel_name}_{signature_hash}"
 
-    unparser = _Unparser(c_param_type_strings, constexpr_inner_strides)
+    unparser = _Unparser(c_param_type_strings, constexpr_strides)
 
     launch_func_unparsed = unparser.unparse(launch_func)
     launch_func_unparsed_lines = launch_func_unparsed.splitlines()
@@ -276,6 +280,52 @@ def _build_stride_variant(
     output_contents.pop(c_source_file_name)
 
     return output_contents
+
+
+def _enumerate_stride_specs(launch_arg_names, tensors, find_tensor):
+    per_tensor_dims = []
+
+    for name in launch_arg_names:
+        tensor = find_tensor(tensors, name)
+
+        if tensor is None or tensor.source.ndim == 0:
+            per_tensor_dims.append((None,))
+        elif tensor.source.ndim == 1:
+            per_tensor_dims.append((0,))
+        else:
+            ndim = tensor.source.ndim
+            per_tensor_dims.append((ndim - 1, ndim - 2))
+
+    innermost = {
+        name: dims[0]
+        for name, dims in zip(launch_arg_names, per_tensor_dims)
+        if dims[0] is not None
+    }
+
+    specs = []
+
+    for combo in itertools.product(*per_tensor_dims):
+        spec = tuple(
+            (name, dim) for name, dim in zip(launch_arg_names, combo) if dim is not None
+        )
+
+        if not spec:
+            continue
+
+        suffix = "s_" + "_".join(str(dim) if dim is not None else "n" for dim in combo)
+        specs.append((suffix, spec))
+
+    specs.append(("generic", ()))
+
+    def _specificity(entry):
+        _, spec = entry
+        num_innermost = sum(1 for name, dim in spec if innermost.get(name) == dim)
+
+        return (-len(spec), -num_innermost)
+
+    specs.sort(key=_specificity)
+
+    return specs
 
 
 _INDENTATION = "    "
