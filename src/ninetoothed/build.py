@@ -30,6 +30,7 @@ def build(
     caller=None,
     kernel_name=None,
     output_dir=None,
+    lazy=False,
 ):
     """Build a kernel from a ``premake`` function and ``configs``.
 
@@ -46,6 +47,10 @@ def build(
     :param caller: Who will call the compute kernel.
     :param kernel_name: The name for the generated kernel.
     :param output_dir: The directory to store the generated files.
+    :param lazy: If ``True``, defer the actual build until the returned
+        kernel is first called. Use this when ``build`` is invoked at
+        module import time and its ``ProcessPoolExecutor`` would
+        otherwise deadlock on the Python import lock.
     """
 
     if caller is None:
@@ -59,6 +64,18 @@ def build(
 
     if cached is not None:
         return cached
+
+    if lazy:
+        return _LazyKernel(
+            lambda: build(
+                premake,
+                configs,
+                meta_parameters=meta_parameters,
+                caller=caller,
+                kernel_name=kernel_name,
+                output_dir=output_dir,
+            )
+        )
 
     kernel_names = []
     all_param_names = []
@@ -191,6 +208,21 @@ def build(
 _DEFAULT_SIZES = (256,)
 
 _DEFAULT_RE_TUNE_AFTER = 16
+
+
+class _LazyKernel:
+    __slots__ = ("_factory", "_kernel")
+
+    def __init__(self, factory):
+        self._factory = factory
+
+        self._kernel = None
+
+    def __call__(self, *args, **kwargs):
+        if self._kernel is None:
+            self._kernel = self._factory()
+
+        return self._kernel(*args, **kwargs)
 
 
 class _AutoTunedKernel:
