@@ -1,6 +1,5 @@
 import ast
 import ctypes
-import itertools
 import pathlib
 import re
 import shutil
@@ -190,6 +189,8 @@ _DTYPE_MAPPING = {
     ninetoothed.dtype.float64: "NINETOOTHED_FLOAT64",
 }
 
+_DTYPE_TO_INDEX = {name: i for i, name in enumerate(_DTYPE_MAPPING.keys())}
+
 _MACRO_CONTENT = "\n\n".join(
     f"#define {identifier} {replacement}"
     for identifier, replacement in _MACRO_MAPPING.values()
@@ -346,11 +347,14 @@ class _ArgumentTensor(ctypes.Structure):
 
     @staticmethod
     def from_torch_tensor(tensor):
-        data = ctypes.c_void_p(tensor.data_ptr())
-        shape = (ctypes.c_uint64 * len(tensor.shape))(*tensor.shape)
-        strides = (ctypes.c_int64 * len(tensor.stride()))(*tensor.stride())
+        ndim = tensor.ndim
+        shape_array_type = _SHAPE_ARRAY_TYPES_BY_NDIM[ndim]
+        strides_array_type = _STRIDES_ARRAY_TYPES_BY_NDIM[ndim]
 
-        arg_tensor = _ArgumentTensor(data, shape, strides)
+        shape = shape_array_type(*tensor.shape)
+        strides = strides_array_type(*tensor.stride())
+
+        arg_tensor = _ArgumentTensor(tensor.data_ptr(), shape, strides)
         arg_tensor._torch_tensor = tensor
 
         return arg_tensor
@@ -358,14 +362,23 @@ class _ArgumentTensor(ctypes.Structure):
     @staticmethod
     def from_scalar(value, ctype):
         buffer = ctype(value)
-        data = ctypes.cast(ctypes.pointer(buffer), ctypes.c_void_p)
-        shape = (ctypes.c_uint64 * 0)()
-        strides = (ctypes.c_int64 * 0)()
-
-        arg_tensor = _ArgumentTensor(data, shape, strides)
+        arg_tensor = _ArgumentTensor(
+            ctypes.addressof(buffer), _EMPTY_SHAPE_ARRAY, _EMPTY_STRIDES_ARRAY
+        )
         arg_tensor._buffer = buffer
 
         return arg_tensor
+
+
+_MAX_NUM_DIMS = 8
+
+_SHAPE_ARRAY_TYPES_BY_NDIM = tuple(ctypes.c_uint64 * i for i in range(_MAX_NUM_DIMS))
+
+_STRIDES_ARRAY_TYPES_BY_NDIM = tuple(ctypes.c_int64 * i for i in range(_MAX_NUM_DIMS))
+
+_EMPTY_SHAPE_ARRAY = _SHAPE_ARRAY_TYPES_BY_NDIM[0]()
+
+_EMPTY_STRIDES_ARRAY = _STRIDES_ARRAY_TYPES_BY_NDIM[0]()
 
 
 class _KernelLaunchError(RuntimeError):
@@ -430,24 +443,28 @@ def _load_launch_func(kernel_name, output_dir):
     launch_func_name = f"launch_{kernel_name}"
     launch_func = getattr(library, launch_func_name)
 
-    def _run_launch_func(*args, **kwargs):
-        arguments = []
+    dtype_to_index = _DTYPE_TO_INDEX
+    from_torch_tensor = _ArgumentTensor.from_torch_tensor
+    from_scalar = _ArgumentTensor.from_scalar
+    c_double = ctypes.c_double
+    c_void_p = ctypes.c_void_p
+    cuda_current_stream = torch.cuda.current_stream
+    Tensor_cls = torch.Tensor
 
-        for arg in itertools.chain(args, kwargs.values()):
-            if isinstance(arg, torch.Tensor):
-                argument = _ArgumentTensor.from_torch_tensor(arg)
-            elif isinstance(arg, str) and arg in _DTYPE_MAPPING:
-                argument = tuple(_DTYPE_MAPPING.keys()).index(arg)
-            elif isinstance(arg, float):
-                argument = _ArgumentTensor.from_scalar(arg, ctypes.c_double)
+    def _run_launch_func(*args):
+        arguments = [None] * len(args)
+
+        for i, arg in enumerate(args):
+            if type(arg) is Tensor_cls or isinstance(arg, Tensor_cls):
+                arguments[i] = from_torch_tensor(arg)
+            elif type(arg) is str:
+                arguments[i] = dtype_to_index[arg]
+            elif type(arg) is float:
+                arguments[i] = from_scalar(arg, c_double)
             else:
-                argument = arg
+                arguments[i] = arg
 
-            arguments.append(argument)
-
-        result = launch_func(
-            ctypes.c_void_p(torch.cuda.current_stream().cuda_stream), *arguments
-        )
+        result = launch_func(c_void_p(cuda_current_stream().cuda_stream), *arguments)
 
         if result != 0:
             raise _KernelLaunchError(result)
