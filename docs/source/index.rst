@@ -12,4 +12,5 @@ NineToothed Documentation
 
    installation
    basics
+   build
    python_api
