@@ -16,6 +16,7 @@ from ninetoothed.aot import (
     _MACRO_MAPPING,
     _generate_launch_func,
     _KernelLaunchError,
+    _load_launch_func,
 )
 from ninetoothed.auto_tuner import AutoTuner
 from ninetoothed.tensor import Symbol
@@ -29,6 +30,7 @@ def build(
     caller=None,
     kernel_name=None,
     output_dir=None,
+    lazy=False,
 ):
     """Build a kernel from a ``premake`` function and ``configs``.
 
@@ -45,12 +47,35 @@ def build(
     :param caller: Who will call the compute kernel.
     :param kernel_name: The name for the generated kernel.
     :param output_dir: The directory to store the generated files.
+    :param lazy: If ``True``, defer the actual build until the returned
+        kernel is first called. Use this when ``build`` is invoked at
+        module import time and its ``ProcessPoolExecutor`` would
+        otherwise deadlock on the Python import lock.
     """
 
     if caller is None:
         caller = "cuda"
 
     output_dir = pathlib.Path(output_dir)
+
+    cached = _load_cached(
+        configs, meta_parameters, kernel_name=kernel_name, output_dir=output_dir
+    )
+
+    if cached is not None:
+        return cached
+
+    if lazy:
+        return _LazyKernel(
+            lambda: build(
+                premake,
+                configs,
+                meta_parameters=meta_parameters,
+                caller=caller,
+                kernel_name=kernel_name,
+                output_dir=output_dir,
+            )
+        )
 
     kernel_names = []
     all_param_names = []
@@ -185,6 +210,21 @@ _DEFAULT_SIZES = (256,)
 _DEFAULT_RE_TUNE_AFTER = 16
 
 
+class _LazyKernel:
+    __slots__ = ("_factory", "_kernel")
+
+    def __init__(self, factory):
+        self._factory = factory
+
+        self._kernel = None
+
+    def __call__(self, *args, **kwargs):
+        if self._kernel is None:
+            self._kernel = self._factory()
+
+        return self._kernel(*args, **kwargs)
+
+
 class _AutoTunedKernel:
     def __init__(
         self,
@@ -293,11 +333,15 @@ class _MetaTensor:
     def __init__(self, shape, dtype):
         self.shape = []
 
+        self.upper_bounds = []
+
         for size in shape:
             if isinstance(size, Symbol):
                 self.shape.append(None)
+                self.upper_bounds.append(getattr(size, "upper_bound", None))
             else:
                 self.shape.append(size)
+                self.upper_bounds.append(None)
 
         self.dtype = dtype
 
@@ -451,9 +495,18 @@ def _warm_up(kernel, config, meta_tensors, *, caller):
     for meta_tensor in meta_tensors:
         all_sizes = []
 
-        for size in meta_tensor.shape:
+        for size, upper_bound in zip(meta_tensor.shape, meta_tensor.upper_bounds):
             if size is None:
-                all_sizes.append(_DEFAULT_SIZES)
+                if upper_bound is not None:
+                    all_sizes.append(
+                        tuple(
+                            dict.fromkeys(
+                                min(upper_bound, size) for size in _DEFAULT_SIZES
+                            )
+                        )
+                    )
+                else:
+                    all_sizes.append(_DEFAULT_SIZES)
             else:
                 all_sizes.append((size,))
 
@@ -516,6 +569,34 @@ def _make(premake, config, caller, kernel_name, output_dir):
     )
 
     return kernel_name_, param_names, combination, config, tensors
+
+
+def _load_cached(configs, meta_parameters, *, kernel_name, output_dir):
+    so_path = output_dir / f"{kernel_name}.so"
+
+    if not so_path.exists():
+        return None
+
+    if meta_parameters is None:
+        return _load_launch_func(kernel_name=kernel_name, output_dir=output_dir)
+
+    csv_path = output_dir / f"{kernel_name}.csv"
+    config_to_best_meta_arguments = _read_auto_tuning_cache(csv_path)
+
+    if not config_to_best_meta_arguments:
+        return None
+
+    kernel = _load_launch_func(kernel_name=kernel_name, output_dir=output_dir)
+
+    return _AutoTunedKernel(
+        kernel_after_auto_tuning=kernel,
+        kernel_before_auto_tuning=kernel,
+        configs=configs,
+        meta_parameters=meta_parameters,
+        config_to_best_meta_arguments=config_to_best_meta_arguments,
+        kernel_name=kernel_name,
+        output_dir=output_dir,
+    )
 
 
 def _read_auto_tuning_cache(path):
