@@ -79,14 +79,14 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     grid = f"{ast.unparse(grid_extractor.grid[0])}, 1, 1"
 
     launch_arg_names = tuple(arg.arg for arg in launch_func.args.args)
-    variant_specs = _enumerate_stride_specs(
+    variant_specs = _enumerate_contiguity_specs(
         launch_arg_names, tensors, _find_tensor_by_source_name
     )
 
     output_contents = {}
 
-    for variant_suffix, stride_spec in variant_specs:
-        variant_outputs = _build_stride_variant(
+    for variant_suffix, contiguity_spec in variant_specs:
+        variant_outputs = _build_contiguity_variant(
             source_file,
             kernel_func,
             launch_func,
@@ -98,11 +98,11 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
             grid=grid,
             num_warps=num_warps,
             num_stages=num_stages,
-            stride_spec=stride_spec,
+            contiguity_spec=contiguity_spec,
         )
         output_contents.update(variant_outputs)
 
-    dispatcher_source, dispatcher_header = _generate_stride_dispatcher(
+    dispatcher_source, dispatcher_header = _generate_contiguity_dispatcher(
         kernel_name, launch_arg_names, variant_specs
     )
 
@@ -112,7 +112,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     return output_contents
 
 
-def _generate_stride_dispatcher(kernel_name, launch_arg_names, variant_specs):
+def _generate_contiguity_dispatcher(kernel_name, launch_arg_names, variant_specs):
     tensor_params = ", ".join(f"NineToothedTensor {name}" for name in launch_arg_names)
     signature_params = (
         f"NineToothedStream stream, {tensor_params}"
@@ -138,7 +138,7 @@ def _generate_stride_dispatcher(kernel_name, launch_arg_names, variant_specs):
     externs = []
     branches = []
 
-    for variant_suffix, stride_spec in variant_specs:
+    for variant_suffix, contiguity_spec in variant_specs:
         variant_name = f"launch_{kernel_name}_{variant_suffix}"
         externs.append(
             f'extern "C" NineToothedResult {variant_name}({signature_params});'
@@ -146,9 +146,9 @@ def _generate_stride_dispatcher(kernel_name, launch_arg_names, variant_specs):
 
         call = f"return {variant_name}({call_args});"
 
-        if stride_spec:
+        if contiguity_spec:
             check = " && ".join(
-                f"{name}.strides[{dim}] == 1" for name, dim in stride_spec
+                f"{name}.strides[{dim}] == 1" for name, dim in contiguity_spec
             )
             branches.append(f"{_INDENTATION}if ({check}) {call}")
         else:
@@ -165,7 +165,7 @@ def _generate_stride_dispatcher(kernel_name, launch_arg_names, variant_specs):
     return source, header
 
 
-def _build_stride_variant(
+def _build_contiguity_variant(
     source_file,
     kernel_func,
     launch_func,
@@ -178,9 +178,9 @@ def _build_stride_variant(
     grid,
     num_warps,
     num_stages,
-    stride_spec,
+    contiguity_spec,
 ):
-    spec_set = {(naming.remove_prefixes(name), dim) for name, dim in stride_spec}
+    spec_set = {(naming.remove_prefixes(name), dim) for name, dim in contiguity_spec}
 
     param_strings = ["stream"]
     param_types = []
@@ -282,7 +282,7 @@ def _build_stride_variant(
     return output_contents
 
 
-def _enumerate_stride_specs(launch_arg_names, tensors, find_tensor):
+def _enumerate_contiguity_specs(launch_arg_names, tensors, find_tensor):
     per_tensor_dims = []
 
     for name in launch_arg_names:
