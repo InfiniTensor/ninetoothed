@@ -18,6 +18,11 @@ from ninetoothed.aot import (
     _KernelLaunchError,
     _load_launch_func,
 )
+from ninetoothed.ascendaotbackend import (
+    build_record as _build_ascend_record,
+    build_from_records as _build_ascend_from_records,
+    should_use_ascend_aot_dispatch as _should_use_ascend_aot_dispatch,
+)
 from ninetoothed.auto_tuner import AutoTuner
 from ninetoothed.tensor import Symbol
 
@@ -77,10 +82,32 @@ def build(
             )
         )
 
-    kernel_names = []
-    all_param_names = []
-    combinations = []
-    all_tensors = []
+    configs = tuple(configs)
+
+    if _should_use_ascend_aot_dispatch(caller):
+        records = []
+        for config in configs:
+            records.append(
+                _build_ascend_record(
+                    premake,
+                    config,
+                    kernel_name=kernel_name,
+                    arg_to_int=_arg_to_int,
+                    generate_suffix=_generate_suffix,
+                    annotate_application=_annotate_application,
+                )
+            )
+        return _build_ascend_from_records(
+            records,
+            meta_parameters=meta_parameters,
+            caller=caller,
+            kernel_name=kernel_name,
+            output_dir=output_dir,
+            arg_to_int=_arg_to_int,
+            kernel_launch_error_cls=_KernelLaunchError,
+            auto_tune_fn=_auto_tune,
+            auto_tuned_kernel_cls=_AutoTunedKernel,
+        )
 
     with concurrent.futures.ProcessPoolExecutor(
         mp_context=multiprocessing.get_context("spawn")
@@ -96,19 +123,17 @@ def build(
                 kernel_name=kernel_name,
                 output_dir=output_dir,
             )
-
             futures.append(future)
 
-        configs = []
-
+        records = []
         for future in concurrent.futures.as_completed(futures):
-            kernel_name_, param_names, combination, config, tensors = future.result()
+            records.append(future.result())
 
-            kernel_names.append(kernel_name_)
-            all_param_names.append(param_names)
-            combinations.append(combination)
-            configs.append(config)
-            all_tensors.append(tensors)
+    configs = tuple(record[3] for record in records)
+    all_tensors = tuple(record[4] for record in records)
+    all_param_names = tuple(record[1] for record in records)
+    combinations = tuple(record[2] for record in records)
+    kernel_names = tuple(record[0] for record in records)
 
     tensor_param_names = tuple(
         functools.reduce(
@@ -200,7 +225,6 @@ def build(
 
     return kernel
 
-
 # TODO: Revisit this value with broader benchmarks. Short experiments on
 # `add` and `silu` showed that very small sizes (e.g., 64) produce
 # unreliable auto-tuning picks, while 256, 1024, and 4096 are all within
@@ -236,6 +260,7 @@ class _AutoTunedKernel:
         kernel_name,
         output_dir,
         re_tune_after=_DEFAULT_RE_TUNE_AFTER,
+        runtime_fallback_handler=None,
     ):
         self._kernel_after_auto_tuning = kernel_after_auto_tuning
 
@@ -266,6 +291,11 @@ class _AutoTunedKernel:
 
         self._new_inputs = []
 
+        self._runtime_fallback_handler = runtime_fallback_handler
+        self._kernel_launch_error_cls = _KernelLaunchError
+        self._read_auto_tuning_cache = _read_auto_tuning_cache
+        self._append_auto_tuning_cache = _append_auto_tuning_cache
+
     def __call__(self, *args, **kwargs):
         _, _, config_key = self._split_args(args)
 
@@ -275,6 +305,12 @@ class _AutoTunedKernel:
             if len(self._new_inputs) >= self._re_tune_after:
                 self._re_tune()
 
+        if self._runtime_fallback_handler is None:
+            return self._kernel_after_auto_tuning(*args, **kwargs)
+
+        result, handled = self._runtime_fallback_handler(self, args, kwargs)
+        if handled:
+            return result
         return self._kernel_after_auto_tuning(*args, **kwargs)
 
     def _re_tune(self):
@@ -327,7 +363,6 @@ class _AutoTunedKernel:
         config_key = tuple(_arg_to_int(arg) for arg in config_args)
 
         return tensor_args, config_args, config_key
-
 
 class _MetaTensor:
     def __init__(self, shape, dtype):
@@ -523,7 +558,7 @@ def _warm_up(kernel, config, meta_tensors, *, caller):
             if len(shape) == 0:
                 device = None
             else:
-                device = caller
+                device = _resolve_device(caller)
 
             tensor = torch.empty(shape, dtype=dtype, device=device)
 
@@ -533,6 +568,13 @@ def _warm_up(kernel, config, meta_tensors, *, caller):
             kernel(*tensors, *args, *kwargs.values(), *compilation_configs.values())
         except _KernelLaunchError:
             pass
+
+
+def _resolve_device(caller):
+    if caller == "ascend":
+        return "npu"
+
+    return caller
 
 
 def _make(premake, config, caller, kernel_name, output_dir):
@@ -552,6 +594,8 @@ def _make(premake, config, caller, kernel_name, output_dir):
 
     kernel_name_ = f"{kernel_name}_{_generate_suffix(combination.values())}"
 
+    _annotate_application(arrangement, application, tensors)
+
     ninetoothed.make(
         arrangement,
         application,
@@ -569,6 +613,14 @@ def _make(premake, config, caller, kernel_name, output_dir):
     )
 
     return kernel_name_, param_names, combination, config, tensors
+
+
+def _annotate_application(arrangement, application, tensors):
+    params = inspect.signature(application).parameters
+    types = arrangement(*tensors)
+    types = types if isinstance(types, tuple) else (types,)
+    annotations = {param: type for param, type in zip(params, types)}
+    application.__annotations__ = annotations
 
 
 def _load_cached(configs, meta_parameters, *, kernel_name, output_dir):
