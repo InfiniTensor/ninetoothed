@@ -696,10 +696,30 @@ def _load_launch_func(kernel_name, output_dir):
     launch_func_name = f"launch_{kernel_name}"
     launch_func = getattr(library, launch_func_name)
 
+    def _num_tensor_args(kernel_name, output_dir):
+        header_path = pathlib.Path(output_dir) / f"{kernel_name}.h"
+        text = header_path.read_text()
+        pattern = (
+            rf"NineToothedResult\s+launch_{re.escape(kernel_name)}\s*\((.*?)\)\s*;"
+        )
+        match = re.search(pattern, text)
+
+        if match is None:
+            raise RuntimeError(
+                f"Could not find launch signature for `{kernel_name}` in `{header_path}`."
+            )
+
+        params = (param.strip() for param in match.group(1).split(","))
+
+        return sum(1 for param in params if param.startswith("NineToothedTensor "))
+
+    num_tensor_args = _num_tensor_args(kernel_name, output_dir)
+
     dtype_to_index = _DTYPE_TO_INDEX
     from_torch_tensor = _ArgumentTensor.from_torch_tensor
     from_scalar = _ArgumentTensor.from_scalar
     c_double = ctypes.c_double
+    c_int64 = ctypes.c_int64
     c_void_p = ctypes.c_void_p
     current_device = torch.cuda.current_device
     get_current_raw_stream = torch._C._cuda_getCurrentRawStream
@@ -709,12 +729,17 @@ def _load_launch_func(kernel_name, output_dir):
         arguments = [None] * len(args)
 
         for i, arg in enumerate(args):
-            if isinstance(arg, Tensor_cls):
-                arguments[i] = from_torch_tensor(arg)
+            if i < num_tensor_args:
+                if isinstance(arg, Tensor_cls):
+                    arguments[i] = from_torch_tensor(arg)
+                elif type(arg) is float:
+                    arguments[i] = from_scalar(arg, c_double)
+                elif type(arg) is int:
+                    arguments[i] = from_scalar(arg, c_int64)
+                else:
+                    arguments[i] = arg
             elif type(arg) is str:
                 arguments[i] = dtype_to_index[arg]
-            elif type(arg) is float:
-                arguments[i] = from_scalar(arg, c_double)
             else:
                 arguments[i] = arg
 
