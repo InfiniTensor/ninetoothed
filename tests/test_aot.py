@@ -302,6 +302,46 @@ def test_conv2d(
     assert torch.allclose(output, expected, rtol=rtol, atol=atol)
 
 
+@pytest.mark.parametrize("device", get_available_devices())
+def test_fp32_scalar(device):
+    def _arrangement(input, scale, output):
+        return input.tile((256,)), scale, output.tile((256,))
+
+    def _application(input, scale, output):
+        output = input * scale  # noqa: F841
+
+    tensors = (
+        Tensor(1, dtype=ninetoothed.float32),
+        Tensor(0, dtype=ninetoothed.float32),
+        Tensor(1, dtype=ninetoothed.float32),
+    )
+
+    caller = device
+    kernel_name = f"fp32_scalar{_generate_kernel_name_suffix()}"
+    output_dir = ninetoothed.generation.CACHE_DIR
+
+    kernel = ninetoothed.make(
+        _arrangement,
+        _application,
+        tensors,
+        caller=caller,
+        kernel_name=kernel_name,
+        output_dir=output_dir,
+    )
+
+    size = 256
+
+    input = torch.randn(size, dtype=torch.float32, device=device)
+    scale = 0.125
+    output = torch.empty_like(input)
+
+    kernel(input, scale, output)
+
+    expected = input * scale
+
+    assert torch.allclose(output, expected)
+
+
 def _generate_kernel_name_suffix():
     count = _generate_kernel_name_suffix._kernel_count
     _generate_kernel_name_suffix._kernel_count += 1
