@@ -235,6 +235,9 @@ def _build_variant(
                 param_types.append(f"{tensor.value}")
                 constexpr_param_indices.append(len(param_types) - 1)
             else:
+                if dtype == ninetoothed.dtype.float32:
+                    dtype = ninetoothed.dtype.float64
+
                 param_types.append(dtype)
 
     signature = ", ".join(param_types)
