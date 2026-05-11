@@ -1,6 +1,5 @@
 import ast
 import ctypes
-import itertools
 import pathlib
 import re
 import shutil
@@ -310,11 +309,22 @@ def _enumerate_variant_specs(launch_arg_names, tensors, find_tensor):
             (name, dim) for name, dim in zip(launch_arg_names, combo) if dim is not None
         )
 
-    dim_specs = tuple(
-        _spec_from_combo(combo)
-        for combo in itertools.product(*per_tensor_dims)
-        if any(dim is not None for dim in combo)
-    ) + ((),)
+    base_combo = tuple(dims[0] for dims in per_tensor_dims)
+    combos = [base_combo] if any(dim is not None for dim in base_combo) else []
+
+    for i, dims in enumerate(per_tensor_dims):
+        if len(dims) <= 1:
+            continue
+
+        for alternative_dim in dims[1:]:
+            if alternative_dim is None:
+                continue
+
+            combo = list(base_combo)
+            combo[i] = alternative_dim
+            combos.append(tuple(combo))
+
+    dim_specs = tuple(_spec_from_combo(combo) for combo in combos) + ((),)
 
     specs = []
 
