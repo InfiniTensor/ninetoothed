@@ -81,10 +81,18 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     variant_specs = _enumerate_variant_specs(
         launch_arg_names, tensors, _find_tensor_by_source_name
     )
+    _, tensor_ndims, _ = _per_tensor_dim_options(
+        launch_arg_names, tensors, _find_tensor_by_source_name
+    )
 
     output_contents = {}
 
-    for variant_suffix, divisibility_spec, contiguity_spec in variant_specs:
+    for (
+        variant_suffix,
+        divisibility_spec,
+        contiguity_spec,
+        index_dtype,
+    ) in variant_specs:
         variant_outputs = _build_variant(
             source_file,
             kernel_func,
@@ -99,11 +107,12 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
             num_stages=num_stages,
             divisibility_spec=divisibility_spec,
             contiguity_spec=contiguity_spec,
+            index_dtype=index_dtype,
         )
         output_contents.update(variant_outputs)
 
     dispatcher_source, dispatcher_header = _generate_dispatcher(
-        kernel_name, launch_arg_names, variant_specs
+        kernel_name, launch_arg_names, variant_specs, tensor_ndims
     )
 
     output_contents[f"{kernel_name}.cpp"] = dispatcher_source
@@ -112,7 +121,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     return output_contents
 
 
-def _generate_dispatcher(kernel_name, launch_arg_names, variant_specs):
+def _generate_dispatcher(kernel_name, launch_arg_names, variant_specs, tensor_ndims):
     tensor_params = ", ".join(f"NineToothedTensor {name}" for name in launch_arg_names)
     signature_params = (
         f"NineToothedStream stream, {tensor_params}"
@@ -138,13 +147,24 @@ def _generate_dispatcher(kernel_name, launch_arg_names, variant_specs):
     externs = []
     branches = []
 
-    for variant_suffix, divisibility_spec, contiguity_spec in variant_specs:
+    fallback_call = None
+
+    for (
+        variant_suffix,
+        divisibility_spec,
+        contiguity_spec,
+        index_dtype,
+    ) in variant_specs:
         variant_name = f"launch_{kernel_name}_{variant_suffix}"
         externs.append(
             f'extern "C" NineToothedResult {variant_name}({signature_params});'
         )
 
         call = f"return {variant_name}({call_args});"
+
+        if index_dtype == ninetoothed.dtype.int64:
+            fallback_call = call
+            continue
 
         checks = tuple(
             f"{name}.shape[{dim}] % 16 == 0" for name, dim in divisibility_spec
@@ -155,11 +175,26 @@ def _generate_dispatcher(kernel_name, launch_arg_names, variant_specs):
         else:
             branches.append(f"{_INDENTATION}{call}")
 
+    prelude_lines = []
+    if fallback_call is not None and launch_arg_names:
+        overflow_terms = []
+        for name, ndim in zip(launch_arg_names, tensor_ndims):
+            for d in range(ndim):
+                overflow_terms.append(f"{name}.shape[{d}] > 2147483647ULL")
+                overflow_terms.append(f"{name}.strides[{d}] > 2147483647LL")
+                overflow_terms.append(f"{name}.strides[{d}] < -2147483648LL")
+        if overflow_terms:
+            prelude_lines.append(
+                f"{_INDENTATION}if ({' || '.join(overflow_terms)}) {fallback_call}"
+            )
+
+    body_lines = prelude_lines + branches
+
     source = (
         f'#include "{_HEADER_PATH}"\n\n'
         + "\n".join(externs)
         + f'\n\nextern "C" {signature} {{\n'
-        + "\n".join(branches)
+        + "\n".join(body_lines)
         + "\n}\n"
     )
 
@@ -181,6 +216,7 @@ def _build_variant(
     num_stages,
     divisibility_spec,
     contiguity_spec,
+    index_dtype=ninetoothed.dtype.int32,
 ):
     divisibility_set = {
         (naming.remove_prefixes(name), dim) for name, dim in divisibility_spec
@@ -211,9 +247,9 @@ def _build_variant(
             bare_source_name = naming.remove_prefixes(source_name)
 
             if (bare_source_name, dim_index) in divisibility_set:
-                param_types.append(f"{ninetoothed.dtype.int64}:16")
+                param_types.append(f"{index_dtype}:16")
             else:
-                param_types.append(ninetoothed.dtype.int64)
+                param_types.append(index_dtype)
         elif match := Tensor.stride_pattern().fullmatch(param):
             source_name = match.group(1)
             dim_index = int(match.group(3))
@@ -224,7 +260,7 @@ def _build_variant(
                 constexpr_param_indices.append(len(param_types) - 1)
                 constexpr_strides.append((source_name, dim_index))
             else:
-                param_types.append(f"{ninetoothed.dtype.int64}:16")
+                param_types.append(f"{index_dtype}:16")
         else:
             source_name = param
             tensor = find_tensor(tensors, source_name)
@@ -331,15 +367,21 @@ def _enumerate_variant_specs(launch_arg_names, tensors, find_tensor):
     for divisibility_spec in dim_specs:
         for contiguity_spec in dim_specs:
             suffix = _variant_suffix(
-                divisibility_spec, contiguity_spec, launch_arg_names, tensor_ndims
+                divisibility_spec,
+                contiguity_spec,
+                launch_arg_names,
+                tensor_ndims,
+                index_dtype=ninetoothed.dtype.int32,
             )
-            specs.append((suffix, divisibility_spec, contiguity_spec))
+            specs.append(
+                (suffix, divisibility_spec, contiguity_spec, ninetoothed.dtype.int32)
+            )
 
     def _num_innermost(spec):
         return sum(1 for name, dim in spec if innermost_dims.get(name) == dim)
 
     def _specificity(entry):
-        _, divisibility_spec, contiguity_spec = entry
+        _, divisibility_spec, contiguity_spec, _ = entry
 
         return (
             -len(divisibility_spec),
@@ -349,6 +391,11 @@ def _enumerate_variant_specs(launch_arg_names, tensors, find_tensor):
         )
 
     specs.sort(key=_specificity)
+
+    fallback_suffix = _variant_suffix(
+        (), (), launch_arg_names, tensor_ndims, index_dtype=ninetoothed.dtype.int64
+    )
+    specs.append((fallback_suffix, (), (), ninetoothed.dtype.int64))
 
     return specs
 
@@ -381,7 +428,13 @@ def _per_tensor_dim_options(launch_arg_names, tensors, find_tensor):
     return per_tensor_dims, tensor_ndims, innermost_dims
 
 
-def _variant_suffix(divisibility_spec, contiguity_spec, launch_arg_names, tensor_ndims):
+def _variant_suffix(
+    divisibility_spec,
+    contiguity_spec,
+    launch_arg_names,
+    tensor_ndims,
+    index_dtype=ninetoothed.dtype.int32,
+):
     divisibility_part = _divisibility_suffix(
         divisibility_spec, launch_arg_names, tensor_ndims
     )
@@ -389,7 +442,7 @@ def _variant_suffix(divisibility_spec, contiguity_spec, launch_arg_names, tensor
         contiguity_spec, launch_arg_names, tensor_ndims
     )
 
-    return f"{divisibility_part}_{contiguity_part}"
+    return f"{divisibility_part}_{contiguity_part}_index_{index_dtype}"
 
 
 def _divisibility_suffix(divisibility_spec, launch_arg_names, tensor_ndims):
