@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 
 import ninetoothed
+import ninetoothed.aot
 import ninetoothed.generation
 import tests.test_addmm as addmm
 import tests.test_attention as attention
@@ -340,6 +341,19 @@ def test_fp32_scalar(device):
     expected = input * scale
 
     assert torch.allclose(output, expected)
+
+
+def test_overflow_terms():
+    terms = ninetoothed.aot._overflow_terms(("input", "scale"), (2, 0))
+
+    assert terms == (
+        "input.shape[0] > 2147483647ULL",
+        "input.strides[0] > 2147483647LL",
+        "input.strides[0] < -2147483648LL",
+        "input.shape[1] > 2147483647ULL",
+        "input.strides[1] > 2147483647LL",
+        "input.strides[1] < -2147483648LL",
+    )
 
 
 def _generate_kernel_name_suffix():
