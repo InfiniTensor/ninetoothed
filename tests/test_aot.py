@@ -343,6 +343,41 @@ def test_fp32_scalar(device):
     assert torch.allclose(output, expected)
 
 
+@pytest.mark.parametrize("device", get_available_devices())
+def test_aot_with_static_non_power_of_two_innermost_sizes(device):
+    def _arrangement(input, output):
+        return input.tile((3,)), output.tile((3,))
+
+    def _application(input, output):
+        output = input  # noqa: F841
+
+    tensors = (
+        Tensor(1, dtype=ninetoothed.float32),
+        Tensor(1, dtype=ninetoothed.float32),
+    )
+
+    kernel_name = (
+        f"static_non_power_of_two_innermost_sizes{_generate_kernel_name_suffix()}"
+    )
+    output_dir = ninetoothed.generation.CACHE_DIR
+
+    kernel = ninetoothed.make(
+        _arrangement,
+        _application,
+        tensors,
+        caller=device,
+        kernel_name=kernel_name,
+        output_dir=output_dir,
+    )
+
+    input = torch.randn((3,), dtype=torch.float32, device=device)
+    output = torch.empty_like(input)
+
+    kernel(input, output)
+
+    assert torch.allclose(input, output)
+
+
 def test_overflow_terms():
     terms = ninetoothed.aot._overflow_terms(("input", "scale"), (2, 0))
 
