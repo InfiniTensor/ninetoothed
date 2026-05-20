@@ -103,6 +103,10 @@ class CodeGenerator(ast.NodeTransformer):
         self.visit(tree)
         Tritonizer().visit(tree)
         _BinOpSimplifier().visit(tree)
+
+        from .advanced_passes import apply_advanced_optimizations
+        tree = apply_advanced_optimizations(tree)
+
         ast.fix_missing_locations(tree)
 
         if prettify:
