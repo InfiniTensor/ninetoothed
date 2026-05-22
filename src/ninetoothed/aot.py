@@ -11,8 +11,8 @@ import uuid
 
 import ninetoothed.dtype
 import ninetoothed.naming as naming
-from ninetoothed.ascendaotbackend import should_use_ascend_aot_dispatch
-from ninetoothed.cudaaotbackend import CudaAotBackend
+from ninetoothed.AscendAOTBackend import should_use_ascend_aot_dispatch
+from ninetoothed.CudaAOTBackend import CudaAotBackend
 from ninetoothed.generation import CACHE_DIR, CodeGenerator
 from ninetoothed.tensor import Tensor
 from ninetoothed.utils import calculate_default_configs
@@ -35,7 +35,7 @@ def aot(
         num_stages = default_num_stages
 
     if should_use_ascend_aot_dispatch(caller):
-        from ninetoothed.ascendaotbackend import AscendAotBackend
+        from ninetoothed.AscendAOTBackend import AscendAotBackend
 
         return AscendAotBackend()(
             func, kernel_name=kernel_name, num_warps=num_warps, num_stages=num_stages

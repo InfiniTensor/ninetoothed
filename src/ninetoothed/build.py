@@ -18,7 +18,7 @@ from ninetoothed.aot import (
     _KernelLaunchError,
     _load_launch_func,
 )
-from ninetoothed.ascendaotbackend import (
+from ninetoothed.AscendAOTBackend import (
     build_record as _build_ascend_record,
     build_from_records as _build_ascend_from_records,
     should_use_ascend_aot_dispatch as _should_use_ascend_aot_dispatch,
