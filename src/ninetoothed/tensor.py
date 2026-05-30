@@ -121,9 +121,23 @@ class Tensor:
         self._inputs = []
 
         self._history = []
-
+        self.is_contiguous = self._check_contiguous()
         type(self).num_instances += 1
-
+    def _check_contiguous(self):
+        """
+        判断张量是否为标准内存连续布局
+        连续张量的stride满足：stride[i] = product(shape[i+1:])
+        """
+        if self.ndim == 0:
+            return True
+        
+        expected_stride = 1
+        # 从最后一个维度向前遍历
+        for i in reversed(range(self.ndim)):
+            if self.strides[i] != expected_stride:
+                return False
+            expected_stride *= self.shape[i]
+        return True
     def __getitem__(self, indices):
         """Returns an indexed tensor using the specified ``indices``.
 
