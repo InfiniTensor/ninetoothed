@@ -17,6 +17,7 @@ import functools
 import hashlib
 import inspect
 import json
+import os
 import pathlib
 import threading
 from typing import Any, Callable, Optional
@@ -193,7 +194,13 @@ class Cache:
         return value
 
     def put(self, key: Any, value: Any) -> None:
-        """Write L1 (mem) and L2 (disk). Disk failure leaves L1 intact."""
+        """Write L1 (mem) and L2 (disk). Disk failure leaves L1 intact.
+
+        Disk writes are atomic: serialize to a sibling `.tmp` file, fsync,
+        then rename over the target. This prevents a concurrent reader from
+        observing a half-written value if the writer is killed mid-write
+        (e.g. crash, OOM kill, or power loss).
+        """
         with self._lock:
             if len(self._mem) >= self._max_memory:
                 self._mem.pop(next(iter(self._mem)))
@@ -201,9 +208,32 @@ class Cache:
 
         path = self._path_for(key)
         if path is not None:
+            self._atomic_write(path, value)
+
+    def _atomic_write(self, path: pathlib.Path, value: Any) -> None:
+        """Serialize, write to `<path>.tmp`, fsync, then rename over `path`.
+
+        Failure modes (OSError, TypeError, ValueError from serializer) leave
+        both L1 and the on-disk state intact -- no half-written file is
+        visible to readers, and the L1 entry is still authoritative in-process.
+        """
+        try:
+            payload = self._serializer(value)
+        except (TypeError, ValueError):
+            return
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except OSError:
+            # Best-effort cleanup of the leftover .tmp file.
             try:
-                path.write_text(self._serializer(value), encoding="utf-8")
-            except (OSError, TypeError, ValueError):
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
                 pass
 
     def delete(self, key: Any) -> None:
