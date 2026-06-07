@@ -13,8 +13,16 @@ from ninetoothed.aot import aot
 from ninetoothed.jit import jit
 
 
-def _build_cache_key(arrangement, application, tensors, caller, kernel_name,
-                     num_warps, num_stages, max_num_configs):
+def _build_cache_key(
+    arrangement,
+    application,
+    tensors,
+    caller,
+    kernel_name,
+    num_warps,
+    num_stages,
+    max_num_configs,
+):
     return (
         hash_function_source(arrangement),
         hash_function_source(application),
@@ -63,8 +71,14 @@ def make(
     # build.py's own cache.
     if caller == "torch":
         key = _build_cache_key(
-            arrangement, application, tensors,
-            caller, kernel_name, num_warps, num_stages, max_num_configs,
+            arrangement,
+            application,
+            tensors,
+            caller,
+            kernel_name,
+            num_warps,
+            num_stages,
+            max_num_configs,
         )
         cached = _HANDLE_CACHE.get(key)
         if cached is not None:
