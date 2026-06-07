@@ -122,6 +122,9 @@ class Symbol:
     def __radd__(self, other):
         return self.__add__(other)
 
+    def __neg__(self):
+        return type(self)(ast.UnaryOp(op=ast.USub(), operand=self._node))
+
     def __sub__(self, other):
         other = type(self)(other)
 
@@ -159,6 +162,28 @@ class Symbol:
         return type(self)(
             ast.BinOp(left=self._node, op=ast.FloorDiv(), right=other._node)
         )
+
+    def __truediv__(self, other):
+        other = type(self)(other)
+
+        if isinstance(other._node, ast.Constant) and other._node.value == 1:
+            return self
+
+        return type(self)(ast.BinOp(left=self._node, op=ast.Div(), right=other._node))
+
+    def __rtruediv__(self, other):
+        return type(self)(other).__truediv__(self)
+
+    def __pow__(self, other):
+        other = type(self)(other)
+
+        if isinstance(other._node, ast.Constant) and other._node.value == 1:
+            return self
+
+        return type(self)(ast.BinOp(left=self._node, op=ast.Pow(), right=other._node))
+
+    def __rpow__(self, other):
+        return type(self)(other).__pow__(self)
 
     def __mod__(self, other):
         other = type(self)(other)
