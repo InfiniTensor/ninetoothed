@@ -1,6 +1,7 @@
 import time
 
 import pytest
+import torch
 
 from ninetoothed.auto_tuner import AutoTuner
 from tests.utils import get_available_devices
@@ -62,6 +63,10 @@ def test_auto_tuner(args, kwargs, _, auto_tuner_factory):
         assert best_func is _bar
 
 
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="auto_tuner uses triton.testing.do_bench which requires a CUDA driver",
+)
 def test_auto_tuner_persists_across_instances(auto_tuner_factory):
     """Re-instantiation should load timings from disk, skipping re-benchmark."""
     tuner1 = auto_tuner_factory()
