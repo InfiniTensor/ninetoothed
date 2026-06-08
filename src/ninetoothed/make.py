@@ -20,7 +20,10 @@ def make(
     :param arrangement: The arrangement of the tensors.
     :param application: The application of the tensors.
     :param tensors: The tensors.
-    :param caller: Who will call the compute kernel.
+    :param caller: Kernel build route selector.
+        - ``torch``: JIT
+        - ``cuda``: CUDA AOT
+        - ``ascend``: Ascend AOT
     :param kernel_name: The name for the generated kernel.
     :param output_dir: The directory to store the generated files.
     :param num_warps: The number of warps to use.
@@ -46,11 +49,16 @@ def make(
             max_num_configs=max_num_configs,
         )
 
-    return aot(
-        application,
-        caller=caller,
-        kernel_name=kernel_name,
-        output_dir=output_dir,
-        num_warps=num_warps,
-        num_stages=num_stages,
+    if caller in ("cuda", "ascend"):
+        return aot(
+            application,
+            caller=caller,
+            kernel_name=kernel_name,
+            output_dir=output_dir,
+            num_warps=num_warps,
+            num_stages=num_stages,
+        )
+
+    raise ValueError(
+        f"Unsupported caller '{caller}'. Expected one of: 'torch', 'cuda', 'ascend'."
     )
