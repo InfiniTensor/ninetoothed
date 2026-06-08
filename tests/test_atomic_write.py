@@ -6,6 +6,7 @@ Verifies the contract:
     previous file intact and no half-written replacement.
   - The in-process L1 cache is unaffected by disk failure.
 """
+
 import json
 
 from ninetoothed._cache import Cache
@@ -34,6 +35,7 @@ def test_put_overwrites_existing_file_atomically(tmp_path):
 
 def test_disk_failure_preserves_l1(tmp_path):
     """If the serializer raises, L1 must still have the value."""
+
     def bad_serializer(_):
         raise TypeError("nope")
 
@@ -74,6 +76,7 @@ def test_oserror_during_rename_keeps_old_file(tmp_path):
 
     # Now patch os.replace to fail
     import ninetoothed._cache as cache_mod
+
     original_replace = cache_mod.os.replace
 
     def fail_replace(src, dst):
@@ -100,6 +103,7 @@ def test_no_tmp_residue_under_concurrent_writes(tmp_path):
             c.put(f"k_{i}_{j}", j)
 
     import threading
+
     threads = [threading.Thread(target=writer, args=(i,)) for i in range(4)]
     for t in threads:
         t.start()

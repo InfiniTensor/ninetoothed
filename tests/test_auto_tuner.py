@@ -13,6 +13,7 @@ def auto_tuner_factory(tmp_path, monkeypatch):
     Avoids polluting ~/.ninetoothed across pytest runs / parametrize rows.
     """
     import ninetoothed.auto_tuner as at_mod
+
     monkeypatch.setattr(at_mod, "CACHE_DIR", tmp_path / ".ninetoothed")
     (tmp_path / ".ninetoothed").mkdir()
     yield lambda: AutoTuner((_foo, _bar), (_foo.__name__, _bar.__name__))

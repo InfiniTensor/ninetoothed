@@ -5,6 +5,7 @@ Covers:
   - hash_tensor_signature: structural identity, NOT instance-bound names.
   - hash_value: stability across calls.
 """
+
 import functools
 
 import pytest
@@ -17,9 +18,11 @@ from ninetoothed._cache import (
 
 # ---------- hash_function_source ----------
 
+
 def test_returns_string():
     def f():
         pass
+
     h = hash_function_source(f)
     assert isinstance(h, str)
     assert len(h) > 0
@@ -28,6 +31,7 @@ def test_returns_string():
 def test_returns_src_prefix_for_normal_function():
     def f():
         return 1
+
     h = hash_function_source(f)
     assert h.startswith("src:")
 
@@ -35,16 +39,19 @@ def test_returns_src_prefix_for_normal_function():
 def test_same_function_same_hash():
     def f(x):
         return x + 1
+
     assert hash_function_source(f) == hash_function_source(f)
 
 
 def test_modified_function_different_hash():
     def f(x):
         return x + 1
+
     h1 = hash_function_source(f)
 
     def f(x):  # noqa: F811
         return x + 2
+
     h2 = hash_function_source(f)
     assert h1 != h2
 
@@ -55,11 +62,13 @@ def test_different_functions_different_hash():
 
     def g():
         return 2
+
     assert hash_function_source(f) != hash_function_source(g)
 
 
 def test_functools_partial_unwrapped():
     """partial(jagged_dim=1) must differ from partial(jagged_dim=2)."""
+
     def base(x):
         return x
 
@@ -71,11 +80,12 @@ def test_functools_partial_unwrapped():
 
 @pytest.mark.xfail(
     reason="Known limitation: hash_function_source only unwraps ONE level of functools.partial. "
-           "Nested partials with different binding order (a-then-b vs b-then-a) hash differently. "
-           "Recursive unwrap is a future-work item.",
+    "Nested partials with different binding order (a-then-b vs b-then-a) hash differently. "
+    "Recursive unwrap is a future-work item.",
 )
 def test_functools_partial_nested():
     """Nested partials (e.g. partial(partial(base, a=1), b=2)) get unwrapped recursively."""
+
     def base(x):
         return x
 
@@ -88,6 +98,7 @@ def test_functools_partial_nested():
 
 def test_functools_partial_with_args():
     """partial(f, 1, 2) vs partial(f, 3, 4) differ because of bound args."""
+
     def base(x, y):
         return x + y
 
@@ -180,6 +191,7 @@ def test_fallback_distinguishes_functools_partial_args():
 
 # ---------- hash_tensor_signature ----------
 
+
 class FakeTensor:
     """Mimics the ninetoothed.Tensor surface used by hash_tensor_signature."""
 
@@ -233,6 +245,7 @@ def test_name_attribute_does_not_affect_signature():
 
 # ---------- hash_value ----------
 
+
 def test_hash_value_stable():
     assert hash_value(42) == hash_value(42)
     assert hash_value("abc") == hash_value("abc")
@@ -254,9 +267,11 @@ def test_hash_value_returns_hex_string():
 
 def test_hash_value_handles_arbitrary_python_objects():
     """repr-based, so any object with a sensible repr works."""
+
     class Obj:
         def __repr__(self):
             return "Obj()"
+
     a = Obj()
     b = Obj()
     assert hash_value(a) == hash_value(b)

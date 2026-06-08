@@ -12,6 +12,7 @@ Covers the public surface of the Cache class:
     elements in the tensors tuple (e.g. ceil_mode), even when the
     output shape happens to be the same for both values.
 """
+
 import threading
 
 import pytest
@@ -24,6 +25,7 @@ from tests.test_max_pool2d import max_pool2d
 from tests.utils import get_available_devices
 
 # ---------- in-memory mode ----------
+
 
 def test_memory_only_put_and_get():
     c = Cache(max_memory=16)
@@ -52,6 +54,7 @@ def test_memory_only_does_not_persist_across_instances():
 
 # ---------- disk-backed mode ----------
 
+
 def test_disk_backed_persists(tmp_path):
     disk = tmp_path / "cache"
     c1 = Cache(cache_dir=disk, suffix=".json", max_memory=16)
@@ -76,6 +79,7 @@ def test_disk_backed_is_not_memory_only(tmp_path):
 
 def test_disk_backed_default_serializer_is_json(tmp_path):
     import json
+
     c = Cache(cache_dir=tmp_path, suffix=".json", max_memory=4)
     c.put("k", {"a": 1})
     files = list(tmp_path.glob("*.json"))
@@ -100,6 +104,7 @@ def test_disk_backed_custom_serializer(tmp_path):
 
 
 # ---------- L1 + L2 promotion ----------
+
 
 def test_l2_hit_promotes_to_l1(tmp_path):
     c = Cache(cache_dir=tmp_path, suffix=".json", max_memory=4)
@@ -131,6 +136,7 @@ def test_contains_reflects_l1_and_l2(tmp_path):
 
 # ---------- FIFO eviction ----------
 
+
 def test_fifo_eviction_at_max_memory():
     c = Cache(max_memory=3)
     c.put("a", 1)
@@ -159,6 +165,7 @@ def test_fifo_eviction_with_disk(tmp_path):
 
 # ---------- delete ----------
 
+
 def test_delete_removes_from_l1_and_l2(tmp_path):
     c = Cache(cache_dir=tmp_path, suffix=".json", max_memory=4)
     c.put("k", "v")
@@ -175,6 +182,7 @@ def test_delete_missing_key_is_noop():
 
 # ---------- disk corruption / bad data ----------
 
+
 def test_corrupt_disk_file_returns_default(tmp_path):
     c = Cache(cache_dir=tmp_path, suffix=".json", max_memory=4)
     c.put("k", "v")
@@ -188,6 +196,7 @@ def test_corrupt_disk_file_returns_default(tmp_path):
 
 
 # ---------- thread safety ----------
+
 
 def test_concurrent_put_get_no_race(tmp_path):
     """Many threads putting + getting on disjoint keys must not corrupt state."""
@@ -263,6 +272,7 @@ def test_concurrent_disk_writes_no_partial_files(tmp_path):
 
 
 # ---------- introspection ----------
+
 
 def test_memory_size_reports_l1_length():
     c = Cache(max_memory=16)

@@ -28,6 +28,7 @@ DEFAULT_CACHE_ROOT = pathlib.Path.home() / ".ninetoothed"
 
 # ---------- Tensor fingerprint ----------
 
+
 def hash_tensor_signature(tensor) -> tuple:
     """Content-stable fingerprint of a ninetoothed.Tensor.
 
@@ -47,6 +48,7 @@ def hash_tensor_signature(tensor) -> tuple:
 
 
 # ---------- Function fingerprint ----------
+
 
 def hash_function_source(func) -> str:
     """Content-sensitive SHA256 hash of a callable.
@@ -95,6 +97,7 @@ def hash_value(value: Any) -> str:
 
 
 # ---------- Cache class ----------
+
 
 class Cache:
     """Two-tier cache: in-memory L1 (FIFO eviction) + filesystem L2 (optional).
@@ -262,7 +265,10 @@ class Cache:
 
 # ---------- Project fingerprint ----------
 
-def project_files_fingerprint(directory: pathlib.Path, exclude_suffixes=(".pyc",)) -> str:
+
+def project_files_fingerprint(
+    directory: pathlib.Path, exclude_suffixes=(".pyc",)
+) -> str:
     """SHA256 fingerprint over all files under `directory`.
 
     Used to namespace caches by the ninetoothed installation version: when
@@ -273,7 +279,8 @@ def project_files_fingerprint(directory: pathlib.Path, exclude_suffixes=(".pyc",
     """
     h = hashlib.sha256()
     paths = sorted(
-        p for p in pathlib.Path(directory).rglob("*")
+        p
+        for p in pathlib.Path(directory).rglob("*")
         if p.is_file() and p.suffix not in exclude_suffixes
     )
     for p in paths:
