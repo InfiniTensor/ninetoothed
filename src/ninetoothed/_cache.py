@@ -68,9 +68,19 @@ def hash_function_source(func) -> str:
     try:
         src = inspect.getsource(func)
     except (OSError, TypeError):
+        # Fallback path: source unavailable (REPL, Jupyter, exec, etc.).
+        # Must still hash `partial_args` so that
+        # `functools.partial(f, x=True)` and `functools.partial(f, x=False)`
+        # produce distinct keys. Previously this branch returned
+        # `id:module.qualname@id(func)` (plain string, no partial_args,
+        # unstable id) -- a silent correctness bug.
         module = getattr(func, "__module__", "?")
         qualname = getattr(func, "__qualname__", "?")
-        return "id:" + module + "." + qualname + "@" + str(id(func))
+        h = hashlib.sha256()
+        h.update(f"id:{module}.{qualname}".encode("utf-8"))
+        if partial_args:
+            h.update(repr(partial_args).encode("utf-8"))
+        return "id:" + h.hexdigest()
 
     h = hashlib.sha256()
     h.update(src.encode("utf-8"))

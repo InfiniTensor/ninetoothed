@@ -8,14 +8,20 @@ Covers the public surface of the Cache class:
   - clear_memory() preserves L2
   - thread-safety (concurrent put/get from multiple threads)
   - contains() reflects L1 + L2
+  - integration: make() cache key is sensitive to non-Tensor
+    elements in the tensors tuple (e.g. ceil_mode), even when the
+    output shape happens to be the same for both values.
 """
 import threading
-import time
 
 import pytest
+import torch
+import torch.nn.functional as F
 
 from ninetoothed._cache import Cache
-
+from ninetoothed.make import _HANDLE_CACHE
+from tests.test_max_pool2d import max_pool2d
+from tests.utils import get_available_devices
 
 # ---------- in-memory mode ----------
 
@@ -265,3 +271,90 @@ def test_memory_size_reports_l1_length():
     assert c.memory_size == 1
     c.put("b", 2)
     assert c.memory_size == 2
+
+
+# ---------- integration: make() cache key sensitivity ----------
+# These tests verify that _HANDLE_CACHE in ninetoothed.make produces
+# DISTINCT cache keys for arrangements that differ only in non-Tensor
+# elements of the tensors tuple (e.g. ceil_mode). This guards against
+# regressions where the cache would mistake two semantically-different
+# kernels for the same cache entry.
+#
+# The two interesting cases:
+#   (A) the differing argument produces a different output shape -- a
+#       shape-naive cache would still correctly miss here, so this is
+#       just a sanity check.
+#   (B) the differing argument produces an IDENTICAL output shape -- a
+#       shape-naive cache would mistakenly HIT and return the wrong
+#       kernel. This is the key regression test.
+#   (C) verify the cache HIT path: a second call with the same arguments
+#       must reuse the cached entry.
+
+
+@pytest.fixture(autouse=True)
+def _clear_handle_cache():
+    """Each test starts (and ends) with an empty _HANDLE_CACHE L1."""
+    _HANDLE_CACHE.clear_memory()
+    yield
+    _HANDLE_CACHE.clear_memory()
+
+
+@pytest.mark.parametrize("device", get_available_devices())
+def test_make_cache_distinguishes_ceil_mode_different_shapes(device):
+    """Sanity case: h=64, r=3 gives DIFFERENT output shapes for the two
+    ceil_mode values (False -> (21,21), True -> (22,22)). Cache must MISS
+    on the second call. (Even a shape-naive cache would miss here.)"""
+    torch.manual_seed(0)
+    x = torch.randn(32, 3, 64, 64, dtype=torch.float16, device=device)
+
+    out_false = max_pool2d(x, (3, 3), ceil_mode=False)
+    out_true = max_pool2d(x, (3, 3), ceil_mode=True)
+
+    assert out_false.shape == (32, 3, 21, 21)
+    assert out_true.shape == (32, 3, 22, 22)
+    assert torch.allclose(out_false, F.max_pool2d(x, (3, 3), ceil_mode=False))
+    assert torch.allclose(out_true, F.max_pool2d(x, (3, 3), ceil_mode=True))
+    # Two distinct ceil_mode values -> two L1 entries
+    assert _HANDLE_CACHE.memory_size == 2
+
+
+@pytest.mark.parametrize("device", get_available_devices())
+def test_make_cache_distinguishes_ceil_mode_same_shape(device):
+    """Key regression test: h=63, r=3 gives IDENTICAL output shape (21,21)
+    for both ceil_mode values. A shape-naive cache would mistakenly HIT
+    on the second call and return the wrong kernel (the False kernel,
+    which uses floor_mode=True, when True was requested, which uses
+    floor_mode=False).
+
+    The cache MUST still MISS: tensors tuple contains the raw bool
+    ceil_mode, whose repr() distinguishes True from False, and the
+    cache key is content-sensitive to that repr()."""
+    torch.manual_seed(0)
+    x = torch.randn(32, 3, 63, 63, dtype=torch.float16, device=device)
+
+    out_false = max_pool2d(x, (3, 3), ceil_mode=False)
+    out_true = max_pool2d(x, (3, 3), ceil_mode=True)
+
+    # Output shapes are identical -- shape alone cannot disambiguate
+    assert out_false.shape == out_true.shape == (32, 3, 21, 21)
+    # But values DO differ between the two kernels (different floor_mode
+    # in the arrangement), and each matches its reference
+    assert torch.allclose(out_false, F.max_pool2d(x, (3, 3), ceil_mode=False))
+    assert torch.allclose(out_true, F.max_pool2d(x, (3, 3), ceil_mode=True))
+    # Cache must hold 2 distinct entries (one per ceil_mode value)
+    assert _HANDLE_CACHE.memory_size == 2
+
+
+@pytest.mark.parametrize("device", get_available_devices())
+def test_make_cache_reuses_unchanged_ceil_mode(device):
+    """Verify cache HIT path: a second call with the same ceil_mode
+    must reuse the cached entry (L1 size unchanged)."""
+    torch.manual_seed(0)
+    x = torch.randn(32, 3, 64, 64, dtype=torch.float16, device=device)
+
+    out1 = max_pool2d(x, (3, 3), ceil_mode=False)
+    assert _HANDLE_CACHE.memory_size == 1  # first call: miss + put
+
+    out2 = max_pool2d(x, (3, 3), ceil_mode=False)
+    assert _HANDLE_CACHE.memory_size == 1  # second call: hit, no new entry
+    assert torch.allclose(out1, out2)

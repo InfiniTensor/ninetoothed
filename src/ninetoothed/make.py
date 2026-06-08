@@ -11,14 +11,24 @@ import inspect
 from ninetoothed._cache import Cache, hash_function_source, hash_tensor_signature
 from ninetoothed.aot import aot
 from ninetoothed.jit import jit
+from ninetoothed.tensor import Tensor
 
 
 def _build_cache_key(arrangement, application, tensors, caller, kernel_name,
                      num_warps, num_stages, max_num_configs):
+    def _hash_one(t):
+        # Tensor instances get content-sensitive structural hashing.
+        if isinstance(t, Tensor):
+            return hash_tensor_signature(t)
+        # Non-Tensor elements (slices, ints, lists, etc. used as
+        # arrangement() kwargs) are hashed via repr() so they
+        # correctly participate in the cache key.
+        return ("__raw__", repr(t))
+
     return (
         hash_function_source(arrangement),
         hash_function_source(application),
-        tuple(hash_tensor_signature(t) for t in tensors),
+        tuple(_hash_one(t) for t in tensors),
         caller,
         kernel_name,
         num_warps,

@@ -15,7 +15,6 @@ from ninetoothed._cache import (
     hash_value,
 )
 
-
 # ---------- hash_function_source ----------
 
 def test_returns_string():
@@ -111,6 +110,72 @@ def test_id_fallback_stable_across_calls():
     h1 = hash_function_source(len)
     h2 = hash_function_source(len)
     assert h1 == h2
+
+
+def test_fallback_distinguishes_functools_partial_kwargs():
+    """When inspect.getsource fails (REPL, exec, Jupyter), functools.partial
+    with different bound kwargs must still hash differently.
+
+    Regression test for the silent correctness bug where the fallback path
+    returned `id:module.qualname@id(func)` -- dropping partial_args entirely,
+    so `partial(f, ceil_mode=True)` and `partial(f, ceil_mode=False)` would
+    collide and return the wrong cached handle.
+    """
+    import ninetoothed._cache as cache_mod
+
+    def arrangement(input, output, ceil_mode=False):
+        return input, output
+
+    p_true = functools.partial(arrangement, ceil_mode=True)
+    p_false = functools.partial(arrangement, ceil_mode=False)
+
+    # Force the fallback path by patching inspect.getsource to raise.
+    original_getsource = cache_mod.inspect.getsource
+
+    def _raise_oserror(*args, **kwargs):
+        raise OSError("simulated: source unavailable")
+
+    cache_mod.inspect.getsource = _raise_oserror
+    try:
+        h_true = hash_function_source(p_true)
+        h_false = hash_function_source(p_false)
+    finally:
+        cache_mod.inspect.getsource = original_getsource
+
+    # Both should be in the fallback (`id:`) prefix
+    assert h_true.startswith("id:")
+    assert h_false.startswith("id:")
+
+    # Different kwargs must produce different hashes
+    assert h_true != h_false
+
+
+def test_fallback_distinguishes_functools_partial_args():
+    """Same as above, but for positional args (e.g. `partial(f, 1, 2)` vs
+    `partial(f, 3, 4)`)."""
+    import ninetoothed._cache as cache_mod
+
+    def base(x, y):
+        return x + y
+
+    p12 = functools.partial(base, 1, 2)
+    p34 = functools.partial(base, 3, 4)
+
+    original_getsource = cache_mod.inspect.getsource
+
+    def _raise_oserror(*args, **kwargs):
+        raise OSError("simulated: source unavailable")
+
+    cache_mod.inspect.getsource = _raise_oserror
+    try:
+        h12 = hash_function_source(p12)
+        h34 = hash_function_source(p34)
+    finally:
+        cache_mod.inspect.getsource = original_getsource
+
+    assert h12.startswith("id:")
+    assert h34.startswith("id:")
+    assert h12 != h34
 
 
 # ---------- hash_tensor_signature ----------

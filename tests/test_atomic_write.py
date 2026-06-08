@@ -7,9 +7,6 @@ Verifies the contract:
   - The in-process L1 cache is unaffected by disk failure.
 """
 import json
-import pathlib
-
-import pytest
 
 from ninetoothed._cache import Cache
 
