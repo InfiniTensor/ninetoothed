@@ -1,7 +1,35 @@
+"""Public entry point: ninetoothed.make(), with content-sensitive handle cache.
+
+The handle cache (L1, in-process, FIFO) is keyed by a content hash of the
+arrangement + application source code, tensor structural signatures, and
+compilation parameters. Editing the user-facing functions invalidates the
+cache; editing unrelated code does not.
+"""
+
 import inspect
 
+from ninetoothed._cache import Cache, hash_function_source, hash_tensor_signature
 from ninetoothed.aot import aot
 from ninetoothed.jit import jit
+
+
+def _build_cache_key(arrangement, application, tensors, caller, kernel_name,
+                     num_warps, num_stages, max_num_configs):
+    return (
+        hash_function_source(arrangement),
+        hash_function_source(application),
+        tuple(hash_tensor_signature(t) for t in tensors),
+        caller,
+        kernel_name,
+        num_warps,
+        num_stages,
+        max_num_configs,
+    )
+
+
+# Per-process L1 cache for JIT handles. Not shared across processes
+# (handles are not serializable). 256-entry FIFO matches prior behavior.
+_HANDLE_CACHE = Cache(max_memory=256)
 
 
 def make(
@@ -24,11 +52,23 @@ def make(
     :param kernel_name: The name for the generated kernel.
     :param output_dir: The directory to store the generated files.
     :param num_warps: The number of warps to use.
-    :param num_stages: The number of pipeline stages.
+    :param num_stages: The number of stages to use.
     :param max_num_configs: The maximum number of auto-tuning
         configurations to use.
     :return: A handle to the compute kernel.
     """
+
+    # Cache only the JIT ("torch") path. The AOT path produces on-disk
+    # build artifacts (.so, .csv, .fingerprint) that are managed by
+    # build.py's own cache.
+    if caller == "torch":
+        key = _build_cache_key(
+            arrangement, application, tensors,
+            caller, kernel_name, num_warps, num_stages, max_num_configs,
+        )
+        cached = _HANDLE_CACHE.get(key)
+        if cached is not None:
+            return cached
 
     params = inspect.signature(application).parameters
     types = arrangement(*tensors)
@@ -37,7 +77,7 @@ def make(
     application.__annotations__ = annotations
 
     if caller == "torch":
-        return jit(
+        handle = jit(
             application,
             caller=caller,
             kernel_name=kernel_name,
@@ -45,6 +85,8 @@ def make(
             num_stages=num_stages,
             max_num_configs=max_num_configs,
         )
+        _HANDLE_CACHE.put(key, handle)
+        return handle
 
     return aot(
         application,
