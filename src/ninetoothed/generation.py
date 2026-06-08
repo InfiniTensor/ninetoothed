@@ -124,7 +124,7 @@ class CodeGenerator(ast.NodeTransformer):
                 ["ruff", "format", "-"], input=source, encoding="utf-8"
             )
 
-        cache_file = cache_source(source)
+        cache_file = cache_source(source, kernel_name)
 
         self.tensors = self._args
         self.kernel_func = self._func_def
@@ -870,8 +870,17 @@ class Tritonizer(ast.NodeTransformer):
         return node
 
 
-def cache_source(source):
-    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+def cache_source(source, kernel_name):
+    # Mix kernel_name into the digest so different kernels derived from
+    # the same source text (e.g. two block_size configs of the same
+    # arrangement) do not collide on a single .py file. Without this,
+    # concurrent AOT compilations can race-write the same cache file,
+    # leaving triton.tools.compile unable to find the named kernel.
+    hasher = hashlib.sha256()
+    hasher.update(source.encode("utf-8"))
+    hasher.update(b"\0")
+    hasher.update(kernel_name.encode("utf-8"))
+    digest = hasher.hexdigest()
     cache_file = CACHE_DIR / f"{digest}.py"
 
     if not cache_file.exists():
