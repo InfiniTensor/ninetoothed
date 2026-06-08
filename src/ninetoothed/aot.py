@@ -35,9 +35,9 @@ def aot(
         num_stages = default_num_stages
 
     if should_use_ascend_aot_dispatch(caller):
-        from ninetoothed.AscendAOTBackend import AscendAotBackend
+        from ninetoothed.AscendAOTBackend import AscendAOTBackend
 
-        return AscendAotBackend()(
+        return AscendAOTBackend()(
             func, kernel_name=kernel_name, num_warps=num_warps, num_stages=num_stages
         )
 

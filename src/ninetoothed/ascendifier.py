@@ -5,15 +5,15 @@ class Ascendifier(ast.NodeTransformer):
     def __init__(self):
         super().__init__()
         self.max_axes = None
-        self._needs_ascend_config_prune = False
         try:
             from triton.backends.ascend.runtime.utils import valid_axis_names
+
             self.max_axes = len(valid_axis_names)
         except ImportError:
             pass
 
     @staticmethod
-    def _is_tl_name(node):
+    def _is_triton_language_name(node):
         return isinstance(node, ast.Name) and node.id == "triton.language"
 
     @staticmethod
@@ -30,7 +30,10 @@ class Ascendifier(ast.NodeTransformer):
         return (
             isinstance(node, ast.Attribute)
             and node.attr == member
-            and (cls._is_tl_name(node.value) or cls._is_triton_language(node.value))
+            and (
+                cls._is_triton_language_name(node.value)
+                or cls._is_triton_language(node.value)
+            )
         )
 
     @staticmethod
@@ -60,16 +63,14 @@ class Ascendifier(ast.NodeTransformer):
 
     @classmethod
     def _is_where_call(cls, node):
-        return (
-            isinstance(node, ast.Call)
-            and cls._is_triton_language_member(node.func, "where")
+        return isinstance(node, ast.Call) and cls._is_triton_language_member(
+            node.func, "where"
         )
 
     @classmethod
     def _is_dot_call(cls, node):
-        return (
-            isinstance(node, ast.Call)
-            and cls._is_triton_language_member(node.func, "dot")
+        return isinstance(node, ast.Call) and cls._is_triton_language_member(
+            node.func, "dot"
         )
 
     @staticmethod
@@ -105,12 +106,14 @@ class Ascendifier(ast.NodeTransformer):
         return name == "qk" or name.endswith("_qk")
 
     @classmethod
-    def _name_is_last_defined_by_dot(cls, name, prior_stmts):
-        for prior in reversed(prior_stmts):
-            if cls._assign_target_name(prior) != name:
+    def _name_is_last_defined_by_dot(cls, name, previous_statements):
+        for previous_statement in reversed(previous_statements):
+            if cls._assign_target_name(previous_statement) != name:
                 continue
 
-            return isinstance(prior.value, ast.Call) and cls._is_dot_call(prior.value)
+            return isinstance(previous_statement.value, ast.Call) and cls._is_dot_call(
+                previous_statement.value
+            )
 
         return False
 
@@ -145,29 +148,31 @@ class Ascendifier(ast.NodeTransformer):
         return not isinstance(node, ast.Constant)
 
     @classmethod
-    def _make_tail_key_boundary_test(cls, mask_expr):
+    def _make_tail_key_boundary_test(cls, mask_expression):
         if not (
-            isinstance(mask_expr, ast.Compare)
-            and len(mask_expr.ops) == 1
-            and isinstance(mask_expr.ops[0], ast.Lt)
-            and len(mask_expr.comparators) == 1
+            isinstance(mask_expression, ast.Compare)
+            and len(mask_expression.ops) == 1
+            and isinstance(mask_expression.ops[0], ast.Lt)
+            and len(mask_expression.comparators) == 1
         ):
             return None
 
-        limit_expr = mask_expr.comparators[0]
-        if not cls._is_dynamic_limit_expr(limit_expr):
+        limit_expression = mask_expression.comparators[0]
+        if not cls._is_dynamic_limit_expr(limit_expression):
             return None
 
-        split = cls._split_block_offset(mask_expr.left)
+        split = cls._split_block_offset(mask_expression.left)
         if split is None:
             return None
 
-        offset_base, block_expr = split
-        tail_lhs = ast.BinOp(left=offset_base, op=ast.Add(), right=block_expr)
+        offset_base, block_expression = split
+        tail_left_hand_side = ast.BinOp(
+            left=offset_base, op=ast.Add(), right=block_expression
+        )
         return ast.Compare(
-            left=tail_lhs,
+            left=tail_left_hand_side,
             ops=[ast.Gt()],
-            comparators=[cls._clone(limit_expr)],
+            comparators=[cls._clone(limit_expression)],
         )
 
     @classmethod
@@ -180,7 +185,9 @@ class Ascendifier(ast.NodeTransformer):
 
     @classmethod
     def _make_to_dtype_call(cls, value_expr, dtype_source):
-        dtype = ast.Attribute(value=cls._clone(dtype_source), attr="dtype", ctx=ast.Load())
+        dtype = ast.Attribute(
+            value=cls._clone(dtype_source), attr="dtype", ctx=ast.Load()
+        )
         return ast.Call(
             func=ast.Attribute(value=cls._clone(value_expr), attr="to", ctx=ast.Load()),
             args=[dtype],
@@ -188,10 +195,10 @@ class Ascendifier(ast.NodeTransformer):
         )
 
     @classmethod
-    def _make_tail_key_boundary_bias_assign(cls, target_name, mask_expr):
+    def _make_tail_key_boundary_bias_assign(cls, target_name, mask_expression):
         target = ast.Name(id=target_name, ctx=ast.Load())
         full_mask = cls._broadcast_to_shape_of(
-            cls._make_row_broadcast_view(mask_expr), target
+            cls._make_row_broadcast_view(mask_expression), target
         )
         mask_float = cls._make_to_dtype_call(full_mask, target)
         inverse_mask = ast.BinOp(
@@ -210,10 +217,10 @@ class Ascendifier(ast.NodeTransformer):
         )
 
     @classmethod
-    def _make_tail_key_boundary_stable_mask_assign(cls, target_name, mask_expr):
+    def _make_tail_key_boundary_stable_mask_assign(cls, target_name, mask_expression):
         target = ast.Name(id=target_name, ctx=ast.Load())
         full_mask = cls._broadcast_to_shape_of(
-            cls._make_row_broadcast_view(mask_expr), target
+            cls._make_row_broadcast_view(mask_expression), target
         )
         return ast.Assign(
             targets=[ast.Name(id=target_name, ctx=ast.Store())],
@@ -225,67 +232,69 @@ class Ascendifier(ast.NodeTransformer):
         )
 
     @classmethod
-    def _is_exp2_assign_using_name(cls, stmt, name):
+    def _is_exp2_assign_using_name(cls, statement, name):
         if not (
-            isinstance(stmt, ast.Assign)
-            and len(stmt.targets) == 1
-            and isinstance(stmt.targets[0], ast.Name)
-            and isinstance(stmt.value, ast.Call)
-            and cls._is_triton_language_member(stmt.value.func, "exp2")
-            and len(stmt.value.args) == 1
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and isinstance(statement.value, ast.Call)
+            and cls._is_triton_language_member(statement.value.func, "exp2")
+            and len(statement.value.args) == 1
         ):
             return False
 
         return any(
             isinstance(node, ast.Name) and node.id == name
-            for node in ast.walk(stmt.value.args[0])
+            for node in ast.walk(statement.value.args[0])
         )
 
     @classmethod
-    def _rewrite_tail_key_boundary_where_assign(cls, stmt, prior_stmts):
+    def _rewrite_tail_key_boundary_where_assign(cls, statement, previous_statements):
         if not (
-            isinstance(stmt, ast.Assign)
-            and len(stmt.targets) == 1
-            and isinstance(stmt.targets[0], ast.Name)
-            and isinstance(stmt.value, ast.Call)
-            and cls._is_where_call(stmt.value)
-            and len(stmt.value.args) >= 3
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and isinstance(statement.value, ast.Call)
+            and cls._is_where_call(statement.value)
+            and len(statement.value.args) >= 3
         ):
             return None
 
-        target_name = stmt.targets[0].id
-        where_call = stmt.value
+        target_name = statement.targets[0].id
+        where_call = statement.value
         if not (
             cls._is_sdpa_score_name(target_name)
             and isinstance(where_call.args[1], ast.Name)
             and where_call.args[1].id == target_name
             and cls._is_negative_inf_literal(where_call.args[2])
-            and cls._name_is_last_defined_by_dot(target_name, prior_stmts)
+            and cls._name_is_last_defined_by_dot(target_name, previous_statements)
         ):
             return None
 
-        mask_expr = where_call.args[0]
-        tail_condition = cls._make_tail_key_boundary_test(mask_expr)
+        mask_expression = where_call.args[0]
+        tail_condition = cls._make_tail_key_boundary_test(mask_expression)
         if tail_condition is None:
             return None
 
         rewritten = ast.If(
             test=tail_condition,
-            body=[cls._make_tail_key_boundary_bias_assign(target_name, mask_expr)],
+            body=[
+                cls._make_tail_key_boundary_bias_assign(target_name, mask_expression)
+            ],
             orelse=[],
         )
-        return rewritten, target_name, tail_condition, mask_expr
+        return rewritten, target_name, tail_condition, mask_expression
 
     # BiShengIR cannot compile SDPA's original key-boundary where on qk.
     # Keep this rewrite narrow: qk-like dot result, -inf false value,
     # and a provable block-offset < runtime-length mask.
     @classmethod
     def _rewrite_tail_key_boundary_masks(cls, module):
-        for stmt in module.body:
-            if not isinstance(stmt, ast.FunctionDef):
+        for statement in module.body:
+            if not isinstance(statement, ast.FunctionDef):
                 continue
 
-            for node in ast.walk(stmt):
+            for node in ast.walk(statement):
                 if not isinstance(node, ast.For):
                     continue
 
@@ -296,13 +305,24 @@ class Ascendifier(ast.NodeTransformer):
                         loop_stmt, new_loop_body
                     )
                     if rewrite is not None:
-                        rewritten, target_name, tail_condition, mask_expr = rewrite
+                        (
+                            rewritten,
+                            target_name,
+                            tail_condition,
+                            mask_expression,
+                        ) = rewrite
                         new_loop_body.append(rewritten)
-                        pending_tail_masks[target_name] = (tail_condition, mask_expr)
+                        pending_tail_masks[target_name] = (
+                            tail_condition,
+                            mask_expression,
+                        )
                         continue
 
                     new_loop_body.append(loop_stmt)
-                    for masked_name, (tail_condition, mask_expr) in pending_tail_masks.items():
+                    for (
+                        masked_name,
+                        (tail_condition, mask_expression),
+                    ) in pending_tail_masks.items():
                         if not cls._is_exp2_assign_using_name(loop_stmt, masked_name):
                             continue
 
@@ -315,7 +335,7 @@ class Ascendifier(ast.NodeTransformer):
                                 test=cls._clone(tail_condition),
                                 body=[
                                     cls._make_tail_key_boundary_stable_mask_assign(
-                                        stable_name, mask_expr
+                                        stable_name, mask_expression
                                     )
                                 ],
                                 orelse=[],
@@ -326,7 +346,6 @@ class Ascendifier(ast.NodeTransformer):
                 node.body = new_loop_body
 
         return module
-
 
     @classmethod
     def _config_block_size_values(cls, node):
@@ -386,282 +405,6 @@ class Ascendifier(ast.NodeTransformer):
                 value_node.value = new_value
 
     @staticmethod
-    def _ascend_config_prune_function_name():
-        return "_ninetoothed_prune_ascend_configs"
-
-    @classmethod
-    def _ascend_config_prune_function_def(cls):
-        source = """
-def {name}(configs, nargs, **kwargs):
-    max_core_dim = 65535
-    max_ub_bits = 1572864
-    max_cc_bits = 1048576
-
-    try:
-        grid = kwargs["grid"]
-    except KeyError:
-        grid = None
-
-    def _as_positive_int(value):
-        try:
-            value = int(value)
-        except Exception:
-            return None
-
-        if value <= 0:
-            return None
-
-        return value
-
-    def _is_block_key(key):
-        key = str(key)
-        upper_key = key.upper()
-        lower_key = key.lower()
-        return (
-            "BLOCK_SIZE" in upper_key
-            or upper_key.startswith("BLOCK_")
-            or lower_key.startswith("block_size")
-        )
-
-    def _not_none(value):
-        return value is not None
-
-    def _block_items(meta):
-        items = []
-        for key, value in meta.items():
-            if not _is_block_key(key):
-                continue
-
-            value = _as_positive_int(value)
-            if _not_none(value):
-                items.append((str(key), value))
-
-        return items
-
-    def _block_values(meta):
-        return [value for _, value in _block_items(meta)]
-
-    def _feature_dim(meta, fallback):
-        candidates = []
-        for key, value in meta.items():
-            key = str(key)
-            upper_key = key.upper()
-            lower_key = key.lower()
-            if (
-                "EMB_DIM" not in upper_key
-                and "HEAD_DIM" not in upper_key
-                and "D_MODEL" not in upper_key
-                and "size_3" not in lower_key
-            ):
-                continue
-
-            value = _as_positive_int(value)
-            if value is not None and value <= 4096:
-                candidates.append(value)
-
-        if candidates:
-            return max(candidates)
-
-        return fallback
-
-    def _estimate_memory_bits(meta):
-        block_items = _block_items(meta)
-        blocks = [value for _, value in block_items]
-        if not blocks:
-            return None
-
-        sub_blocks = [value for key, value in block_items if "SUB" in key.upper()]
-        if len(blocks) == 1 or sub_blocks:
-            block = max(sub_blocks or blocks)
-            # Generic elementwise-like estimate: input, output, mask/temp, plus
-            # one extra temporary. Kernels that need larger blocks generally
-            # require explicit sub-blocking instead of a larger single tile; when
-            # such a sub-block exists, UB pressure is bounded by that sub-block.
-            ub_bits = block * 16 * 4
-            return ub_bits, 0
-
-        block_m = blocks[0]
-        block_n = blocks[1]
-        feature = _feature_dim(meta, max(block_n, 64))
-
-        dot_bits = block_m * block_n * 32
-        qk_like_bits = 3 * dot_bits
-        acc_like_bits = block_m * feature * 32
-        input_like_bits = (block_m * feature + 2 * block_n * feature) * 16
-        vector_like_bits = (4 * block_m + block_n + feature) * 32
-
-        ub_bits = qk_like_bits + acc_like_bits + input_like_bits + vector_like_bits
-        cc_bits = 2 * dot_bits
-
-        return ub_bits, cc_bits
-
-    def _core_dim(meta):
-        try:
-            grid_dims = grid(meta) if callable(grid) else grid
-        except Exception:
-            return None
-
-        if not isinstance(grid_dims, tuple):
-            grid_dims = (grid_dims,)
-
-        core_dim = 1
-        try:
-            for dim in grid_dims:
-                core_dim *= int(dim)
-        except Exception:
-            return None
-
-        return core_dim
-
-    safe_records = []
-    pruned_for_core_dim = False
-    for config in configs:
-        meta = dict(kwargs)
-        meta.update(config.all_kwargs())
-
-        core_dim = _core_dim(meta)
-        if core_dim is not None and core_dim > max_core_dim:
-            pruned_for_core_dim = True
-            continue
-
-        memory_bits = _estimate_memory_bits(meta)
-        if _not_none(memory_bits):
-            ub_bits, cc_bits = memory_bits
-            if ub_bits > max_ub_bits or cc_bits > max_cc_bits:
-                continue
-
-        blocks = _block_values(meta)
-        block_footprint = 0
-        for block in blocks:
-            block_footprint = max(block_footprint, block)
-        safe_records.append((config, core_dim, block_footprint))
-
-    if safe_records:
-        if pruned_for_core_dim:
-            safe_records = sorted(
-                safe_records,
-                key=lambda item: (
-                    max_core_dim if item[1] is None else item[1],
-                    -item[2],
-                ),
-            )
-
-        return [config for config, _, _ in safe_records]
-
-    raise RuntimeError(
-        "No Ascend-safe Triton autotune configs: all candidates exceed "
-        "coreDim, UB, or CC limits."
-    )
-""".format(name=cls._ascend_config_prune_function_name())
-        return ast.parse(source).body[0]
-
-    @classmethod
-    def _has_ascend_config_prune_function(cls, module):
-        return any(
-            isinstance(stmt, ast.FunctionDef)
-            and stmt.name == cls._ascend_config_prune_function_name()
-            for stmt in module.body
-        )
-
-    @classmethod
-    def _inject_ascend_config_prune_function(cls, module):
-        if cls._has_ascend_config_prune_function(module):
-            return module
-
-        insert_at = 0
-        while insert_at < len(module.body) and isinstance(
-            module.body[insert_at], (ast.Import, ast.ImportFrom)
-        ):
-            insert_at += 1
-
-        module.body.insert(insert_at, cls._ascend_config_prune_function_def())
-        return module
-
-    @classmethod
-    def _chain_ascend_config_prune(cls, existing):
-        args = ast.arguments(
-            posonlyargs=[],
-            args=[
-                ast.arg(arg="configs"),
-                ast.arg(arg="nargs"),
-            ],
-            vararg=None,
-            kwonlyargs=[],
-            kw_defaults=[],
-            kwarg=ast.arg(arg="kwargs"),
-            defaults=[],
-        )
-        chained_configs = ast.Call(
-            func=cls._clone(existing),
-            args=[
-                ast.Name(id="configs", ctx=ast.Load()),
-                ast.Name(id="nargs", ctx=ast.Load()),
-            ],
-            keywords=[
-                ast.keyword(arg=None, value=ast.Name(id="kwargs", ctx=ast.Load()))
-            ],
-        )
-        return ast.Lambda(
-            args=args,
-            body=ast.Call(
-                func=ast.Name(
-                    id=cls._ascend_config_prune_function_name(),
-                    ctx=ast.Load(),
-                ),
-                args=[
-                    chained_configs,
-                    ast.Name(id="nargs", ctx=ast.Load()),
-                ],
-                keywords=[
-                    ast.keyword(arg=None, value=ast.Name(id="kwargs", ctx=ast.Load()))
-                ],
-            ),
-        )
-
-    @classmethod
-    def _add_ascend_config_prune_to_autotune(cls, node):
-        for kw in node.keywords:
-            if kw.arg != "prune_configs_by":
-                continue
-
-            if isinstance(kw.value, ast.Dict):
-                for index, key_node in enumerate(kw.value.keys):
-                    if not (
-                        isinstance(key_node, ast.Constant)
-                        and key_node.value == "early_config_prune"
-                    ):
-                        continue
-
-                    kw.value.values[index] = cls._chain_ascend_config_prune(
-                        kw.value.values[index]
-                    )
-                    return True
-
-                kw.value.keys.append(ast.Constant(value="early_config_prune"))
-                kw.value.values.append(
-                    ast.Name(id=cls._ascend_config_prune_function_name(), ctx=ast.Load())
-                )
-                return True
-
-            return False
-
-        node.keywords.append(
-            ast.keyword(
-                arg="prune_configs_by",
-                value=ast.Dict(
-                    keys=[ast.Constant(value="early_config_prune")],
-                    values=[
-                        ast.Name(
-                            id=cls._ascend_config_prune_function_name(),
-                            ctx=ast.Load(),
-                        )
-                    ],
-                ),
-            )
-        )
-        return True
-
-    @staticmethod
     def _is_triton_autotune_call(node):
         return (
             isinstance(node, ast.Call)
@@ -677,8 +420,8 @@ def {name}(configs, nargs, **kwargs):
 
     @staticmethod
     def _autotune_key_priority(item):
-        index, elt = item
-        value = str(elt.value)
+        index, key_node = item
+        value = str(key_node.value)
         if "next_power_of_2" in value:
             priority = 2
         elif "constexpr" in value:
@@ -691,43 +434,45 @@ def {name}(configs, nargs, **kwargs):
     @classmethod
     def _filter_autotune_keys(cls, key_nodes, max_axes):
         size_keys = [
-            elt
-            for elt in key_nodes
-            if isinstance(elt, ast.Constant) and "size" in str(elt.value)
+            key_node
+            for key_node in key_nodes
+            if isinstance(key_node, ast.Constant) and "size" in str(key_node.value)
         ]
         return [
-            elt
-            for _, elt in sorted(enumerate(size_keys), key=cls._autotune_key_priority)
+            key_node
+            for _, key_node in sorted(
+                enumerate(size_keys), key=cls._autotune_key_priority
+            )
         ][:max_axes]
 
     @classmethod
-    def _rewrite_autotune_keyword(cls, kw, max_axes):
-        if kw.arg == "configs" and cls._is_sequence_literal(kw.value):
-            cls._rewrite_square_block_autotune_configs(kw.value.elts)
+    def _rewrite_autotune_keyword(cls, keyword, max_axes):
+        if keyword.arg == "configs" and cls._is_sequence_literal(keyword.value):
+            cls._rewrite_square_block_autotune_configs(keyword.value.elts)
             return
 
-        if kw.arg == "key" and cls._is_sequence_literal(kw.value):
-            kw.value.elts = cls._filter_autotune_keys(kw.value.elts, max_axes)
+        if keyword.arg == "key" and cls._is_sequence_literal(keyword.value):
+            keyword.value.elts = cls._filter_autotune_keys(keyword.value.elts, max_axes)
 
     @classmethod
     def _rewrite_autotune_call(cls, node, max_axes):
-        for kw in node.keywords:
-            cls._rewrite_autotune_keyword(kw, max_axes)
+        for keyword in node.keywords:
+            cls._rewrite_autotune_keyword(keyword, max_axes)
 
-        return cls._add_ascend_config_prune_to_autotune(node)
+        return
 
     @classmethod
     def _rewrite_load_call(cls, node):
         if not cls._is_triton_language_member(node.func, "load"):
             return
 
-        for kw in node.keywords:
+        for keyword in node.keywords:
             if (
-                kw.arg == "other"
-                and isinstance(kw.value, ast.Constant)
-                and kw.value.value is None
+                keyword.arg == "other"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is None
             ):
-                kw.value.value = 0.0
+                keyword.value.value = 0.0
 
     @classmethod
     def _rewrite_clamp_call(cls, node):
@@ -764,8 +509,7 @@ def {name}(configs, nargs, **kwargs):
         self.generic_visit(node)
 
         if type(self)._is_triton_autotune_call(node):
-            if type(self)._rewrite_autotune_call(node, self.max_axes):
-                self._needs_ascend_config_prune = True
+            type(self)._rewrite_autotune_call(node, self.max_axes)
 
         type(self)._rewrite_load_call(node)
         return type(self)._rewrite_clamp_call(node)
@@ -774,7 +518,5 @@ def {name}(configs, nargs, **kwargs):
         self.generic_visit(node)
 
         node = type(self)._rewrite_tail_key_boundary_masks(node)
-        if self._needs_ascend_config_prune:
-            node = type(self)._inject_ascend_config_prune_function(node)
 
         return node

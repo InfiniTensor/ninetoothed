@@ -9,7 +9,7 @@ import time
 import uuid
 
 
-class AscendAotBackend:
+class AscendAOTBackend:
     """NPU runtime backend for AOT entrypoints.
 
     This backend intentionally avoids CUDA-only `triton.tools.compile`
@@ -27,7 +27,7 @@ class AscendAotBackend:
 
 _UNKNOWN_SIZE_BUCKET = -1
 _MULTI_AXIS_MAX_CANDIDATES_DEFAULT = 16
-_MULTI_AXIS_MAX_TUNE_MS_DEFAULT = 400.0
+_MULTI_AXIS_MAX_TUNE_MILLISECONDS_DEFAULT = 400.0
 
 
 # -----------------------------------------------------------------------------
@@ -35,12 +35,15 @@ _MULTI_AXIS_MAX_TUNE_MS_DEFAULT = 400.0
 # -----------------------------------------------------------------------------
 
 
-def _first_tensor_like_arg(args):
-    return next((arg for arg in args if hasattr(arg, "numel")), None)
+def _first_tensor_like_arg(tensor_args):
+    return next(
+        (tensor_arg for tensor_arg in tensor_args if hasattr(tensor_arg, "numel")),
+        None,
+    )
 
 
-def _cdiv(x, y):
-    return (int(x) + int(y) - 1) // int(y)
+def _ceil_div(numerator, denominator):
+    return (int(numerator) + int(denominator) - 1) // int(denominator)
 
 
 # -----------------------------------------------------------------------------
@@ -81,43 +84,28 @@ def _normalize_compile_options(num_warps, num_stages):
 # -----------------------------------------------------------------------------
 
 
-def _debug_enabled():
-    return os.getenv("NINETOOTHED_ASCEND_DEBUG_META", "0") == "1"
-
-
-def _debug_meta_selection(kernel_name, size_bucket, config_values, meta_values, source):
-    if not _debug_enabled():
-        return
-
-    print(
-        f"[ninetoothed][ascend][meta] kernel={kernel_name} "
-        f"bucket={size_bucket} config={config_values} meta={meta_values} source={source}",
-        flush=True,
-    )
-
-
 def _multi_axis_max_candidates():
-    raw = os.getenv("NINETOOTHED_MULTI_AXIS_MAX_CANDIDATES", "")
-    if not raw:
+    raw_value = os.getenv("NINETOOTHED_MULTI_AXIS_MAX_CANDIDATES", "")
+    if not raw_value:
         return _MULTI_AXIS_MAX_CANDIDATES_DEFAULT
 
     try:
-        value = int(raw)
+        value = int(raw_value)
     except ValueError:
         return _MULTI_AXIS_MAX_CANDIDATES_DEFAULT
 
     return max(1, value)
 
 
-def _multi_axis_max_tune_ms():
-    raw = os.getenv("NINETOOTHED_MULTI_AXIS_MAX_TUNE_MS", "")
-    if not raw:
-        return _MULTI_AXIS_MAX_TUNE_MS_DEFAULT
+def _multi_axis_max_tune_milliseconds():
+    raw_value = os.getenv("NINETOOTHED_MULTI_AXIS_MAX_TUNE_MS", "")
+    if not raw_value:
+        return _MULTI_AXIS_MAX_TUNE_MILLISECONDS_DEFAULT
 
     try:
-        value = float(raw)
+        value = float(raw_value)
     except ValueError:
-        return _MULTI_AXIS_MAX_TUNE_MS_DEFAULT
+        return _MULTI_AXIS_MAX_TUNE_MILLISECONDS_DEFAULT
 
     return max(1.0, value)
 
@@ -160,9 +148,7 @@ def build_kernel_artifact(func, *, kernel_name, num_warps, num_stages):
     }
     artifact["artifact_id"] = _make_artifact_id(artifact)
 
-    manifest_path = source_path.with_suffix(
-        f".{kernel_name}.ascend-aot.manifest.json"
-    )
+    manifest_path = source_path.with_suffix(f".{kernel_name}.ascend-aot.manifest.json")
     _write_manifest(manifest_path, artifact)
     artifact["manifest_path"] = str(manifest_path)
 
@@ -226,7 +212,8 @@ def _backfill_legacy_artifact(artifact):
     normalized.setdefault("kind", "python_launch_wrapper")
     normalized.setdefault("preferred_launch_name", f"{launch_name}_npu")
     normalized.setdefault(
-        "artifact_id", uuid.uuid5(uuid.NAMESPACE_URL, f"{source_file}:{launch_name}").hex
+        "artifact_id",
+        uuid.uuid5(uuid.NAMESPACE_URL, f"{source_file}:{launch_name}").hex,
     )
 
     return normalized
@@ -413,9 +400,7 @@ def build_dispatch_kernel(
         expected_num_args = len(tensor_param_names) + len(non_tensor_param_names)
 
         if len(args) != expected_num_args:
-            raise TypeError(
-                f"Expected {expected_num_args} arguments, got {len(args)}."
-            )
+            raise TypeError(f"Expected {expected_num_args} arguments, got {len(args)}.")
 
         tensor_args = dict(zip(tensor_param_names, args[: len(tensor_param_names)]))
         non_tensor_args = dict(
@@ -431,7 +416,9 @@ def build_dispatch_kernel(
             call_args = tuple(tensor_args[name] for name in param_names)
             return kernel(*call_args)
 
-        raise kernel_launch_error_cls("No matching Ascend AOT kernel configuration found.")
+        raise kernel_launch_error_cls(
+            "No matching Ascend AOT kernel configuration found."
+        )
 
     return dispatch_kernel
 
@@ -475,13 +462,15 @@ def _estimate_core_dim(*, tensor_args, meta_values, meta_param_to_index):
     if block_size <= 0:
         return -1
 
-    return _cdiv(int(first_tensor.numel()), block_size)
+    return _ceil_div(int(first_tensor.numel()), block_size)
 
 
-def _is_meta_safe_for_tensor_args(args, meta_values, meta_param_to_index, core_dim_limit):
+def _is_meta_safe_for_tensor_args(
+    tensor_args, meta_values, meta_param_to_index, core_dim_limit
+):
     """Check whether static coreDim estimate is within hardware limit."""
     core_dim = _estimate_core_dim(
-        tensor_args=args,
+        tensor_args=tensor_args,
         meta_values=meta_values,
         meta_param_to_index=meta_param_to_index,
     )
@@ -491,7 +480,11 @@ def _is_meta_safe_for_tensor_args(args, meta_values, meta_param_to_index, core_d
 
 
 def _pick_safe_meta_values(
-    tensor_args, preferred_meta_values, all_meta_values, meta_param_to_index, core_dim_limit
+    tensor_args,
+    preferred_meta_values,
+    all_meta_values,
+    meta_param_to_index,
+    core_dim_limit,
 ):
     """Pick a statically safe fallback meta when possible."""
     if _has_multi_axis_block_sizes(meta_param_to_index):
@@ -544,7 +537,7 @@ def _compose_size_aware_config_key(config_values, tensor_args):
 def _tune_meta_for_size_bucket(
     *,
     kernel_before_auto_tuning,
-    args,
+    runtime_args,
     all_meta_values,
     meta_param_to_index,
     core_dim_limit,
@@ -564,14 +557,16 @@ def _tune_meta_for_size_bucket(
             seed_meta_values=seed_meta_values,
             max_candidates=_multi_axis_max_candidates(),
         )
-        tune_budget_ms = _multi_axis_max_tune_ms()
+        tune_budget_milliseconds = _multi_axis_max_tune_milliseconds()
     else:
         safe_candidates = tuple(
             meta
             for meta in all_meta_values
-            if _is_meta_safe_for_tensor_args(args, meta, meta_param_to_index, core_dim_limit)
+            if _is_meta_safe_for_tensor_args(
+                runtime_args, meta, meta_param_to_index, core_dim_limit
+            )
         )
-        tune_budget_ms = None
+        tune_budget_milliseconds = None
 
     if not safe_candidates:
         return None
@@ -581,15 +576,15 @@ def _tune_meta_for_size_bucket(
     started = time.perf_counter()
 
     for meta_values in safe_candidates:
-        if tune_budget_ms is not None:
-            elapsed_ms = (time.perf_counter() - started) * 1000.0
-            if elapsed_ms >= tune_budget_ms:
+        if tune_budget_milliseconds is not None:
+            elapsed_milliseconds = (time.perf_counter() - started) * 1000.0
+            if elapsed_milliseconds >= tune_budget_milliseconds:
                 break
 
         try:
             timing = triton.testing.do_bench(
                 lambda meta_values=meta_values: kernel_before_auto_tuning(
-                    *args, *meta_values
+                    *runtime_args, *meta_values
                 )
             )
         except Exception:
@@ -611,43 +606,53 @@ def _prioritize_multi_axis_candidates(*, all_meta_values, seed_meta_values):
         return sorted(candidates, reverse=True)
 
     def distance(meta_values):
-        return sum(abs(int(a) - int(b)) for a, b in zip(meta_values, seed_meta_values))
-    by_near = sorted(candidates, key=lambda meta: (0 if meta == seed_meta_values else 1, distance(meta)))
-    by_far = sorted(candidates, key=lambda meta: distance(meta), reverse=True)
+        return sum(
+            abs(int(value) - int(seed_value))
+            for value, seed_value in zip(meta_values, seed_meta_values)
+        )
+
+    near_candidates = sorted(
+        candidates,
+        key=lambda meta_values: (
+            0 if meta_values == seed_meta_values else 1,
+            distance(meta_values),
+        ),
+    )
+    far_candidates = sorted(candidates, key=distance, reverse=True)
 
     # Interleave neighborhood exploitation with far-distance exploration
     # to avoid being trapped by a bad legacy seed.
     ordered = []
     used = set()
 
-    def append_once(meta):
-        key = tuple(meta)
+    def append_once(meta_values):
+        key = tuple(meta_values)
         if key in used:
             return False
-        ordered.append(meta)
+        ordered.append(meta_values)
         used.add(key)
         return True
 
-    if seed_meta_values in by_near:
+    if seed_meta_values in near_candidates:
         append_once(seed_meta_values)
 
-    near_i = 0
-    far_i = 0
+    near_index = 0
+    far_index = 0
     while len(ordered) < len(candidates):
         for _ in range(3):
-            while near_i < len(by_near):
-                meta = by_near[near_i]
-                near_i += 1
-                if append_once(meta):
+            while near_index < len(near_candidates):
+                meta_values = near_candidates[near_index]
+                near_index += 1
+                if append_once(meta_values):
                     break
             else:
                 break
-        while far_i < len(by_far):
-            meta = by_far[far_i]
-            far_i += 1
-            if append_once(meta):
+        while far_index < len(far_candidates):
+            meta_values = far_candidates[far_index]
+            far_index += 1
+            if append_once(meta_values):
                 break
-        if near_i >= len(by_near) and far_i >= len(by_far):
+        if near_index >= len(near_candidates) and far_index >= len(far_candidates):
             break
 
     return ordered
@@ -665,19 +670,22 @@ def _select_multi_axis_candidates(
         return tuple(capped)
 
     def distance(meta_values):
-        return sum(abs(int(a) - int(b)) for a, b in zip(meta_values, seed_meta_values))
+        return sum(
+            abs(int(value) - int(seed_value))
+            for value, seed_value in zip(meta_values, seed_meta_values)
+        )
 
     far_candidates = sorted(all_meta_values, key=distance, reverse=True)
     explore_slots = min(len(capped), max(1, max_candidates // 4))
     protected = list(capped[: max(0, len(capped) - explore_slots)])
-    selected_set = {tuple(meta) for meta in protected}
+    selected_set = {tuple(meta_values) for meta_values in protected}
 
     # Refill tail using far candidates to avoid being trapped by local-neighborhood picks.
-    for meta in far_candidates:
-        key = tuple(meta)
+    for meta_values in far_candidates:
+        key = tuple(meta_values)
         if key in selected_set:
             continue
-        protected.append(meta)
+        protected.append(meta_values)
         selected_set.add(key)
         if len(protected) >= len(capped):
             break
@@ -706,7 +714,7 @@ def build_kernel_with_auto_tuning(
     num_non_meta_premake_params = len(next(iter(config_to_best_meta_arguments)))
     config_param_names = non_tensor_param_names[:num_non_meta_premake_params]
     meta_param_names = non_tensor_param_names[num_non_meta_premake_params:]
-    meta_param_to_index = {name: i for i, name in enumerate(meta_param_names)}
+    meta_param_to_index = {name: index for index, name in enumerate(meta_param_names)}
     all_meta_values = tuple(all_meta_values)
     core_dim_hard_limit = (1 << 16) - 1
 
@@ -717,9 +725,7 @@ def build_kernel_with_auto_tuning(
         expected_num_args = len(tensor_param_names) + len(config_param_names)
 
         if len(args) != expected_num_args:
-            raise TypeError(
-                f"Expected {expected_num_args} arguments, got {len(args)}."
-            )
+            raise TypeError(f"Expected {expected_num_args} arguments, got {len(args)}.")
 
         config_values = tuple(
             arg_to_int(value) for value in args[len(tensor_param_names) :]
@@ -728,13 +734,11 @@ def build_kernel_with_auto_tuning(
             config_values, args[: len(tensor_param_names)]
         )
 
-        selection_source = "size_cache_hit"
         meta_values = config_to_best_meta_arguments.get(size_aware_config_values)
         if meta_values is None:
-            selection_source = "size_bucket_tune"
             meta_values = _tune_meta_for_size_bucket(
                 kernel_before_auto_tuning=kernel_before_auto_tuning,
-                args=args,
+                runtime_args=args,
                 all_meta_values=all_meta_values,
                 meta_param_to_index=meta_param_to_index,
                 core_dim_limit=core_dim_hard_limit,
@@ -744,11 +748,9 @@ def build_kernel_with_auto_tuning(
                 config_to_best_meta_arguments[size_aware_config_values] = meta_values
             else:
                 # Backward compatibility for old csv entries keyed without size bucket.
-                selection_source = "legacy_cache_hit"
                 meta_values = config_to_best_meta_arguments.get(config_values)
 
         if meta_values is None:
-            selection_source = "default_fallback"
             if config_to_best_meta_arguments:
                 meta_values = next(iter(config_to_best_meta_arguments.values()))
             else:
@@ -762,19 +764,6 @@ def build_kernel_with_auto_tuning(
             all_meta_values,
             meta_param_to_index,
             core_dim_hard_limit,
-        )
-
-        size_bucket = (
-            size_aware_config_values[-1]
-            if size_aware_config_values
-            else _UNKNOWN_SIZE_BUCKET
-        )
-        _debug_meta_selection(
-            kernel_name=kernel_name,
-            size_bucket=size_bucket,
-            config_values=config_values,
-            meta_values=meta_values,
-            source=selection_source,
         )
 
         return kernel_before_auto_tuning(*args, *meta_values)
@@ -808,7 +797,9 @@ def _read_cached_meta(kernel_state, config_key):
     return None
 
 
-def _find_runtime_fallback_meta(kernel_state, tensor_args, config_args, config_key, kwargs):
+def _find_runtime_fallback_meta(
+    kernel_state, tensor_args, config_args, config_key, kwargs
+):
     """Find a runtime-valid fallback meta from remaining candidates."""
     candidates = sorted(kernel_state._all_meta_values, reverse=True)
 
