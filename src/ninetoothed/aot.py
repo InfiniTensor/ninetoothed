@@ -1,6 +1,5 @@
 import ast
 import ctypes
-import itertools
 import pathlib
 import re
 import shutil
@@ -83,14 +82,23 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     grid = f"{ast.unparse(grid_extractor.grid[0])}, 1, 1"
 
     launch_arg_names = tuple(arg.arg for arg in launch_func.args.args)
-    variant_specs = _enumerate_stride_specs(
+    variant_specs = _enumerate_variant_specs(
+        launch_arg_names, tensors, _find_tensor_by_source_name
+    )
+    _, tensor_ndims, _ = _per_tensor_dim_options(
         launch_arg_names, tensors, _find_tensor_by_source_name
     )
 
     output_contents = {}
 
-    for variant_suffix, stride_spec in variant_specs:
-        variant_outputs = _build_stride_variant(
+    for (
+        variant_suffix,
+        divisibility_spec,
+        contiguity_spec,
+        size_type,
+        stride_type,
+    ) in variant_specs:
+        variant_outputs = _build_variant(
             source_file,
             kernel_func,
             launch_func,
@@ -102,12 +110,15 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
             grid=grid,
             num_warps=num_warps,
             num_stages=num_stages,
-            stride_spec=stride_spec,
+            divisibility_spec=divisibility_spec,
+            contiguity_spec=contiguity_spec,
+            size_type=size_type,
+            stride_type=stride_type,
         )
         output_contents.update(variant_outputs)
 
-    dispatcher_source, dispatcher_header = _generate_stride_dispatcher(
-        kernel_name, launch_arg_names, variant_specs
+    dispatcher_source, dispatcher_header = _generate_dispatcher(
+        kernel_name, launch_arg_names, variant_specs, tensor_ndims
     )
 
     output_contents[f"{kernel_name}.cpp"] = dispatcher_source
@@ -116,7 +127,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     return output_contents
 
 
-def _generate_stride_dispatcher(kernel_name, launch_arg_names, variant_specs):
+def _generate_dispatcher(kernel_name, launch_arg_names, variant_specs, tensor_ndims):
     tensor_params = ", ".join(f"NineToothedTensor {name}" for name in launch_arg_names)
     signature_params = (
         f"NineToothedStream stream, {tensor_params}"
@@ -142,7 +153,15 @@ def _generate_stride_dispatcher(kernel_name, launch_arg_names, variant_specs):
     externs = []
     branches = []
 
-    for variant_suffix, stride_spec in variant_specs:
+    fallback_call = None
+
+    for (
+        variant_suffix,
+        divisibility_spec,
+        contiguity_spec,
+        size_type,
+        stride_type,
+    ) in variant_specs:
         variant_name = f"launch_{kernel_name}_{variant_suffix}"
         externs.append(
             f'extern "C" NineToothedResult {variant_name}({signature_params});'
@@ -150,26 +169,47 @@ def _generate_stride_dispatcher(kernel_name, launch_arg_names, variant_specs):
 
         call = f"return {variant_name}({call_args});"
 
-        if stride_spec:
-            check = " && ".join(
-                f"{name}.strides[{dim}] == 1" for name, dim in stride_spec
-            )
-            branches.append(f"{_INDENTATION}if ({check}) {call}")
+        if (size_type, stride_type) == (
+            ninetoothed.dtype.int64,
+            ninetoothed.dtype.int64,
+        ):
+            fallback_call = call
+
+            continue
+
+        checks = tuple(
+            f"{name}.shape[{dim}] % 16 == 0" for name, dim in divisibility_spec
+        ) + tuple(f"{name}.strides[{dim}] == 1" for name, dim in contiguity_spec)
+
+        if checks:
+            branches.append(f"{_INDENTATION}if ({' && '.join(checks)}) {call}")
         else:
             branches.append(f"{_INDENTATION}{call}")
+
+    prelude_lines = []
+
+    if fallback_call is not None and launch_arg_names:
+        overflow_terms = _overflow_terms(launch_arg_names, tensor_ndims)
+
+        if overflow_terms:
+            prelude_lines.append(
+                f"{_INDENTATION}if ({' || '.join(overflow_terms)}) {fallback_call}"
+            )
+
+    body_lines = prelude_lines + branches
 
     source = (
         f'#include "{_HEADER_PATH}"\n\n'
         + "\n".join(externs)
         + f'\n\nextern "C" {signature} {{\n'
-        + "\n".join(branches)
+        + "\n".join(body_lines)
         + "\n}\n"
     )
 
     return source, header
 
 
-def _build_stride_variant(
+def _build_variant(
     source_file,
     kernel_func,
     launch_func,
@@ -182,9 +222,17 @@ def _build_stride_variant(
     grid,
     num_warps,
     num_stages,
-    stride_spec,
+    divisibility_spec,
+    contiguity_spec,
+    size_type=ninetoothed.dtype.int32,
+    stride_type=ninetoothed.dtype.int32,
 ):
-    spec_set = {(naming.remove_prefixes(name), dim) for name, dim in stride_spec}
+    divisibility_set = {
+        (naming.remove_prefixes(name), dim) for name, dim in divisibility_spec
+    }
+    contiguity_set = {
+        (naming.remove_prefixes(name), dim) for name, dim in contiguity_spec
+    }
 
     param_strings = ["stream"]
     param_types = []
@@ -202,19 +250,26 @@ def _build_stride_variant(
             dtype = tensor.source.dtype
 
             param_types.append(f"*{dtype}:16")
-        elif Tensor.size_pattern().fullmatch(param):
-            param_types.append(ninetoothed.dtype.int64)
+        elif match := Tensor.size_pattern().fullmatch(param):
+            source_name = match.group(1)
+            dim_index = int(match.group(3))
+            bare_source_name = naming.remove_prefixes(source_name)
+
+            if (bare_source_name, dim_index) in divisibility_set:
+                param_types.append(f"{size_type}:16")
+            else:
+                param_types.append(size_type)
         elif match := Tensor.stride_pattern().fullmatch(param):
             source_name = match.group(1)
             dim_index = int(match.group(3))
             bare_source_name = naming.remove_prefixes(source_name)
 
-            if (bare_source_name, dim_index) in spec_set:
+            if (bare_source_name, dim_index) in contiguity_set:
                 param_types.append("1")
                 constexpr_param_indices.append(len(param_types) - 1)
                 constexpr_strides.append((source_name, dim_index))
             else:
-                param_types.append(f"{ninetoothed.dtype.int64}:16")
+                param_types.append(f"{stride_type}:16")
         else:
             source_name = param
             tensor = find_tensor(tensors, source_name)
@@ -224,6 +279,9 @@ def _build_stride_variant(
                 param_types.append(f"{tensor.value}")
                 constexpr_param_indices.append(len(param_types) - 1)
             else:
+                if dtype == ninetoothed.dtype.float32:
+                    dtype = ninetoothed.dtype.float64
+
                 param_types.append(dtype)
 
     signature = ", ".join(param_types)
@@ -286,50 +344,177 @@ def _build_stride_variant(
     return output_contents
 
 
-def _enumerate_stride_specs(launch_arg_names, tensors, find_tensor):
+def _enumerate_variant_specs(launch_arg_names, tensors, find_tensor):
+    per_tensor_dims, tensor_ndims, innermost_dims = _per_tensor_dim_options(
+        launch_arg_names, tensors, find_tensor
+    )
+
+    def _spec_from_combo(combo):
+        return tuple(
+            (name, dim) for name, dim in zip(launch_arg_names, combo) if dim is not None
+        )
+
+    base_combo = tuple(dims[0] for dims in per_tensor_dims)
+    combos = [base_combo] if any(dim is not None for dim in base_combo) else []
+
+    for i, dims in enumerate(per_tensor_dims):
+        if len(dims) <= 1:
+            continue
+
+        for alternative_dim in dims[1:]:
+            if alternative_dim is None:
+                continue
+
+            combo = list(base_combo)
+            combo[i] = alternative_dim
+            combos.append(tuple(combo))
+
+    dim_specs = tuple(_spec_from_combo(combo) for combo in combos) + ((),)
+
+    specs = []
+
+    for divisibility_spec in dim_specs:
+        for contiguity_spec in dim_specs:
+            suffix = _variant_suffix(
+                divisibility_spec,
+                contiguity_spec,
+                launch_arg_names,
+                tensor_ndims,
+                size_type=ninetoothed.dtype.int32,
+                stride_type=ninetoothed.dtype.int32,
+            )
+            specs.append(
+                (
+                    suffix,
+                    divisibility_spec,
+                    contiguity_spec,
+                    ninetoothed.dtype.int32,
+                    ninetoothed.dtype.int32,
+                )
+            )
+
+    def _num_innermost(spec):
+        return sum(1 for name, dim in spec if innermost_dims.get(name) == dim)
+
+    def _specificity(entry):
+        _, divisibility_spec, contiguity_spec, _, _ = entry
+
+        return (
+            -len(divisibility_spec),
+            -_num_innermost(divisibility_spec),
+            -len(contiguity_spec),
+            -_num_innermost(contiguity_spec),
+        )
+
+    specs.sort(key=_specificity)
+
+    fallback_suffix = _variant_suffix(
+        (),
+        (),
+        launch_arg_names,
+        tensor_ndims,
+        size_type=ninetoothed.dtype.int64,
+        stride_type=ninetoothed.dtype.int64,
+    )
+    specs.append(
+        (
+            fallback_suffix,
+            (),
+            (),
+            ninetoothed.dtype.int64,
+            ninetoothed.dtype.int64,
+        )
+    )
+
+    return specs
+
+
+def _per_tensor_dim_options(launch_arg_names, tensors, find_tensor):
     per_tensor_dims = []
+    tensor_ndims = []
 
     for name in launch_arg_names:
         tensor = find_tensor(tensors, name)
+        ndim = tensor.source.ndim if tensor is not None else 0
+        tensor_ndims.append(ndim)
 
-        if tensor is None or tensor.source.ndim == 0:
+        if ndim == 0:
             per_tensor_dims.append((None,))
-        elif tensor.source.ndim == 1:
+        elif ndim == 1:
             per_tensor_dims.append((0,))
         else:
-            ndim = tensor.source.ndim
             per_tensor_dims.append((ndim - 1, ndim - 2))
 
-    innermost = {
+    per_tensor_dims = tuple(per_tensor_dims)
+    tensor_ndims = tuple(tensor_ndims)
+
+    innermost_dims = {
         name: dims[0]
         for name, dims in zip(launch_arg_names, per_tensor_dims)
         if dims[0] is not None
     }
 
-    specs = []
+    return per_tensor_dims, tensor_ndims, innermost_dims
 
-    for combo in itertools.product(*per_tensor_dims):
-        spec = tuple(
-            (name, dim) for name, dim in zip(launch_arg_names, combo) if dim is not None
+
+def _overflow_terms(launch_arg_names, tensor_ndims):
+    int32_min = -(2**31)
+    int32_max = 2**31 - 1
+
+    return tuple(
+        term
+        for name, ndim in zip(launch_arg_names, tensor_ndims)
+        for dim in range(ndim)
+        for term in (
+            f"{name}.shape[{dim}] > {int32_max}ULL",
+            f"{name}.strides[{dim}] > {int32_max}LL",
+            f"{name}.strides[{dim}] < {int32_min}LL",
         )
+    )
 
-        if not spec:
-            continue
 
-        suffix = "s_" + "_".join(str(dim) if dim is not None else "n" for dim in combo)
-        specs.append((suffix, spec))
+def _variant_suffix(
+    divisibility_spec,
+    contiguity_spec,
+    launch_arg_names,
+    tensor_ndims,
+    size_type=ninetoothed.dtype.int32,
+    stride_type=ninetoothed.dtype.int32,
+):
+    divisibility_part = _divisibility_suffix(
+        divisibility_spec, launch_arg_names, tensor_ndims
+    )
+    contiguity_part = _contiguity_suffix(
+        contiguity_spec, launch_arg_names, tensor_ndims
+    )
 
-    specs.append(("generic", ()))
+    return (
+        f"{divisibility_part}_{contiguity_part}_size_{size_type}_stride_{stride_type}"
+    )
 
-    def _specificity(entry):
-        _, spec = entry
-        num_innermost = sum(1 for name, dim in spec if innermost.get(name) == dim)
 
-        return (-len(spec), -num_innermost)
+def _divisibility_suffix(divisibility_spec, launch_arg_names, tensor_ndims):
+    hinted = set(divisibility_spec)
 
-    specs.sort(key=_specificity)
+    parts = tuple(
+        "16" if (name, dim) in hinted else "1"
+        for name, ndim in zip(launch_arg_names, tensor_ndims)
+        for dim in range(ndim)
+    )
 
-    return specs
+    return "divisibility_" + "_".join(parts) if parts else "divisibility"
+
+
+def _contiguity_suffix(contiguity_spec, launch_arg_names, tensor_ndims):
+    contiguous = set(contiguity_spec)
+
+    parts = tuple(
+        "1" if (name, dim) in contiguous else "0"
+        for name, ndim in zip(launch_arg_names, tensor_ndims)
+        for dim in range(ndim)
+    )
+
+    return "contiguity_" + "_".join(parts) if parts else "contiguity"
 
 
 _INDENTATION = "    "
@@ -625,10 +810,30 @@ def _load_launch_func(kernel_name, output_dir):
     launch_func_name = f"launch_{kernel_name}"
     launch_func = getattr(library, launch_func_name)
 
+    def _num_tensor_args(kernel_name, output_dir):
+        header_path = pathlib.Path(output_dir) / f"{kernel_name}.h"
+        text = header_path.read_text()
+        pattern = (
+            rf"NineToothedResult\s+launch_{re.escape(kernel_name)}\s*\((.*?)\)\s*;"
+        )
+        match = re.search(pattern, text)
+
+        if match is None:
+            raise RuntimeError(
+                f"Could not find launch signature for `{kernel_name}` in `{header_path}`."
+            )
+
+        params = (param.strip() for param in match.group(1).split(","))
+
+        return sum(1 for param in params if param.startswith("NineToothedTensor "))
+
+    num_tensor_args = _num_tensor_args(kernel_name, output_dir)
+
     dtype_to_index = _DTYPE_TO_INDEX
     from_torch_tensor = _ArgumentTensor.from_torch_tensor
     from_scalar = _ArgumentTensor.from_scalar
     c_double = ctypes.c_double
+    c_int64 = ctypes.c_int64
     c_void_p = ctypes.c_void_p
     current_device = torch.cuda.current_device
     get_current_raw_stream = torch._C._cuda_getCurrentRawStream
@@ -638,12 +843,17 @@ def _load_launch_func(kernel_name, output_dir):
         arguments = [None] * len(args)
 
         for i, arg in enumerate(args):
-            if isinstance(arg, Tensor_cls):
-                arguments[i] = from_torch_tensor(arg)
+            if i < num_tensor_args:
+                if isinstance(arg, Tensor_cls):
+                    arguments[i] = from_torch_tensor(arg)
+                elif type(arg) is float:
+                    arguments[i] = from_scalar(arg, c_double)
+                elif type(arg) is int:
+                    arguments[i] = from_scalar(arg, c_int64)
+                else:
+                    arguments[i] = arg
             elif type(arg) is str:
                 arguments[i] = dtype_to_index[arg]
-            elif type(arg) is float:
-                arguments[i] = from_scalar(arg, c_double)
             else:
                 arguments[i] = arg
 

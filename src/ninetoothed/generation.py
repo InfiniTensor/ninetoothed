@@ -817,6 +817,16 @@ class CodeGenerator(ast.NodeTransformer):
     @staticmethod
     def _generate_innermost_indices(tensor, use_power_of_2_sizes=True):
         class _NextPowerOfTwoMaker(ast.NodeTransformer):
+            def visit_Constant(self, node):
+                value = node.value
+
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                    return ast.copy_location(
+                        ast.Constant(value=1 << (value - 1).bit_length()), node
+                    )
+
+                return self.generic_visit(node)
+
             def visit_Name(self, node):
                 name = node.id
 

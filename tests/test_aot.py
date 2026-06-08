@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 
 import ninetoothed
+import ninetoothed.aot
 import ninetoothed.generation
 import tests.test_addmm as addmm
 import tests.test_attention as attention
@@ -300,6 +301,94 @@ def test_conv2d(
     expected = F.conv2d(input, filter)
 
     assert torch.allclose(output, expected, rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize("device", get_available_devices())
+def test_fp32_scalar(device):
+    def _arrangement(input, scale, output):
+        return input.tile((256,)), scale, output.tile((256,))
+
+    def _application(input, scale, output):
+        output = input * scale  # noqa: F841
+
+    tensors = (
+        Tensor(1, dtype=ninetoothed.float32),
+        Tensor(0, dtype=ninetoothed.float32),
+        Tensor(1, dtype=ninetoothed.float32),
+    )
+
+    caller = device
+    kernel_name = f"fp32_scalar{_generate_kernel_name_suffix()}"
+    output_dir = ninetoothed.generation.CACHE_DIR
+
+    kernel = ninetoothed.make(
+        _arrangement,
+        _application,
+        tensors,
+        caller=caller,
+        kernel_name=kernel_name,
+        output_dir=output_dir,
+    )
+
+    size = 256
+
+    input = torch.randn(size, dtype=torch.float32, device=device)
+    scale = 0.125
+    output = torch.empty_like(input)
+
+    kernel(input, scale, output)
+
+    expected = input * scale
+
+    assert torch.allclose(output, expected)
+
+
+@pytest.mark.parametrize("device", get_available_devices())
+def test_aot_with_static_non_power_of_two_innermost_sizes(device):
+    def _arrangement(input, output):
+        return input.tile((3,)), output.tile((3,))
+
+    def _application(input, output):
+        output = input  # noqa: F841
+
+    tensors = (
+        Tensor(1, dtype=ninetoothed.float32),
+        Tensor(1, dtype=ninetoothed.float32),
+    )
+
+    kernel_name = (
+        f"static_non_power_of_two_innermost_sizes{_generate_kernel_name_suffix()}"
+    )
+    output_dir = ninetoothed.generation.CACHE_DIR
+
+    kernel = ninetoothed.make(
+        _arrangement,
+        _application,
+        tensors,
+        caller=device,
+        kernel_name=kernel_name,
+        output_dir=output_dir,
+    )
+
+    input = torch.randn((3,), dtype=torch.float32, device=device)
+    output = torch.empty_like(input)
+
+    kernel(input, output)
+
+    assert torch.allclose(input, output)
+
+
+def test_overflow_terms():
+    terms = ninetoothed.aot._overflow_terms(("input", "scale"), (2, 0))
+
+    assert terms == (
+        "input.shape[0] > 2147483647ULL",
+        "input.strides[0] > 2147483647LL",
+        "input.strides[0] < -2147483648LL",
+        "input.shape[1] > 2147483647ULL",
+        "input.strides[1] > 2147483647LL",
+        "input.strides[1] < -2147483648LL",
+    )
 
 
 def _generate_kernel_name_suffix():
