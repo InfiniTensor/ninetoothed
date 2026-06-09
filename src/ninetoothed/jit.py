@@ -102,9 +102,10 @@ class JIT:
 
         target_kernel_name = self._kernel_name
         target_launch_name = code_generator.launch_func_name
-        
+
         if self._caller == "torch":
             import torch
+
             if hasattr(torch, "npu") and torch.npu.is_available():
                 target_kernel_name = f"{self._kernel_name}_npu"
                 target_launch_name = f"{code_generator.launch_func_name}_npu"

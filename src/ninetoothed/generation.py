@@ -24,7 +24,10 @@ from ninetoothed.torchifier import Torchifier
 
 
 def _resolve_cache_dir():
-    for cache_dir in (pathlib.Path.home() / ".ninetoothed", pathlib.Path("/tmp/.ninetoothed")):
+    for cache_dir in (
+        pathlib.Path.home() / ".ninetoothed",
+        pathlib.Path("/tmp/.ninetoothed"),
+    ):
         try:
             cache_dir.mkdir(exist_ok=True)
             probe = cache_dir / ".write_probe"
@@ -38,6 +41,7 @@ def _resolve_cache_dir():
 
 
 CACHE_DIR = _resolve_cache_dir()
+
 
 class CodeGenerator(ast.NodeTransformer):
     def __init__(self):
