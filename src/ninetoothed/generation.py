@@ -15,12 +15,12 @@ import triton
 from triton.language.extra import libdevice
 
 import ninetoothed.naming as naming
+from ninetoothed.ascendifier import Ascendifier
 from ninetoothed.cudaifier import Cudaifier
 from ninetoothed.language import attribute, call
 from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
-from ninetoothed.ascendifier import Ascendifier
 
 
 def _resolve_cache_dir():
