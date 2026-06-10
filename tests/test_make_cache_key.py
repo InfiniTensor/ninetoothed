@@ -8,13 +8,12 @@ Covers:
 
 import functools
 
-import pytest
-
 from ninetoothed._cache import (
     hash_function_source,
     hash_tensor_signature,
     hash_value,
 )
+from ninetoothed.tensor import Tensor
 
 # ---------- hash_function_source ----------
 
@@ -78,11 +77,6 @@ def test_functools_partial_unwrapped():
     assert hash_function_source(p1) != hash_function_source(p2)
 
 
-@pytest.mark.xfail(
-    reason="Known limitation: hash_function_source only unwraps ONE level of functools.partial. "
-    "Nested partials with different binding order (a-then-b vs b-then-a) hash differently. "
-    "Recursive unwrap is a future-work item.",
-)
 def test_functools_partial_nested():
     """Nested partials (e.g. partial(partial(base, a=1), b=2)) get unwrapped recursively."""
 
@@ -94,6 +88,36 @@ def test_functools_partial_nested():
 
     # Both end up with same final bound state, so hashes should match
     assert hash_function_source(p_ab) == hash_function_source(p_ba)
+
+
+def test_closure_values_affect_function_hash():
+    def make_arrangement(scale):
+        def arrangement(input, output):
+            tile = input.tile((1, scale))
+            return tile, output
+
+        return arrangement
+
+    assert hash_function_source(make_arrangement(2)) != hash_function_source(
+        make_arrangement(4)
+    )
+
+
+def test_global_helper_source_affects_function_hash(monkeypatch):
+    def helper(x):
+        return x + 1
+
+    def application(x):
+        return helper(x)
+
+    original = hash_function_source(application)
+
+    def helper(x):  # noqa: F811
+        return x + 2
+
+    monkeypatch.setitem(application.__globals__, "helper", helper)
+
+    assert hash_function_source(application) != original
 
 
 def test_functools_partial_with_args():
@@ -195,11 +219,25 @@ def test_fallback_distinguishes_functools_partial_args():
 class FakeTensor:
     """Mimics the ninetoothed.Tensor surface used by hash_tensor_signature."""
 
-    def __init__(self, ndim, jagged_dim=None, other=0, name="t"):
+    def __init__(
+        self,
+        ndim,
+        jagged_dim=None,
+        other=0,
+        name="t",
+        shape=None,
+        dtype=None,
+        constexpr=False,
+        value=None,
+    ):
         self.ndim = ndim
         self.jagged_dim = jagged_dim
         self.other = other
         self.name = name
+        self.shape = tuple(None for _ in range(ndim)) if shape is None else shape
+        self.dtype = dtype
+        self.constexpr = constexpr
+        self.value = value
 
 
 def test_returns_tuple():
@@ -231,6 +269,24 @@ def test_different_jagged_dim_different_signature():
 def test_different_other_different_signature():
     t1 = FakeTensor(ndim=2, other=0)
     t2 = FakeTensor(ndim=2, other=1)
+    assert hash_tensor_signature(t1) != hash_tensor_signature(t2)
+
+
+def test_different_static_shape_different_signature():
+    t1 = FakeTensor(ndim=2, shape=(None, 128))
+    t2 = FakeTensor(ndim=2, shape=(None, 256))
+    assert hash_tensor_signature(t1) != hash_tensor_signature(t2)
+
+
+def test_different_dtype_different_signature():
+    t1 = FakeTensor(ndim=2, dtype="float16")
+    t2 = FakeTensor(ndim=2, dtype="float32")
+    assert hash_tensor_signature(t1) != hash_tensor_signature(t2)
+
+
+def test_different_constexpr_value_different_signature():
+    t1 = Tensor(0, constexpr=True, value=16)
+    t2 = Tensor(0, constexpr=True, value=32)
     assert hash_tensor_signature(t1) != hash_tensor_signature(t2)
 
 

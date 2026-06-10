@@ -152,6 +152,18 @@ def test_fifo_eviction_at_max_memory():
     assert c.get("d") == 4
 
 
+def test_updating_existing_key_does_not_evict_other_entries():
+    c = Cache(max_memory=2)
+    c.put("a", 1)
+    c.put("b", 2)
+
+    c.put("b", 3)
+
+    assert c.memory_size == 2
+    assert c.get("a") == 1
+    assert c.get("b") == 3
+
+
 def test_fifo_eviction_with_disk(tmp_path):
     c = Cache(cache_dir=tmp_path, suffix=".json", max_memory=2)
     c.put("a", 1)

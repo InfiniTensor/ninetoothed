@@ -13,12 +13,14 @@ Public API:
     - project_files_fingerprint: hash of all files in a directory.
 """
 
+import ast
 import functools
 import hashlib
 import inspect
 import json
 import os
 import pathlib
+import tempfile
 import threading
 from typing import Any, Callable, Optional
 
@@ -32,19 +34,54 @@ DEFAULT_CACHE_ROOT = pathlib.Path.home() / ".ninetoothed"
 def hash_tensor_signature(tensor) -> tuple:
     """Content-stable fingerprint of a ninetoothed.Tensor.
 
-    Captures only the *structural* identity (ndim, jagged_dim, padding value)
-    of the tensor's symbolic layout -- NOT the symbol names bound to
-    `Tensor.name` (which are instance-counter-bound and would give every
-    freshly constructed Tensor a unique identity).
+    Captures the symbolic layout fields that affect code generation while
+    deliberately ignoring `Tensor.name`, whose auto-generated instance suffix
+    would otherwise make equivalent fresh Tensor objects miss the cache.
 
     Two Tensors that share the same structural layout hash equal, even if
     they were constructed in different `ninetoothed.make()` calls.
     """
     return (
         tensor.ndim,
+        tuple(_hash_symbolic_value(size) for size in tensor.shape),
+        _stable_repr(getattr(tensor, "dtype", None)),
         tensor.jagged_dim,
-        tensor.other,
+        _stable_repr(tensor.other),
+        bool(getattr(tensor, "constexpr", False)),
+        _stable_repr(getattr(tensor, "value", None)),
     )
+
+
+def _hash_symbolic_value(value: Any) -> tuple:
+    """Stable representation for Tensor.shape entries."""
+    if hasattr(value, "node"):
+        node = value.node
+        bounds = (
+            getattr(value, "lower_bound", None),
+            getattr(value, "upper_bound", None),
+            getattr(value, "power_of_two", None),
+        )
+        if isinstance(node, ast.Constant):
+            return ("constant", node.value, bounds)
+        if isinstance(node, ast.Name):
+            return ("symbol", bounds)
+        return ("expr", ast.dump(node, include_attributes=False), bounds)
+    return ("raw", _stable_repr(value))
+
+
+def _stable_repr(value: Any) -> str:
+    if isinstance(value, dict):
+        items = sorted((_stable_repr(k), _stable_repr(v)) for k, v in value.items())
+        return "{" + ", ".join(f"{k}: {v}" for k, v in items) + "}"
+    if isinstance(value, tuple):
+        return "(" + ", ".join(_stable_repr(v) for v in value) + ")"
+    if isinstance(value, list):
+        return "[" + ", ".join(_stable_repr(v) for v in value) + "]"
+    if isinstance(value, set):
+        return "{" + ", ".join(sorted(_stable_repr(v) for v in value)) + "}"
+    if inspect.isfunction(value):
+        return _function_payload(value, depth=1, seen=set()).hex()
+    return repr(value)
 
 
 # ---------- Function fingerprint ----------
@@ -62,33 +99,97 @@ def hash_function_source(func) -> str:
 
     Returns a 64-char hex digest prefixed with `src:` or `id:`.
     """
-    partial_args = []
+    func, partial_args, partial_kwargs = _unwrap_partial(func)
+
+    payload, prefix = _function_payload(func, depth=0, seen=set(), with_prefix=True)
+    h = hashlib.sha256()
+    h.update(payload)
+    h.update(_stable_repr(partial_args).encode("utf-8"))
+    h.update(_stable_repr(partial_kwargs).encode("utf-8"))
+    return prefix + h.hexdigest()
+
+
+def _unwrap_partial(func):
+    layers = []
     while isinstance(func, functools.partial):
-        partial_args.append((func.args, func.keywords))
+        layers.append(func)
         func = func.func
+
+    args = []
+    kwargs = {}
+    for layer in reversed(layers):
+        args.extend(layer.args)
+        if layer.keywords:
+            kwargs.update(layer.keywords)
+
+    return func, tuple(args), tuple(sorted(kwargs.items()))
+
+
+def _function_payload(func, depth=0, seen=None, with_prefix=False):
+    if seen is None:
+        seen = set()
+
+    obj_id = id(func)
+    if obj_id in seen:
+        payload = (
+            f"recursive:{getattr(func, '__module__', '?')}."
+            f"{getattr(func, '__qualname__', '?')}"
+        ).encode("utf-8")
+        return (payload, "id:") if with_prefix else payload
+
+    seen.add(obj_id)
+    parts = [
+        ("module", getattr(func, "__module__", "?")),
+        ("qualname", getattr(func, "__qualname__", "?")),
+    ]
 
     try:
         src = inspect.getsource(func)
     except (OSError, TypeError):
-        # Fallback path: source unavailable (REPL, Jupyter, exec, etc.).
-        # Must still hash `partial_args` so that
-        # `functools.partial(f, x=True)` and `functools.partial(f, x=False)`
-        # produce distinct keys. Previously this branch returned
-        # `id:module.qualname@id(func)` (plain string, no partial_args,
-        # unstable id) -- a silent correctness bug.
-        module = getattr(func, "__module__", "?")
-        qualname = getattr(func, "__qualname__", "?")
-        h = hashlib.sha256()
-        h.update(f"id:{module}.{qualname}".encode("utf-8"))
-        if partial_args:
-            h.update(repr(partial_args).encode("utf-8"))
-        return "id:" + h.hexdigest()
+        src = None
 
-    h = hashlib.sha256()
-    h.update(src.encode("utf-8"))
-    if partial_args:
-        h.update(repr(partial_args).encode("utf-8"))
-    return "src:" + h.hexdigest()
+    prefix = "src:" if src is not None else "id:"
+    parts.append(("source", src))
+    code = getattr(func, "__code__", None)
+    if code is not None:
+        parts.append(("code", code.co_code.hex()))
+        parts.append(("defaults", _stable_repr(getattr(func, "__defaults__", None))))
+        parts.append(
+            ("kwdefaults", _stable_repr(getattr(func, "__kwdefaults__", None)))
+        )
+        parts.append(("closure", _closure_payload(func)))
+        if depth < 2:
+            globals_ = getattr(func, "__globals__", {})
+            for name in sorted(code.co_names):
+                if name not in globals_:
+                    continue
+                value = globals_[name]
+                if inspect.isfunction(value):
+                    parts.append(
+                        (
+                            "global_func",
+                            name,
+                            _function_payload(value, depth=depth + 1, seen=seen).hex(),
+                        )
+                    )
+                elif isinstance(value, (str, int, float, bool, type(None), tuple)):
+                    parts.append(("global_value", name, _stable_repr(value)))
+
+    payload = _stable_repr(tuple(parts)).encode("utf-8")
+    return (payload, prefix) if with_prefix else payload
+
+
+def _closure_payload(func) -> tuple:
+    closure = getattr(func, "__closure__", None)
+    if not closure:
+        return ()
+    values = []
+    for cell in closure:
+        try:
+            values.append(_stable_repr(cell.cell_contents))
+        except ValueError:
+            values.append("<empty>")
+    return tuple(values)
 
 
 def hash_value(value: Any) -> str:
@@ -199,7 +300,7 @@ class Cache:
 
         with self._lock:
             if len(self._mem) >= self._max_memory:
-                self._mem.pop(next(iter(self._mem)))
+                self._evict_one_unlocked()
             self._mem[key] = value
         return value
 
@@ -212,8 +313,8 @@ class Cache:
         (e.g. crash, OOM kill, or power loss).
         """
         with self._lock:
-            if len(self._mem) >= self._max_memory:
-                self._mem.pop(next(iter(self._mem)))
+            if key not in self._mem and len(self._mem) >= self._max_memory:
+                self._evict_one_unlocked()
             self._mem[key] = value
 
         path = self._path_for(key)
@@ -231,9 +332,17 @@ class Cache:
             payload = self._serializer(value)
         except (TypeError, ValueError):
             return
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp = None
         try:
-            with open(tmp, "w", encoding="utf-8") as f:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=path.name + ".",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                tmp = pathlib.Path(f.name)
                 f.write(payload)
                 f.flush()
                 os.fsync(f.fileno())
@@ -241,10 +350,14 @@ class Cache:
         except OSError:
             # Best-effort cleanup of the leftover .tmp file.
             try:
-                if tmp.exists():
+                if tmp is not None and tmp.exists():
                     tmp.unlink()
             except OSError:
                 pass
+
+    def _evict_one_unlocked(self) -> None:
+        if self._max_memory > 0 and self._mem:
+            self._mem.pop(next(iter(self._mem)))
 
     def delete(self, key: Any) -> None:
         """Remove from L1 and L2. Missing entries are silently ignored."""

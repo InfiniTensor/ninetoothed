@@ -8,6 +8,7 @@ Verifies the contract:
 """
 
 import json
+import multiprocessing
 
 from ninetoothed._cache import Cache
 
@@ -120,3 +121,23 @@ def test_no_tmp_residue_under_concurrent_writes(tmp_path):
     for i in range(4):
         for j in range(20):
             assert c2.get(f"k_{i}_{j}") == j
+
+
+def _process_writer(args):
+    cache_dir, value = args
+    c = Cache(cache_dir=cache_dir, suffix=".json", max_memory=1)
+    for _ in range(50):
+        c.put("shared", {"v": value})
+
+
+def test_process_safe_writes_same_key(tmp_path):
+    ctx = multiprocessing.get_context("spawn")
+    values = tuple(range(4))
+    with ctx.Pool(processes=len(values)) as pool:
+        pool.map(_process_writer, [(tmp_path, value) for value in values])
+
+    assert not list(tmp_path.glob("*.tmp"))
+
+    c = Cache(cache_dir=tmp_path, suffix=".json", max_memory=1)
+    stored = c.get("shared")
+    assert stored in [{"v": value} for value in values]
