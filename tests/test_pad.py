@@ -25,15 +25,12 @@ def pad(input, pad, mode="constant", value=None):
     output = torch.full(output_shape, value, dtype=input.dtype, device=input.device)
 
     ndim = input.ndim
-    kernel_config = (ndim, input_slices, output_slices)
-    kernel_key = str(kernel_config)
+    tensors = (Tensor(ndim), Tensor(ndim), input_slices, output_slices)
 
-    if kernel_key not in _kernel_cache:
-        tensors = (Tensor(ndim), Tensor(ndim), input_slices, output_slices)
-
-        _kernel_cache[kernel_key] = make(arrangement, application, tensors)
-
-    _kernel_cache[kernel_key](input, output)
+    # Unified Cache (per-process L1 in ninetoothed.make) handles the
+    # `input_slices` / `output_slices` slice objects via repr() hashing.
+    kernel = make(arrangement, application, tensors)
+    kernel(input, output)
 
     return output
 
@@ -61,9 +58,6 @@ def test_pad(shape, pad_, mode, value, dtype, device, atol):
     expected = F.pad(input, pad_, mode, value)
 
     assert torch.allclose(output, expected, atol=atol)
-
-
-_kernel_cache = {}
 
 
 def _analyze_pad_config(input, pad, mode):

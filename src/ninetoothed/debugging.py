@@ -59,7 +59,7 @@ def simulate_arrangement(arrangement, tensors, device=None):
 
     application_source = _generate_debug_application_source(tensors, debug_tensors)
 
-    source_file = str(cache_source(application_source))
+    source_file = str(cache_source(application_source, "_debug_"))
 
     module = import_from_path(source_file, source_file)
     module_vars = vars(module)
