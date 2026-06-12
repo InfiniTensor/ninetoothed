@@ -832,7 +832,11 @@ class CodeGenerator(ast.NodeTransformer):
             for tensor_ in level:
                 tensor_.offsets()
 
-        if self._tiling_hint.has_divisible_tiles:
+        # Only reset mask for simple tiling patterns (1 tile op, no
+        # expand/squeeze). Complex multi-level tiling with expand/squeeze
+        # generates cross-dimension index dependencies that need masks.
+        if (self._tiling_hint.has_divisible_tiles
+                and len(tensor.source._levels) <= 2):
             tensor.source._mask = Symbol(True)
 
         for dim, offset in enumerate(tensor.source._outputs[0]):

@@ -80,15 +80,21 @@ def _prepare_app(arrangement, application, tensors):
 
 
 def _auto_hint(tensors, has_divisible, use_contiguous):
-    """Build a TilingHint using actual tensor source names from the list."""
+    """Build a TilingHint using actual tensor source names from the list.
+
+    Only marks innermost dimension as contiguous (stride=1). Outer dims
+    have stride=N_cols etc., which is NOT 1 even for contiguous tensors.
+    """
     contiguous_dims = set()
     known_strides = {}
     if use_contiguous:
         for t in tensors:
+            if t.source.ndim == 0:
+                continue
             bare = naming.remove_prefixes(t.source.name)
-            for dim in range(t.source.ndim):
-                contiguous_dims.add((bare, dim))
-                known_strides[(bare, dim)] = 1
+            innermost = t.source.ndim - 1
+            contiguous_dims.add((bare, innermost))
+            known_strides[(bare, innermost)] = 1
     return TilingHint(
         has_divisible_tiles=has_divisible,
         contiguous_dims=contiguous_dims,
