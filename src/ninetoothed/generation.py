@@ -1,6 +1,7 @@
 import ast
 import collections
 import copy
+import dataclasses
 import functools
 import hashlib
 import inspect
@@ -21,13 +22,51 @@ from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
 
+
+@dataclasses.dataclass
+class TilingHint:
+    """Specialization hints for optimizing generated Triton code.
+
+    These hints carry compile-time knowledge (from AOT variant analysis or static
+    shape inference) into the code generator, enabling specialized code paths that
+    produce leaner Triton source.
+
+    Attributes:
+        has_divisible_tiles: If True, tile sizes evenly divide tensor dimensions,
+            guaranteeing no tail blocks. Allows skip of boundary mask checks.
+        contiguous_dims: Set of (source_name, dim_index) tuples where the tensor
+            dimension is known to be contiguous (stride=1), enabling simplified
+            pointer arithmetic.
+        known_strides: Mapping from (source_name, dim_index) → stride_value for
+            dimensions whose stride is statically known.
+        exact_innermost_sizes: If True, use exact tile sizes instead of
+            next_power_of_2 for innermost loop bounds.
+    """
+
+    has_divisible_tiles: bool = False
+    contiguous_dims: set = dataclasses.field(default_factory=set)
+    known_strides: dict = dataclasses.field(default_factory=dict)
+    exact_innermost_sizes: bool = False
+
+    def is_active(self):
+        """Return True if any specialization hint is active."""
+        return (
+            self.has_divisible_tiles
+            or bool(self.contiguous_dims)
+            or bool(self.known_strides)
+            or self.exact_innermost_sizes
+        )
+
+
 CACHE_DIR = pathlib.Path.home() / ".ninetoothed"
 CACHE_DIR.mkdir(exist_ok=True)
 
 
 class CodeGenerator(ast.NodeTransformer):
-    def __init__(self):
+    def __init__(self, tiling_hint=None):
         super().__init__()
+
+        self._tiling_hint = tiling_hint if tiling_hint is not None else TilingHint()
 
         device = triton.runtime.driver.active.get_current_device()
         properties = triton.runtime.driver.active.utils.get_device_properties(device)
@@ -52,7 +91,12 @@ class CodeGenerator(ast.NodeTransformer):
         num_stages,
         max_num_configs,
         prettify,
+        tiling_hint=None,
     ):
+        # Allow per-call tiling hint override (used by AOT variant generation)
+        if tiling_hint is not None:
+            self._tiling_hint = tiling_hint
+
         def _get_tree(func):
             func_def = ast.parse(textwrap.dedent(inspect.getsource(func)))
 
@@ -658,7 +702,7 @@ class CodeGenerator(ast.NodeTransformer):
         name_for_pointers = type(self)._name_for_pointers(tensor)
         self._invariants[name_for_pointers] = Symbol(tensor.source.pointer_string())
 
-        overall_offsets, mask = type(self)._generate_overall_offsets_and_mask(
+        overall_offsets, mask = self._generate_overall_offsets_and_mask(
             tensor, indices
         )
 
@@ -670,7 +714,7 @@ class CodeGenerator(ast.NodeTransformer):
         return (
             tuple(self._generate_pid_indices(tensor))
             + tuple(indices)
-            + tuple(type(self)._generate_innermost_indices(tensor))
+            + tuple(self._generate_innermost_indices(tensor))
         )
 
     def _generate_pid_indices(self, tensor):
@@ -707,6 +751,10 @@ class CodeGenerator(ast.NodeTransformer):
 
     @staticmethod
     def _generate_other(tensor):
+        return CodeGenerator._generate_other_static(tensor)
+
+    @staticmethod
+    def _generate_other_static(tensor):
         other = tensor.source.other
 
         if isinstance(other, float) and not math.isfinite(other):
@@ -721,16 +769,30 @@ class CodeGenerator(ast.NodeTransformer):
             for target_dim in tensor.innermost().target_dims
         )
 
-    @staticmethod
-    def _generate_overall_offsets_and_mask(tensor, indices):
+    def _generate_overall_offsets_and_mask(self, tensor, indices):
+        """Compute overall pointer offsets and mask, with specialization hints.
+
+        When tiling_hint has_divisible_tiles is True, the mask is set to the
+        constant True (no boundary checks needed). When contiguous_dims are
+        specified, stride lookups for those dimensions are replaced with
+        constant 1, reducing stride expression count in generated code.
+        """
         indices = list(indices)
 
-        offsets, mask = CodeGenerator._generate_offsets_and_mask(tensor, indices)
+        offsets, mask = self._generate_offsets_and_mask(tensor, indices)
 
         tensor._last_generated_offsets = offsets
 
+        contiguous_dims = self._tiling_hint.contiguous_dims
+        bare_source_name = naming.remove_prefixes(tensor.source.name)
+
         overall_offsets = sum(
-            offsets[source_dim] * Symbol(tensor.source.stride_string(source_dim))
+            offsets[source_dim]
+            * (
+                Symbol(1)
+                if (bare_source_name, source_dim) in contiguous_dims
+                else Symbol(tensor.source.stride_string(source_dim))
+            )
             for source_dim in range(tensor.source.ndim)
         )
 
@@ -743,8 +805,13 @@ class CodeGenerator(ast.NodeTransformer):
 
         return overall_offsets, mask
 
-    @staticmethod
-    def _generate_offsets_and_mask(tensor, indices):
+    def _generate_offsets_and_mask(self, tensor, indices):
+        """Compute per-dimension offsets and boundary mask.
+
+        When tiling_hint has_divisible_tiles is True, the boundary mask
+        generation is skipped — the mask is reset to the constant True
+        after all tiling levels have computed their offsets.
+        """
         offsets = [Symbol(0) for _ in range(tensor.source.ndim)]
 
         tensor.source._mask = Symbol(True)
@@ -765,6 +832,9 @@ class CodeGenerator(ast.NodeTransformer):
             for tensor_ in level:
                 tensor_.offsets()
 
+        if self._tiling_hint.has_divisible_tiles:
+            tensor.source._mask = Symbol(True)
+
         for dim, offset in enumerate(tensor.source._outputs[0]):
             offsets[dim] += offset
 
@@ -777,8 +847,12 @@ class CodeGenerator(ast.NodeTransformer):
 
         return offsets, tensor.source._mask
 
-    @staticmethod
-    def _generate_innermost_indices(tensor, use_power_of_2_sizes=True):
+    def _generate_innermost_indices(self, tensor, use_power_of_2_sizes=True):
+        # When tiling_hint requests exact innermost sizes, skip the
+        # next_power_of_2 transformation to generate tighter loop bounds.
+        if self._tiling_hint.exact_innermost_sizes:
+            use_power_of_2_sizes = False
+
         class _NextPowerOfTwoMaker(ast.NodeTransformer):
             def visit_Constant(self, node):
                 value = node.value

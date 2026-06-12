@@ -10,7 +10,7 @@ import uuid
 
 import ninetoothed.dtype
 import ninetoothed.naming as naming
-from ninetoothed.generation import CACHE_DIR, CodeGenerator
+from ninetoothed.generation import CACHE_DIR, CodeGenerator, TilingHint
 from ninetoothed.tensor import Tensor
 from ninetoothed.utils import calculate_default_configs
 
@@ -85,6 +85,36 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
         launch_arg_names, tensors, _find_tensor_by_source_name
     )
 
+    # Build specialization hints for each variant and pre-generate
+    # specialized Triton source files where hints produce leaner code.
+    _variant_source_files = {}
+    for (
+        variant_suffix,
+        divisibility_spec,
+        contiguity_spec,
+        size_type,
+        stride_type,
+    ) in variant_specs:
+        hint_key = _make_hint_key(divisibility_spec, contiguity_spec, launch_arg_names)
+        if hint_key not in _variant_source_files:
+            tiling_hint = _build_tiling_hint(
+                divisibility_spec, contiguity_spec, launch_arg_names, tensors,
+                _find_tensor_by_source_name,
+            )
+            if tiling_hint.is_active():
+                hinted_code_gen = CodeGenerator(tiling_hint=tiling_hint)
+                _variant_source_files[hint_key] = hinted_code_gen(
+                    func,
+                    caller=caller,
+                    kernel_name=kernel_name,
+                    num_warps=num_warps,
+                    num_stages=num_stages,
+                    max_num_configs=None,
+                    prettify=False,
+                )
+            else:
+                _variant_source_files[hint_key] = source_file
+
     output_contents = {}
 
     for (
@@ -94,8 +124,11 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
         size_type,
         stride_type,
     ) in variant_specs:
+        hint_key = _make_hint_key(divisibility_spec, contiguity_spec, launch_arg_names)
+        variant_source_file = _variant_source_files.get(hint_key, source_file)
+
         variant_outputs = _build_variant(
-            source_file,
+            variant_source_file,
             kernel_func,
             launch_func,
             tensors,
@@ -451,6 +484,57 @@ def _per_tensor_dim_options(launch_arg_names, tensors, find_tensor):
     }
 
     return per_tensor_dims, tensor_ndims, innermost_dims
+
+
+def _make_hint_key(divisibility_spec, contiguity_spec, launch_arg_names):
+    """Create a stable cache key from divisibility and contiguity specs."""
+    div_key = tuple(sorted(divisibility_spec))
+    cont_key = tuple(sorted(contiguity_spec))
+    return (div_key, cont_key)
+
+
+def _build_tiling_hint(
+    divisibility_spec, contiguity_spec, launch_arg_names, tensors, find_tensor,
+):
+    """Convert AOT variant specs into a TilingHint for code generation.
+
+    A divisibility spec of ((name, dim), ...) means those dimensions are known
+    to be divisible by 16 at runtime. When ALL tensor dimensions referenced by
+    the launch args have divisibility hints, has_divisible_tiles becomes True
+    (no tail block possible).
+
+    A contiguity spec of ((name, dim), ...) means those dimensions have stride 1.
+    """
+    contiguous_dims = set()
+    known_strides = {}
+
+    for name, dim in contiguity_spec:
+        bare_name = naming.remove_prefixes(name)
+        contiguous_dims.add((bare_name, dim))
+        known_strides[(bare_name, dim)] = 1
+
+    # has_divisible_tiles: True when divisibility specs cover the innermost
+    # dimensions for all tensor args, guaranteeing no tail blocks.
+    has_divisible_tiles = False
+    if divisibility_spec:
+        # Check whether every tensor argument's innermost dim is in the spec
+        divisibility_set = set(divisibility_spec)
+        innermost_covered = True
+        for name in launch_arg_names:
+            tensor = find_tensor(tensors, name)
+            if tensor is not None and tensor.source.ndim > 0:
+                innermost_dim = tensor.source.ndim - 1
+                if (name, innermost_dim) not in divisibility_set:
+                    innermost_covered = False
+                    break
+        has_divisible_tiles = innermost_covered and len(divisibility_spec) > 0
+
+    return TilingHint(
+        has_divisible_tiles=has_divisible_tiles,
+        contiguous_dims=contiguous_dims,
+        known_strides=known_strides,
+        exact_innermost_sizes=has_divisible_tiles,
+    )
 
 
 def _overflow_terms(launch_arg_names, tensor_ndims):
