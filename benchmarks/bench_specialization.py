@@ -25,12 +25,33 @@ from ninetoothed.generation import CodeGenerator, TilingHint
 # ---------------------------------------------------------------------------
 
 def count_metrics(source_text):
-    """Count code quality metrics in generated Triton source."""
+    """Count code quality metrics in generated Triton source.
+
+    mask_complexity counts boundary condition conjuncts (&) in mask
+    expressions. mask=True has 0 complexity; compound masks have N.
+    Stride/pointer counts only look in the kernel body (after the
+    function signature's first line) to avoid counting parameter decls.
+    """
+    lines = source_text.splitlines()
+    # Find where kernel body starts (first non-decorator, non-def line after def)
+    body_start = 0
+    for i, line in enumerate(lines):
+        if line.strip().startswith("def "):
+            body_start = i + 1
+            break
+    body_text = "\n".join(lines[body_start:]) if body_start < len(lines) else source_text
+
+    # Count & inside mask= expressions as a proxy for mask complexity
+    mask_parts = re.findall(r"mask=[^,)]+", body_text)
+    mask_complexity = sum(
+        part.count(" & ") for part in mask_parts
+    )
     return {
-        "mask_expr_count": len(re.findall(r"mask=", source_text)),
-        "stride_expr_count": len(re.findall(r"_stride_\d+", source_text)),
-        "pointer_expr_count": len(re.findall(r"_pointer\s*\+", source_text)),
-        "source_line_count": len(source_text.splitlines()),
+        "mask_complexity": mask_complexity,
+        "mask_expr_count": len(re.findall(r"mask=", body_text)),
+        "stride_expr_count": len(re.findall(r"_stride_\d+", body_text)),
+        "pointer_expr_count": len(re.findall(r"_pointer\s*\+", body_text)),
+        "source_line_count": len(lines),
     }
 
 
@@ -49,10 +70,20 @@ def bench_add_application(x, output):
     output = x  # noqa: F841
 
 
+def _prepare_app(arrangement, application, tensors):
+    """Set up annotations on application so CodeGenerator can be called directly."""
+    import inspect as _inspect
+    params = _inspect.signature(application).parameters
+    types = arrangement(*tensors)
+    types = types if isinstance(types, tuple) else (types,)
+    application.__annotations__ = {param: typ for param, typ in zip(params, types)}
+
+
 def run_add_kernel(arrangement, application, tensors, input_data, output_data,
                    device, kernel_name, tiling_hint=None, warmup=5, iters=100):
     """Run a kernel and return (runtime_ms, source_metrics)."""
     if tiling_hint is not None and tiling_hint.is_active():
+        _prepare_app(arrangement, application, tensors)
         code_gen = CodeGenerator(tiling_hint=tiling_hint)
         source_file = code_gen(
             application,
@@ -64,7 +95,9 @@ def run_add_kernel(arrangement, application, tensors, input_data, output_data,
             prettify=False,
         )
     else:
-        kernel = ninetoothed.make(arrangement, application, tensors)
+        kernel = ninetoothed.make(
+            arrangement, application, tensors, kernel_name=kernel_name,
+        )
         source_file = kernel._source
 
     source_text = pathlib.Path(source_file).read_text()
@@ -253,6 +286,8 @@ def main():
         "baseline_metrics": bl_met_2d,
         "submitted_metrics": sub_met_2d,
     })
+
+    # Scenario 6: 2D non-divisible fallback (same as above with odd sizes)
 
     # Scenario 6: 2D non-divisible fallback
     input_2d_nd = torch.randn((519, 519), device=device)

@@ -24,6 +24,19 @@ from tests.utils import get_available_devices
 # Helper: run a kernel and return output + generated source
 # ---------------------------------------------------------------------------
 
+def _prepare_app(arrangement, application, tensors):
+    """Set up annotations on application so CodeGenerator can be called directly.
+
+    This mirrors what ninetoothed.make does internally. Without this,
+    CodeGenerator.__call__ sees empty annotations and _generate_autotune fails.
+    """
+    import inspect as _inspect
+    params = _inspect.signature(application).parameters
+    types = arrangement(*tensors)
+    types = types if isinstance(types, tuple) else (types,)
+    application.__annotations__ = {param: typ for param, typ in zip(params, types)}
+
+
 def _make_and_get_source(arrangement, application, tensors, **kwargs):
     """Build a kernel via ninetoothed.make and return (output_array, source_text)."""
     kernel = ninetoothed.make(arrangement, application, tensors, **kwargs)
@@ -142,6 +155,7 @@ class TestDivisibleTileSpecialization:
             x  # noqa: B018
 
         tensors = (Tensor(1),)
+        _prepare_app(arrangement, application, tensors)
         hint = TilingHint(
             has_divisible_tiles=True,
             exact_innermost_sizes=True,
@@ -273,6 +287,7 @@ class TestGeneratedSourceStructure:
             x  # noqa: B018
 
         tensors = (Tensor(1),)
+        _prepare_app(arrangement, application, tensors)
 
         # Baseline: no hints
         baseline_gen = CodeGenerator()
@@ -320,6 +335,7 @@ class TestGeneratedSourceStructure:
             x  # noqa: B018
 
         tensors = (Tensor(1),)
+        _prepare_app(arrangement, application, tensors)
 
         # Baseline: no hints
         baseline_gen = CodeGenerator()
@@ -370,6 +386,7 @@ class TestGeneratedSourceStructure:
             x  # noqa: B018
 
         tensors = (Tensor(1),)
+        _prepare_app(arrangement, application, tensors)
 
         # With exact sizes hint
         hint = TilingHint(
@@ -403,6 +420,7 @@ class TestGeneratedSourceStructure:
             x  # noqa: B018
 
         tensors = (Tensor(1),)
+        _prepare_app(arrangement, application, tensors)
 
         # Baseline
         baseline_gen = CodeGenerator()
@@ -461,6 +479,7 @@ class TestCombinedSpecialization:
             output = x  # noqa: F841
 
         tensors = (Tensor(1), Tensor(1))
+        _prepare_app(arrangement, application, tensors)
 
         # Generate with combined hints
         hint = TilingHint(
@@ -508,6 +527,7 @@ class TestCombinedSpecialization:
             output = x  # noqa: F841
 
         tensors = (Tensor(2), Tensor(2))
+        _prepare_app(arrangement, application, tensors)
 
         # With divisible hints
         hint = TilingHint(
