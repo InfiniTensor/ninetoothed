@@ -513,21 +513,27 @@ def _build_tiling_hint(
         contiguous_dims.add((bare_name, dim))
         known_strides[(bare_name, dim)] = 1
 
-    # has_divisible_tiles: True when divisibility specs cover the innermost
-    # dimensions for all tensor args, guaranteeing no tail blocks.
+    # has_divisible_tiles: True when divisibility specs cover ALL relevant
+    # tiling dimensions for all tensor args, guaranteeing no tail blocks.
+    # Uses the same per_tensor_dim_options logic as variant enumeration
+    # to determine which dims matter for each tensor.
     has_divisible_tiles = False
     if divisibility_spec:
-        # Check whether every tensor argument's innermost dim is in the spec
         divisibility_set = set(divisibility_spec)
-        innermost_covered = True
-        for name in launch_arg_names:
+        per_tensor_dims, _, _ = _per_tensor_dim_options(
+            launch_arg_names, tensors, find_tensor,
+        )
+        all_covered = True
+        for name, dims in zip(launch_arg_names, per_tensor_dims):
             tensor = find_tensor(tensors, name)
             if tensor is not None and tensor.source.ndim > 0:
-                innermost_dim = tensor.source.ndim - 1
-                if (name, innermost_dim) not in divisibility_set:
-                    innermost_covered = False
-                    break
-        has_divisible_tiles = innermost_covered and len(divisibility_spec) > 0
+                for dim in dims:
+                    if dim is not None and (name, dim) not in divisibility_set:
+                        all_covered = False
+                        break
+            if not all_covered:
+                break
+        has_divisible_tiles = all_covered and len(divisibility_spec) > 0
 
     return TilingHint(
         has_divisible_tiles=has_divisible_tiles,
