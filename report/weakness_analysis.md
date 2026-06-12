@@ -2,11 +2,15 @@
 
 ## Executive Summary
 
-We analyzed the baseline NineToothed code generation pipeline (`generation.py`) and identified **four categories of redundant code emission** in generated Triton kernels. These inefficiencies cause unnecessary mask computations, stride arithmetic, and pointer calculations that increase kernel instruction count and reduce performance. Below we present two concrete case studies.
+We analyzed the baseline NineToothed code generation pipeline (`generation.py`, `tensor.py`, `aot.py`) and identified **four categories of redundant code emission** in generated Triton kernels. Below we present four concrete cases, each classified by the competition's weakness taxonomy.
 
 ---
 
-## Case Study 1: Redundant Boundary Mask in Divisible Tiles
+## Case 1: Redundant Boundary Mask in Divisible Tiles
+
+- **Weakness Category**: ① 冗余 mask
+- **File**: `tensor.py:571-584` (`offsets()`), `generation.py:747-778` (`_generate_offsets_and_mask`)
+- **Severity**: 高 — 每个 tl.load / tl.store 均受影响
 
 ### Scenario
 1D vector copy with 2048 elements, tiled with block size 256.
@@ -36,7 +40,11 @@ x = tl.load(x_ptr + offsets, mask=mask)
 
 ---
 
-## Case Study 2: Redundant Stride Arithmetic for Contiguous Tensors
+## Case 2: Redundant Stride Arithmetic for Contiguous Tensors
+
+- **Weakness Category**: ② 冗余 stride 或 offset 计算
+- **File**: `generation.py:762-764` (`_generate_overall_offsets_and_mask`)
+- **Severity**: 中 — 每个 pointer 表达式增加不必要的乘法和符号查询
 
 ### Scenario
 Contiguous 1D tensor (default PyTorch layout), block size 256.
@@ -72,7 +80,11 @@ offsets = pid * 256 + arange(0, 256)
 
 ---
 
-## Case Study 3: Forced next_power_of_2 in Innermost Loop
+## Case 3: Forced next_power_of_2 in Innermost Loop
+
+- **Weakness Category**: ④ 可判定布局没有命中特化 variant
+- **File**: `generation.py:781-817` (`_generate_innermost_indices`)
+- **Severity**: 低 — 仅在 power-of-2 tile 场景多一次函数调用
 
 ### Scenario
 Tiled operation with block size 256 (already a power of 2).
@@ -89,7 +101,11 @@ offsets = arange(0, triton.next_power_of_2(256))
 
 ---
 
-## Case Study 4: AOT Variant Knowledge Not Used in Code Generation
+## Case 4: AOT Variant Knowledge Not Used in Code Generation
+
+- **Weakness Category**: ④ 可判定布局没有命中特化 variant + ③ 冗余 pointer arithmetic
+- **File**: `aot.py:47-123` (`_aot()`)
+- **Severity**: 高 — 所有 AOT variant 生成相同的 Triton 代码，variant 仅影响 C 类型
 
 ### Scenario
 AOT compilation with `divisibility_spec` indicating all innermost dims are divisible by 16.
@@ -104,9 +120,9 @@ AOT compilation with `divisibility_spec` indicating all innermost dims are divis
 
 ## Summary Table
 
-| Weakness | Category | File | Key Method | Impact |
-|----------|----------|------|------------|--------|
-| Redundant mask in divisible tiles | 2 | tensor.py:571-584 | `offsets()` | Extra comparison + branch per element |
-| Unnecessary stride arithmetic | 1 | generation.py:762-764 | `_generate_overall_offsets_and_mask()` | Extra mul + load per pointer calc |
-| Forced next_power_of_2 | 4 | generation.py:781-817 | `_generate_innermost_indices()` | Extra function call per loop init |
-| AOT hints siloed | 4 | aot.py:47-123 | `_aot()` | Missed optimization opportunity |
+| # | Weakness | Category | File | Key Method | Impact |
+|---|----------|----------|------|------------|--------|
+| 1 | Redundant mask in divisible tiles | ① 冗余 mask | tensor.py:571-584 | `offsets()` | Extra comparison + branch per element |
+| 2 | Unnecessary stride arithmetic | ② 冗余 stride / offset | generation.py:762-764 | `_generate_overall_offsets_and_mask()` | Extra mul + load per pointer calc |
+| 3 | Forced next_power_of_2 | ④ 未命中特化 variant | generation.py:781-817 | `_generate_innermost_indices()` | Extra function call per loop init |
+| 4 | AOT hints siloed from codegen | ④ 未命中特化 + ③ 冗余 pointer | aot.py:47-123 | `_aot()` | Missed optimization opportunity |

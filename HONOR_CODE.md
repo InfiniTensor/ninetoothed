@@ -4,7 +4,7 @@
 - Competition: 2026 Spring AI Competition
 - Track: 九齿开发赛道
 - Problem: T1-2-1 NineToothed 代码生成特化增强挑战
-- Team Name: [请填写小组名称]
+- Team Name: 何ev
 - Members: gacn2890356890-rgb
 
 ## Independent Work Declaration

@@ -129,6 +129,12 @@ def benchmark_scenario(scenario_name, size, arrangement_fn, application_fn,
     return {
         "scenario": scenario_name,
         "size": size,
+        "variant_name": (
+            "contiguous_divisible_fast" if specialization_hit and tiling_hint.has_divisible_tiles and bool(tiling_hint.contiguous_dims)
+            else "divisible_fast" if specialization_hit and tiling_hint.has_divisible_tiles
+            else "contiguous_fast" if specialization_hit and bool(tiling_hint.contiguous_dims)
+            else "general_fallback"
+        ),
         "baseline_runtime_ms": round(baseline_runtime, 4),
         "submitted_runtime_ms": round(submitted_runtime, 4),
         "speedup": round(speedup, 4),
