@@ -15,7 +15,7 @@ import time
 import torch
 import triton
 
-import ninetoothed
+import ninetoothed, ninetoothed.naming as naming
 from ninetoothed import Symbol, Tensor
 from ninetoothed.generation import CodeGenerator, TilingHint
 
@@ -50,7 +50,7 @@ def count_metrics(source_text):
         "mask_complexity": mask_complexity,
         "mask_expr_count": len(re.findall(r"mask=", body_text)),
         "stride_expr_count": len(re.findall(r"_stride_\d+", body_text)),
-        "pointer_expr_count": len(re.findall(r"_pointer\s*\+", body_text)),
+        "pointer_expr_count": len(re.findall(r"_pointers\s*\+", body_text)),
         "source_line_count": len(lines),
     }
 
@@ -77,6 +77,24 @@ def _prepare_app(arrangement, application, tensors):
     types = arrangement(*tensors)
     types = types if isinstance(types, tuple) else (types,)
     application.__annotations__ = {param: typ for param, typ in zip(params, types)}
+
+
+def _auto_hint(tensors, has_divisible, use_contiguous):
+    """Build a TilingHint using actual tensor source names from the list."""
+    contiguous_dims = set()
+    known_strides = {}
+    if use_contiguous:
+        for t in tensors:
+            bare = naming.remove_prefixes(t.source.name)
+            for dim in range(t.source.ndim):
+                contiguous_dims.add((bare, dim))
+                known_strides[(bare, dim)] = 1
+    return TilingHint(
+        has_divisible_tiles=has_divisible,
+        contiguous_dims=contiguous_dims,
+        known_strides=known_strides,
+        exact_innermost_sizes=has_divisible,
+    )
 
 
 def run_add_kernel(arrangement, application, tensors, input_data, output_data,
@@ -186,71 +204,37 @@ def main():
     results = []
 
     # Scenario 1: Contiguous + divisible (should hit both specializations)
-    hint_combined = TilingHint(
-        has_divisible_tiles=True,
-        contiguous_dims={("tensor_0", 0)},
-        known_strides={("tensor_0", 0): 1},
-        exact_innermost_sizes=True,
-    )
+    t1d_a = (Tensor(1), Tensor(1))
     result = benchmark_scenario(
-        "contiguous_divisible_hit",
-        2048,  # 2048/256 = 8, perfectly divisible
-        bench_add_arrangement,
-        bench_add_application,
-        (Tensor(1), Tensor(1)),
-        device,
-        hint_combined,
-        specialization_hit=True,
+        "contiguous_divisible_hit", 2048,
+        bench_add_arrangement, bench_add_application, t1d_a,
+        device, _auto_hint(t1d_a, True, True), specialization_hit=True,
     )
     results.append(result)
 
     # Scenario 2: Contiguous only, non-divisible
-    hint_contiguous = TilingHint(
-        has_divisible_tiles=False,
-        contiguous_dims={("tensor_0", 0)},
-        known_strides={("tensor_0", 0): 1},
-        exact_innermost_sizes=False,
-    )
+    t1d_b = (Tensor(1), Tensor(1))
     result = benchmark_scenario(
-        "contiguous_only_hit",
-        1027,  # 1027/256 = 4.01, not divisible
-        bench_add_arrangement,
-        bench_add_application,
-        (Tensor(1), Tensor(1)),
-        device,
-        hint_contiguous,
-        specialization_hit=True,
+        "contiguous_only_hit", 1027,
+        bench_add_arrangement, bench_add_application, t1d_b,
+        device, _auto_hint(t1d_b, False, True), specialization_hit=True,
     )
     results.append(result)
 
     # Scenario 3: Divisible only, non-contiguous
-    hint_divisible = TilingHint(
-        has_divisible_tiles=True,
-        exact_innermost_sizes=True,
-    )
+    t1d_c = (Tensor(1), Tensor(1))
     result = benchmark_scenario(
-        "divisible_only_hit",
-        2048,
-        bench_add_arrangement,
-        bench_add_application,
-        (Tensor(1), Tensor(1)),
-        device,
-        hint_divisible,
-        specialization_hit=True,
+        "divisible_only_hit", 2048,
+        bench_add_arrangement, bench_add_application, t1d_c,
+        device, _auto_hint(t1d_c, True, False), specialization_hit=True,
     )
     results.append(result)
 
-    # Scenario 4: Pure fallback — non-divisible, non-contiguous
-    hint_fallback = TilingHint()  # All defaults = no specialization
+    # Scenario 4: Pure fallback
     result = benchmark_scenario(
-        "pure_fallback",
-        1027,
-        bench_add_arrangement,
-        bench_add_application,
-        (Tensor(1), Tensor(1)),
-        device,
-        hint_fallback,
-        specialization_hit=False,
+        "pure_fallback", 1027,
+        bench_add_arrangement, bench_add_application, (Tensor(1), Tensor(1)),
+        device, TilingHint(), specialization_hit=False,
     )
     results.append(result)
 
@@ -258,23 +242,18 @@ def main():
     def bench_2d_arrangement(x, output):
         return x.tile((64, 64)), output.tile((64, 64))
 
-    hint_2d = TilingHint(
-        has_divisible_tiles=True,
-        exact_innermost_sizes=True,
-    )
+    t2d_a = (Tensor(2), Tensor(2))
+    hint_2d = _auto_hint(t2d_a, True, False)
     input_2d = torch.randn((512, 512), device=device)
     output_2d = torch.empty_like(input_2d)
 
-    # Baseline 2D
     bl_rt_2d, bl_met_2d = run_add_kernel(
-        bench_2d_arrangement, bench_add_application,
-        (Tensor(2), Tensor(2)), input_2d, output_2d,
-        device, "bench_2d_div_baseline", tiling_hint=None,
+        bench_2d_arrangement, bench_add_application, t2d_a,
+        input_2d, output_2d, device, "bench_2d_div_baseline", tiling_hint=None,
     )
     sub_rt_2d, sub_met_2d = run_add_kernel(
-        bench_2d_arrangement, bench_add_application,
-        (Tensor(2), Tensor(2)), input_2d, output_2d,
-        device, "bench_2d_div", tiling_hint=hint_2d,
+        bench_2d_arrangement, bench_add_application, t2d_a,
+        input_2d, output_2d, device, "bench_2d_div", tiling_hint=hint_2d,
     )
     results.append({
         "scenario": "2d_divisible_hit",
@@ -287,22 +266,19 @@ def main():
         "submitted_metrics": sub_met_2d,
     })
 
-    # Scenario 6: 2D non-divisible fallback (same as above with odd sizes)
-
     # Scenario 6: 2D non-divisible fallback
+    t2d_b = (Tensor(2), Tensor(2))
+    hint_2d_fb = TilingHint()
     input_2d_nd = torch.randn((519, 519), device=device)
     output_2d_nd = torch.empty_like(input_2d_nd)
 
-    hint_fallback_2d = TilingHint()
     bl_rt_2d_nd, bl_met_2d_nd = run_add_kernel(
-        bench_2d_arrangement, bench_add_application,
-        (Tensor(2), Tensor(2)), input_2d_nd, output_2d_nd,
-        device, "bench_2d_nd_baseline", tiling_hint=None,
+        bench_2d_arrangement, bench_add_application, t2d_b,
+        input_2d_nd, output_2d_nd, device, "bench_2d_nd_baseline", tiling_hint=None,
     )
     sub_rt_2d_nd, sub_met_2d_nd = run_add_kernel(
-        bench_2d_arrangement, bench_add_application,
-        (Tensor(2), Tensor(2)), input_2d_nd, output_2d_nd,
-        device, "bench_2d_nd", tiling_hint=hint_fallback_2d,
+        bench_2d_arrangement, bench_add_application, t2d_b,
+        input_2d_nd, output_2d_nd, device, "bench_2d_nd", tiling_hint=hint_2d_fb,
     )
     results.append({
         "scenario": "2d_non_divisible_fallback",
