@@ -1,3 +1,4 @@
+from ninetoothed.backends import backend_capabilities
 from ninetoothed.build import build
 from ninetoothed.dtype import (
     bfloat16,
@@ -16,6 +17,7 @@ from ninetoothed.dtype import (
 from ninetoothed.eval import _eval as eval
 from ninetoothed.eval import _subs as subs
 from ninetoothed.jit import jit
+from ninetoothed.lowering import lower
 from ninetoothed.make import make
 from ninetoothed.symbol import Symbol, block_size
 from ninetoothed.tensor import Tensor
@@ -23,6 +25,7 @@ from ninetoothed.tensor import Tensor
 __all__ = [
     "Symbol",
     "Tensor",
+    "backend_capabilities",
     "bfloat16",
     "block_size",
     "build",
@@ -34,6 +37,7 @@ __all__ = [
     "int32",
     "int64",
     "eval",
+    "lower",
     "subs",
     "jit",
     "make",
