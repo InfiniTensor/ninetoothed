@@ -7,6 +7,8 @@ emitter, whose dispatch unit is a single SSA operation.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any, Mapping
+
 from ninetoothed.backends.base import (
     Backend,
     BackendArtifact,
@@ -16,6 +18,9 @@ from ninetoothed.backends.base import (
 )
 from ninetoothed.backends.ssa_unified import lower_unified_ssa_artifact
 from ninetoothed.ir import KernelIR
+
+if TYPE_CHECKING:
+    from ninetoothed.ssa_passes import SSAPassRegistry
 
 
 class TritonBackend(Backend):
@@ -35,3 +40,49 @@ class TritonBackend(Backend):
         self, kernel: KernelIR, options: BackendOptions | None = None
     ) -> BackendArtifact:
         return lower_unified_ssa_artifact(kernel, self.name)
+
+
+def register_ssa_passes(registry: "SSAPassRegistry") -> None:
+    from ninetoothed.ssa_passes import OptimizeSchedulePass
+
+    class TritonOptimizeSchedulePass(OptimizeSchedulePass):
+        name = "ssa.triton.optimize_schedule"
+        supported_backends = (BackendName.TRITON,)
+
+        def optimization_policy(
+            self,
+            backend: BackendName,
+            analysis: Mapping[str, Any],
+            schedule: Mapping[str, Any],
+        ) -> Mapping[str, Any]:
+            del backend, analysis
+            granularity = str(schedule.get("granularity", "elementwise-grid"))
+            if granularity == "blocked-linalg":
+                return {
+                    "passes": ("linalg-block-tiling", "strict-fp32-dot-selection"),
+                    "lowering": "tl.dot-blocked-matmul",
+                    "tile": {"block_m": 32, "block_n": 32, "block_k": 32},
+                    "small_tile": {"block_m": 16, "block_n": 16, "block_k": 32},
+                    "small_problem_lowering": "vector-kloop-microkernel",
+                    "small_problem_threshold": {"m": 128, "n": 128, "k": 128},
+                    "num_warps": 4,
+                    "num_stages": 3,
+                    "use_tensor_cores": False,
+                    "input_precision": "ieee",
+                }
+            if granularity == "parallel-reduction":
+                return {
+                    "passes": ("coalesced-load", "single-program-tree-reduction"),
+                    "lowering": "tl.sum/tl.max",
+                    "block_size": 1024,
+                    "num_warps": 4,
+                }
+            return {
+                "passes": ("coalesced-vector-blocks", "load-store-combine"),
+                "lowering": "tl.load/tl.store-vectorized",
+                "block_size": 1024,
+                "vector_width": 4,
+                "num_warps": 4,
+            }
+
+    registry.register(TritonOptimizeSchedulePass, tags=("optimization", "triton"))

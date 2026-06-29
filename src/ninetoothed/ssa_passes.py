@@ -487,7 +487,9 @@ def create_default_ssa_pass_registry() -> SSAPassRegistry:
 
 
 def _register_backend_specific_ssa_passes(registry: SSAPassRegistry) -> None:
-    from ninetoothed.backends.ssa_passes import register_backend_specific_ssa_passes
+    from ninetoothed.backends.backend_pass_registry import (
+        register_backend_specific_ssa_passes,
+    )
 
     register_backend_specific_ssa_passes(registry)
 
