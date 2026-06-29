@@ -1,0 +1,18 @@
+id: t1-relu
+repo: InfiniTensor/ntops
+pattern: unary
+op_name: relu
+spec: |
+  relu(x) = max(0, x)
+  Match PyTorch relu semantics.
+reference_kernel: ntops/src/ntops/kernels/relu.py
+formula_hint: "output = max(0.0, input)"
+pytest_file: tests/test_relu.py
+scaffold_style: ntops
+acceptance:
+  - preflight passes on src/ntops/kernels/relu.py
+  - pytest -k relu passes
+deliverables:
+  - src/ntops/kernels/relu.py
+  - src/ntops/kernels/__init__.py updated
+  - src/ntops/torch wrapper

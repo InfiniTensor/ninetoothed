@@ -1,0 +1,15 @@
+id: forge-silu
+op: silu
+family: elementwise_unary
+pattern: unary
+spec: |
+  silu(x) = x * sigmoid(x)
+formula: "output = input / (1 + ntl.exp(-ntl.cast(input, ntl.float32)))"
+reference: src/ntops/kernels/silu.py
+pytest: tests/test_silu.py
+contest_id: T1-1-1
+github_id: hongwei-2026
+acceptance:
+  preflight_strict: true
+  compare_ref: true
+  pytest: true
