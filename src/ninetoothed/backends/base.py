@@ -17,18 +17,12 @@ class BackendName(str, Enum):
     TVM = "tvm"
 
 
-_BACKEND_ALIASES = {
+_CANONICAL_BACKEND_NAMES = {
     None: BackendName.TRITON,
     "triton": BackendName.TRITON,
-    "tl": BackendName.TRITON,
     "tilelang": BackendName.TILELANG,
-    "tile-lang": BackendName.TILELANG,
-    "tile_lang": BackendName.TILELANG,
     "cuda": BackendName.CUDA,
-    "cu": BackendName.CUDA,
     "tvm": BackendName.TVM,
-    "tvm-script": BackendName.TVM,
-    "tvmscript": BackendName.TVM,
 }
 
 
@@ -129,13 +123,15 @@ def normalize_backend_name(name: BackendName | str | None) -> BackendName:
     key = None if name is None else str(name).lower()
 
     try:
-        return _BACKEND_ALIASES[key]
+        return _CANONICAL_BACKEND_NAMES[key]
     except KeyError as exc:
         supported = ", ".join(
-            sorted(alias for alias in _BACKEND_ALIASES if isinstance(alias, str))
+            sorted(
+                alias for alias in _CANONICAL_BACKEND_NAMES if isinstance(alias, str)
+            )
         )
         raise ValueError(
-            f"Unsupported backend `{name}`. Supported aliases: {supported}."
+            f"Unsupported backend `{name}`. Supported backends: {supported}."
         ) from exc
 
 

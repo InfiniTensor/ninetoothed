@@ -333,7 +333,9 @@ class OptimizeSchedulePass(SSAPass):
     def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
         analysis = dict(program.metadata.get("analysis", {}))
         schedule = dict(program.metadata.get("schedule", {}))
-        optimization = dict(_optimization_policy(context.backend, analysis, schedule))
+        optimization = dict(
+            self.optimization_policy(context.backend, analysis, schedule)
+        )
         optimization = _merge_nested(
             optimization,
             _pass_options(context, self.name, "ssa.optimize_schedule"),
@@ -366,25 +368,17 @@ class OptimizeSchedulePass(SSAPass):
             },
         )
 
-
-class TritonOptimizeSchedulePass(OptimizeSchedulePass):
-    name = "ssa.triton.optimize_schedule"
-    supported_backends = (BackendName.TRITON,)
-
-
-class CudaOptimizeSchedulePass(OptimizeSchedulePass):
-    name = "ssa.cuda.optimize_schedule"
-    supported_backends = (BackendName.CUDA,)
-
-
-class TileLangOptimizeSchedulePass(OptimizeSchedulePass):
-    name = "ssa.tilelang.optimize_schedule"
-    supported_backends = (BackendName.TILELANG,)
-
-
-class TvmOptimizeSchedulePass(OptimizeSchedulePass):
-    name = "ssa.tvm.optimize_schedule"
-    supported_backends = (BackendName.TVM,)
+    def optimization_policy(
+        self,
+        backend: BackendName,
+        analysis: Mapping[str, Any],
+        schedule: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        del backend, analysis, schedule
+        return {
+            "passes": ("coalesced-linear-indexing",),
+            "lowering": "ssa-operation-linear-emission",
+        }
 
 
 class LowerMemoryScopesPass(SSAPass):
@@ -486,16 +480,16 @@ def create_default_ssa_pass_registry() -> SSAPassRegistry:
     registry.register(DecomposeLinalgPass, tags=("generic", "linalg", "decomposition"))
     registry.register(AnalyzeSSAEffectsPass, tags=("generic", "analysis", "required"))
     registry.register(SelectSchedulePass, tags=("schedule",))
-    registry.register(
-        OptimizeSchedulePass, tags=("optimization", "generic-backend-policy")
-    )
-    registry.register(TritonOptimizeSchedulePass, tags=("optimization", "triton"))
-    registry.register(CudaOptimizeSchedulePass, tags=("optimization", "cuda"))
-    registry.register(TileLangOptimizeSchedulePass, tags=("optimization", "tilelang"))
-    registry.register(TvmOptimizeSchedulePass, tags=("optimization", "tvm"))
+    _register_backend_specific_ssa_passes(registry)
     registry.register(LowerMemoryScopesPass, tags=("lowering", "memory"))
     registry.register(LowerBackendIntrinsicsPass, tags=("lowering", "intrinsics"))
     return registry
+
+
+def _register_backend_specific_ssa_passes(registry: SSAPassRegistry) -> None:
+    from ninetoothed.backends.ssa_passes import register_backend_specific_ssa_passes
+
+    register_backend_specific_ssa_passes(registry)
 
 
 def registered_ssa_passes(
@@ -871,66 +865,6 @@ def _tile_policy(
     if granularity == "parallel-reduction":
         return {"threads": 256, "reduction": "tree"}
     return {"threads": 256, "coalesced": True}
-
-
-def _optimization_policy(
-    backend: BackendName,
-    analysis: Mapping[str, Any],
-    schedule: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    granularity = schedule.get("granularity") or _schedule_granularity(analysis)
-    if backend == BackendName.TRITON and granularity == "blocked-linalg":
-        return {
-            "passes": ("linalg-block-tiling", "strict-fp32-dot-selection"),
-            "lowering": "tl.dot-blocked-matmul",
-            "tile": {"block_m": 32, "block_n": 32, "block_k": 32},
-            "small_tile": {"block_m": 16, "block_n": 16, "block_k": 32},
-            "small_problem_lowering": "vector-kloop-microkernel",
-            "small_problem_threshold": {"m": 128, "n": 128, "k": 128},
-            "num_warps": 4,
-            "num_stages": 3,
-            "use_tensor_cores": False,
-            "input_precision": "ieee",
-        }
-    if backend == BackendName.TRITON and granularity == "parallel-reduction":
-        return {
-            "passes": ("coalesced-load", "single-program-tree-reduction"),
-            "lowering": "tl.sum/tl.max",
-            "block_size": 1024,
-            "num_warps": 4,
-        }
-    if backend == BackendName.TRITON and granularity == "elementwise-grid":
-        return {
-            "passes": ("coalesced-vector-blocks", "load-store-combine"),
-            "lowering": "tl.load/tl.store-vectorized",
-            "block_size": 1024,
-            "vector_width": 4,
-            "num_warps": 4,
-        }
-    if backend == BackendName.CUDA and granularity == "blocked-linalg":
-        return {
-            "passes": ("block-tiling",),
-            "lowering": "thread-block-matmul",
-            "tile": {"block_m": 16, "block_n": 16, "block_k": 8},
-        }
-    if (
-        backend in {BackendName.TILELANG, BackendName.TVM}
-        and granularity == "blocked-linalg"
-    ):
-        return {
-            "passes": ("block-tiling", "loop-reorder"),
-            "lowering": "scheduled-tir-loops",
-            "tile": dict(schedule.get("tile", {})),
-        }
-    if granularity == "parallel-reduction":
-        return {
-            "passes": ("tree-reduction",),
-            "lowering": "ssa-reduction-scf-loop",
-        }
-    return {
-        "passes": ("coalesced-linear-indexing",),
-        "lowering": "ssa-operation-linear-emission",
-    }
 
 
 def _map_block(block: SSABlockIR, fn) -> SSABlockIR:

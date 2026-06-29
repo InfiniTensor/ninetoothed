@@ -1,11 +1,9 @@
 import ast
 import ctypes
-import os
 import pathlib
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import textwrap
 import uuid
@@ -34,7 +32,6 @@ def aot(
         num_stages = default_num_stages
 
     output_dir = pathlib.Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     output_contents = _aot(func, caller, kernel_name, num_warps, num_stages)
 
@@ -74,9 +71,6 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     tensors = code_generator.tensors
     kernel_func = code_generator.kernel_func
     launch_func = code_generator.launch_func
-    meta_config = _first_autotune_meta_config(
-        getattr(code_generator, "_autotune", None)
-    )
 
     grid_extractor = _GridExtractor()
     launch_func = grid_extractor.visit(launch_func)
@@ -112,7 +106,6 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
             grid=grid,
             num_warps=num_warps,
             num_stages=num_stages,
-            meta_config=meta_config,
             divisibility_spec=divisibility_spec,
             contiguity_spec=contiguity_spec,
             size_type=size_type,
@@ -225,7 +218,6 @@ def _build_variant(
     grid,
     num_warps,
     num_stages,
-    meta_config,
     divisibility_spec,
     contiguity_spec,
     size_type=ninetoothed.dtype.int32,
@@ -248,16 +240,7 @@ def _build_variant(
 
         param_strings.append(param)
 
-        if naming.is_meta(param):
-            try:
-                param_types.append(str(meta_config[param]))
-            except KeyError as exc:
-                raise ValueError(
-                    f"No AOT meta configuration value found for `{param}`."
-                ) from exc
-
-            constexpr_param_indices.append(len(param_types) - 1)
-        elif match := Tensor.pointer_pattern().fullmatch(param):
+        if match := Tensor.pointer_pattern().fullmatch(param):
             source_name = match.group(1)
             tensor = find_tensor(tensors, source_name)
             dtype = tensor.source.dtype
@@ -309,8 +292,6 @@ def _build_variant(
 
     c_source_file_name = f"{kernel_name}.{signature_hash}.c"
     c_source_file = output_contents[c_source_file_name]
-    for meta_name, meta_value in meta_config.items():
-        c_source_file = c_source_file.replace(meta_name, str(meta_value))
 
     c_header_file_name = f"{kernel_name}.{signature_hash}.h"
     c_header_file = output_contents[c_header_file_name]
@@ -357,26 +338,6 @@ def _build_variant(
     output_contents.pop(c_source_file_name)
 
     return output_contents
-
-
-def _first_autotune_meta_config(autotune):
-    if autotune is None:
-        return {}
-
-    try:
-        configs = next(
-            keyword.value.elts
-            for keyword in autotune.keywords
-            if keyword.arg == "configs"
-        )
-        first_config = configs[0]
-        meta_dict = first_config.args[0]
-    except (AttributeError, IndexError, StopIteration) as exc:
-        raise ValueError("Could not extract the first AOT autotune config.") from exc
-
-    return {
-        key.value: value.value for key, value in zip(meta_dict.keys, meta_dict.values)
-    }
 
 
 def _enumerate_variant_specs(launch_arg_names, tensors, find_tensor):
@@ -797,7 +758,7 @@ def _compile(path, name, signature, grid, num_warps, num_stages):
         output_path = output_dir / output_name
 
         command = [
-            sys.executable,
+            "python",
             "-m",
             "triton.tools.compile",
             str(path),
@@ -903,7 +864,7 @@ def _load_launch_func(kernel_name, output_dir):
 
 def _compile_library(kernel_name, output_dir):
     command = [
-        _find_nvcc(),
+        "nvcc",
         "-shared",
         "-arch",
         "native",
@@ -920,27 +881,6 @@ def _compile_library(kernel_name, output_dir):
     ] + list(output_dir.glob(f"{kernel_name}*.cpp"))
 
     subprocess.run(command, check=True)
-
-
-def _find_nvcc():
-    nvcc = shutil.which("nvcc")
-    if nvcc is not None:
-        return nvcc
-
-    candidates = []
-    cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
-    if cuda_home is not None:
-        candidates.append(pathlib.Path(cuda_home) / "bin" / "nvcc")
-
-    candidates.append(pathlib.Path("/usr/local/cuda/bin/nvcc"))
-
-    for candidate in candidates:
-        if candidate.exists():
-            return str(candidate)
-
-    raise FileNotFoundError(
-        "nvcc was not found. Set CUDA_HOME or add the CUDA toolkit bin directory to PATH."
-    )
 
 
 def _load_library(kernel_name, kernel_dir):

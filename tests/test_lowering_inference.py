@@ -1,6 +1,5 @@
 # ruff: noqa: F841
 import inspect
-import unittest
 
 import ninetoothed.language as ntl
 from ninetoothed.ir import SSAOperationIR, SSAProgramIR, TensorTypeIR
@@ -110,17 +109,16 @@ def rowwise_layernorm(x, weight, bias, out):
     mean = ntl.sum(x, axis=1) / 32.0
     mean_square = ntl.sum(x * x, axis=1) / 32.0
     var = mean_square - mean * mean
-    out = (x - mean[:, None]) * ntl.rsqrt(var[:, None] + 1.0e-5) * weight + bias
+    out = (x - mean[:, None]) * ntl.rsqrt(var[:, None] + 1e-05) * weight + bias
 
 
-def _ssa(
-    func,
-    tensors: tuple[TensorTypeIR, ...] | None = None,
-) -> SSAProgramIR:
+def _ssa(func, tensors: tuple[TensorTypeIR, ...] | None = None) -> SSAProgramIR:
     if tensors is None:
         tensors = tuple(
-            TensorTypeIR(name, 1, dtype="float32", shape=("n",))
-            for name in inspect.signature(func).parameters
+            (
+                TensorTypeIR(name, 1, dtype="float32", shape=("n",))
+                for name in inspect.signature(func).parameters
+            )
         )
     program = application_to_ssa(func, tensor_irs=tensors, kind=func.__name__)
     assert program is not None
@@ -143,18 +141,18 @@ def _walk(program: SSAProgramIR) -> tuple[SSAOperationIR, ...]:
 
 
 def _opcodes(program: SSAProgramIR) -> tuple[str, ...]:
-    return tuple(operation.opcode for operation in _walk(program))
+    return tuple((operation.opcode for operation in _walk(program)))
 
 
-class LoweringInferenceTest(unittest.TestCase):
-    def assertNoCoarseProgramIR(self, program: SSAProgramIR) -> None:
+class TestLoweringInference:
+    def _assert_no_coarse_program_ir(self, program: SSAProgramIR) -> None:
         rendered = render_ssa_program(program)
-        self.assertNotIn("ProgramIR", rendered)
-        self.assertNotIn("ReductionOpIR", rendered)
-        self.assertNotIn("MatmulOpIR", rendered)
-        self.assertNotIn("FlashAttentionOpIR", rendered)
-        self.assertEqual(program.metadata["source"], "application_ast")
-        self.assertFalse(program.metadata["coarse_operator_nodes"])
+        assert "ProgramIR" not in rendered
+        assert "ReductionOpIR" not in rendered
+        assert "MatmulOpIR" not in rendered
+        assert "FlashAttentionOpIR" not in rendered
+        assert program.metadata["source"] == "application_ast"
+        assert not program.metadata["coarse_operator_nodes"]
 
     def test_fill_copy_and_assignment_calls_lower_to_ssa_effects(self):
         for func in (
@@ -163,11 +161,9 @@ class LoweringInferenceTest(unittest.TestCase):
             copy_statement,
             plain_copy_assignment,
         ):
-            with self.subTest(func=func.__name__):
-                program = _ssa(func)
-
-                self.assertIn("mem.store", _opcodes(program))
-                self.assertNoCoarseProgramIR(program)
+            program = _ssa(func)
+            assert "mem.store" in _opcodes(program)
+            self._assert_no_coarse_program_ir(program)
 
     def test_reductions_lower_to_ssa_reduce_ops(self):
         cases = (
@@ -176,15 +172,12 @@ class LoweringInferenceTest(unittest.TestCase):
             (max_assignment, "reduce.max"),
             (dot_reduction_assignment, "reduce.sum"),
         )
-
         for func, opcode in cases:
-            with self.subTest(func=func.__name__):
-                program = _ssa(func)
-                opcodes = _opcodes(program)
-
-                self.assertIn(opcode, opcodes)
-                self.assertIn("mem.store", opcodes)
-                self.assertNoCoarseProgramIR(program)
+            program = _ssa(func)
+            opcodes = _opcodes(program)
+            assert opcode in opcodes
+            assert "mem.store" in opcodes
+            self._assert_no_coarse_program_ir(program)
 
     def test_transpose_and_matmul_lower_to_ssa_compute_ops(self):
         cases = (
@@ -192,25 +185,23 @@ class LoweringInferenceTest(unittest.TestCase):
             (matmul_statement, "linalg.matmul"),
             (matmul_assignment, "linalg.matmul"),
         )
-
         for func, opcode in cases:
-            with self.subTest(func=func.__name__):
-                program = _ssa(func)
-                opcodes = _opcodes(program)
-
-                self.assertIn(opcode, opcodes)
-                self.assertIn("mem.store", opcodes)
-                self.assertNoCoarseProgramIR(program)
+            program = _ssa(func)
+            opcodes = _opcodes(program)
+            assert opcode in opcodes
+            assert "mem.store" in opcodes
+            self._assert_no_coarse_program_ir(program)
 
     def test_unknown_intrinsic_names_stay_as_call_ops_not_coarse_attention_ir(self):
         tensors = tuple(
-            TensorTypeIR(name, 2, dtype="float32", shape=("rows", "cols"))
-            for name in ("q", "k", "v", "out")
+            (
+                TensorTypeIR(name, 2, dtype="float32", shape=("rows", "cols"))
+                for name in ("q", "k", "v", "out")
+            )
         )
         program = _ssa(flash_attention_call_name, tensors)
-
-        self.assertIn("call.flash_attention", _opcodes(program))
-        self.assertNoCoarseProgramIR(program)
+        assert "call.flash_attention" in _opcodes(program)
+        self._assert_no_coarse_program_ir(program)
 
     def test_multi_output_and_scalar_math_are_generic_ssa(self):
         for func, fragments in (
@@ -218,14 +209,12 @@ class LoweringInferenceTest(unittest.TestCase):
             (bitwise_shift, ("arith.bitwise_left_shift",)),
             (compare_float_inf, ("cmp.eq", "cmp.ne", "arith.bitwise_and")),
         ):
-            with self.subTest(func=func.__name__):
-                program = _ssa(func)
-                opcodes = _opcodes(program)
-
-                for fragment in fragments:
-                    self.assertIn(fragment, opcodes)
-                self.assertIn("mem.store", opcodes)
-                self.assertNoCoarseProgramIR(program)
+            program = _ssa(func)
+            opcodes = _opcodes(program)
+            for fragment in fragments:
+                assert fragment in opcodes
+            assert "mem.store" in opcodes
+            self._assert_no_coarse_program_ir(program)
 
     def test_offsets_lower_to_explicit_index_ops(self):
         program = _ssa(
@@ -233,21 +222,18 @@ class LoweringInferenceTest(unittest.TestCase):
             (TensorTypeIR("out", 2, dtype="float32", shape=("rows", "cols")),),
         )
         opcodes = _opcodes(program)
-
-        self.assertEqual(opcodes.count("index.offset"), 2)
-        self.assertIn("cmp.eq", opcodes)
-        self.assertIn("mem.store", opcodes)
-        self.assertNoCoarseProgramIR(program)
+        assert opcodes.count("index.offset") == 2
+        assert "cmp.eq" in opcodes
+        assert "mem.store" in opcodes
+        self._assert_no_coarse_program_ir(program)
 
     def test_axis_reductions_are_not_shape_special_cased(self):
         for func, axis in ((axis_zero_call, 0), (rowwise_sum, 1), (rowwise_mean, 1)):
-            with self.subTest(func=func.__name__):
-                program = _ssa(func)
-                reduce_ops = [op for op in _walk(program) if op.opcode == "reduce.sum"]
-
-                self.assertTrue(reduce_ops)
-                self.assertEqual(reduce_ops[0].attrs.get("axis"), axis)
-                self.assertNoCoarseProgramIR(program)
+            program = _ssa(func)
+            reduce_ops = [op for op in _walk(program) if op.opcode == "reduce.sum"]
+            assert reduce_ops
+            assert reduce_ops[0].attrs.get("axis") == axis
+            self._assert_no_coarse_program_ir(program)
 
     def test_axis_reduction_fusions_lower_to_generic_dataflow(self):
         tensors = (
@@ -257,11 +243,10 @@ class LoweringInferenceTest(unittest.TestCase):
         )
         program = _ssa(rowwise_aminmax, tensors)
         opcodes = _opcodes(program)
-
-        self.assertIn("reduce.min", opcodes)
-        self.assertIn("reduce.max", opcodes)
-        self.assertEqual(opcodes.count("mem.store"), 2)
-        self.assertNoCoarseProgramIR(program)
+        assert "reduce.min" in opcodes
+        assert "reduce.max" in opcodes
+        assert opcodes.count("mem.store") == 2
+        self._assert_no_coarse_program_ir(program)
 
     def test_rowwise_softmax_and_layernorm_are_dataflow_not_kernel_nodes(self):
         softmax_tensors = (
@@ -274,7 +259,6 @@ class LoweringInferenceTest(unittest.TestCase):
             TensorTypeIR("bias", 1, dtype="float32", shape=("cols",)),
             TensorTypeIR("out", 2, dtype="float32", shape=("rows", "cols")),
         )
-
         for func, tensors, fragments in (
             (
                 rowwise_softmax,
@@ -287,22 +271,15 @@ class LoweringInferenceTest(unittest.TestCase):
                 ("reduce.sum", "math.rsqrt", "arith.mul", "arith.add"),
             ),
         ):
-            with self.subTest(func=func.__name__):
-                program = _ssa(func, tensors)
-                opcodes = _opcodes(program)
-
-                for fragment in fragments:
-                    self.assertIn(fragment, opcodes)
-                self.assertIn("mem.store", opcodes)
-                self.assertNoCoarseProgramIR(program)
+            program = _ssa(func, tensors)
+            opcodes = _opcodes(program)
+            for fragment in fragments:
+                assert fragment in opcodes
+            assert "mem.store" in opcodes
+            self._assert_no_coarse_program_ir(program)
 
     def test_ssa_textual_rendering_is_the_audit_format(self):
         rendered = render_ssa_program(_ssa(rowwise_addmv))
-
-        self.assertTrue(rendered.startswith("ssa @rowwise_addmv {"))
-        self.assertIn("reduce.sum", rendered)
-        self.assertIn("mem.store", rendered)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert rendered.startswith("ssa @rowwise_addmv {")
+        assert "reduce.sum" in rendered
+        assert "mem.store" in rendered

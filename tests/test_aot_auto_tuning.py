@@ -1,5 +1,4 @@
 import functools
-import os
 import shutil
 
 import pytest
@@ -49,19 +48,13 @@ def premake(size=None, dtype=None, block_size=None):
     ),
 )
 @pytest.mark.parametrize("size", (20260128, 1127))
-def test_auto_tuning(size, dtype, device, ninetoothed_dtype, rtol, atol):
+def test_auto_tuning(size, dtype, device, ninetoothed_dtype, rtol, atol, tmp_path):
     caller = device
     kernel_name = "add"
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
-    dtype_name = str(dtype).rsplit(".", maxsplit=1)[-1]
-    output_dir = (
-        ninetoothed.generation.CACHE_DIR
-        / "test_auto_tuning"
-        / f"{worker_id}_{device}_{size}_{dtype_name}"
-    )
+    output_dir = tmp_path / "test_auto_tuning"
 
     shutil.rmtree(output_dir, ignore_errors=True)
-    output_dir.mkdir(parents=True)
+    output_dir.mkdir()
 
     configs = (
         ((), {"size": 20260128, "dtype": ninetoothed.float16, "block_size": 256}, {}),
@@ -107,7 +100,7 @@ def test_auto_tuning(size, dtype, device, ninetoothed_dtype, rtol, atol):
 
     kernel(input, other, alpha, output, size, ninetoothed_dtype)
 
-    shutil.rmtree(output_dir, ignore_errors=True)
+    shutil.rmtree(output_dir)
 
     expected = torch.add(input, other, alpha=alpha)
 

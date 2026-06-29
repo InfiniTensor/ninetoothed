@@ -2,8 +2,8 @@
 
 ``SSAProgramIR`` is the canonical IR consumed by backend code generation.  The
 older structured ``ProgramIR`` records remain in this module as compatibility
-objects for legacy tests and migration scripts; the public ``ninetoothed.lower``
-entrypoint lowers application Python source directly to SSA.
+objects for legacy tests and migration scripts; application Python source is
+lowered directly to SSA by ``ninetoothed.lowering.lower``.
 """
 
 from __future__ import annotations
@@ -397,7 +397,7 @@ def program_to_ssa(
     """Convert legacy structured ProgramIR fixtures to SSA.
 
     This helper exists for migration tests and historical scripts.  It is not
-    used by the public ``ninetoothed.lower`` source-to-backend path.
+    used by the application source-to-backend lowering path.
     """
 
     builder = _SSABuilder(program, tensors)

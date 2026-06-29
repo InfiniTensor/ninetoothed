@@ -6,10 +6,8 @@ import hashlib
 import inspect
 import itertools
 import math
-import os
 import pathlib
 import subprocess
-import tempfile
 import textwrap
 
 import sympy
@@ -23,9 +21,8 @@ from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
 
-DEFAULT_CACHE_DIR = pathlib.Path.home() / ".ninetoothed"
-CACHE_DIR = pathlib.Path(os.environ.get("NINETOOTHED_CACHE_DIR", DEFAULT_CACHE_DIR))
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_DIR = pathlib.Path.home() / ".ninetoothed"
+CACHE_DIR.mkdir(exist_ok=True)
 
 
 class CodeGenerator(ast.NodeTransformer):
@@ -876,21 +873,10 @@ class Tritonizer(ast.NodeTransformer):
 def cache_source(source):
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
     cache_file = CACHE_DIR / f"{digest}.py"
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     if not cache_file.exists():
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=CACHE_DIR,
-            delete=False,
-            prefix=f"{digest}.",
-            suffix=".tmp",
-        ) as f:
+        with open(cache_file, "w", encoding="utf-8") as f:
             f.write(source)
-            temp_name = f.name
-
-        pathlib.Path(temp_name).replace(cache_file)
 
     return cache_file
 

@@ -1,5 +1,3 @@
-import unittest
-
 from ninetoothed.backends.base import BackendName
 from ninetoothed.ir import (
     ElementwiseAssignOpIR,
@@ -33,7 +31,7 @@ def _operations(operations):
             yield from _operations(region.operations)
 
 
-class SSAPassPipelineTest(unittest.TestCase):
+class TestSSAPassPipeline:
     def test_pipeline_attaches_target_schedule_without_coarse_nodes(self):
         program = ProgramIR(
             kind="elementwise",
@@ -63,41 +61,33 @@ class SSAPassPipelineTest(unittest.TestCase):
             backend=BackendName.CUDA,
             compiler_options={"num_warps": 4, "num_stages": 3},
         )
-
-        self.assertEqual(
-            tuple(lowered.metadata["pass_trace"]),
-            (
-                "ssa.canonicalize",
-                "ssa.analyze_effects",
-                "ssa.select_schedule",
-                "ssa.cuda.optimize_schedule",
-                "ssa.decompose_linalg",
-                "ssa.lower_memory_scopes",
-                "ssa.lower_backend_intrinsics",
-            ),
+        assert tuple(lowered.metadata["pass_trace"]) == (
+            "ssa.canonicalize",
+            "ssa.analyze_effects",
+            "ssa.select_schedule",
+            "ssa.cuda.optimize_schedule",
+            "ssa.decompose_linalg",
+            "ssa.lower_memory_scopes",
+            "ssa.lower_backend_intrinsics",
         )
-        self.assertEqual(lowered.metadata["target_backend"], "cuda")
-        self.assertEqual(
-            lowered.metadata["schedule"]["granularity"], "elementwise-grid"
+        assert lowered.metadata["target_backend"] == "cuda"
+        assert lowered.metadata["schedule"]["granularity"] == "elementwise-grid"
+        assert tuple(lowered.metadata["optimization"]["passes"]) == (
+            "coalesced-linear-indexing",
         )
-        self.assertEqual(
-            tuple(lowered.metadata["optimization"]["passes"]),
-            ("coalesced-linear-indexing",),
-        )
-        self.assertEqual(
-            lowered.metadata["optimization"]["lowering"],
-            "ssa-operation-linear-emission",
+        assert (
+            lowered.metadata["optimization"]["lowering"]
+            == "ssa-operation-linear-emission"
         )
         forbidden = "tem" + "plate"
-        self.assertNotIn(forbidden, str(lowered.metadata["optimization"]).lower())
-        self.assertEqual(lowered.metadata["memory_scope"]["register"], "thread-local")
-        self.assertFalse(lowered.metadata["coarse_operator_nodes"])
-
+        assert forbidden not in str(lowered.metadata["optimization"]).lower()
+        assert lowered.metadata["memory_scope"]["register"] == "thread-local"
+        assert not lowered.metadata["coarse_operator_nodes"]
         opcodes = tuple(_opcodes(lowered.blocks[0].operations))
-        self.assertIn("arith.add", opcodes)
-        self.assertIn("mem.store", opcodes)
-        self.assertNotIn("AttentionOpIR", opcodes)
-        self.assertNotIn("FlashAttentionOpIR", opcodes)
+        assert "arith.add" in opcodes
+        assert "mem.store" in opcodes
+        assert "AttentionOpIR" not in opcodes
+        assert "FlashAttentionOpIR" not in opcodes
 
     def test_schedule_sees_linalg_before_decomposition(self):
         program = ProgramIR(
@@ -115,24 +105,21 @@ class SSAPassPipelineTest(unittest.TestCase):
             program_to_ssa(program, tensors), backend=BackendName.CUDA
         )
         opcodes = tuple(_opcodes(lowered.blocks[0].operations))
-
-        self.assertTrue(lowered.metadata["analysis"]["has_dot"])
-        self.assertEqual(lowered.metadata["schedule"]["granularity"], "blocked-linalg")
-        self.assertTrue(lowered.metadata["linalg_decomposed"])
-        self.assertNotIn("linalg.matmul", opcodes)
-        self.assertIn("scf.for", opcodes)
-        self.assertIn("tensor.extract", opcodes)
-        self.assertIn("arith.mul", opcodes)
-        self.assertIn("arith.add", opcodes)
+        assert lowered.metadata["analysis"]["has_dot"]
+        assert lowered.metadata["schedule"]["granularity"] == "blocked-linalg"
+        assert lowered.metadata["linalg_decomposed"]
+        assert "linalg.matmul" not in opcodes
+        assert "scf.for" in opcodes
+        assert "tensor.extract" in opcodes
+        assert "arith.mul" in opcodes
+        assert "arith.add" in opcodes
 
     def test_backend_specific_intrinsics_are_annotations_not_semantic_ops(self):
         program = ProgramIR(
             kind="elementwise",
             operations=(
                 ElementwiseAssignOpIR(
-                    output="out",
-                    expression=ExprIR(kind="var", value="x"),
-                    extent="n",
+                    output="out", expression=ExprIR(kind="var", value="x"), extent="n"
                 ),
             ),
         )
@@ -140,24 +127,22 @@ class SSAPassPipelineTest(unittest.TestCase):
             TensorTypeIR("x", 1, "float32", ("n",)),
             TensorTypeIR("out", 1, "float32", ("n",)),
         )
-
         for backend, expected_program_id in (
             (BackendName.TRITON, "tl.program_id"),
             (BackendName.TILELANG, "T.Kernel + T.get_thread_binding"),
             (BackendName.TVM, "T.thread_binding"),
         ):
-            with self.subTest(backend=backend.value):
-                lowered = lower_ssa_for_backend(
-                    program_to_ssa(program, tensors), backend=backend
-                )
-                self.assertEqual(
-                    lowered.metadata["backend_intrinsics"]["program_id"],
-                    expected_program_id,
-                )
-                for operation in _operations(lowered.blocks[0].operations):
-                    self.assertIn("backend_intrinsic", operation.attrs)
-                    self.assertIn("optimization", operation.attrs)
-                    self.assertNotIn("AttentionOpIR", operation.opcode)
+            lowered = lower_ssa_for_backend(
+                program_to_ssa(program, tensors), backend=backend
+            )
+            assert (
+                lowered.metadata["backend_intrinsics"]["program_id"]
+                == expected_program_id
+            )
+            for operation in _operations(lowered.blocks[0].operations):
+                assert "backend_intrinsic" in operation.attrs
+                assert "optimization" in operation.attrs
+                assert "AttentionOpIR" not in operation.opcode
 
     def test_pass_registry_classifies_hardware_independent_and_target_passes(self):
         independent = {
@@ -174,23 +159,20 @@ class SSAPassPipelineTest(unittest.TestCase):
                 category=BACKEND_SPECIFIC, backend=BackendName.TRITON
             )
         }
-
-        self.assertIn("ssa.canonicalize", independent)
-        self.assertIn("ssa.decompose_linalg", independent)
-        self.assertIn("ssa.analyze_effects", independent)
-        self.assertIn("ssa.select_schedule", dependent)
-        self.assertIn("ssa.lower_backend_intrinsics", dependent)
-        self.assertIn("ssa.triton.optimize_schedule", triton_specific)
-        self.assertNotIn("ssa.cuda.optimize_schedule", triton_specific)
+        assert "ssa.canonicalize" in independent
+        assert "ssa.decompose_linalg" in independent
+        assert "ssa.analyze_effects" in independent
+        assert "ssa.select_schedule" in dependent
+        assert "ssa.lower_backend_intrinsics" in dependent
+        assert "ssa.triton.optimize_schedule" in triton_specific
+        assert "ssa.cuda.optimize_schedule" not in triton_specific
 
     def test_custom_pipeline_can_disable_backend_optimization_pass(self):
         program = ProgramIR(
             kind="elementwise",
             operations=(
                 ElementwiseAssignOpIR(
-                    output="out",
-                    expression=ExprIR(kind="var", value="x"),
-                    extent="n",
+                    output="out", expression=ExprIR(kind="var", value="x"), extent="n"
                 ),
             ),
         )
@@ -214,23 +196,19 @@ class SSAPassPipelineTest(unittest.TestCase):
                 reason="test pipeline without backend optimization",
             ),
         )
-
-        self.assertNotIn("ssa.triton.optimize_schedule", lowered.metadata["pass_trace"])
-        self.assertNotIn("optimization", lowered.metadata)
-        self.assertEqual(lowered.metadata["pipeline_selection"]["mode"], "custom")
-        self.assertEqual(
-            lowered.metadata["pipeline_selection"]["categories"][HARDWARE_INDEPENDENT],
-            ("ssa.canonicalize", "ssa.decompose_linalg", "ssa.analyze_effects"),
-        )
+        assert "ssa.triton.optimize_schedule" not in lowered.metadata["pass_trace"]
+        assert "optimization" not in lowered.metadata
+        assert lowered.metadata["pipeline_selection"]["mode"] == "custom"
+        assert lowered.metadata["pipeline_selection"]["categories"][
+            HARDWARE_INDEPENDENT
+        ] == ("ssa.canonicalize", "ssa.decompose_linalg", "ssa.analyze_effects")
 
     def test_autotune_pipeline_records_candidates_and_selected_passes(self):
         program = ProgramIR(
             kind="elementwise",
             operations=(
                 ElementwiseAssignOpIR(
-                    output="out",
-                    expression=ExprIR(kind="var", value="x"),
-                    extent="n",
+                    output="out", expression=ExprIR(kind="var", value="x"), extent="n"
                 ),
             ),
         )
@@ -239,17 +217,10 @@ class SSAPassPipelineTest(unittest.TestCase):
             TensorTypeIR("out", 1, "float32", ("n",)),
         )
         lowered = lower_ssa_for_backend(
-            program_to_ssa(program, tensors),
-            backend=BackendName.TRITON,
-            autotune=True,
+            program_to_ssa(program, tensors), backend=BackendName.TRITON, autotune=True
         )
-
         selection = lowered.metadata["pipeline_selection"]
-        self.assertEqual(selection["mode"], "autotune")
-        self.assertIn("ssa.triton.optimize_schedule", selection["selected_passes"])
-        self.assertTrue(selection["candidate_pipelines"])
-        self.assertIn("policy-autotune", selection["reason"])
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert selection["mode"] == "autotune"
+        assert "ssa.triton.optimize_schedule" in selection["selected_passes"]
+        assert selection["candidate_pipelines"]
+        assert "policy-autotune" in selection["reason"]
