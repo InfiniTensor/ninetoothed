@@ -48,10 +48,10 @@ def premake(size=None, dtype=None, block_size=None):
     ),
 )
 @pytest.mark.parametrize("size", (20260128, 1127))
-def test_auto_tuning(size, dtype, device, ninetoothed_dtype, rtol, atol, tmp_path):
+def test_auto_tuning(size, dtype, device, ninetoothed_dtype, rtol, atol):
     caller = device
     kernel_name = "add"
-    output_dir = tmp_path / "test_auto_tuning"
+    output_dir = ninetoothed.generation.CACHE_DIR / "test_auto_tuning"
 
     shutil.rmtree(output_dir, ignore_errors=True)
     output_dir.mkdir()
