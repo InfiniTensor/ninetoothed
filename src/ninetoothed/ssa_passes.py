@@ -6,10 +6,10 @@ They do not introduce whole-operator IR nodes.
 
 Pass execution is intentionally organized like a compiler pipeline:
 
-* hardware-independent passes canonicalize and analyze the generic SSA;
-* hardware-dependent passes select schedules, memory scopes, and intrinsics;
-* backend-specific optimization passes attach target policies such as tiling
-  and dot lowering.
+* hardware-independent passes canonicalize, analyze, and attach generic
+  schedule intent to SSA;
+* backend-specific passes, registered from ``ninetoothed.backends``, attach
+  target policies such as tiling, memory scopes, and intrinsic choices.
 
 The pass registry is the public control point for default pipelines, custom
 pipelines, and policy-based autotune pipeline selection.
@@ -301,11 +301,11 @@ class DecomposeLinalgPass(SSAPass):
 
 
 class SelectSchedulePass(SSAPass):
-    """Attach target-aware schedule information."""
+    """Attach backend-neutral schedule intent."""
 
     name = "ssa.select_schedule"
-    category = HARDWARE_DEPENDENT
-    phase = "schedule_selection"
+    category = HARDWARE_INDEPENDENT
+    phase = "schedule_intent"
 
     def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
         analysis = dict(program.metadata.get("analysis", {}))
@@ -314,17 +314,13 @@ class SelectSchedulePass(SSAPass):
             "granularity": _schedule_granularity(analysis),
             "indexing": "flat-contiguous",
             "parallelism": "program-blocks",
-            "vector_width": _vector_width(context.backend, analysis),
-            "tile": _tile_policy(context.backend, analysis),
-            "num_warps": context.compiler_options.get("num_warps"),
-            "num_stages": context.compiler_options.get("num_stages"),
         }
         schedule = _merge_nested(schedule, options)
         return _with_metadata(program, schedule=schedule)
 
 
-class OptimizeSchedulePass(SSAPass):
-    """Attach backend-specific performance decisions to fine-grained SSA."""
+class BackendScheduleOptimizationPass(SSAPass):
+    """Contract for backend-specific schedule optimization passes."""
 
     name = "ssa.optimize_schedule"
     category = BACKEND_SPECIFIC
@@ -340,17 +336,10 @@ class OptimizeSchedulePass(SSAPass):
             optimization,
             _pass_options(context, self.name, "ssa.optimize_schedule"),
         )
-        optimized_schedule = dict(schedule)
-        if "tile" in optimization:
-            optimized_schedule["tile"] = dict(schedule.get("tile", {})) | dict(
-                optimization["tile"]
-            )
-        if "vector_width" in optimization:
-            optimized_schedule["vector_width"] = optimization["vector_width"]
-        if "num_warps" in optimization:
-            optimized_schedule["num_warps"] = optimization["num_warps"]
-        if "num_stages" in optimization:
-            optimized_schedule["num_stages"] = optimization["num_stages"]
+        optimized_schedule = _merge_nested(
+            schedule,
+            dict(optimization.get("schedule", {})),
+        )
 
         blocks = tuple(
             _map_block(
@@ -374,104 +363,53 @@ class OptimizeSchedulePass(SSAPass):
         analysis: Mapping[str, Any],
         schedule: Mapping[str, Any],
     ) -> Mapping[str, Any]:
-        del backend, analysis, schedule
-        return {
-            "passes": ("coalesced-linear-indexing",),
-            "lowering": "ssa-operation-linear-emission",
-        }
+        raise NotImplementedError
 
 
-class LowerMemoryScopesPass(SSAPass):
-    """Map generic scratch/storage concepts to backend memory scopes."""
+class OptimizeSchedulePass(BackendScheduleOptimizationPass):
+    """Backward-compatible base name for backend schedule passes."""
+
+
+class BackendMemoryScopesLoweringPass(SSAPass):
+    """Contract for backend-specific memory scope materialization passes."""
 
     name = "ssa.lower_memory_scopes"
-    category = HARDWARE_DEPENDENT
+    category = BACKEND_SPECIFIC
     phase = "target_lowering"
 
     def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
-        scopes = {
-            BackendName.TRITON: {
-                "register": "tl.scalar/tl.tensor",
-                "shared": "tl.dot-managed-smem",
-                "global": "pointer",
-            },
-            BackendName.CUDA: {
-                "register": "thread-local",
-                "shared": "__shared__",
-                "global": "__global__ pointer",
-            },
-            BackendName.TILELANG: {
-                "register": "local.fragment",
-                "shared": "shared",
-                "global": "global",
-            },
-            BackendName.TVM: {
-                "register": "local",
-                "shared": "shared",
-                "global": "global",
-            },
-        }[context.backend]
-        blocks = tuple(
-            _map_block(block, lambda op: _annotate_operation(op, memory_scope=scopes))
-            for block in program.blocks
-        )
-        return _replace_program(
+        scopes = dict(self.memory_scopes(context))
+        return annotate_ssa_operations(
             program,
-            blocks=blocks,
-            metadata=dict(program.metadata) | {"memory_scope": scopes},
+            attrs={"memory_scope": scopes},
+            metadata={"memory_scope": scopes},
         )
 
+    def memory_scopes(self, context: SSAPassContext) -> Mapping[str, str]:
+        raise NotImplementedError
 
-class LowerBackendIntrinsicsPass(SSAPass):
-    """Attach backend-specific intrinsic choices without changing semantics."""
 
-    name = "ssa.lower_backend_intrinsics"
-    category = HARDWARE_DEPENDENT
+class BackendIntrinsicsLoweringPass(SSAPass):
+    """Contract for backend-specific intrinsic materialization passes."""
+
+    name = "ssa.lower_intrinsics"
+    category = BACKEND_SPECIFIC
     phase = "target_lowering"
 
     def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
-        intrinsic = {
-            BackendName.TRITON: {
-                "dot": "tl.dot",
-                "exp": "tl.exp/tl.exp2",
-                "program_id": "tl.program_id",
-                "load_store": "tl.load/tl.store",
-            },
-            BackendName.CUDA: {
-                "dot": "thread loop or mma.sync candidate",
-                "exp": "__expf/expf",
-                "program_id": "blockIdx/threadIdx",
-                "load_store": "pointer load/store",
-            },
-            BackendName.TILELANG: {
-                "dot": "T.gemm/T.dot candidate",
-                "exp": "T.exp",
-                "program_id": "T.Kernel + T.get_thread_binding",
-                "load_store": "T.match_buffer",
-            },
-            BackendName.TVM: {
-                "dot": "TIR loop or tensorize candidate",
-                "exp": "T.exp",
-                "program_id": "T.thread_binding",
-                "load_store": "T.match_buffer/T.BufferStore",
-            },
-        }[context.backend]
-        blocks = tuple(
-            _map_block(
-                block, lambda op: _annotate_operation(op, backend_intrinsic=intrinsic)
-            )
-            for block in program.blocks
-        )
-        return _replace_program(
+        intrinsic = dict(self.intrinsics(context))
+        return annotate_ssa_operations(
             program,
-            blocks=blocks,
-            metadata=dict(program.metadata)
-            | {
+            attrs={"backend_intrinsic": intrinsic},
+            metadata={
                 "target_backend": context.backend.value,
                 "backend_intrinsics": intrinsic,
                 "lowering_stage": "target-annotated-ssa",
             },
         )
+
+    def intrinsics(self, context: SSAPassContext) -> Mapping[str, str]:
+        raise NotImplementedError
 
 
 def create_default_ssa_pass_registry() -> SSAPassRegistry:
@@ -481,8 +419,6 @@ def create_default_ssa_pass_registry() -> SSAPassRegistry:
     registry.register(AnalyzeSSAEffectsPass, tags=("generic", "analysis", "required"))
     registry.register(SelectSchedulePass, tags=("schedule",))
     _register_backend_specific_ssa_passes(registry)
-    registry.register(LowerMemoryScopesPass, tags=("lowering", "memory"))
-    registry.register(LowerBackendIntrinsicsPass, tags=("lowering", "intrinsics"))
     return registry
 
 
@@ -753,13 +689,21 @@ def _default_pass_names(backend: BackendName) -> tuple[str, ...]:
         "ssa.select_schedule",
         _backend_optimize_pass_name(backend),
         "ssa.decompose_linalg",
-        "ssa.lower_memory_scopes",
-        "ssa.lower_backend_intrinsics",
+        _backend_memory_pass_name(backend),
+        _backend_intrinsics_pass_name(backend),
     )
 
 
 def _backend_optimize_pass_name(backend: BackendName) -> str:
     return f"ssa.{backend.value}.optimize_schedule"
+
+
+def _backend_memory_pass_name(backend: BackendName) -> str:
+    return f"ssa.{backend.value}.lower_memory_scopes"
+
+
+def _backend_intrinsics_pass_name(backend: BackendName) -> str:
+    return f"ssa.{backend.value}.lower_intrinsics"
 
 
 def _autotune_enabled(value: bool | str | Mapping[str, Any]) -> bool:
@@ -835,38 +779,23 @@ def _schedule_granularity(analysis: Mapping[str, Any]) -> str:
     return "elementwise-grid"
 
 
-def _vector_width(backend: BackendName, analysis: Mapping[str, Any]) -> int:
-    if analysis.get("has_dot"):
-        return 1
-    return {
-        BackendName.TRITON: 4,
-        BackendName.CUDA: 4,
-        BackendName.TILELANG: 1,
-        BackendName.TVM: 1,
-    }[backend]
+def annotate_ssa_operations(
+    program: SSAProgramIR,
+    *,
+    attrs: Mapping[str, Any],
+    metadata: Mapping[str, Any] | None = None,
+) -> SSAProgramIR:
+    """Return ``program`` with every operation annotated by ``attrs``."""
 
-
-def _tile_policy(
-    backend: BackendName, analysis: Mapping[str, Any]
-) -> Mapping[str, Any]:
-    granularity = _schedule_granularity(analysis)
-    if granularity == "exp-reduction-dot-region":
-        return {
-            BackendName.TRITON: {"block_m": 16, "block_n": 32, "block_d": "pow2"},
-            BackendName.CUDA: {"threads": 256, "items_per_thread": 1},
-            BackendName.TILELANG: {"threads": 256, "scratch": "local.fragment"},
-            BackendName.TVM: {"threads": 256, "scratch": "local"},
-        }[backend]
-    if granularity == "blocked-linalg":
-        return {
-            BackendName.TRITON: {"block_m": 16, "block_n": 16, "block_k": 32},
-            BackendName.CUDA: {"block_m": 16, "block_n": 16, "block_k": 8},
-            BackendName.TILELANG: {"block_m": 16, "block_n": 16, "block_k": 32},
-            BackendName.TVM: {"block_m": 16, "block_n": 16, "block_k": 8},
-        }[backend]
-    if granularity == "parallel-reduction":
-        return {"threads": 256, "reduction": "tree"}
-    return {"threads": 256, "coalesced": True}
+    blocks = tuple(
+        _map_block(block, lambda op: _annotate_operation(op, **dict(attrs)))
+        for block in program.blocks
+    )
+    return _replace_program(
+        program,
+        blocks=blocks,
+        metadata=dict(program.metadata) | dict(metadata or {}),
+    )
 
 
 def _map_block(block: SSABlockIR, fn) -> SSABlockIR:

@@ -45,7 +45,7 @@ def _scheduled_tir_loop_policy(schedule: Mapping[str, Any]) -> Mapping[str, Any]
     return {
         "passes": ("block-tiling", "loop-reorder"),
         "lowering": "scheduled-tir-loops",
-        "tile": dict(schedule.get("tile", {})),
+        "schedule": {"tile": dict(schedule.get("tile", {}))},
     }
 
 
@@ -64,9 +64,14 @@ def _generic_linear_or_reduction_policy(
 
 
 def register_ssa_passes(registry: "SSAPassRegistry") -> None:
-    from ninetoothed.ssa_passes import OptimizeSchedulePass
+    from ninetoothed.ssa_passes import (
+        BackendIntrinsicsLoweringPass,
+        BackendMemoryScopesLoweringPass,
+        BackendScheduleOptimizationPass,
+        SSAPassContext,
+    )
 
-    class TileLangOptimizeSchedulePass(OptimizeSchedulePass):
+    class TileLangOptimizeSchedulePass(BackendScheduleOptimizationPass):
         name = "ssa.tilelang.optimize_schedule"
         supported_backends = (BackendName.TILELANG,)
 
@@ -82,3 +87,37 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
             return _generic_linear_or_reduction_policy(schedule)
 
     registry.register(TileLangOptimizeSchedulePass, tags=("optimization", "tilelang"))
+
+    class TileLangLowerMemoryScopesPass(BackendMemoryScopesLoweringPass):
+        name = "ssa.tilelang.lower_memory_scopes"
+        supported_backends = (BackendName.TILELANG,)
+
+        def memory_scopes(self, context: SSAPassContext) -> Mapping[str, str]:
+            del context
+            return {
+                "register": "local.fragment",
+                "shared": "shared",
+                "global": "global",
+            }
+
+    class TileLangLowerIntrinsicsPass(BackendIntrinsicsLoweringPass):
+        name = "ssa.tilelang.lower_intrinsics"
+        supported_backends = (BackendName.TILELANG,)
+
+        def intrinsics(self, context: SSAPassContext) -> Mapping[str, str]:
+            del context
+            return {
+                "dot": "T.gemm/T.dot candidate",
+                "exp": "T.exp",
+                "program_id": "T.Kernel + T.get_thread_binding",
+                "load_store": "T.match_buffer",
+            }
+
+    registry.register(
+        TileLangLowerMemoryScopesPass,
+        tags=("target-lowering", "memory", "tilelang"),
+    )
+    registry.register(
+        TileLangLowerIntrinsicsPass,
+        tags=("target-lowering", "intrinsics", "tilelang"),
+    )

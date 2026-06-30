@@ -57,9 +57,14 @@ def _generic_linear_or_reduction_policy(
 
 
 def register_ssa_passes(registry: "SSAPassRegistry") -> None:
-    from ninetoothed.ssa_passes import OptimizeSchedulePass
+    from ninetoothed.ssa_passes import (
+        BackendIntrinsicsLoweringPass,
+        BackendMemoryScopesLoweringPass,
+        BackendScheduleOptimizationPass,
+        SSAPassContext,
+    )
 
-    class CudaOptimizeSchedulePass(OptimizeSchedulePass):
+    class CudaOptimizeSchedulePass(BackendScheduleOptimizationPass):
         name = "ssa.cuda.optimize_schedule"
         supported_backends = (BackendName.CUDA,)
 
@@ -74,8 +79,40 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
                 return {
                     "passes": ("block-tiling",),
                     "lowering": "thread-block-matmul",
-                    "tile": {"block_m": 16, "block_n": 16, "block_k": 8},
+                    "schedule": {"tile": {"block_m": 16, "block_n": 16, "block_k": 8}},
                 }
             return _generic_linear_or_reduction_policy(schedule)
 
     registry.register(CudaOptimizeSchedulePass, tags=("optimization", "cuda"))
+
+    class CudaLowerMemoryScopesPass(BackendMemoryScopesLoweringPass):
+        name = "ssa.cuda.lower_memory_scopes"
+        supported_backends = (BackendName.CUDA,)
+
+        def memory_scopes(self, context: SSAPassContext) -> Mapping[str, str]:
+            del context
+            return {
+                "register": "thread-local",
+                "shared": "__shared__",
+                "global": "__global__ pointer",
+            }
+
+    class CudaLowerIntrinsicsPass(BackendIntrinsicsLoweringPass):
+        name = "ssa.cuda.lower_intrinsics"
+        supported_backends = (BackendName.CUDA,)
+
+        def intrinsics(self, context: SSAPassContext) -> Mapping[str, str]:
+            del context
+            return {
+                "dot": "thread loop or mma.sync candidate",
+                "exp": "__expf/expf",
+                "program_id": "blockIdx/threadIdx",
+                "load_store": "pointer load/store",
+            }
+
+    registry.register(
+        CudaLowerMemoryScopesPass, tags=("target-lowering", "memory", "cuda")
+    )
+    registry.register(
+        CudaLowerIntrinsicsPass, tags=("target-lowering", "intrinsics", "cuda")
+    )

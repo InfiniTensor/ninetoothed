@@ -43,9 +43,14 @@ class TritonBackend(Backend):
 
 
 def register_ssa_passes(registry: "SSAPassRegistry") -> None:
-    from ninetoothed.ssa_passes import OptimizeSchedulePass
+    from ninetoothed.ssa_passes import (
+        BackendIntrinsicsLoweringPass,
+        BackendMemoryScopesLoweringPass,
+        BackendScheduleOptimizationPass,
+        SSAPassContext,
+    )
 
-    class TritonOptimizeSchedulePass(OptimizeSchedulePass):
+    class TritonOptimizeSchedulePass(BackendScheduleOptimizationPass):
         name = "ssa.triton.optimize_schedule"
         supported_backends = (BackendName.TRITON,)
 
@@ -61,12 +66,14 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
                 return {
                     "passes": ("linalg-block-tiling", "strict-fp32-dot-selection"),
                     "lowering": "tl.dot-blocked-matmul",
-                    "tile": {"block_m": 32, "block_n": 32, "block_k": 32},
+                    "schedule": {
+                        "tile": {"block_m": 32, "block_n": 32, "block_k": 32},
+                        "num_warps": 4,
+                        "num_stages": 3,
+                    },
                     "small_tile": {"block_m": 16, "block_n": 16, "block_k": 32},
                     "small_problem_lowering": "vector-kloop-microkernel",
                     "small_problem_threshold": {"m": 128, "n": 128, "k": 128},
-                    "num_warps": 4,
-                    "num_stages": 3,
                     "use_tensor_cores": False,
                     "input_precision": "ieee",
                 }
@@ -75,14 +82,44 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
                     "passes": ("coalesced-load", "single-program-tree-reduction"),
                     "lowering": "tl.sum/tl.max",
                     "block_size": 1024,
-                    "num_warps": 4,
+                    "schedule": {"num_warps": 4},
                 }
             return {
                 "passes": ("coalesced-vector-blocks", "load-store-combine"),
                 "lowering": "tl.load/tl.store-vectorized",
                 "block_size": 1024,
-                "vector_width": 4,
-                "num_warps": 4,
+                "schedule": {"vector_width": 4, "num_warps": 4},
+            }
+
+    class TritonLowerMemoryScopesPass(BackendMemoryScopesLoweringPass):
+        name = "ssa.triton.lower_memory_scopes"
+        supported_backends = (BackendName.TRITON,)
+
+        def memory_scopes(self, context: SSAPassContext) -> Mapping[str, str]:
+            del context
+            return {
+                "register": "tl.scalar/tl.tensor",
+                "shared": "tl.dot-managed-smem",
+                "global": "pointer",
+            }
+
+    class TritonLowerIntrinsicsPass(BackendIntrinsicsLoweringPass):
+        name = "ssa.triton.lower_intrinsics"
+        supported_backends = (BackendName.TRITON,)
+
+        def intrinsics(self, context: SSAPassContext) -> Mapping[str, str]:
+            del context
+            return {
+                "dot": "tl.dot",
+                "exp": "tl.exp/tl.exp2",
+                "program_id": "tl.program_id",
+                "load_store": "tl.load/tl.store",
             }
 
     registry.register(TritonOptimizeSchedulePass, tags=("optimization", "triton"))
+    registry.register(
+        TritonLowerMemoryScopesPass, tags=("target-lowering", "memory", "triton")
+    )
+    registry.register(
+        TritonLowerIntrinsicsPass, tags=("target-lowering", "intrinsics", "triton")
+    )

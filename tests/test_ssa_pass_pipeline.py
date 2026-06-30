@@ -12,6 +12,7 @@ from ninetoothed.ssa_passes import (
     HARDWARE_DEPENDENT,
     HARDWARE_INDEPENDENT,
     SSAPipelineSpec,
+    default_ssa_pipeline_spec,
     lower_ssa_for_backend,
     registered_ssa_passes,
 )
@@ -67,8 +68,8 @@ class TestSSAPassPipeline:
             "ssa.select_schedule",
             "ssa.cuda.optimize_schedule",
             "ssa.decompose_linalg",
-            "ssa.lower_memory_scopes",
-            "ssa.lower_backend_intrinsics",
+            "ssa.cuda.lower_memory_scopes",
+            "ssa.cuda.lower_intrinsics",
         )
         assert lowered.metadata["target_backend"] == "cuda"
         assert lowered.metadata["schedule"]["granularity"] == "elementwise-grid"
@@ -162,10 +163,29 @@ class TestSSAPassPipeline:
         assert "ssa.canonicalize" in independent
         assert "ssa.decompose_linalg" in independent
         assert "ssa.analyze_effects" in independent
-        assert "ssa.select_schedule" in dependent
-        assert "ssa.lower_backend_intrinsics" in dependent
+        assert "ssa.select_schedule" in independent
+        assert not dependent
         assert "ssa.triton.optimize_schedule" in triton_specific
+        assert "ssa.triton.lower_memory_scopes" in triton_specific
+        assert "ssa.triton.lower_intrinsics" in triton_specific
         assert "ssa.cuda.optimize_schedule" not in triton_specific
+        assert "ssa.cuda.lower_intrinsics" not in triton_specific
+
+    def test_each_backend_registers_required_contract_passes(self):
+        for backend in BackendName:
+            registered = {
+                descriptor.name
+                for descriptor in registered_ssa_passes(
+                    category=BACKEND_SPECIFIC, backend=backend
+                )
+            }
+            required = {
+                f"ssa.{backend.value}.optimize_schedule",
+                f"ssa.{backend.value}.lower_memory_scopes",
+                f"ssa.{backend.value}.lower_intrinsics",
+            }
+            assert required <= registered
+            assert required <= set(default_ssa_pipeline_spec(backend).passes)
 
     def test_custom_pipeline_can_disable_backend_optimization_pass(self):
         program = ProgramIR(
@@ -189,8 +209,8 @@ class TestSSAPassPipeline:
                     "ssa.decompose_linalg",
                     "ssa.analyze_effects",
                     "ssa.select_schedule",
-                    "ssa.lower_memory_scopes",
-                    "ssa.lower_backend_intrinsics",
+                    "ssa.triton.lower_memory_scopes",
+                    "ssa.triton.lower_intrinsics",
                 ),
                 mode="custom",
                 reason="test pipeline without backend optimization",
@@ -201,7 +221,12 @@ class TestSSAPassPipeline:
         assert lowered.metadata["pipeline_selection"]["mode"] == "custom"
         assert lowered.metadata["pipeline_selection"]["categories"][
             HARDWARE_INDEPENDENT
-        ] == ("ssa.canonicalize", "ssa.decompose_linalg", "ssa.analyze_effects")
+        ] == (
+            "ssa.canonicalize",
+            "ssa.decompose_linalg",
+            "ssa.analyze_effects",
+            "ssa.select_schedule",
+        )
 
     def test_autotune_pipeline_records_candidates_and_selected_passes(self):
         program = ProgramIR(
