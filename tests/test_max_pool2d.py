@@ -1,5 +1,3 @@
-import functools
-
 import pytest
 import torch
 import torch.nn.functional as F
@@ -50,16 +48,16 @@ def max_pool2d(input, window_shape, ceil_mode=False):
 
     output = torch.empty(n, c, p, q, dtype=input.dtype, device=input.device)
 
-    max_pool2d_kernels = {
-        ceil_mode: ninetoothed.make(
-            functools.partial(arrangement, ceil_mode=ceil_mode),
-            application,
-            (Tensor(4, other=float("-inf")), Tensor(4)),
-        )
-        for ceil_mode in (True, False)
-    }
-
-    max_pool2d_kernels[ceil_mode](input, output, WINDOW_HEIGHT=r, WINDOW_WIDTH=s)
+    # Unified Cache (per-process L1 in ninetoothed.make) correctly
+    # distinguishes ceil_mode via the tensors tuple's repr() hash on
+    # the trailing `ceil_mode` element (matching test_pad's pattern of
+    # including non-Tensor arrangement kwargs in tensors).
+    kernel = ninetoothed.make(
+        arrangement,
+        application,
+        (Tensor(4, other=float("-inf")), Tensor(4), ceil_mode),
+    )
+    kernel(input, output, WINDOW_HEIGHT=r, WINDOW_WIDTH=s)
 
     return output
 
