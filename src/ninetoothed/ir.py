@@ -399,7 +399,6 @@ def program_to_ssa(
     This helper exists for migration tests and historical scripts.  It is not
     used by the application source-to-backend lowering path.
     """
-
     builder = _SSABuilder(program, tensors)
     builder.lower_program()
     return builder.finish()
@@ -407,7 +406,6 @@ def program_to_ssa(
 
 def ir_to_dict(value: Any) -> Any:
     """Return a JSON-serializable representation of IR dataclasses."""
-
     if is_dataclass(value):
         return {
             field.name: ir_to_dict(getattr(value, field.name))

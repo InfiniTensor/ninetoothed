@@ -39,7 +39,6 @@ def lower(
     **backend_options: Any,
 ) -> BackendArtifact:
     """Lower a NineToothed kernel to a backend artifact through SSA only."""
-
     from ninetoothed.utils import calculate_default_configs
 
     params = inspect.signature(application).parameters
@@ -124,7 +123,6 @@ def _public_tensor_irs(params, tensors) -> tuple[TensorTypeIR, ...]:
     This helper is kept for source-audit scripts.  The public ``lower`` API uses
     ``_application_tensor_irs`` so the SSA sees the arranged application views.
     """
-
     return tuple(
         _public_tensor_ir(name, tensor) for name, tensor in zip(params, tensors)
     )

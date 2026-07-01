@@ -437,7 +437,6 @@ def registered_ssa_passes(
     registry: SSAPassRegistry | None = None,
 ) -> tuple[SSAPassDescriptor, ...]:
     """Return registered SSA pass descriptors."""
-
     return (registry or DEFAULT_SSA_PASS_REGISTRY).descriptors(
         category=category, backend=backend
     )
@@ -449,7 +448,6 @@ def default_ssa_pipeline_spec(
     registry: SSAPassRegistry | None = None,
 ) -> SSAPipelineSpec:
     """Return the default declarative pipeline for a backend."""
-
     backend_name = normalize_backend_name(backend)
     pass_names = _default_pass_names(backend_name)
     _validate_passes(pass_names, backend_name, registry or DEFAULT_SSA_PASS_REGISTRY)
@@ -462,7 +460,6 @@ def default_ssa_pipeline_spec(
 
 def default_ssa_pipeline(backend: BackendName | str | None) -> SSAPassPipeline:
     """Return the default target-aware SSA lowering pipeline."""
-
     backend_name = normalize_backend_name(backend)
     return build_ssa_pipeline(
         default_ssa_pipeline_spec(backend_name), backend=backend_name
@@ -476,7 +473,6 @@ def build_ssa_pipeline(
     registry: SSAPassRegistry | None = None,
 ) -> SSAPassPipeline:
     """Build an executable pass pipeline from a declarative spec."""
-
     backend_name = normalize_backend_name(backend)
     registry = registry or DEFAULT_SSA_PASS_REGISTRY
     normalized = _normalize_pipeline_spec(spec, backend_name, registry)
@@ -498,7 +494,6 @@ def autotune_ssa_pipeline_spec(
     best static pipeline for the observed SSA shape. Runtime measurement can be
     layered on top by passing explicit ``passes`` and ``pass_options`` later.
     """
-
     registry = registry or DEFAULT_SSA_PASS_REGISTRY
     default_passes = _default_pass_names(context.backend)
     optimize_pass = _backend_optimize_pass_name(context.backend)
@@ -559,7 +554,6 @@ def lower_ssa_for_backend(
     pass_registry: SSAPassRegistry | None = None,
 ) -> SSAProgramIR | None:
     """Run an SSA pass pipeline for a backend."""
-
     if program is None:
         return None
 
@@ -786,7 +780,6 @@ def annotate_ssa_operations(
     metadata: Mapping[str, Any] | None = None,
 ) -> SSAProgramIR:
     """Return ``program`` with every operation annotated by ``attrs``."""
-
     blocks = tuple(
         _map_block(block, lambda op: _annotate_operation(op, **dict(attrs)))
         for block in program.blocks

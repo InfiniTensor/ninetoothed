@@ -42,7 +42,6 @@ def application_to_ssa(
     semantic pattern matcher for named operators; it only sees Python AST and
     emits generic operations.
     """
-
     try:
         source = inspect.getsource(application)
     except OSError:
@@ -322,7 +321,6 @@ def _bind_call_arguments(
 
 def render_ssa_program(program: SSAProgramIR | None) -> str:
     """Render SSA IR as a readable textual form, not JSON."""
-
     if program is None:
         return "<not-available>"
 

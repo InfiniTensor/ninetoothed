@@ -634,7 +634,6 @@ def _is_top_level_effect(op: SSAOperationIR) -> bool:
     loop, if, or other effect recursively asks for the value.  This keeps the
     source generator operator-agnostic while avoiding dead top-level temporaries.
     """
-
     if op.opcode in {"mem.store", "mem.atomic_add"}:
         return True
     if op.opcode in {"scf.for", "scf.if"} and not op.results:
