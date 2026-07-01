@@ -88,7 +88,9 @@ class Tensor:
             self.name = naming.make_constexpr(self.name)
 
         if not constexpr and value is not None:
-            raise ValueError("The `value` option can only be set for constexpr tensors.")
+            raise ValueError(
+                "The `value` option can only be set for constexpr tensors."
+            )
 
         self.value = value
 

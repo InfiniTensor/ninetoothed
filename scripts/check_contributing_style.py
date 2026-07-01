@@ -7,7 +7,6 @@ import argparse
 import ast
 import io
 import re
-import sys
 import tokenize
 from dataclasses import dataclass
 from pathlib import Path
@@ -157,7 +156,9 @@ def discover_python_files(paths: tuple[Path, ...]) -> list[Path]:
     return sorted(dict.fromkeys(files))
 
 
-def check_file(path: Path, text: str, *, fix: bool) -> tuple[list[Diagnostic], str | None]:
+def check_file(
+    path: Path, text: str, *, fix: bool
+) -> tuple[list[Diagnostic], str | None]:
     diagnostics: list[Diagnostic] = []
     lines = text.splitlines()
 
@@ -301,13 +302,17 @@ def is_skippable_comment_line(text: str) -> bool:
     if re.fullmatch(r"coding[:=]\s*[-\w.]+", lower):
         return True
 
-    if lower.startswith(("noqa", "type:", "pragma:", "fmt:", "isort:", "pylint:", "flake8:")):
+    if lower.startswith(
+        ("noqa", "type:", "pragma:", "fmt:", "isort:", "pylint:", "flake8:")
+    ):
         return True
 
     if text.startswith(("http://", "https://")):
         return True
 
-    return bool(re.fullmatch(r"-{2,}.*-{2,}", text) or re.fullmatch(r"[=#*-]{3,}", text))
+    return bool(
+        re.fullmatch(r"-{2,}.*-{2,}", text) or re.fullmatch(r"[=#*-]{3,}", text)
+    )
 
 
 def normalize_comment_block(block: list[CommentLine]) -> str:
@@ -514,7 +519,9 @@ def check_function_signature_spacing(
 
 
 def find_header_end_line(
-    node: ast.FunctionDef | ast.AsyncFunctionDef, first_statement: ast.stmt, lines: list[str]
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    first_statement: ast.stmt,
+    lines: list[str],
 ) -> int | None:
     for line_number in range(first_statement.lineno - 1, node.lineno - 1, -1):
         line = lines[line_number - 1].strip()
@@ -558,7 +565,9 @@ def check_statement_spacing(
         code = ""
         message = ""
 
-        if isinstance(current, ast.Return) and not isinstance(previous, CONTROL_FLOW_STATEMENTS):
+        if isinstance(current, ast.Return) and not isinstance(
+            previous, CONTROL_FLOW_STATEMENTS
+        ):
             needs_blank = True
             code = "R001"
             message = "Add a blank line before this return statement."
@@ -571,7 +580,9 @@ def check_statement_spacing(
             code = "B002"
             message = "Add a blank line after this control-flow statement."
 
-        if not needs_blank or has_blank_line_between(lines, previous.end_lineno, current.lineno):
+        if not needs_blank or has_blank_line_between(
+            lines, previous.end_lineno, current.lineno
+        ):
             continue
 
         insertions.add(current.lineno)
@@ -588,7 +599,9 @@ def check_statement_spacing(
     return diagnostics
 
 
-def has_blank_line_between(lines: list[str], previous_end_line: int, current_line: int) -> bool:
+def has_blank_line_between(
+    lines: list[str], previous_end_line: int, current_line: int
+) -> bool:
     return any(
         not lines[line_number - 1].strip()
         for line_number in range(previous_end_line + 1, current_line)

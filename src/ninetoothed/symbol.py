@@ -45,7 +45,9 @@ class Symbol:
         self._node = ast.parse(expr, mode="eval").body
 
         if (constexpr or meta) and not isinstance(self._node, ast.Name):
-            raise ValueError("The `constexpr` and `meta` options are properties of name symbols.")
+            raise ValueError(
+                "The `constexpr` and `meta` options are properties of name symbols."
+            )
 
         if meta:
             if constexpr is False:

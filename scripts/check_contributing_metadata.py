@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,7 +59,9 @@ def parse_args() -> argparse.Namespace:
         help="Commit message file whose first line should be checked as a title.",
     )
     parser.add_argument("--skip-title", action="store_true", help="Skip title checks.")
-    parser.add_argument("--skip-branch", action="store_true", help="Skip branch checks.")
+    parser.add_argument(
+        "--skip-branch", action="store_true", help="Skip branch checks."
+    )
     parser.add_argument(
         "--skip-pytest-output",
         action="store_true",
@@ -134,7 +135,9 @@ def check_title_text(title: str | None, *, label: str) -> list[str]:
         return [f"METADATA001: The {label} cannot be empty."]
 
     if not normalized[0].isupper():
-        diagnostics.append(f"METADATA002: The {label} must start with an uppercase letter.")
+        diagnostics.append(
+            f"METADATA002: The {label} must start with an uppercase letter."
+        )
 
     if normalized[-1] in TRAILING_PUNCTUATION:
         diagnostics.append(f"METADATA003: The {label} must not end with punctuation.")
@@ -160,7 +163,9 @@ def check_branch_name(branch: str | None) -> list[str]:
         )
 
     if len(normalized) > 50:
-        diagnostics.append("METADATA007: The branch name must be 50 characters or shorter.")
+        diagnostics.append(
+            "METADATA007: The branch name must be 50 characters or shorter."
+        )
 
     return diagnostics
 
@@ -170,7 +175,9 @@ def check_pytest_output_block(body: str | None) -> list[str]:
     match = PYTEST_OUTPUT_PATTERN.search(normalized)
 
     if match is None:
-        return ["METADATA008: The PR description must include a `pytest` output code block."]
+        return [
+            "METADATA008: The PR description must include a `pytest` output code block."
+        ]
 
     if not match.group(1).strip():
         return ["METADATA009: The `pytest` output code block cannot be empty."]
