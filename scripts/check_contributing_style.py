@@ -575,7 +575,9 @@ def check_statement_spacing(
             needs_blank = True
             code = "B001"
             message = "Add a blank line before this control-flow statement."
-        elif isinstance(previous, CONTROL_FLOW_STATEMENTS):
+        elif isinstance(previous, CONTROL_FLOW_STATEMENTS) and not isinstance(
+            current, ast.Return
+        ):
             needs_blank = True
             code = "B002"
             message = "Add a blank line after this control-flow statement."
