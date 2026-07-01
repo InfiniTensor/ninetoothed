@@ -25,7 +25,6 @@ def _eval(tensor, subs=None):
         Previously, the evaluation would flatten the dimensions of the
         outermost level.
     """
-
     if tensor.source.ndim == 0:
         return np.array(0, dtype=np.intp)
 
@@ -65,7 +64,6 @@ def _subs(tensor, subs):
     :param subs: The substitutions for symbolic variables.
     :return: A new tensor with the substitutions applied.
     """
-
     replacements = _generate_replacements(subs)
 
     source = Tensor(

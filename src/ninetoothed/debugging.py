@@ -22,7 +22,6 @@ def simulate_arrangement(arrangement, tensors, device=None):
         specified in ``arrangement``, and each element in each tensor
         stores the index of that element in the source tensor.
     """
-
     if device is None:
         device = "cuda"
 

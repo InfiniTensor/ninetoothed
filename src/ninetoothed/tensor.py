@@ -9,7 +9,7 @@ from ninetoothed.symbol import Symbol
 
 
 class Tensor:
-    """A class uesed to represent a symbolic tensor.
+    """A class used to represent a symbolic tensor.
 
     :param ndim: The number of dimensions of the tensor.
     :param shape: The shape of the tensor.
@@ -79,7 +79,7 @@ class Tensor:
 
         if constexpr and self.ndim != 0:
             raise ValueError(
-                "`constexpr` can only be set for zero-dimensional tensors."
+                "The `constexpr` option can only be set for zero-dimensional tensors."
             )
 
         self.constexpr = constexpr
@@ -88,7 +88,9 @@ class Tensor:
             self.name = naming.make_constexpr(self.name)
 
         if not constexpr and value is not None:
-            raise ValueError("`value` can only be set for constexpr tensors.")
+            raise ValueError(
+                "The `value` option can only be set for constexpr tensors."
+            )
 
         self.value = value
 
@@ -125,12 +127,11 @@ class Tensor:
         type(self).num_instances += 1
 
     def __getitem__(self, indices):
-        """Returns an indexed tensor using the specified ``indices``.
+        """Return an indexed tensor using the specified ``indices``.
 
         :param indices: The indices of the elements to extract.
         :return: The indexed tensor.
         """
-
         if not isinstance(indices, tuple):
             indices = (indices,)
 
@@ -198,7 +199,7 @@ class Tensor:
 
     @_meta_operation
     def tile(self, tile_shape, strides=None, dilation=None, floor_mode=False):
-        """Tiles the tensor into a hierarchical tensor.
+        """Tile the tensor into a hierarchical tensor.
 
         :param tile_shape: The shape of a tile.
         :param strides: The interval at which each tile is generated.
@@ -207,7 +208,6 @@ class Tensor:
             compute the outer shape.
         :return: A hierarchical tensor.
         """
-
         if strides is None:
             strides = [-1 for _ in tile_shape]
 
@@ -287,12 +287,11 @@ class Tensor:
 
     @_meta_operation
     def expand(self, shape):
-        """Expands the specified singleton dimensions of the tensor.
+        """Expand the specified singleton dimensions of the tensor.
 
         :param shape: The expanded shape.
         :return: The expanded tensor.
         """
-
         self._inputs.append([])
 
         def _offsets(indices):
@@ -322,12 +321,11 @@ class Tensor:
 
     @_meta_operation
     def unsqueeze(self, dim):
-        """Inserts a singleton dimension in the tensor.
+        """Insert a singleton dimension in the tensor.
 
         :param dim: The dimension to be unsqueezed.
         :return: The unsqueezed tensor.
         """
-
         # TODO: Add error handling.
         new_shape = list(self.shape)
         new_shape.insert(dim, 1)
@@ -355,12 +353,11 @@ class Tensor:
 
     @_meta_operation
     def squeeze(self, dim):
-        """Removes the specified singleton dimensions of the tensor.
+        """Remove the specified singleton dimensions of the tensor.
 
         :param dim: The dimension(s) to be squeezed.
         :return: The squeezed tensor.
         """
-
         if not isinstance(dim, tuple):
             dim = (dim,)
 
@@ -395,12 +392,11 @@ class Tensor:
 
     @_meta_operation
     def permute(self, dims):
-        """Permutes the dimensions of the tensor.
+        """Permute the dimensions of the tensor.
 
         :param dims: The permuted ordering of the dimensions.
         :return: The permuted tensor.
         """
-
         # TODO: Add error handling.
         new_shape = [None for _ in range(self.ndim)]
 
@@ -427,7 +423,7 @@ class Tensor:
 
     @_meta_operation
     def flatten(self, start_dim=None, end_dim=None):
-        """Flattens the specified dimensions of the tensor.
+        """Flatten the specified dimensions of the tensor.
 
         See :func:`ravel` for the differences between :func:`flatten`
         and :func:`ravel`.
@@ -436,10 +432,10 @@ class Tensor:
         :param end_dim: The dimension after the last to flatten.
         :return: The flattened tensor.
         """
-
         # TODO: Add error handling.
         if start_dim is None:
             start_dim = 0
+
         if end_dim is None:
             end_dim = self.ndim
 
@@ -485,7 +481,7 @@ class Tensor:
 
     @_meta_operation
     def ravel(self):
-        """Flattens the hierarchy of the tensor.
+        """Flatten the hierarchy of the tensor.
 
         :func:`ravel` differs from :func:`flatten`, which only flattens
         dimensions at a single level. For example, consider a tensor
@@ -496,7 +492,6 @@ class Tensor:
 
         :return: The raveled tensor.
         """
-
         # TODO: Add error handling.
         new_shape = []
         outputs = []
@@ -542,12 +537,11 @@ class Tensor:
 
     @_meta_operation
     def pad(self, pad):
-        """Pads the tensor with the specified padding.
+        """Pad the tensor with the specified padding.
 
         :param pad: The amount of padding applied to the tensor.
         :return: The padded tensor.
         """
-
         new_shape = tuple(size + sum(pad_i) for size, pad_i in zip(self.shape, pad))
 
         self._inputs.append([])
@@ -676,7 +670,7 @@ class Tensor:
 
     @_meta_operation
     def _slice_dim(self, dim, start, stop=None, step=None):
-        """Slices the tensor along the specified dimension.
+        """Slice the tensor along the specified dimension.
 
         :param dim: The dimension to slice.
         :param start: The starting index of the slice.
@@ -684,7 +678,6 @@ class Tensor:
         :param step: The step size of the slice.
         :return: The sliced tensor.
         """
-
         if dim < 0:
             dim += self.ndim
 
@@ -695,11 +688,13 @@ class Tensor:
 
         if start is None:
             start = 0 if step > 0 else size - 1
+
         if stop is None:
             stop = size if step > 0 else -1
 
         if isinstance(start, int) and start < 0:
             start += size
+
         if isinstance(stop, int) and (stop < 0 if step > 0 else stop < -1):
             stop += size
 

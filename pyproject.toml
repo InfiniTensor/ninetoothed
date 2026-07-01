@@ -30,3 +30,10 @@ src = [".", "src", "tests"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
+extend-select = ["D2", "D3", "D4"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.ruff.format]
+docstring-code-format = true

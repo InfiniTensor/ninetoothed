@@ -7,7 +7,7 @@ import ninetoothed.naming as naming
 
 
 class Symbol:
-    """A class uesed to represent a symbol.
+    """A class used to represent a symbol.
 
     :param expr: The expression used to construct the symbol.
     :param constexpr: Whether the symbol is a constexpr.
@@ -28,10 +28,12 @@ class Symbol:
     ):
         if isinstance(expr, type(self)):
             self._node = expr._node
+
             return
 
         if isinstance(expr, ast.AST):
             self._node = expr
+
             return
 
         if isinstance(expr, types.CodeType):
@@ -43,7 +45,9 @@ class Symbol:
         self._node = ast.parse(expr, mode="eval").body
 
         if (constexpr or meta) and not isinstance(self._node, ast.Name):
-            raise ValueError("`constexpr` and `meta` are properties of name symbols.")
+            raise ValueError(
+                "The `constexpr` and `meta` options are properties of name symbols."
+            )
 
         if meta:
             if constexpr is False:
@@ -257,7 +261,6 @@ def block_size(lower_bound=None, upper_bound=None):
     :param upper_bound: The upper bound for the block size's range.
     :return: A block size symbol that serves as a meta-parameter.
     """
-
     name = naming.auto_generate(f"BLOCK_SIZE_{block_size._num_block_sizes}")
 
     block_size._num_block_sizes += 1

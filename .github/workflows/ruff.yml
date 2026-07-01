@@ -5,6 +5,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Check contributing style
+        run: python3 scripts/check_contributing_style.py
       - uses: chartboost/ruff-action@v1
       - uses: chartboost/ruff-action@v1
         with:

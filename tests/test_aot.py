@@ -139,8 +139,10 @@ def test_attention(
     query_, key_, value_, output_ = tuple(
         Tensor(4, dtype=ninetoothed_dtype) for _ in range(4)
     )
+
     for tensor in (query_, key_, value_, output_):
         tensor.shape = tensor.shape[:-1] + (emb_dim,)
+
     is_causal_ = Tensor(0, constexpr=True, value=1)
     tensors = (query_, key_, value_, is_causal_, output_)
     caller = device

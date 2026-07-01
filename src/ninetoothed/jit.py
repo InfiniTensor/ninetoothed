@@ -15,7 +15,7 @@ def jit(
     max_num_configs=None,
     _prettify=False,
 ):
-    """A decorator for generating compute kernels.
+    """Generate compute kernels as a decorator.
 
     :param func: The function to be compiled.
     :param caller: Who will call the compute kernel.
@@ -32,7 +32,6 @@ def jit(
         The ``_prettify`` parameter is experimental, which might break
         the generated code.
     """
-
     default_num_warps, default_num_stages = calculate_default_configs()
 
     if num_warps is None:

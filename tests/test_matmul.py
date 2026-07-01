@@ -40,8 +40,10 @@ def arrangement(
 
 def application(lhs, rhs, output):
     accumulator = ntl.zeros(output.shape, dtype=ntl.float32)
+
     for k in range(lhs.shape[0]):
         accumulator += ntl.dot(lhs[k], rhs[k])
+
     output = accumulator.to(ntl.float16)
 
 

@@ -55,7 +55,7 @@ We follow [GitHub flow](https://docs.github.com/en/get-started/using-github/gith
 
 ### Branch Naming
 
-Use kebab-case (lowercase letters, numbers, and hyphens) for branch names, with a maximum of 50 characters. This is enforced by the `pre-push` hook.
+Use kebab-case (lowercase letters, numbers, and hyphens) for branch names, with a maximum of 50 characters. This is enforced by the `pre-push` hook and the PR metadata workflow.
 
 - **Valid:** `develop-visualization`, `fix-123-memory-leak`, `add-conv2d-support`
 - **Invalid:** `Develop_Visualization`, `fix_memory_leak`, `myBranch`
@@ -68,7 +68,7 @@ The following rules apply to both commit messages and PR titles:
 - **Do not** end with punctuation (`.`, `!`, `?`, etc.).
 - **Use imperative mood** (e.g., "Add feature" not "Added feature").
 
-These rules are enforced by the `commit-msg` hook.
+Commit messages are enforced by the `commit-msg` hook. PR titles are enforced by the PR metadata workflow.
 
 **Valid examples:**
 
@@ -84,7 +84,7 @@ These rules are enforced by the `commit-msg` hook.
 
 ### Pull Request Requirements
 
-Before merging a PR, you must provide the `pytest` output in the PR description to confirm that all tests pass with your latest changes. The PR template includes a section for this. See [#30](https://github.com/InfiniTensor/ninetoothed/pull/30) for a reference example.
+Before merging a PR, you must provide the `pytest` output in the PR description to confirm that all tests pass with your latest changes. The PR template includes a section for this, and the PR metadata workflow checks that the section is filled in. See [#30](https://github.com/InfiniTensor/ninetoothed/pull/30) for a reference example.
 
 ## Code Style Guide
 
@@ -96,7 +96,19 @@ Run [Ruff](https://docs.astral.sh/ruff/) before every commit:
 ruff format && ruff check
 ```
 
-This is also enforced by the `commit-msg` hook.
+Run the project-specific contributing style checker for Python code:
+
+```bash
+python scripts/check_contributing_style.py
+```
+
+To apply mechanical blank-line fixes before checking:
+
+```bash
+python scripts/check_contributing_style.py --fix
+```
+
+Ruff and the project-specific contributing style checks are also enforced by the `commit-msg` hook.
 
 ### Additional Rules
 
@@ -132,10 +144,26 @@ Run the formatter:
 ruff format
 ```
 
+Run the project-specific contributing style checker:
+
+```bash
+python scripts/check_contributing_style.py
+```
+
+Apply project-specific blank-line fixes:
+
+```bash
+python scripts/check_contributing_style.py --fix
+```
+
 To run a full local CI check before pushing:
 
 ```bash
-ruff format && ruff check && pytest
+python scripts/check_contributing_style.py --fix
+ruff format
+ruff check
+python scripts/check_contributing_style.py
+pytest
 ```
 
 ## Version Release Process
