@@ -15,7 +15,7 @@ def jit(
     max_num_configs=None,
     _prettify=False,
 ):
-    """A decorator for generating compute kernels.
+    """Generate compute kernels as a decorator.
 
     :param func: The function to be compiled.
     :param caller: Who will call the compute kernel.

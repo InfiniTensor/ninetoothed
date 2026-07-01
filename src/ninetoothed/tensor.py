@@ -9,7 +9,7 @@ from ninetoothed.symbol import Symbol
 
 
 class Tensor:
-    """A class uesed to represent a symbolic tensor.
+    """A class used to represent a symbolic tensor.
 
     :param ndim: The number of dimensions of the tensor.
     :param shape: The shape of the tensor.
@@ -127,7 +127,7 @@ class Tensor:
         type(self).num_instances += 1
 
     def __getitem__(self, indices):
-        """Returns an indexed tensor using the specified ``indices``.
+        """Return an indexed tensor using the specified ``indices``.
 
         :param indices: The indices of the elements to extract.
         :return: The indexed tensor.
@@ -199,7 +199,7 @@ class Tensor:
 
     @_meta_operation
     def tile(self, tile_shape, strides=None, dilation=None, floor_mode=False):
-        """Tiles the tensor into a hierarchical tensor.
+        """Tile the tensor into a hierarchical tensor.
 
         :param tile_shape: The shape of a tile.
         :param strides: The interval at which each tile is generated.
@@ -287,7 +287,7 @@ class Tensor:
 
     @_meta_operation
     def expand(self, shape):
-        """Expands the specified singleton dimensions of the tensor.
+        """Expand the specified singleton dimensions of the tensor.
 
         :param shape: The expanded shape.
         :return: The expanded tensor.
@@ -321,7 +321,7 @@ class Tensor:
 
     @_meta_operation
     def unsqueeze(self, dim):
-        """Inserts a singleton dimension in the tensor.
+        """Insert a singleton dimension in the tensor.
 
         :param dim: The dimension to be unsqueezed.
         :return: The unsqueezed tensor.
@@ -353,7 +353,7 @@ class Tensor:
 
     @_meta_operation
     def squeeze(self, dim):
-        """Removes the specified singleton dimensions of the tensor.
+        """Remove the specified singleton dimensions of the tensor.
 
         :param dim: The dimension(s) to be squeezed.
         :return: The squeezed tensor.
@@ -392,7 +392,7 @@ class Tensor:
 
     @_meta_operation
     def permute(self, dims):
-        """Permutes the dimensions of the tensor.
+        """Permute the dimensions of the tensor.
 
         :param dims: The permuted ordering of the dimensions.
         :return: The permuted tensor.
@@ -423,7 +423,7 @@ class Tensor:
 
     @_meta_operation
     def flatten(self, start_dim=None, end_dim=None):
-        """Flattens the specified dimensions of the tensor.
+        """Flatten the specified dimensions of the tensor.
 
         See :func:`ravel` for the differences between :func:`flatten`
         and :func:`ravel`.
@@ -481,7 +481,7 @@ class Tensor:
 
     @_meta_operation
     def ravel(self):
-        """Flattens the hierarchy of the tensor.
+        """Flatten the hierarchy of the tensor.
 
         :func:`ravel` differs from :func:`flatten`, which only flattens
         dimensions at a single level. For example, consider a tensor
@@ -537,7 +537,7 @@ class Tensor:
 
     @_meta_operation
     def pad(self, pad):
-        """Pads the tensor with the specified padding.
+        """Pad the tensor with the specified padding.
 
         :param pad: The amount of padding applied to the tensor.
         :return: The padded tensor.
@@ -670,7 +670,7 @@ class Tensor:
 
     @_meta_operation
     def _slice_dim(self, dim, start, stop=None, step=None):
-        """Slices the tensor along the specified dimension.
+        """Slice the tensor along the specified dimension.
 
         :param dim: The dimension to slice.
         :param start: The starting index of the slice.

@@ -7,7 +7,7 @@ import ninetoothed.naming as naming
 
 
 class Symbol:
-    """A class uesed to represent a symbol.
+    """A class used to represent a symbol.
 
     :param expr: The expression used to construct the symbol.
     :param constexpr: Whether the symbol is a constexpr.
