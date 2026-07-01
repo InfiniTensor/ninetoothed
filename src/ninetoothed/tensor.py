@@ -79,7 +79,7 @@ class Tensor:
 
         if constexpr and self.ndim != 0:
             raise ValueError(
-                "`constexpr` can only be set for zero-dimensional tensors."
+                "The `constexpr` option can only be set for zero-dimensional tensors."
             )
 
         self.constexpr = constexpr
@@ -88,7 +88,7 @@ class Tensor:
             self.name = naming.make_constexpr(self.name)
 
         if not constexpr and value is not None:
-            raise ValueError("`value` can only be set for constexpr tensors.")
+            raise ValueError("The `value` option can only be set for constexpr tensors.")
 
         self.value = value
 
@@ -440,6 +440,7 @@ class Tensor:
         # TODO: Add error handling.
         if start_dim is None:
             start_dim = 0
+
         if end_dim is None:
             end_dim = self.ndim
 
@@ -695,11 +696,13 @@ class Tensor:
 
         if start is None:
             start = 0 if step > 0 else size - 1
+
         if stop is None:
             stop = size if step > 0 else -1
 
         if isinstance(start, int) and start < 0:
             start += size
+
         if isinstance(stop, int) and (stop < 0 if step > 0 else stop < -1):
             stop += size
 

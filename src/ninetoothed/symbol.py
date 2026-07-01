@@ -28,10 +28,12 @@ class Symbol:
     ):
         if isinstance(expr, type(self)):
             self._node = expr._node
+
             return
 
         if isinstance(expr, ast.AST):
             self._node = expr
+
             return
 
         if isinstance(expr, types.CodeType):
@@ -43,7 +45,7 @@ class Symbol:
         self._node = ast.parse(expr, mode="eval").body
 
         if (constexpr or meta) and not isinstance(self._node, ast.Name):
-            raise ValueError("`constexpr` and `meta` are properties of name symbols.")
+            raise ValueError("The `constexpr` and `meta` options are properties of name symbols.")
 
         if meta:
             if constexpr is False:
