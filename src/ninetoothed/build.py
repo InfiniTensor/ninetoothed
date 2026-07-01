@@ -53,7 +53,6 @@ def build(
         module import time and its ``ProcessPoolExecutor`` would
         otherwise deadlock on the Python import lock.
     """
-
     if caller is None:
         caller = "cuda"
 

@@ -21,7 +21,6 @@ def visualize(tensor, color=None, save_path=None):
     :param color: The color to be used for visualization.
     :param save_path: The path where the visualization should be saved.
     """
-
     if color is None:
         color = f"C{visualize.count}"
 
@@ -55,7 +54,6 @@ def visualize_arrangement(arrangement, tensors):
     :param arrangement: The arrangement of the tensors.
     :param tensors: The tensors.
     """
-
     source_tensors, target_tensors = simulate_arrangement(arrangement, tensors)
 
     param_names = inspect.signature(arrangement).parameters.keys()

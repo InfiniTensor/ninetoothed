@@ -32,7 +32,6 @@ def jit(
         The ``_prettify`` parameter is experimental, which might break
         the generated code.
     """
-
     default_num_warps, default_num_stages = calculate_default_configs()
 
     if num_warps is None:

@@ -132,7 +132,6 @@ class Tensor:
         :param indices: The indices of the elements to extract.
         :return: The indexed tensor.
         """
-
         if not isinstance(indices, tuple):
             indices = (indices,)
 
@@ -209,7 +208,6 @@ class Tensor:
             compute the outer shape.
         :return: A hierarchical tensor.
         """
-
         if strides is None:
             strides = [-1 for _ in tile_shape]
 
@@ -294,7 +292,6 @@ class Tensor:
         :param shape: The expanded shape.
         :return: The expanded tensor.
         """
-
         self._inputs.append([])
 
         def _offsets(indices):
@@ -329,7 +326,6 @@ class Tensor:
         :param dim: The dimension to be unsqueezed.
         :return: The unsqueezed tensor.
         """
-
         # TODO: Add error handling.
         new_shape = list(self.shape)
         new_shape.insert(dim, 1)
@@ -362,7 +358,6 @@ class Tensor:
         :param dim: The dimension(s) to be squeezed.
         :return: The squeezed tensor.
         """
-
         if not isinstance(dim, tuple):
             dim = (dim,)
 
@@ -402,7 +397,6 @@ class Tensor:
         :param dims: The permuted ordering of the dimensions.
         :return: The permuted tensor.
         """
-
         # TODO: Add error handling.
         new_shape = [None for _ in range(self.ndim)]
 
@@ -438,7 +432,6 @@ class Tensor:
         :param end_dim: The dimension after the last to flatten.
         :return: The flattened tensor.
         """
-
         # TODO: Add error handling.
         if start_dim is None:
             start_dim = 0
@@ -499,7 +492,6 @@ class Tensor:
 
         :return: The raveled tensor.
         """
-
         # TODO: Add error handling.
         new_shape = []
         outputs = []
@@ -550,7 +542,6 @@ class Tensor:
         :param pad: The amount of padding applied to the tensor.
         :return: The padded tensor.
         """
-
         new_shape = tuple(size + sum(pad_i) for size, pad_i in zip(self.shape, pad))
 
         self._inputs.append([])
@@ -687,7 +678,6 @@ class Tensor:
         :param step: The step size of the slice.
         :return: The sliced tensor.
         """
-
         if dim < 0:
             dim += self.ndim
 

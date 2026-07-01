@@ -29,7 +29,6 @@ def make(
         configurations to use.
     :return: A handle to the compute kernel.
     """
-
     params = inspect.signature(application).parameters
     types = arrangement(*tensors)
     types = types if isinstance(types, tuple) else (types,)

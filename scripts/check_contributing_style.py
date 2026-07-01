@@ -557,8 +557,11 @@ def check_statement_spacing(
 ) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
 
-    for previous, current in zip(statements, statements[1:]):
+    for index, (previous, current) in enumerate(zip(statements, statements[1:])):
         if previous.end_lineno is None:
+            continue
+
+        if index == 0 and is_docstring_statement(previous):
             continue
 
         needs_blank = False
@@ -599,6 +602,14 @@ def check_statement_spacing(
         )
 
     return diagnostics
+
+
+def is_docstring_statement(statement: ast.stmt) -> bool:
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and isinstance(statement.value.value, str)
+    )
 
 
 def has_blank_line_between(

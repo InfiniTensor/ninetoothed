@@ -261,7 +261,6 @@ def block_size(lower_bound=None, upper_bound=None):
     :param upper_bound: The upper bound for the block size's range.
     :return: A block size symbol that serves as a meta-parameter.
     """
-
     name = naming.auto_generate(f"BLOCK_SIZE_{block_size._num_block_sizes}")
 
     block_size._num_block_sizes += 1
