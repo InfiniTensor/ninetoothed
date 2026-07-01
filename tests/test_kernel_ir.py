@@ -93,6 +93,7 @@ class TestKernelIR:
             MatmulOpIR(lhs="a", rhs="b", output="out"),
             TransposeOpIR(input="x", output="out"),
         )
+
         for operation in operations:
             program = ProgramIR(kind="structured", operations=(operation,))
             assert program.operations[0] == operation

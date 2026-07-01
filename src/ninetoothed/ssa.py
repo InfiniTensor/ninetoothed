@@ -64,13 +64,16 @@ def source_to_ssa(
 ) -> SSAProgramIR | None:
     tree = ast.parse(textwrap.dedent(source))
     func = next((node for node in tree.body if isinstance(node, ast.FunctionDef)), None)
+
     if func is None:
         return None
+
     if globalns is not None:
         func = _InlineHelperCalls(globalns).inline(func)
 
     builder = _ApplicationSSABuilder(func, tensor_irs, kind)
     builder.lower()
+
     return builder.finish()
 
 
@@ -86,10 +89,12 @@ class _InlineHelperCalls:
         func = deepcopy(func)
         func.body = self._inline_statements(func.body)
         ast.fix_missing_locations(func)
+
         return func
 
     def _inline_statements(self, statements: Iterable[ast.stmt]) -> list[ast.stmt]:
         result: list[ast.stmt] = []
+
         for stmt in statements:
             result.extend(self._inline_statement(deepcopy(stmt)))
         return result
@@ -98,40 +103,55 @@ class _InlineHelperCalls:
         if isinstance(stmt, ast.Assign):
             value, prefix = self._inline_expr(stmt.value)
             stmt.value = value
+
             return [*prefix, stmt]
+
         if isinstance(stmt, ast.AnnAssign):
             if stmt.value is None:
                 return [stmt]
+
             value, prefix = self._inline_expr(stmt.value)
             stmt.value = value
+
             return [*prefix, stmt]
+
         if isinstance(stmt, ast.AugAssign):
             value, prefix = self._inline_expr(stmt.value)
             stmt.value = value
+
             return [*prefix, stmt]
+
         if isinstance(stmt, ast.Return):
             if stmt.value is None:
                 return [stmt]
+
             value, prefix = self._inline_expr(stmt.value)
             stmt.value = value
+
             return [*prefix, stmt]
+
         if isinstance(stmt, ast.Expr):
             value, prefix = self._inline_expr(stmt.value)
             stmt.value = value
+
             if isinstance(value, ast.Constant) and value.value is None:
                 return prefix
             return [*prefix, stmt]
+
         if isinstance(stmt, ast.If):
             test, prefix = self._inline_expr(stmt.test)
             stmt.test = test
             stmt.body = self._inline_statements(stmt.body)
             stmt.orelse = self._inline_statements(stmt.orelse)
+
             return [*prefix, stmt]
+
         if isinstance(stmt, ast.For):
             iter_expr, prefix = self._inline_expr(stmt.iter)
             stmt.iter = iter_expr
             stmt.body = self._inline_statements(stmt.body)
             stmt.orelse = self._inline_statements(stmt.orelse)
+
             return [*prefix, stmt]
         return [stmt]
 
@@ -142,21 +162,28 @@ class _InlineHelperCalls:
             func, func_prefix = self._inline_expr(expr.func)
             prefix.extend(func_prefix)
             args = []
+
             for arg in expr.args:
                 lowered, arg_prefix = self._inline_expr(arg)
                 prefix.extend(arg_prefix)
                 args.append(lowered)
+
             keywords = []
+
             for keyword in expr.keywords:
                 if keyword.arg is None:
                     return expr, prefix
+
                 value, keyword_prefix = self._inline_expr(keyword.value)
                 prefix.extend(keyword_prefix)
                 keywords.append(ast.keyword(arg=keyword.arg, value=value))
+
             expr = ast.Call(func=func, args=args, keywords=keywords)
             inlined = self._inline_call(expr)
+
             if inlined is not None:
                 value, statements = inlined
+
                 return value, [*prefix, *statements]
             return expr, prefix
 
@@ -167,6 +194,7 @@ class _InlineHelperCalls:
                 setattr(expr, field, lowered)
             elif isinstance(value, list):
                 items = []
+
                 for item in value:
                     if isinstance(item, ast.AST):
                         lowered, item_prefix = self._inline_expr(item)
@@ -174,26 +202,34 @@ class _InlineHelperCalls:
                         items.append(lowered)
                     else:
                         items.append(item)
+
                 setattr(expr, field, items)
 
         return expr, prefix
 
     def _inline_call(self, node: ast.Call) -> tuple[ast.AST, list[ast.stmt]] | None:
         func = self._resolve_user_function(node.func)
+
         if func is None or func in self.stack:
             return None
 
         source = _function_source(func)
+
         if source is None:
             return None
+
         helper = _find_function_def(source, getattr(func, "__name__", ""))
+
         if helper is None:
             return None
+
         binding = _bind_call_arguments(helper, node)
+
         if binding is None:
             return None
 
         self.stack.add(func)
+
         try:
             body = deepcopy(helper.body)
             local_names = set(_assigned_names(body)) - set(binding)
@@ -216,10 +252,12 @@ class _InlineHelperCalls:
             value=value,
         )
         inlined_body.append(assignment)
+
         return ast.Name(id=temp_name, ctx=ast.Load()), inlined_body
 
     def _resolve_user_function(self, node: ast.AST) -> Any | None:
         obj: Any | None
+
         if isinstance(node, ast.Name):
             obj = self.globalns.get(node.id)
         elif isinstance(node, ast.Attribute):
@@ -230,8 +268,10 @@ class _InlineHelperCalls:
 
         if not inspect.isfunction(obj):
             return None
+
         module = inspect.getmodule(obj)
         module_name = "" if module is None else module.__name__
+
         if (
             module_name.startswith(("ninetoothed", "torch", "triton"))
             or module_name == "math"
@@ -242,8 +282,10 @@ class _InlineHelperCalls:
     def _resolve_object(self, node: ast.AST) -> Any | None:
         if isinstance(node, ast.Name):
             return self.globalns.get(node.id)
+
         if isinstance(node, ast.Attribute):
             base = self._resolve_object(node.value)
+
             return None if base is None else getattr(base, node.attr, None)
         return None
 
@@ -272,6 +314,7 @@ class _ReplaceParameters(ast.NodeTransformer):
     def visit_Name(self, node: ast.Name) -> ast.AST:
         if isinstance(node.ctx, ast.Load) and node.id in self.binding:
             replacement = deepcopy(self.binding[node.id])
+
             return ast.copy_location(replacement, node)
         return node
 
@@ -288,6 +331,7 @@ def _function_source(func: Any) -> str | None:
 
 def _find_function_def(source: str, name: str) -> ast.FunctionDef | None:
     tree = ast.parse(textwrap.dedent(source))
+
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return node
@@ -299,22 +343,30 @@ def _bind_call_arguments(
 ) -> dict[str, ast.AST] | None:
     if any(keyword.arg is None for keyword in call.keywords):
         return None
+
     params = [arg.arg for arg in func.args.args]
+
     if len(call.args) > len(params):
         return None
+
     defaults = list(func.args.defaults)
     default_by_param = dict(zip(params[len(params) - len(defaults) :], defaults))
     binding: dict[str, ast.AST] = {}
+
     for name, arg in zip(params, call.args):
         binding[name] = arg
+
     for keyword in call.keywords:
         if keyword.arg not in params or keyword.arg in binding:
             return None
+
         binding[keyword.arg] = keyword.value
+
     for name in params:
         if name not in binding:
             if name not in default_by_param:
                 return None
+
             binding[name] = default_by_param[name]
     return binding
 
@@ -325,12 +377,16 @@ def render_ssa_program(program: SSAProgramIR | None) -> str:
         return "<not-available>"
 
     lines = [f"ssa @{program.kind} {{"]
+
     if program.inputs:
         lines.append("  inputs:")
+
         for value in program.inputs:
             lines.append(f"    {value.name} : {_format_type(value.type)}")
+
     if program.outputs:
         lines.append("  outputs:")
+
         for value in program.outputs:
             lines.append(f"    {value.name} : {_format_type(value.type)}")
 
@@ -338,6 +394,7 @@ def render_ssa_program(program: SSAProgramIR | None) -> str:
         _render_block(block, lines, indent=2)
 
     lines.append("}")
+
     return "\n".join(lines)
 
 
@@ -389,6 +446,7 @@ class _ApplicationSSABuilder:
             "coarse_operator_nodes": False,
             "ssa_operation_count": _count_operations(self.operations),
         }
+
         return SSAProgramIR(
             kind=self.kind,
             inputs=tuple(
@@ -409,29 +467,37 @@ class _ApplicationSSABuilder:
             if isinstance(stmt, ast.Assign):
                 self._lower_assign(stmt, operations, env)
                 continue
+
             if isinstance(stmt, ast.AnnAssign):
                 self._lower_annassign(stmt, operations, env)
                 continue
+
             if isinstance(stmt, ast.AugAssign):
                 self._lower_augassign(stmt, operations, env)
                 continue
+
             if isinstance(stmt, ast.For):
                 self._lower_for(stmt, operations, env)
                 continue
+
             if isinstance(stmt, ast.If):
                 self._lower_if(stmt, operations, env)
                 continue
+
             if isinstance(stmt, ast.Expr):
                 self._lower_expr(stmt.value, operations, env)
                 continue
+
             if isinstance(stmt, ast.Return):
                 if stmt.value is not None:
                     self._lower_expr(stmt.value, operations, env)
+
                 continue
+
             if isinstance(stmt, ast.Pass):
                 continue
 
-            raise SSALoweringError(f"Unsupported statement: {ast.dump(stmt)}")
+            raise SSALoweringError(f"Unsupported statement: {ast.dump(stmt)}.")
 
     def _lower_assign(
         self,
@@ -448,8 +514,10 @@ class _ApplicationSSABuilder:
         if isinstance(target, ast.Name):
             if target.id in self.param_names:
                 output = self._named_value(target.id)
+
                 if output not in self.outputs:
                     self.outputs.append(output)
+
                 operations.append(
                     SSAOperationIR(
                         "mem.store",
@@ -463,8 +531,10 @@ class _ApplicationSSABuilder:
 
         if isinstance(target, ast.Subscript):
             destination = self._lower_tensor_ref(target.value, operations, env)
+
             if destination not in self.outputs:
                 self.outputs.append(destination)
+
             index_values = tuple(
                 value.name
                 for value in self._lower_subscript_values(target.slice, operations, env)
@@ -479,9 +549,10 @@ class _ApplicationSSABuilder:
                     },
                 )
             )
+
             return
 
-        raise SSALoweringError(f"Unsupported assignment target: {ast.dump(target)}")
+        raise SSALoweringError(f"Unsupported assignment target: {ast.dump(target)}.")
 
     def _lower_annassign(
         self,
@@ -491,6 +562,7 @@ class _ApplicationSSABuilder:
     ) -> None:
         if stmt.value is None:
             return
+
         self._lower_assign(
             ast.Assign(targets=[stmt.target], value=stmt.value),
             operations,
@@ -505,8 +577,10 @@ class _ApplicationSSABuilder:
     ) -> None:
         if isinstance(stmt.target, ast.Subscript):
             destination = self._lower_tensor_ref(stmt.target.value, operations, env)
+
             if destination not in self.outputs:
                 self.outputs.append(destination)
+
             index_values = tuple(
                 value.name
                 for value in self._lower_subscript_values(
@@ -540,6 +614,7 @@ class _ApplicationSSABuilder:
                     },
                 )
             )
+
             return
 
         if not isinstance(stmt.target, ast.Name):
@@ -548,8 +623,10 @@ class _ApplicationSSABuilder:
             )
 
         lhs = env.get(stmt.target.id)
+
         if lhs is None:
             raise SSALoweringError(f"Unknown AugAssign target {stmt.target.id!r}.")
+
         rhs = self._lower_expr(stmt.value, operations, env)
         result = self._emit(
             operations,
@@ -578,6 +655,7 @@ class _ApplicationSSABuilder:
         loop_env = dict(env)
         loop_env[stmt.target.id] = induction
         iter_arg_attrs = []
+
         for name in carried:
             current = env[name]
             arg = SSAValueIR(f"%{name}_iter", current.type)
@@ -633,14 +711,17 @@ class _ApplicationSSABuilder:
         assigned = tuple(
             name for name in _assigned_names(stmt.body + stmt.orelse) if name in env
         )
+
         if not assigned:
             body_ops: list[SSAOperationIR] = []
             self._lower_statements(stmt.body, body_ops, dict(env))
             regions = [SSABlockIR(name="then", operations=tuple(body_ops))]
+
             if stmt.orelse:
                 else_ops: list[SSAOperationIR] = []
                 self._lower_statements(stmt.orelse, else_ops, dict(env))
                 regions.append(SSABlockIR(name="else", operations=tuple(else_ops)))
+
             operations.append(
                 SSAOperationIR(
                     "scf.if",
@@ -649,6 +730,7 @@ class _ApplicationSSABuilder:
                     regions=tuple(regions),
                 )
             )
+
             return
 
         then_env = dict(env)
@@ -662,8 +744,10 @@ class _ApplicationSSABuilder:
 
         else_env = dict(env)
         else_ops: list[SSAOperationIR] = []
+
         if stmt.orelse:
             self._lower_statements(stmt.orelse, else_ops, else_env)
+
         else_ops.append(
             SSAOperationIR(
                 "scf.yield", operands=tuple(else_env[name].name for name in assigned)
@@ -697,20 +781,27 @@ class _ApplicationSSABuilder:
             raise SSALoweringError("Only for ... in range(...) loops are supported.")
 
         args = node.args
+
         if len(args) == 1:
             lower = self._constant(operations, 0)
             upper = self._lower_expr(args[0], operations, env)
             step = self._constant(operations, 1)
+
             return lower, upper, step
+
         if len(args) == 2:
             lower = self._lower_expr(args[0], operations, env)
             upper = self._lower_expr(args[1], operations, env)
             step = self._constant(operations, 1)
+
             return lower, upper, step
+
         if len(args) == 3:
             return tuple(self._lower_expr(arg, operations, env) for arg in args)  # type: ignore[return-value]
 
-        raise SSALoweringError("range() with more than three arguments is unsupported.")
+        raise SSALoweringError(
+            "Calls to `range()` with more than three arguments are unsupported."
+        )
 
     def _lower_expr(
         self,
@@ -727,9 +818,12 @@ class _ApplicationSSABuilder:
         if isinstance(node, ast.UnaryOp):
             if isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant):
                 value = node.operand.value
+
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     return self._constant(operations, -value)
+
             operand = self._lower_expr(node.operand, operations, env)
+
             return self._emit(
                 operations,
                 f"arith.{_unaryop_name(node.op)}",
@@ -745,6 +839,7 @@ class _ApplicationSSABuilder:
                 if isinstance(node.op, ast.MatMult)
                 else f"arith.{_binop_name(node.op)}"
             )
+
             return self._emit(
                 operations,
                 opcode,
@@ -754,9 +849,12 @@ class _ApplicationSSABuilder:
 
         if isinstance(node, ast.BoolOp):
             values = [self._lower_expr(value, operations, env) for value in node.values]
+
             if not values:
                 raise SSALoweringError("Empty BoolOp is unsupported.")
+
             result = values[0]
+
             for rhs in values[1:]:
                 result = self._emit(
                     operations,
@@ -769,6 +867,7 @@ class _ApplicationSSABuilder:
         if isinstance(node, ast.Compare):
             lhs = self._lower_expr(node.left, operations, env)
             comparisons: list[SSAValueIR] = []
+
             for operator, comparator in zip(node.ops, node.comparators):
                 rhs = self._lower_expr(comparator, operations, env)
                 comparisons.append(
@@ -780,9 +879,12 @@ class _ApplicationSSABuilder:
                     )
                 )
                 lhs = rhs
+
             if not comparisons:
                 raise SSALoweringError("Empty comparison is unsupported.")
+
             result = comparisons[0]
+
             for rhs in comparisons[1:]:
                 result = self._emit(
                     operations,
@@ -796,6 +898,7 @@ class _ApplicationSSABuilder:
             condition = self._lower_expr(node.test, operations, env)
             body = self._lower_expr(node.body, operations, env)
             orelse = self._lower_expr(node.orelse, operations, env)
+
             return self._emit(
                 operations,
                 "select.where",
@@ -805,13 +908,16 @@ class _ApplicationSSABuilder:
 
         if isinstance(node, ast.Subscript):
             shape_dim = self._lower_shape_dim(node, operations, env)
+
             if shape_dim is not None:
                 return shape_dim
+
             base = self._lower_expr(node.value, operations, env)
             index_values = tuple(
                 value.name
                 for value in self._lower_subscript_values(node.slice, operations, env)
             )
+
             return self._emit(
                 operations,
                 "tensor.extract" if index_values else "tensor.view",
@@ -823,6 +929,7 @@ class _ApplicationSSABuilder:
         if isinstance(node, ast.Attribute):
             if node.attr == "T":
                 value = self._lower_expr(node.value, operations, env)
+
                 return self._emit(
                     operations,
                     "linalg.transpose",
@@ -842,6 +949,7 @@ class _ApplicationSSABuilder:
 
         if isinstance(node, (ast.Tuple, ast.List)):
             items = tuple(self._lower_expr(item, operations, env) for item in node.elts)
+
             return self._emit(
                 operations,
                 "tuple.construct",
@@ -850,7 +958,7 @@ class _ApplicationSSABuilder:
                 result_type=SSATypeIR("tuple"),
             )
 
-        raise SSALoweringError(f"Unsupported expression: {ast.dump(node)}")
+        raise SSALoweringError(f"Unsupported expression: {ast.dump(node)}.")
 
     def _lower_call(
         self,
@@ -860,8 +968,10 @@ class _ApplicationSSABuilder:
     ) -> SSAValueIR:
         if _call_leaf_name(node.func) == "float" and len(node.args) == 1:
             literal = _literal_value(node.args[0])
+
             if literal == "-inf":
                 return self._constant(operations, float("-inf"))
+
             if literal == "inf":
                 return self._constant(operations, float("inf"))
 
@@ -870,6 +980,7 @@ class _ApplicationSSABuilder:
         ):
             method = node.func.attr
             receiver = self._lower_tensor_ref(node.func.value, operations, env)
+
             if method == "to":
                 return self._emit(
                     operations,
@@ -878,8 +989,10 @@ class _ApplicationSSABuilder:
                     attrs={"dtype": _unparse(node.args[0]) if node.args else None},
                     result_type=receiver.type,
                 )
+
             if method == "offsets":
                 dim = _literal_value(node.args[0]) if node.args else None
+
                 return self._emit(
                     operations,
                     "index.offset",
@@ -887,8 +1000,10 @@ class _ApplicationSSABuilder:
                     attrs={"dim": dim},
                     result_type=_offset_type(receiver.type, dim),
                 )
+
             if method == "stride":
                 dim = _literal_value(node.args[0]) if node.args else 0
+
                 return self._emit(
                     operations,
                     "tensor.stride",
@@ -896,6 +1011,7 @@ class _ApplicationSSABuilder:
                     attrs={"dim": dim},
                     result_type=SSATypeIR("index"),
                 )
+
             if method == "data_ptr":
                 return self._emit(
                     operations,
@@ -903,9 +1019,11 @@ class _ApplicationSSABuilder:
                     operands=(receiver.name,),
                     result_type=SSATypeIR("pointer", dtype=receiver.type.dtype),
                 )
+
             if method in {"sum", "max", "min"}:
                 axis = _axis_from_call(node, positional_index=0)
                 opcode = f"reduce.{method}"
+
                 return self._emit(
                     operations,
                     opcode,
@@ -913,10 +1031,12 @@ class _ApplicationSSABuilder:
                     attrs={"axis": axis},
                     result_type=_reduce_type(receiver.type, axis),
                 )
+
             if method in _SUPPORTED_MATH_CALLS:
                 args = tuple(
                     self._lower_expr(arg, operations, env) for arg in node.args
                 )
+
                 return self._emit(
                     operations,
                     f"math.{method}",
@@ -925,12 +1045,14 @@ class _ApplicationSSABuilder:
                 )
 
         name = _call_leaf_name(node.func)
+
         if name in {"zeros", "empty"}:
             shape = (
                 _shape_tuple_from_ast(node.args[0], operations, env, self)
                 if node.args
                 else ()
             )
+
             return self._emit(
                 operations,
                 "tensor.zeros",
@@ -952,6 +1074,7 @@ class _ApplicationSSABuilder:
                 if node.args
                 else ()
             )
+
             return self._emit(
                 operations,
                 "tensor.full",
@@ -973,18 +1096,22 @@ class _ApplicationSSABuilder:
         if name == "fill":
             if len(operands) == 1:
                 return operands[0]
+
             if len(operands) >= 2:
                 destination, value = operands[0], operands[1]
                 self._store_intrinsic_result(operations, destination, value, name)
+
                 return destination
 
         if name == "copy" and len(operands) >= 2:
             source, destination = operands[0], operands[1]
             self._store_intrinsic_result(operations, destination, source, name)
+
             return destination
 
         if name.startswith("reduce_") and operands:
             operator = name[len("reduce_") :]
+
             if operator in {"sum", "max", "min"}:
                 axis = _axis_from_call(node, positional_index=2)
                 reduced = self._emit(
@@ -994,8 +1121,10 @@ class _ApplicationSSABuilder:
                     attrs={"axis": axis},
                     result_type=_reduce_type(operands[0].type, axis),
                 )
+
                 if len(operands) > 1:
                     self._store_intrinsic_result(operations, operands[1], reduced, name)
+
                     return operands[1]
                 return reduced
 
@@ -1007,6 +1136,7 @@ class _ApplicationSSABuilder:
                 result_type=operands[2].type,
             )
             self._store_intrinsic_result(operations, operands[2], result, name)
+
             return operands[2]
 
         if name == "atomic_add":
@@ -1026,6 +1156,7 @@ class _ApplicationSSABuilder:
                 if len(operands) >= 2
                 else SSATypeIR("tensor")
             )
+
             return self._emit(
                 operations,
                 "linalg.dot" if name == "dot" else "linalg.matmul",
@@ -1041,6 +1172,7 @@ class _ApplicationSSABuilder:
                 result_type=operands[1].type,
             )
             self._store_intrinsic_result(operations, operands[1], result, name)
+
             return operands[1]
 
         if name in {"trans", "transpose"}:
@@ -1065,6 +1197,7 @@ class _ApplicationSSABuilder:
 
         if name in {"sum", "max", "min"}:
             axis = _axis_from_call(node, positional_index=1)
+
             return self._emit(
                 operations,
                 f"reduce.{name}",
@@ -1108,6 +1241,7 @@ class _ApplicationSSABuilder:
     ) -> None:
         if destination not in self.outputs:
             self.outputs.append(destination)
+
         operations.append(
             SSAOperationIR(
                 "mem.store",
@@ -1123,12 +1257,16 @@ class _ApplicationSSABuilder:
         env: dict[str, SSAValueIR],
     ) -> SSAValueIR:
         shape_dim = self._lower_shape_dim(node, operations, env)
+
         if shape_dim is not None:
             return shape_dim
+
         if isinstance(node, ast.Name):
             return env.get(node.id) or self._named_value(node.id)
+
         if isinstance(node, ast.Subscript):
             return self._lower_expr(node, operations, env)
+
         if isinstance(node, ast.Attribute):
             if node.attr == "source":
                 return self._lower_tensor_ref(node.value, operations, env)
@@ -1148,15 +1286,21 @@ class _ApplicationSSABuilder:
     ) -> SSAValueIR | None:
         if not isinstance(node, ast.Subscript):
             return None
+
         value = node.value
+
         if not isinstance(value, ast.Attribute) or value.attr != "shape":
             return None
+
         tensor_node = value.value
         source = False
+
         if isinstance(tensor_node, ast.Attribute) and tensor_node.attr == "source":
             tensor_node = tensor_node.value
             source = True
+
         tensor = self._lower_tensor_ref(tensor_node, operations, env)
+
         return self._emit(
             operations,
             "shape.dim",
@@ -1173,15 +1317,19 @@ class _ApplicationSSABuilder:
     ) -> tuple[SSAValueIR, ...]:
         if isinstance(node, ast.Tuple):
             values = []
+
             for elt in node.elts:
                 if isinstance(elt, ast.Slice) or (
                     isinstance(elt, ast.Constant) and elt.value is None
                 ):
                     continue
+
                 values.append(self._lower_expr(elt, operations, env))
             return tuple(values)
+
         if isinstance(node, ast.Slice):
             return ()
+
         if isinstance(node, ast.Constant) and node.value is None:
             return ()
         return (self._lower_expr(node, operations, env),)
@@ -1197,7 +1345,9 @@ class _ApplicationSSABuilder:
             dtype = "none"
         else:
             dtype = "symbol"
+
         attr_value: Any = value
+
         if isinstance(value, float) and not math.isfinite(value):
             attr_value = "-inf" if value < 0 else "inf"
         return self._emit(
@@ -1225,6 +1375,7 @@ class _ApplicationSSABuilder:
                 attrs=dict(attrs or {}),
             )
         )
+
         return result
 
     def _temp(self, type_: SSATypeIR, *, hint: str | None = None) -> SSAValueIR:
@@ -1232,6 +1383,7 @@ class _ApplicationSSABuilder:
         self.temp_index += 1
         value = SSAValueIR(name, type_)
         self.values[name] = value
+
         return value
 
     def _named_value(self, name: str, type_: SSATypeIR | None = None) -> SSAValueIR:
@@ -1246,6 +1398,7 @@ class _ApplicationSSABuilder:
     ) -> SSAValueIR:
         if value.type.dtype == "bool":
             return value
+
         if value.type.kind != "scalar" or value.type.dtype not in {None, "symbol"}:
             return value
 
@@ -1259,6 +1412,7 @@ class _ApplicationSSABuilder:
             ),
         )
         self.values[value.name] = replacement
+
         for name, current in tuple(env.items()):
             if current.name == value.name:
                 env[name] = replacement
@@ -1273,26 +1427,31 @@ def _assigned_names(statements: Iterable[ast.stmt]) -> tuple[str, ...]:
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id not in names:
                     names.append(target.id)
+
             self.generic_visit(node.value)
 
         def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
             if isinstance(node.target, ast.Name) and node.target.id not in names:
                 names.append(node.target.id)
+
             if node.value is not None:
                 self.visit(node.value)
 
         def visit_AugAssign(self, node: ast.AugAssign) -> None:
             if isinstance(node.target, ast.Name) and node.target.id not in names:
                 names.append(node.target.id)
+
             self.generic_visit(node.value)
 
         def visit_For(self, node: ast.For) -> None:
             if isinstance(node.target, ast.Name) and node.target.id not in names:
                 names.append(node.target.id)
+
             for stmt in node.body + node.orelse:
                 self.visit(stmt)
 
     visitor = Visitor()
+
     for stmt in statements:
         visitor.visit(stmt)
     return tuple(names)
@@ -1300,8 +1459,10 @@ def _assigned_names(statements: Iterable[ast.stmt]) -> tuple[str, ...]:
 
 def _count_operations(operations: Iterable[SSAOperationIR]) -> int:
     total = 0
+
     for op in operations:
         total += 1
+
         for region in op.regions:
             total += _count_operations(region.operations)
     return total
@@ -1310,13 +1471,16 @@ def _count_operations(operations: Iterable[SSAOperationIR]) -> int:
 def _render_block(block: SSABlockIR, lines: list[str], *, indent: int) -> None:
     prefix = " " * indent
     args = ""
+
     if block.args:
         args = (
             "("
             + ", ".join(f"{arg.name}: {_format_type(arg.type)}" for arg in block.args)
             + ")"
         )
+
     lines.append(f"{prefix}^{block.name}{args}:")
+
     for operation in block.operations:
         _render_operation(operation, lines, indent=indent + 2)
 
@@ -1332,15 +1496,19 @@ def _render_operation(
     suffix = f" {attrs}" if attrs else ""
     operand_text = f" {operands}" if operands else ""
     lines.append(f"{prefix}{lhs}{operation.opcode}{operand_text}{suffix}".rstrip())
+
     for region in operation.regions:
         _render_block(region, lines, indent=indent + 2)
 
 
 def _format_type(type_: SSATypeIR) -> str:
     shape = ""
+
     if type_.shape:
         shape = "<" + "x".join(type_.shape) + ">"
+
     dtype = f"x{type_.dtype}" if type_.dtype else ""
+
     return f"{type_.kind}{shape}{dtype}"
 
 
@@ -1348,6 +1516,7 @@ def _format_attrs(attrs: Mapping[str, Any]) -> str:
     cleaned = {
         key: value for key, value in attrs.items() if value is not None and value != ()
     }
+
     if not cleaned:
         return ""
     return (
@@ -1360,10 +1529,13 @@ def _format_attrs(attrs: Mapping[str, Any]) -> str:
 def _format_attr(value: Any) -> str:
     if isinstance(value, str):
         return repr(value)
+
     if isinstance(value, tuple):
         return "(" + ", ".join(_format_attr(item) for item in value) + ")"
+
     if isinstance(value, list):
         return "[" + ", ".join(_format_attr(item) for item in value) + "]"
+
     if isinstance(value, dict):
         return (
             "{"
@@ -1383,7 +1555,9 @@ def _shape_tuple_from_ast(
         return tuple(
             _shape_text_from_ast(item, operations, env, builder) for item in node.elts
         )
+
     text = _shape_text_from_ast(node, operations, env, builder)
+
     return () if text in {"", "None"} else (text,)
 
 
@@ -1394,14 +1568,20 @@ def _shape_text_from_ast(
     builder: _ApplicationSSABuilder,
 ) -> str:
     resolved = _shape_dim_text_from_ast(node, env, builder)
+
     if resolved is not None:
         return resolved
+
     literal = _literal_value(node)
+
     if isinstance(literal, (int, float)) and not isinstance(literal, bool):
         return str(literal)
+
     if isinstance(literal, str) and literal != _unparse(node):
         return literal
+
     value = builder._lower_expr(node, operations, env)
+
     if value.name.startswith("%"):
         return value.name
     return str(value.name)
@@ -1414,18 +1594,26 @@ def _shape_dim_text_from_ast(
 ) -> str | None:
     if not isinstance(node, ast.Subscript):
         return None
+
     value = node.value
+
     if not isinstance(value, ast.Attribute) or value.attr != "shape":
         return None
+
     tensor_node = value.value
     source = False
+
     if isinstance(tensor_node, ast.Attribute) and tensor_node.attr == "source":
         tensor_node = tensor_node.value
         source = True
+
     tensor = _value_for_shape_node(tensor_node, env, builder)
+
     if tensor is None:
         return None
+
     dim = _literal_value(node.slice)
+
     return _shape_dim_from_type(tensor.type, dim, source=source)
 
 
@@ -1436,8 +1624,10 @@ def _value_for_shape_node(
 ) -> SSAValueIR | None:
     if isinstance(node, ast.Name):
         return env.get(node.id) or builder.values.get(node.id)
+
     if isinstance(node, ast.Subscript):
         base = _value_for_shape_node(node.value, env, builder)
+
         if base is None:
             return None
         return SSAValueIR("<shape-proxy>", _subscript_type(base.type, node.slice))
@@ -1451,11 +1641,15 @@ def _shape_dim_from_type(
         shape = tuple(str(item) for item in type_.attrs.get("source_shape", ()))
     else:
         shape = tuple(str(item) for item in type_.shape)
+
     if not shape:
         return None
+
     index = int(dim or 0)
+
     if index < 0:
         index += len(shape)
+
     if index < 0 or index >= len(shape):
         return None
     return shape[index]
@@ -1477,11 +1671,14 @@ def _subscript_type(type_: SSATypeIR, slice_node: ast.AST) -> SSATypeIR:
         if isinstance(element, ast.Constant) and element.value is None:
             result_shape.append("1")
             continue
+
         if isinstance(element, ast.Slice):
             if position < len(shape):
                 result_shape.append(shape[position])
                 position += 1
+
             continue
+
         if position < len(shape):
             position += 1
             consumed += 1
@@ -1491,9 +1688,11 @@ def _subscript_type(type_: SSATypeIR, slice_node: ast.AST) -> SSATypeIR:
 
     if not result_shape:
         next_shape = _next_dtype_shape(type_)
+
         if next_shape is not None:
             level = int(attrs.get("dtype_level", 0)) + 1
             attrs["dtype_level"] = level
+
             return SSATypeIR("tensor", dtype=type_.dtype, shape=next_shape, attrs=attrs)
         return SSATypeIR("scalar", dtype=type_.dtype, attrs=attrs)
 
@@ -1510,6 +1709,7 @@ def _next_dtype_shape(type_: SSATypeIR) -> tuple[str, ...] | None:
         for shape in type_.attrs.get("dtype_shapes", ())
     )
     level = int(type_.attrs.get("dtype_level", 0))
+
     if level + 1 >= len(shapes):
         return None
     return shapes[level + 1]
@@ -1518,15 +1718,22 @@ def _next_dtype_shape(type_: SSATypeIR) -> tuple[str, ...] | None:
 def _reduce_type(type_: SSATypeIR, axis: Any) -> SSATypeIR:
     if type_.kind != "tensor":
         return type_
+
     shape = tuple(str(dim) for dim in type_.shape)
+
     if axis is None:
         return SSATypeIR("scalar", dtype=type_.dtype, attrs=dict(type_.attrs))
+
     index = int(axis)
+
     if index < 0:
         index += len(shape)
+
     if index < 0 or index >= len(shape):
         return type_
+
     result_shape = shape[:index] + shape[index + 1 :]
+
     if not result_shape:
         return SSATypeIR("scalar", dtype=type_.dtype, attrs=dict(type_.attrs))
     return SSATypeIR(
@@ -1537,6 +1744,7 @@ def _reduce_type(type_: SSATypeIR, axis: Any) -> SSATypeIR:
 def _offset_type(type_: SSATypeIR, dim: Any) -> SSATypeIR:
     if type_.kind != "tensor":
         return SSATypeIR("scalar", dtype="index")
+
     shape = tuple(str(item) for item in type_.shape)
     dtype_target_dims = tuple(
         tuple(None if item is None else str(item) for item in dims)
@@ -1544,18 +1752,22 @@ def _offset_type(type_: SSATypeIR, dim: Any) -> SSATypeIR:
     )
     level = int(type_.attrs.get("dtype_level", 0))
     target_dims = dtype_target_dims[level] if level < len(dtype_target_dims) else ()
+
     if not target_dims:
         return SSATypeIR("tensor", dtype="index", shape=shape)
 
     source_ndim = int(type_.attrs.get("source_ndim", len(target_dims)))
     source_dim = int(dim or 0)
+
     if source_dim < 0:
         source_dim += source_ndim
+
     kept = tuple(
         axis
         for axis, target_dim in zip(shape, target_dims)
         if target_dim is not None and int(target_dim) == source_dim
     )
+
     if not kept:
         return SSATypeIR("scalar", dtype="index")
     return SSATypeIR("tensor", dtype="index", shape=kept)
@@ -1571,10 +1783,13 @@ def _matmul_type(lhs: SSATypeIR, rhs: SSATypeIR) -> SSATypeIR:
         return SSATypeIR(
             "tensor", dtype=dtype, shape=(lhs_shape[-2], rhs_shape[-1]), attrs=attrs
         )
+
     if len(lhs_shape) >= 2 and len(rhs_shape) == 1:
         return SSATypeIR("tensor", dtype=dtype, shape=(lhs_shape[-2],), attrs=attrs)
+
     if len(lhs_shape) == 1 and len(rhs_shape) >= 2:
         return SSATypeIR("tensor", dtype=dtype, shape=(rhs_shape[-1],), attrs=attrs)
+
     if len(lhs_shape) == 1 and len(rhs_shape) == 1:
         return SSATypeIR("scalar", dtype=dtype, attrs=attrs)
     return _broadcast_type(lhs, rhs)
@@ -1587,14 +1802,17 @@ def _common_type(lhs: SSAValueIR, rhs: SSAValueIR) -> SSATypeIR:
 def _broadcast_type(lhs: SSATypeIR, rhs: SSATypeIR) -> SSATypeIR:
     if lhs.kind != "tensor" and rhs.kind != "tensor":
         return lhs
+
     if lhs.kind == "tensor" and rhs.kind != "tensor":
         return lhs
+
     if rhs.kind == "tensor" and lhs.kind != "tensor":
         return rhs
 
     lhs_shape = tuple(str(dim) for dim in lhs.shape)
     rhs_shape = tuple(str(dim) for dim in rhs.shape)
     result: list[str] = []
+
     for lhs_dim, rhs_dim in zip(reversed(lhs_shape), reversed(rhs_shape)):
         if lhs_dim == rhs_dim or rhs_dim == "1":
             result.append(lhs_dim)
@@ -1602,18 +1820,22 @@ def _broadcast_type(lhs: SSATypeIR, rhs: SSATypeIR) -> SSATypeIR:
             result.append(rhs_dim)
         else:
             result.append(lhs_dim)
+
     longer = lhs_shape if len(lhs_shape) > len(rhs_shape) else rhs_shape
     prefix = longer[: abs(len(lhs_shape) - len(rhs_shape))]
     shape = tuple(prefix) + tuple(reversed(result))
     dtype = lhs.dtype or rhs.dtype
     attrs = dict(lhs.attrs if lhs.kind == "tensor" else rhs.attrs)
+
     return SSATypeIR("tensor", dtype=dtype, shape=shape, attrs=attrs)
 
 
 def _bool_type(lhs: SSAValueIR, rhs: SSAValueIR | None = None) -> SSATypeIR:
     if rhs is not None and rhs.type.kind == "tensor":
         shape = _broadcast_type(lhs.type, rhs.type).shape
+
         return SSATypeIR("tensor", dtype="bool", shape=shape)
+
     if lhs.type.kind == "tensor":
         return SSATypeIR("tensor", dtype="bool", shape=lhs.type.shape)
     return SSATypeIR("scalar", dtype="bool")
@@ -1661,6 +1883,7 @@ def _transpose_type(type_: SSATypeIR) -> SSATypeIR:
 def _axis_from_call(node: ast.Call, *, positional_index: int) -> Any:
     if len(node.args) > positional_index:
         return _literal_value(node.args[positional_index])
+
     for keyword in node.keywords:
         if keyword.arg in {"axis", "dim"}:
             return _literal_value(keyword.value)
@@ -1677,12 +1900,16 @@ def _keyword_text(node: ast.Call, name: str) -> str | None:
 def _literal_value(node: ast.AST) -> Any:
     if isinstance(node, ast.Constant):
         return node.value
+
     if isinstance(node, ast.UnaryOp) and isinstance(node.operand, ast.Constant):
         value = node.operand.value
+
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
+
         if isinstance(node.op, ast.USub):
             return -value
+
         if isinstance(node.op, ast.UAdd):
             return value
     return _unparse(node)
@@ -1691,6 +1918,7 @@ def _literal_value(node: ast.AST) -> Any:
 def _call_leaf_name(node: ast.AST) -> str:
     if isinstance(node, ast.Name):
         return node.id
+
     if isinstance(node, ast.Attribute):
         return node.attr
     return _unparse(node)
@@ -1708,6 +1936,7 @@ def _is_namespace_ref(node: ast.AST) -> bool:
             "torch",
             "triton",
         }
+
     if isinstance(node, ast.Attribute):
         return _is_namespace_ref(node.value)
     return False
@@ -1733,6 +1962,7 @@ def _binop_name(node: ast.operator) -> str:
         ast.BitXor: "bitwise_xor",
         ast.MatMult: "matmul",
     }
+
     return mapping[type(node)]
 
 
@@ -1745,6 +1975,7 @@ def _augop_symbol(node: ast.operator) -> str:
         ast.FloorDiv: "//",
         ast.Mod: "%",
     }
+
     return mapping.get(type(node), "?")
 
 
@@ -1755,6 +1986,7 @@ def _unaryop_name(node: ast.unaryop) -> str:
         ast.Not: "not",
         ast.Invert: "invert",
     }
+
     return mapping[type(node)]
 
 
@@ -1773,4 +2005,5 @@ def _cmpop_name(node: ast.cmpop) -> str:
         ast.Is: "eq",
         ast.IsNot: "ne",
     }
+
     return mapping[type(node)]

@@ -62,6 +62,7 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
         ) -> Mapping[str, Any]:
             del backend, analysis
             granularity = str(schedule.get("granularity", "elementwise-grid"))
+
             if granularity == "blocked-linalg":
                 return {
                     "passes": ("linalg-block-tiling", "strict-fp32-dot-selection"),
@@ -77,6 +78,7 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
                     "use_tensor_cores": False,
                     "input_precision": "ieee",
                 }
+
             if granularity == "parallel-reduction":
                 return {
                     "passes": ("coalesced-load", "single-program-tree-reduction"),
@@ -97,6 +99,7 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
 
         def memory_scopes(self, context: SSAPassContext) -> Mapping[str, str]:
             del context
+
             return {
                 "register": "tl.scalar/tl.tensor",
                 "shared": "tl.dot-managed-smem",
@@ -109,6 +112,7 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
 
         def intrinsics(self, context: SSAPassContext) -> Mapping[str, str]:
             del context
+
             return {
                 "dot": "tl.dot",
                 "exp": "tl.exp/tl.exp2",

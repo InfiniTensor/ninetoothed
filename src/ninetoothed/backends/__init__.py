@@ -25,6 +25,7 @@ def create_default_registry() -> BackendRegistry:
     registry.register(TileLangBackend())
     registry.register(CudaBackend())
     registry.register(TvmBackend())
+
     return registry
 
 
@@ -38,9 +39,11 @@ def lower(
 ) -> BackendArtifact:
     if options is None:
         options = normalize_backend_options(backend)
+
     kernel = _prepare_kernel_for_backend(kernel, options)
     backend_impl = DEFAULT_BACKENDS.get(options.name)
     artifact = backend_impl.lower(kernel, options)
+
     return _attach_pipeline_metadata(artifact, kernel)
 
 
@@ -48,6 +51,7 @@ def _prepare_kernel_for_backend(kernel: KernelIR, options: BackendOptions) -> Ke
     from ninetoothed.ssa_passes import lower_ssa_for_backend
 
     ssa = kernel.ssa
+
     if ssa is None:
         return kernel
 

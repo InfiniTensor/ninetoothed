@@ -49,8 +49,10 @@ def lower(
     }
 
     default_num_warps, default_num_stages = calculate_default_configs()
+
     if num_warps is None:
         num_warps = default_num_warps
+
     if num_stages is None:
         num_stages = default_num_stages
 
@@ -61,6 +63,7 @@ def lower(
         backend, caller=caller, emit_only=True, **backend_options
     )
     tensor_irs = _application_tensor_irs(params, arranged)
+
     try:
         ssa_program = application_to_ssa(
             application,
@@ -69,7 +72,7 @@ def lower(
         )
     except SSALoweringError as exc:
         raise SSALoweringError(
-            f"Cannot lower `{application.__name__}` through the SSA backend path: {exc}"
+            f"Cannot lower `{application.__name__}` through the SSA backend path: {exc}."
         ) from exc
 
     if ssa_program is None:
@@ -103,7 +106,7 @@ def lower(
 
     if write:
         if output_dir is None:
-            raise ValueError("`output_dir` is required when `write=True`.")
+            raise ValueError("Output directory is required when `write=True`.")
 
         artifact.write_to(output_dir)
 
@@ -138,6 +141,7 @@ def _public_tensor_ir(name: str, tensor) -> TensorTypeIR:
     source = getattr(tensor, "source", tensor)
     dtype = getattr(source, "dtype", getattr(tensor, "dtype", None))
     shape = getattr(source, "shape", getattr(tensor, "shape", ()))
+
     return TensorTypeIR(
         name=str(name),
         ndim=int(getattr(source, "ndim", getattr(tensor, "ndim", len(shape)))),
@@ -156,6 +160,7 @@ def _application_tensor_ir(name: str, tensor) -> TensorTypeIR:
     dtype = getattr(source, "dtype", getattr(tensor, "dtype", None))
     shape = getattr(tensor, "shape", getattr(source, "shape", ()))
     application_shape = _tensor_application_shape(tensor)
+
     return TensorTypeIR(
         name=str(name),
         ndim=int(getattr(tensor, "ndim", getattr(source, "ndim", len(shape)))),
@@ -181,6 +186,7 @@ def _tensor_source_attrs(tensor) -> dict[str, Any]:
     source_shape = getattr(source, "shape", ())
     source_ndim = int(getattr(source, "ndim", len(source_shape)))
     dtype = getattr(source, "dtype", getattr(tensor, "dtype", None))
+
     return {
         "source_name": str(getattr(source, "name", getattr(tensor, "name", "tensor"))),
         "source_ndim": source_ndim,
@@ -202,9 +208,12 @@ def _tensor_source_attrs(tensor) -> dict[str, Any]:
 
 def _tensor_application_shape(tensor) -> tuple[str, ...]:
     dtype = getattr(tensor, "dtype", None)
+
     if _tensor_like(dtype):
         return tuple(_shape_text(size) for size in getattr(dtype, "shape", ()))
+
     shape = getattr(tensor, "shape", ())
+
     return tuple(_shape_text(size) for size in shape)
 
 
@@ -212,6 +221,7 @@ def _tensor_dtype_shapes(tensor) -> tuple[tuple[str, ...], ...]:
     shapes: list[tuple[str, ...]] = []
     current = getattr(tensor, "dtype", None)
     seen: set[int] = set()
+
     while _tensor_like(current) and id(current) not in seen:
         seen.add(id(current))
         shapes.append(
@@ -225,6 +235,7 @@ def _tensor_dtype_target_dims(tensor) -> tuple[tuple[str | None, ...], ...]:
     target_dims: list[tuple[str | None, ...]] = []
     current = getattr(tensor, "dtype", None)
     seen: set[int] = set()
+
     while _tensor_like(current) and id(current) not in seen:
         seen.add(id(current))
         target_dims.append(
@@ -239,8 +250,10 @@ def _tensor_dtype_target_dims(tensor) -> tuple[tuple[str | None, ...], ...]:
 
 def _tensor_access_templates(tensor) -> tuple[dict[str, Any], ...]:
     dtype_shapes = _tensor_dtype_shapes(tensor)
+
     if not dtype_shapes:
         return ()
+
     try:
         from ninetoothed.generation import CodeGenerator
         from ninetoothed.symbol import Symbol
@@ -256,25 +269,32 @@ def _tensor_access_templates(tensor) -> tuple[dict[str, Any], ...]:
 
     templates: list[dict[str, Any]] = []
     last_level = len(dtype_shapes) - 1
+
     for level, shape in enumerate(dtype_shapes):
         if level != last_level:
             continue
+
         indices = list(outer_indices)
+
         for prior_level, prior_shape in enumerate(dtype_shapes[:level]):
             indices.extend(
                 Symbol(f"extract_{prior_level}_{dim}")
                 for dim in range(len(prior_shape))
             )
+
         indices.extend(Symbol(f"value_{dim}") for dim in range(len(shape)))
+
         try:
             offsets, mask = CodeGenerator._generate_offsets_and_mask(
                 view, tuple(indices)
             )
             linear_offset = Symbol(0)
+
             for offset, stride in zip(offsets, source_strides):
                 linear_offset += Symbol(offset) * Symbol(stride)
         except Exception:
             continue
+
         templates.append(
             {
                 "level": level,
@@ -301,6 +321,7 @@ def _shape_text(value) -> str:
 def _view_index_attrs(tensor) -> dict[str, str]:
     if int(getattr(tensor, "ndim", 0)) == 0:
         return {}
+
     try:
         from ninetoothed.generation import CodeGenerator
         from ninetoothed.symbol import Symbol
@@ -311,6 +332,7 @@ def _view_index_attrs(tensor) -> dict[str, str]:
         offsets, mask = CodeGenerator._generate_offsets_and_mask(view, view_indices)
         source_strides = tuple(type(view)._calculate_default_strides(source_shape))
         linear_offset = Symbol(0)
+
         for offset, stride in zip(offsets, source_strides):
             linear_offset += Symbol(offset) * Symbol(stride)
     except Exception:

@@ -9,12 +9,15 @@ def reference_attention(q, k, v, is_causal, o):
     acc = ntl.zeros((q.shape[-2], q.shape[-1]), dtype=ntl.float32)
     l_i = ntl.full((q.shape[-2],), 1, dtype=ntl.float32)
     m_i = ntl.full((q.shape[-2],), float("-inf"), dtype=ntl.float32)
+
     for i in range(k.shape[0]):
         qk = ntl.dot(q_loaded, ntl.trans(k[i]))
         qk = ntl.where(k[i].offsets(-2) < k.source.shape[-2], qk, float("-inf"))
+
         if is_causal:
             mask = q.offsets(-2)[:, None] >= k[i].offsets(-2)[None, :]
             qk = ntl.where(mask, qk, float("-inf"))
+
         m_ij = ntl.maximum(m_i, ntl.max(qk, 1))
         p = ntl.exp2(qk - m_ij[:, None])
         l_ij = ntl.sum(p, 1)
@@ -22,6 +25,7 @@ def reference_attention(q, k, v, is_causal, o):
         acc = acc * alpha[:, None] + ntl.dot(p.to(v[i].dtype), v[i])
         m_i = m_ij
         l_i = l_i * alpha + l_ij
+
     acc /= l_i[:, None]
     o = acc
 
@@ -39,6 +43,7 @@ def _attention_tensors():
 def _opcodes(operations):
     for operation in operations:
         yield operation.opcode
+
         for region in operation.regions:
             yield from _opcodes(region.operations)
 
@@ -46,6 +51,7 @@ def _opcodes(operations):
 def _operations(operations):
     for operation in operations:
         yield operation
+
         for region in operation.regions:
             yield from _operations(region.operations)
 
@@ -93,6 +99,7 @@ class TestApplicationSSALowering:
             if operation.opcode in {"reduce.max", "reduce.sum"}
         ]
         assert reductions
+
         for operation in reductions:
             assert "ntl" not in operation.operands
 

@@ -72,6 +72,7 @@ class BackendArtifact:
         output_path.mkdir(parents=True, exist_ok=True)
 
         paths = []
+
         for name, content in self.sources.items():
             path = output_path / name
             path.write_text(content, encoding="utf-8")

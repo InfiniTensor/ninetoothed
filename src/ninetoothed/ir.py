@@ -336,6 +336,7 @@ class KernelIR:
 
         launch_func = getattr(code_generator, "launch_func", None)
         launch_args: Sequence[str] = ()
+
         if launch_func is not None:
             launch_args = tuple(arg.arg for arg in launch_func.args.args)
 
@@ -401,6 +402,7 @@ def program_to_ssa(
     """
     builder = _SSABuilder(program, tensors)
     builder.lower_program()
+
     return builder.finish()
 
 
@@ -411,10 +413,13 @@ def ir_to_dict(value: Any) -> Any:
             field.name: ir_to_dict(getattr(value, field.name))
             for field in fields(value)
         }
+
     if isinstance(value, tuple):
         return [ir_to_dict(item) for item in value]
+
     if isinstance(value, list):
         return [ir_to_dict(item) for item in value]
+
     if isinstance(value, MappingABC):
         return {str(key): ir_to_dict(item) for key, item in value.items()}
     return value
@@ -474,31 +479,37 @@ class _SSABuilder:
                 result_type=lhs.type,
             )
             self._store(result, op.output, extent=op.extent)
+
             return
 
         if isinstance(op, ElementwiseAssignOpIR):
             result = self._lower_expr(op.expression)
             self._store(result, op.output, extent=op.extent)
+
             return
 
         if isinstance(op, AxisReductionAssignOpIR):
             result = self._lower_expr(op.expression)
             self._store(result, op.output, rows=op.rows, cols=op.cols, axis=op.axis)
+
             return
 
         if isinstance(op, RowwiseAssignOpIR):
             result = self._lower_expr(op.expression)
             self._store(result, op.output, rows=op.rows, cols=op.cols)
+
             return
 
         if isinstance(op, FillOpIR):
             result = self._constant(op.value)
             self._store(result, op.output, extent=op.extent)
+
             return
 
         if isinstance(op, CopyOpIR):
             result = self._value(op.input)
             self._store(result, op.output, extent=op.extent)
+
             return
 
         if isinstance(op, ReductionOpIR):
@@ -514,6 +525,7 @@ class _SSABuilder:
                 result_type=SSATypeIR("scalar", dtype=operand.type.dtype),
             )
             self._store(result, op.output, extent="1")
+
             return
 
         if isinstance(op, MatmulOpIR):
@@ -526,6 +538,7 @@ class _SSABuilder:
                 result_type=self._tensor_type(op.output),
             )
             self._store(result, op.output, m=op.m, n=op.n, k=op.k)
+
             return
 
         if isinstance(op, FlashAttentionOpIR):
@@ -546,6 +559,7 @@ class _SSABuilder:
                 result_type=self._tensor_type(op.output),
             )
             self._store(result, op.output, q_rows=op.q_rows, value_dim=op.value_dim)
+
             return
 
         if isinstance(op, TransposeOpIR):
@@ -557,23 +571,27 @@ class _SSABuilder:
                 result_type=self._tensor_type(op.output),
             )
             self._store(result, op.output, rows=op.rows, cols=op.cols)
+
             return
 
         raise TypeError(f"Unsupported ProgramIR operation {type(op).__name__}.")
 
     def _lower_expr(self, expr: ExprIR) -> SSAValueIR:
         cache_key = repr(ir_to_dict(expr))
+
         if cache_key in self.expr_cache:
             return self.expr_cache[cache_key]
 
         if expr.kind == "var":
             result = self._value(str(expr.value))
             self.expr_cache[cache_key] = result
+
             return result
 
         if expr.kind == "const":
             result = self._constant(expr.value)
             self.expr_cache[cache_key] = result
+
             return result
 
         if expr.kind == "unary":
@@ -584,6 +602,7 @@ class _SSABuilder:
                 result_type=operand.type,
             )
             self.expr_cache[cache_key] = result
+
             return result
 
         if expr.kind == "binary":
@@ -595,6 +614,7 @@ class _SSABuilder:
                 result_type=lhs.type,
             )
             self.expr_cache[cache_key] = result
+
             return result
 
         if expr.kind == "call":
@@ -605,6 +625,7 @@ class _SSABuilder:
                 result_type=operands[0].type if operands else SSATypeIR("scalar"),
             )
             self.expr_cache[cache_key] = result
+
             return result
 
         if expr.kind == "axis_reduce":
@@ -618,6 +639,7 @@ class _SSABuilder:
                 result_type=SSATypeIR("tensor", dtype=operand.type.dtype),
             )
             self.expr_cache[cache_key] = result
+
             return result
 
         if expr.kind == "offset":
@@ -631,6 +653,7 @@ class _SSABuilder:
                 result_type=SSATypeIR("index"),
             )
             self.expr_cache[cache_key] = result
+
             return result
 
         raise TypeError(f"Unsupported ExprIR kind {expr.kind!r}.")
@@ -643,6 +666,7 @@ class _SSABuilder:
             if isinstance(value, float)
             else "int64"
         )
+
         return self._emit(
             "arith.constant",
             attrs={"value": value},
@@ -651,8 +675,10 @@ class _SSABuilder:
 
     def _store(self, value: SSAValueIR, output: str, **attrs: Any) -> None:
         output_value = self._value(output, self._tensor_type(output))
+
         if output_value not in self.outputs:
             self.outputs.append(output_value)
+
         self.operations.append(
             SSAOperationIR(
                 "mem.store",
@@ -678,11 +704,13 @@ class _SSABuilder:
                 attrs=dict(attrs or {}),
             )
         )
+
         return result
 
     def _temp(self, type_: SSATypeIR) -> SSAValueIR:
         name = f"%{self.temp_index}"
         self.temp_index += 1
+
         return self._value(name, type_)
 
     def _value(self, name: str, type_: SSATypeIR | None = None) -> SSAValueIR:

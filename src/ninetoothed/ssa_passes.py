@@ -88,7 +88,9 @@ class SSAPassDescriptor:
     def supports(self, backend: BackendName | str | None) -> bool:
         if not self.supported_backends:
             return True
+
         backend_name = normalize_backend_name(backend)
+
         return backend_name in self.supported_backends
 
 
@@ -113,6 +115,7 @@ class SSAPassRegistry:
         factory = _normalize_pass_factory(pass_factory)
         probe = factory()
         pass_name = name or probe.name
+
         if pass_name in self._descriptors:
             raise ValueError(f"SSA pass `{pass_name}` is already registered.")
 
@@ -122,6 +125,7 @@ class SSAPassRegistry:
             else tuple(getattr(probe, "supported_backends", ()))
         )
         doc = description
+
         if doc is None:
             raw_doc = (probe.__doc__ or "").strip().splitlines()
             doc = raw_doc[0].strip() if raw_doc else ""
@@ -145,7 +149,7 @@ class SSAPassRegistry:
         except KeyError as exc:
             available = ", ".join(self._descriptors)
             raise KeyError(
-                f"Unknown SSA pass `{name}`. Available passes: {available}"
+                f"Unknown SSA pass `{name}`. Available passes: {available}."
             ) from exc
 
     def descriptors(
@@ -155,10 +159,12 @@ class SSAPassRegistry:
         backend: BackendName | str | None = None,
     ) -> tuple[SSAPassDescriptor, ...]:
         result = tuple(self._descriptors.values())
+
         if category is not None:
             result = tuple(
                 descriptor for descriptor in result if descriptor.category == category
             )
+
         if backend is not None:
             result = tuple(
                 descriptor for descriptor in result if descriptor.supports(backend)
@@ -193,6 +199,7 @@ class SSAPassPipeline:
 
     def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
         current = _with_metadata(program, pipeline_selection=self._pipeline_metadata())
+
         for pass_ in self.passes:
             current = pass_.run(current, context)
             current = _with_metadata(
@@ -208,6 +215,7 @@ class SSAPassPipeline:
                 "mode": "manual",
                 "selected_passes": tuple(pass_.name for pass_ in self.passes),
             }
+
         categories = {
             HARDWARE_INDEPENDENT: tuple(
                 descriptor.name
@@ -225,6 +233,7 @@ class SSAPassPipeline:
                 if descriptor.category == BACKEND_SPECIFIC
             ),
         }
+
         return {
             "mode": self.spec.mode,
             "selected_passes": self.spec.passes,
@@ -262,6 +271,7 @@ class AnalyzeSSAEffectsPass(SSAPass):
         stores = sum(1 for opcode in opcodes if opcode == "mem.store")
         reductions = sum(1 for opcode in opcodes if opcode.startswith("reduce."))
         loops = sum(1 for opcode in opcodes if opcode == "scf.for")
+
         return _with_metadata(
             program,
             analysis={
@@ -289,6 +299,7 @@ class DecomposeLinalgPass(SSAPass):
         blocks = tuple(
             _decompose_linalg_block(block, value_types) for block in program.blocks
         )
+
         return _replace_program(
             program,
             blocks=blocks,
@@ -316,6 +327,7 @@ class SelectSchedulePass(SSAPass):
             "parallelism": "program-blocks",
         }
         schedule = _merge_nested(schedule, options)
+
         return _with_metadata(program, schedule=schedule)
 
 
@@ -347,6 +359,7 @@ class BackendScheduleOptimizationPass(SSAPass):
             )
             for block in program.blocks
         )
+
         return _replace_program(
             program,
             blocks=blocks,
@@ -379,6 +392,7 @@ class BackendMemoryScopesLoweringPass(SSAPass):
 
     def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
         scopes = dict(self.memory_scopes(context))
+
         return annotate_ssa_operations(
             program,
             attrs={"memory_scope": scopes},
@@ -398,6 +412,7 @@ class BackendIntrinsicsLoweringPass(SSAPass):
 
     def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
         intrinsic = dict(self.intrinsics(context))
+
         return annotate_ssa_operations(
             program,
             attrs={"backend_intrinsic": intrinsic},
@@ -419,6 +434,7 @@ def create_default_ssa_pass_registry() -> SSAPassRegistry:
     registry.register(AnalyzeSSAEffectsPass, tags=("generic", "analysis", "required"))
     registry.register(SelectSchedulePass, tags=("schedule",))
     _register_backend_specific_ssa_passes(registry)
+
     return registry
 
 
@@ -451,6 +467,7 @@ def default_ssa_pipeline_spec(
     backend_name = normalize_backend_name(backend)
     pass_names = _default_pass_names(backend_name)
     _validate_passes(pass_names, backend_name, registry or DEFAULT_SSA_PASS_REGISTRY)
+
     return SSAPipelineSpec(
         passes=pass_names,
         mode="default",
@@ -461,6 +478,7 @@ def default_ssa_pipeline_spec(
 def default_ssa_pipeline(backend: BackendName | str | None) -> SSAPassPipeline:
     """Return the default target-aware SSA lowering pipeline."""
     backend_name = normalize_backend_name(backend)
+
     return build_ssa_pipeline(
         default_ssa_pipeline_spec(backend_name), backend=backend_name
     )
@@ -478,6 +496,7 @@ def build_ssa_pipeline(
     normalized = _normalize_pipeline_spec(spec, backend_name, registry)
     descriptors = tuple(registry.get(name) for name in normalized.passes)
     passes = tuple(descriptor.create() for descriptor in descriptors)
+
     return SSAPassPipeline(passes, descriptors=descriptors, spec=normalized)
 
 
@@ -515,10 +534,12 @@ def autotune_ssa_pipeline_spec(
     )
 
     pass_options: Mapping[str, Mapping[str, Any]] = {}
+
     if isinstance(autotune, Mapping):
         if "passes" in autotune:
             selected = tuple(str(name) for name in autotune["passes"])
             _validate_passes(selected, context.backend, registry)
+
             return SSAPipelineSpec(
                 passes=selected,
                 mode="autotune",
@@ -526,9 +547,11 @@ def autotune_ssa_pipeline_spec(
                 candidate_pipelines=candidates + (selected,),
                 reason=str(autotune.get("reason", "explicit autotune pass override")),
             )
+
         pass_options = autotune.get("pass_options", {})
 
     _validate_passes(default_passes, context.backend, registry)
+
     return SSAPipelineSpec(
         passes=default_passes,
         mode="autotune",
@@ -580,6 +603,7 @@ def lower_ssa_for_backend(
             kernel_metadata=kernel_metadata,
             pass_options=explicit_pass_options,
         )
+
         return pass_pipeline.run(program, context)
 
     if pass_pipeline is None and _autotune_enabled(autotune):
@@ -614,6 +638,7 @@ def lower_ssa_for_backend(
         pass_options=merged_pass_options,
         pipeline_spec=spec,
     )
+
     return build_ssa_pipeline(spec, backend=backend_name, registry=registry).run(
         program, context
     )
@@ -624,6 +649,7 @@ def _normalize_pass_factory(
 ) -> Callable[[], SSAPass]:
     if isinstance(pass_factory, SSAPass):
         return lambda pass_=pass_factory: pass_
+
     if isinstance(pass_factory, type) and issubclass(pass_factory, SSAPass):
         return pass_factory
     return pass_factory
@@ -636,13 +662,18 @@ def _normalize_pipeline_spec(
 ) -> SSAPipelineSpec:
     if spec is None:
         return default_ssa_pipeline_spec(backend, registry=registry)
+
     if isinstance(spec, SSAPipelineSpec):
         _validate_passes(spec.passes, backend, registry)
+
         return spec
+
     if isinstance(spec, Mapping):
         passes = spec.get("passes")
+
         if passes is None:
             passes = _default_pass_names(backend)
+
         normalized = SSAPipelineSpec(
             passes=tuple(str(name) for name in passes),
             mode=str(spec.get("mode", "custom")),
@@ -653,13 +684,16 @@ def _normalize_pipeline_spec(
             reason=spec.get("reason"),
         )
         _validate_passes(normalized.passes, backend, registry)
+
         return normalized
+
     normalized = SSAPipelineSpec(
         passes=tuple(str(name) for name in spec),
         mode="custom",
         reason="explicit custom pass sequence",
     )
     _validate_passes(normalized.passes, backend, registry)
+
     return normalized
 
 
@@ -670,6 +704,7 @@ def _validate_passes(
 ) -> None:
     for name in pass_names:
         descriptor = registry.get(name)
+
         if not descriptor.supports(backend):
             raise ValueError(
                 f"SSA pass `{name}` does not support backend `{backend.value}`."
@@ -703,6 +738,7 @@ def _backend_intrinsics_pass_name(backend: BackendName) -> str:
 def _autotune_enabled(value: bool | str | Mapping[str, Any]) -> bool:
     if isinstance(value, Mapping):
         return bool(value.get("enabled", True))
+
     if isinstance(value, str):
         return value.lower() not in {"", "0", "false", "none", "off"}
     return bool(value)
@@ -712,6 +748,7 @@ def _merge_pass_options(
     *options: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     merged: dict[str, dict[str, Any]] = {}
+
     for option_map in options:
         for pass_name, pass_option in dict(option_map or {}).items():
             merged[str(pass_name)] = _merge_nested(
@@ -722,6 +759,7 @@ def _merge_pass_options(
 
 def _pass_options(context: SSAPassContext, *names: str) -> Mapping[str, Any]:
     merged: Mapping[str, Any] = {}
+
     for name in ("*", *names):
         merged = _merge_nested(dict(merged), dict(context.pass_options.get(name, {})))
     return merged
@@ -729,6 +767,7 @@ def _pass_options(context: SSAPassContext, *names: str) -> Mapping[str, Any]:
 
 def _merge_nested(left: Mapping[str, Any], right: Mapping[str, Any]) -> dict[str, Any]:
     merged = dict(left)
+
     for key, value in dict(right).items():
         if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
             merged[key] = _merge_nested(merged[key], value)
@@ -743,6 +782,7 @@ def _iter_opcodes(program: SSAProgramIR) -> tuple[str, ...]:
     def visit_block(block: SSABlockIR) -> None:
         for operation in block.operations:
             opcodes.append(operation.opcode)
+
             for region in operation.regions:
                 visit_block(region)
 
@@ -758,6 +798,7 @@ def _has_exp_reduction_dot_pattern(opcodes: tuple[str, ...]) -> bool:
         "reduce.max",
         "reduce.sum",
     }
+
     return required.issubset(set(opcodes)) and any(
         opcode in {"math.exp", "math.exp2"} for opcode in opcodes
     )
@@ -766,8 +807,10 @@ def _has_exp_reduction_dot_pattern(opcodes: tuple[str, ...]) -> bool:
 def _schedule_granularity(analysis: Mapping[str, Any]) -> str:
     if analysis.get("has_exp_reduction_dot_pattern"):
         return "exp-reduction-dot-region"
+
     if analysis.get("has_dot"):
         return "blocked-linalg"
+
     if analysis.get("reduction_count"):
         return "parallel-reduction"
     return "elementwise-grid"
@@ -784,6 +827,7 @@ def annotate_ssa_operations(
         _map_block(block, lambda op: _annotate_operation(op, **dict(attrs)))
         for block in program.blocks
     )
+
     return _replace_program(
         program,
         blocks=blocks,
@@ -810,6 +854,7 @@ def _map_operation(operation: SSAOperationIR, fn) -> SSAOperationIR:
         attrs=operation.attrs,
         regions=mapped_regions,
     )
+
     return fn(operation)
 
 
@@ -819,8 +864,10 @@ def _decompose_linalg_block(
 ) -> SSABlockIR:
     value_types = dict(parent_value_types)
     value_types.update({arg.name: arg.type for arg in block.args})
+
     for operation in block.operations:
         value_types.update({result.name: result.type for result in operation.results})
+
     existing_names = {
         value.name for operation in block.operations for value in operation.results
     } | {arg.name for arg in block.args}
@@ -856,6 +903,7 @@ def _decompose_linalg_block(
         and operation.operands[0] in matmuls
     }
     operations: list[SSAOperationIR] = []
+
     for operation in block.operations:
         if (
             operation.opcode == "linalg.transpose"
@@ -863,12 +911,14 @@ def _decompose_linalg_block(
             and operation.results[0].name in consumed_transposes
         ):
             continue
+
         if (
             operation.opcode in {"linalg.matmul", "linalg.dot"}
             and operation.results
             and operation.results[0].name in consumed_matmuls
         ):
             continue
+
         if (
             operation.opcode == "mem.store"
             and operation.operands
@@ -920,6 +970,7 @@ def _decompose_linalg_block(
                 )
             )
             continue
+
         if (
             operation.opcode == "mem.store"
             and operation.operands
@@ -937,6 +988,7 @@ def _decompose_linalg_block(
             )
             temp_index = _next_temp_index(existing_names)
             continue
+
         regions = tuple(
             _decompose_linalg_block(region, value_types) for region in operation.regions
         )
@@ -1038,6 +1090,7 @@ def _decompose_matmul_store(
             ),
         ),
     )
+
     return (
         (
             SSAOperationIR(
@@ -1086,6 +1139,7 @@ def _program_value_types(program: SSAProgramIR) -> dict[str, SSATypeIR]:
     value_types = {
         value.name: value.type for value in (*program.inputs, *program.outputs)
     }
+
     for block in program.blocks:
         _collect_block_value_types(block, value_types)
     return value_types
@@ -1095,8 +1149,10 @@ def _collect_block_value_types(
     block: SSABlockIR, value_types: dict[str, SSATypeIR]
 ) -> None:
     value_types.update({arg.name: arg.type for arg in block.args})
+
     for operation in block.operations:
         value_types.update({result.name: result.type for result in operation.results})
+
         for region in operation.regions:
             _collect_block_value_types(region, value_types)
 
@@ -1135,12 +1191,14 @@ def _infer_matmul_symbols(
         _shape_dim(rhs_shape, 0),
         "k",
     )
+
     return m, n, k
 
 
 def _shape_dim(shape: tuple[str, ...], index: int) -> str | None:
     if not shape:
         return None
+
     try:
         return shape[index]
     except IndexError:
@@ -1151,7 +1209,9 @@ def _first_symbol(*candidates: object) -> str:
     for candidate in candidates:
         if candidate is None:
             continue
+
         text = str(candidate)
+
         if text.isidentifier():
             return text
     return str(candidates[-1])
@@ -1163,6 +1223,7 @@ def _scalar_type(type_: SSATypeIR) -> SSATypeIR:
 
 def _next_temp_index(existing_names: set[str]) -> int:
     index = 0
+
     while f"%{index}" in existing_names:
         index += 1
     return index
@@ -1175,8 +1236,10 @@ def _fresh_value(
 ) -> tuple[SSAValueIR, int]:
     while f"%{temp_index}" in existing_names:
         temp_index += 1
+
     name = f"%{temp_index}"
     existing_names.add(name)
+
     return SSAValueIR(name, type_), temp_index + 1
 
 

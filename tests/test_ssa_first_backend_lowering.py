@@ -29,8 +29,10 @@ def add_application(x, out):
 
 def loop_application(x, out):
     acc = x
+
     for _ in range(2):
         acc = acc + x
+
     out = acc
 
 
@@ -41,8 +43,10 @@ def unsupported_application(x, out):
 
 def if_application(x, out):
     acc = x
+
     if x > x:
         acc = acc + x
+
     out = acc
 
 
@@ -70,6 +74,7 @@ def dot_reduction_application(x, y, out):
 
 def fused_affine_helper(x, y, scale=2.0):
     product = x * y
+
     return product * scale + 1.0
 
 
@@ -82,6 +87,7 @@ def _ssa_kernel(
 ) -> KernelIR:
     ssa = source_to_ssa(source, tensors, kind=kernel_name)
     assert ssa is not None
+
     return KernelIR(
         kernel_name=kernel_name,
         source=source,
@@ -112,9 +118,11 @@ class TestSSAFirstBackendLowering:
             "source_passthrough",
             "existing_triton",
         )
+
         for filename in ("triton.py", "cuda.py", "tilelang.py", "tvm.py"):
             source = (backend_dir / filename).read_text(encoding="utf-8")
             assert "lower_unified_ssa_artifact" in source
+
             for token in forbidden:
                 assert token not in source
 
@@ -128,6 +136,7 @@ class TestSSAFirstBackendLowering:
             ),
             "tvm": ("ssa-unified-tvm-emitter", ("T.if_then_else", "T.exp", "T.sqrt")),
         }
+
         for backend, (route, fragments) in expected.items():
             artifact = lower_application(
                 ternary_arrangement,
@@ -141,6 +150,7 @@ class TestSSAFirstBackendLowering:
             assert artifact.metadata["source_route"] == route
             assert not artifact.metadata["program_ir_compat"]
             assert "select.where" in str(artifact.metadata["ssa"])
+
             for fragment in fragments:
                 assert fragment in artifact.primary_source
 
@@ -154,6 +164,7 @@ class TestSSAFirstBackendLowering:
             ),
             "tvm": ("ssa-unified-tvm-emitter", "v0 = (x_buf[index] + x_buf[index])"),
         }
+
         for backend, (route, source_fragment) in expected.items():
             artifact = lower_application(
                 arrangement,
@@ -200,6 +211,7 @@ class TestSSAFirstBackendLowering:
             "tilelang": "x_buf[",
             "tvm": "x_buf[",
         }
+
         for backend, load_fragment in expected.items():
             artifact = lower_application(
                 offset_arrangement,
@@ -274,12 +286,15 @@ class TestSSAFirstBackendLowering:
                 .expand((output_tiled.shape[0], -1))
             )
             rhs_tiled.dtype = rhs_tiled.dtype.squeeze(1)
+
             return (lhs_tiled, rhs_tiled, output_tiled)
 
         def matmul_application(lhs, rhs, output):
             accumulator = ntl.zeros(output.shape, dtype=ntl.float32)
+
             for k in range(lhs.shape[0]):
                 accumulator += ntl.dot(lhs[k], rhs[k])
+
             output = accumulator.to(ntl.float16)
 
         artifact = lower_application(
@@ -402,8 +417,10 @@ class TestSSAFirstBackendLowering:
             "tilelang": "ssa-unified-tilelang-emitter",
             "tvm": "ssa-unified-tvm-emitter",
         }
+
         for case_name, (source, tensors, fragments) in cases.items():
             kernel = _ssa_kernel(source, f"ssa_linear_{case_name}", tensors)
+
             for backend, route in routes.items():
                 artifact = lower_kernel_ir(kernel, backend)
                 assert artifact.executable
@@ -444,6 +461,7 @@ class TestSSAFirstBackendLowering:
             ),
             "tvm": ("ssa-unified-tvm-emitter", ("rows: T.int64", "v0 = rows")),
         }
+
         for backend, (route, source_fragments) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -451,6 +469,7 @@ class TestSSAFirstBackendLowering:
             assert artifact.metadata["source_route"] == route
             assert not artifact.metadata["program_ir_compat"]
             assert artifact.metadata["source_route"] != "generic-ssa-emitter"
+
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
@@ -490,6 +509,7 @@ class TestSSAFirstBackendLowering:
                 ("v0 = cols", "v1 = 1", "v2 = (v0 + v1)"),
             ),
         }
+
         for backend, (route, source_fragments) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -497,6 +517,7 @@ class TestSSAFirstBackendLowering:
             assert artifact.metadata["source_route"] == route
             assert not artifact.metadata["program_ir_compat"]
             assert "lower_stride" not in artifact.primary_source
+
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
@@ -521,6 +542,7 @@ class TestSSAFirstBackendLowering:
             "tilelang": ("ssa-unified-tilelang-emitter", ("T.max", "T.min")),
             "tvm": ("ssa-unified-tvm-emitter", ("T.max", "T.min")),
         }
+
         for backend, (route, source_fragments) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -528,6 +550,7 @@ class TestSSAFirstBackendLowering:
             assert artifact.metadata["source_route"] == route
             assert not artifact.metadata["program_ir_compat"]
             assert artifact.metadata["source_route"] != "generic-ssa-emitter"
+
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
@@ -557,6 +580,7 @@ class TestSSAFirstBackendLowering:
             ),
             "tvm": ("ssa-unified-tvm-emitter", ("T.log1p", "T.atan2", "T.pow")),
         }
+
         for backend, (route, source_fragments) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -564,6 +588,7 @@ class TestSSAFirstBackendLowering:
             assert artifact.metadata["source_route"] == route
             assert not artifact.metadata["program_ir_compat"]
             assert artifact.metadata["source_route"] != "generic-ssa-emitter"
+
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
@@ -608,12 +633,14 @@ class TestSSAFirstBackendLowering:
                 ("T.if_then_else", "(v2 & v4)", "out_buf[index] = v7"),
             ),
         }
+
         for backend, (route, source_fragments) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
             assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
             assert artifact.metadata["source_route"] == route
             assert not artifact.metadata["program_ir_compat"]
+
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
@@ -655,12 +682,14 @@ class TestSSAFirstBackendLowering:
                 ("T.sqrt", "for v1_i in T.serial(n):", "T.exp"),
             ),
         }
+
         for backend, (route, source_fragments) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
             assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
             assert artifact.metadata["source_route"] == route
             assert not artifact.metadata["program_ir_compat"]
+
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
@@ -681,6 +710,7 @@ class TestSSAFirstBackendLowering:
             "tilelang": ("ssa-unified-tilelang-emitter", ("T.exp", "T.sqrt")),
             "tvm": ("ssa-unified-tvm-emitter", ("T.exp", "T.sqrt")),
         }
+
         for backend, (route, source_fragments) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -688,6 +718,7 @@ class TestSSAFirstBackendLowering:
             assert artifact.metadata["source_route"] == route
             assert not artifact.metadata["program_ir_compat"]
             assert "math[" not in artifact.primary_source
+
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
@@ -702,6 +733,7 @@ class TestSSAFirstBackendLowering:
             ),
         )
         opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
+
         for opcode in (
             "math.acos",
             "math.asin",
@@ -712,6 +744,7 @@ class TestSSAFirstBackendLowering:
             "math.cosh",
         ):
             assert opcode in opcodes
+
         expected = {
             "triton": (
                 "ssa-unified-triton-emitter",
@@ -730,6 +763,7 @@ class TestSSAFirstBackendLowering:
                 ("T.acos", "T.asin", "T.atan", "T.log10", "T.exp", "T.sinh", "T.cosh"),
             ),
         }
+
         for backend, (route, source_fragments) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -737,6 +771,7 @@ class TestSSAFirstBackendLowering:
             assert artifact.metadata["source_route"] == route
             assert not artifact.metadata["program_ir_compat"]
             assert artifact.metadata["source_route"] != "generic-ssa-emitter"
+
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
@@ -760,6 +795,7 @@ class TestSSAFirstBackendLowering:
             "tilelang": "ssa-unified-tilelang-emitter",
             "tvm": "ssa-unified-tvm-emitter",
         }
+
         for backend, route in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -806,9 +842,11 @@ class TestSSAFirstBackendLowering:
             "tilelang": "ssa-unified-tilelang-emitter",
             "tvm": "ssa-unified-tvm-emitter",
         }
+
         for case_name, (source, tensors, fragments) in cases.items():
             kernel = _ssa_kernel(source, f"ssa_indexed_store_{case_name}", tensors)
             assert "'indices'" in str(kernel.ssa)
+
             for backend, route in routes.items():
                 artifact = lower_kernel_ir(kernel, backend)
                 assert artifact.executable
@@ -840,6 +878,7 @@ class TestSSAFirstBackendLowering:
             "tilelang": ("ssa-unified-tilelang-emitter", "out_buf[v0] = v2"),
             "tvm": ("ssa-unified-tvm-emitter", "out_buf[v0] = v2"),
         }
+
         for backend, (route, source_fragment) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -869,6 +908,7 @@ class TestSSAFirstBackendLowering:
         extract = kernel.ssa.blocks[0].operations[2]
         assert extract.opcode == "tensor.extract"
         assert extract.operands == ("x", "%0", "%1")
+
         for backend, (route, source_fragment) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -887,6 +927,7 @@ class TestSSAFirstBackendLowering:
             "tilelang": ("ssa-unified-tilelang-emitter", "x_buf[v1_i] * y_buf[v1_i]"),
             "tvm": ("ssa-unified-tvm-emitter", "x_buf[v1_i] * y_buf[v1_i]"),
         }
+
         for backend, (route, source_fragment) in expected.items():
             artifact = lower_application(
                 reduction_arrangement,
@@ -918,6 +959,7 @@ class TestSSAFirstBackendLowering:
             "\\(index\\) < ninetoothed_ninetoothed_tensor_[0-9]+_size_0",
             artifact.primary_source,
         )
+
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "tvm_reduction_artifact.py"
             path.write_text(artifact.primary_source, encoding="utf-8")
@@ -929,6 +971,7 @@ class TestSSAFirstBackendLowering:
             assert spec.loader is not None
             module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = module
+
             try:
                 try:
                     spec.loader.exec_module(module)
@@ -969,6 +1012,7 @@ class TestSSAFirstBackendLowering:
                 ),
             ),
         }
+
         for backend, (route, source_fragments) in expected.items():
             artifact = lower_application(
                 binary_arrangement,
@@ -983,6 +1027,7 @@ class TestSSAFirstBackendLowering:
             assert not artifact.metadata["program_ir_compat"]
             assert "call.fused_affine_helper" not in str(artifact.metadata["ssa"])
             assert "fused_affine_helper" not in artifact.primary_source
+
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
@@ -1006,6 +1051,7 @@ class TestSSAFirstBackendLowering:
             "tilelang": ("ssa-unified-tilelang-emitter", "for v1_i in T.serial(cols):"),
             "tvm": ("ssa-unified-tvm-emitter", "for v1_i in T.serial(cols):"),
         }
+
         for backend, (route, source_fragment) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -1030,6 +1076,7 @@ class TestSSAFirstBackendLowering:
             "tilelang": ("ssa-unified-tilelang-emitter", "out_buf[index] = v1"),
             "tvm": ("ssa-unified-tvm-emitter", "out_buf[index] = v1"),
         }
+
         for backend, (route, source_fragment) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -1058,6 +1105,7 @@ class TestSSAFirstBackendLowering:
             "tilelang": ("ssa-unified-tilelang-emitter", "for v10_i in T.serial(k):"),
             "tvm": ("ssa-unified-tvm-emitter", "for v10_i in T.serial(k):"),
         }
+
         for backend, (route, source_fragment) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -1085,6 +1133,7 @@ class TestSSAFirstBackendLowering:
             "tilelang": ("ssa-unified-tilelang-emitter", "x_buf[(v2) * (cols) + (v1)]"),
             "tvm": ("ssa-unified-tvm-emitter", "x_buf[(v2) * (cols) + (v1)]"),
         }
+
         for backend, (route, source_fragment) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -1115,6 +1164,7 @@ class TestSSAFirstBackendLowering:
         transpose = kernel.ssa.blocks[0].operations[0]
         assert transpose.opcode == "linalg.transpose"
         assert transpose.operands == ("x",)
+
         for backend, (route, source_fragment) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -1151,6 +1201,7 @@ class TestSSAFirstBackendLowering:
                 ("for loop_i in T.serial(n):", "out_buf[loop_i] ="),
             ),
         }
+
         for backend, (route, source_fragments) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -1159,6 +1210,7 @@ class TestSSAFirstBackendLowering:
             assert not artifact.metadata["program_ir_compat"]
             assert "scf.for" in str(artifact.metadata["ssa"])
             assert "lower_loop_store" not in artifact.primary_source
+
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
@@ -1189,6 +1241,7 @@ class TestSSAFirstBackendLowering:
                 ("v2 = (v0 < v1)", "if v2:", "out_buf[v3"),
             ),
         }
+
         for backend, (route, source_fragments) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -1197,6 +1250,7 @@ class TestSSAFirstBackendLowering:
             assert not artifact.metadata["program_ir_compat"]
             assert "scf.if" in str(artifact.metadata["ssa"])
             assert "lower_if_store" not in artifact.primary_source
+
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
@@ -1242,12 +1296,14 @@ class TestSSAFirstBackendLowering:
             )
         )
         assert tuple((region.name for region in op.regions)) == ("then", "else")
+
         for backend, (route, source_fragments) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
             assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
             assert artifact.metadata["source_route"] == route
             assert not artifact.metadata["program_ir_compat"]
+
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
@@ -1268,6 +1324,7 @@ class TestSSAFirstBackendLowering:
             "tilelang": ("ssa-unified-tilelang-emitter", "if v2:"),
             "tvm": ("ssa-unified-tvm-emitter", "if v2:"),
         }
+
         for backend, (route, source_fragment) in expected.items():
             artifact = lower_kernel_ir(kernel, backend)
             assert artifact.executable
@@ -1286,6 +1343,7 @@ class TestSSAFirstBackendLowering:
             "tilelang": ("ssa-unified-tilelang-emitter", "T.serial(2)"),
             "tvm": ("ssa-unified-tvm-emitter", "T.serial(2)"),
         }
+
         for backend, (route, source_fragment) in expected.items():
             artifact = lower_application(
                 arrangement,
@@ -1308,6 +1366,7 @@ class TestSSAFirstBackendLowering:
             "tilelang": ("ssa-unified-tilelang-emitter", "T.if_then_else"),
             "tvm": ("ssa-unified-tvm-emitter", "T.if_then_else"),
         }
+
         for backend, (route, source_fragment) in expected.items():
             artifact = lower_application(
                 arrangement,

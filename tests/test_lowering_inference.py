@@ -120,8 +120,10 @@ def _ssa(func, tensors: tuple[TensorTypeIR, ...] | None = None) -> SSAProgramIR:
                 for name in inspect.signature(func).parameters
             )
         )
+
     program = application_to_ssa(func, tensor_irs=tensors, kind=func.__name__)
     assert program is not None
+
     return program
 
 
@@ -130,6 +132,7 @@ def _walk(program: SSAProgramIR) -> tuple[SSAOperationIR, ...]:
 
     def visit(operation: SSAOperationIR) -> None:
         ops.append(operation)
+
         for region in operation.regions:
             for inner in region.operations:
                 visit(inner)
@@ -172,6 +175,7 @@ class TestLoweringInference:
             (max_assignment, "reduce.max"),
             (dot_reduction_assignment, "reduce.sum"),
         )
+
         for func, opcode in cases:
             program = _ssa(func)
             opcodes = _opcodes(program)
@@ -185,6 +189,7 @@ class TestLoweringInference:
             (matmul_statement, "linalg.matmul"),
             (matmul_assignment, "linalg.matmul"),
         )
+
         for func, opcode in cases:
             program = _ssa(func)
             opcodes = _opcodes(program)
@@ -211,8 +216,10 @@ class TestLoweringInference:
         ):
             program = _ssa(func)
             opcodes = _opcodes(program)
+
             for fragment in fragments:
                 assert fragment in opcodes
+
             assert "mem.store" in opcodes
             self._assert_no_coarse_program_ir(program)
 
@@ -259,6 +266,7 @@ class TestLoweringInference:
             TensorTypeIR("bias", 1, dtype="float32", shape=("cols",)),
             TensorTypeIR("out", 2, dtype="float32", shape=("rows", "cols")),
         )
+
         for func, tensors, fragments in (
             (
                 rowwise_softmax,
@@ -273,8 +281,10 @@ class TestLoweringInference:
         ):
             program = _ssa(func, tensors)
             opcodes = _opcodes(program)
+
             for fragment in fragments:
                 assert fragment in opcodes
+
             assert "mem.store" in opcodes
             self._assert_no_coarse_program_ir(program)
 

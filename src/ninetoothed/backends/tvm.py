@@ -83,6 +83,7 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
             schedule: Mapping[str, Any],
         ) -> Mapping[str, Any]:
             del backend, analysis
+
             if schedule.get("granularity") == "blocked-linalg":
                 return _scheduled_tir_loop_policy(schedule)
             return _generic_linear_or_reduction_policy(schedule)
@@ -95,6 +96,7 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
 
         def memory_scopes(self, context: SSAPassContext) -> Mapping[str, str]:
             del context
+
             return {
                 "register": "local",
                 "shared": "shared",
@@ -107,6 +109,7 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
 
         def intrinsics(self, context: SSAPassContext) -> Mapping[str, str]:
             del context
+
             return {
                 "dot": "TIR loop or tensorize candidate",
                 "exp": "T.exp",

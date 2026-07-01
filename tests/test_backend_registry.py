@@ -101,7 +101,7 @@ def _structured_float16_add_ir():
 
 def _with_ssa(kernel: KernelIR) -> KernelIR:
     if kernel.program is None:
-        raise ValueError("test fixture requires ProgramIR before attaching SSA")
+        raise ValueError("Test fixture requires ProgramIR before attaching SSA.")
     return type(kernel)(
         kernel_name=kernel.kernel_name,
         source=kernel.source,
@@ -155,6 +155,7 @@ def _structured_expression_ir():
             ExprIR(kind="call", value="sqrt", args=(ExprIR(kind="var", value="y"),)),
         ),
     )
+
     return _with_ssa(
         KernelIR(
             kernel_name="expr",
@@ -211,6 +212,7 @@ def _structured_multi_output_ir():
             ),
         ),
     )
+
     return _with_ssa(
         KernelIR(
             kernel_name="multi_output",
@@ -243,6 +245,7 @@ def _structured_offsets_ir():
             ExprIR(kind="offset", value={"tensor": "out", "dim": 1}),
         ),
     )
+
     return _with_ssa(
         KernelIR(
             kernel_name="eye_offsets",
@@ -271,6 +274,7 @@ def _structured_special_calls_ir():
             ),
         ),
     )
+
     return _with_ssa(
         KernelIR(
             kernel_name="special_calls",
@@ -347,6 +351,7 @@ def _structured_dot_reduction_ir():
         value="mul",
         args=(ExprIR(kind="var", value="x"), ExprIR(kind="var", value="y")),
     )
+
     return _with_ssa(
         KernelIR(
             kernel_name="dot_reduce",
@@ -387,6 +392,7 @@ def _structured_axis_reduction_ir():
     expression = ExprIR(
         kind="binary", value="add", args=(ExprIR(kind="var", value="bias"), sum_expr)
     )
+
     return _with_ssa(
         KernelIR(
             kernel_name="axis_addmv",
@@ -418,6 +424,7 @@ def _structured_axis_multi_reduction_ir():
         value={"operator": "max", "axis": 1},
         args=(ExprIR(kind="var", value="x"),),
     )
+
     return _with_ssa(
         KernelIR(
             kernel_name="axis_aminmax",
@@ -449,6 +456,7 @@ def _structured_rowwise_softmax_ir():
         kind="axis_reduce", value={"operator": "sum", "axis": 1}, args=(exp_expr,)
     )
     output = ExprIR(kind="binary", value="div", args=(exp_expr, sum_expr))
+
     return _with_ssa(
         KernelIR(
             kernel_name="rowwise_softmax",
@@ -508,6 +516,7 @@ def _structured_rowwise_layernorm_ir():
     output = ExprIR(
         kind="binary", value="add", args=(scaled, ExprIR(kind="var", value="bias"))
     )
+
     return _with_ssa(
         KernelIR(
             kernel_name="rowwise_layernorm",
@@ -572,6 +581,7 @@ class TestBackendRegistry:
         assert normalize_backend_name("tilelang") == BackendName.TILELANG
         assert normalize_backend_name("cuda") == BackendName.CUDA
         assert normalize_backend_name("tvm") == BackendName.TVM
+
         for alias in ("tl", "tile-lang", "tile_lang", "cu", "tvm-script", "tvmscript"):
             with pytest.raises(ValueError, match="Unsupported backend"):
                 normalize_backend_name(alias)
@@ -658,6 +668,7 @@ class TestBackendRegistry:
                 ),
             ),
         ]
+
         for name, kernel, fragments in kernels:
             artifact = lower(kernel, "triton")
             assert artifact.executable
@@ -672,6 +683,7 @@ class TestBackendRegistry:
                 "ssa-unified-triton-emitter",
             }
             assert "ssa_optimization" in artifact.metadata
+
             for fragment in fragments:
                 assert fragment in artifact.primary_source
 
@@ -776,6 +788,7 @@ class TestBackendRegistry:
 
     def test_structured_elementwise_binary_operators_are_executable(self):
         expected = {"sub": "-", "mul": "*", "div": "/"}
+
         for backend in ("cuda", "tilelang", "tvm"):
             for operator, symbol in expected.items():
                 artifact = lower(_structured_binary_ir(operator), backend)
@@ -789,11 +802,14 @@ class TestBackendRegistry:
             "tilelang": ("T.exp", "T.sqrt", "T.if_then_else"),
             "tvm": ("T.exp", "T.sqrt", "T.if_then_else"),
         }
+
         for backend, fragments in expected_fragments.items():
             artifact = lower(_structured_expression_ir(), backend)
             assert artifact.executable
+
             for fragment in fragments:
                 assert fragment in artifact.primary_source
+
             assert "NotImplementedError" not in artifact.primary_source
 
     def test_structured_multi_output_elementwise_is_executable(self):
@@ -802,11 +818,14 @@ class TestBackendRegistry:
             "tilelang": ("out0_buf[index] =", "out1_buf[index] ="),
             "tvm": ("out0_buf[index] =", "out1_buf[index] ="),
         }
+
         for backend, fragments in expected_fragments.items():
             artifact = lower(_structured_multi_output_ir(), backend)
             assert artifact.executable
+
             for fragment in fragments:
                 assert fragment in artifact.primary_source
+
             assert "NotImplementedError" not in artifact.primary_source
 
     def test_structured_offsets_elementwise_is_executable(self):
@@ -825,11 +844,14 @@ class TestBackendRegistry:
                 "index % cols",
             ),
         }
+
         for backend, fragments in expected_fragments.items():
             artifact = lower(_structured_offsets_ir(), backend)
             assert artifact.executable
+
             for fragment in fragments:
                 assert fragment in artifact.primary_source
+
             assert "Unsupported" not in artifact.primary_source
 
     def test_structured_special_pointwise_calls_are_executable(self):
@@ -838,11 +860,14 @@ class TestBackendRegistry:
             "tilelang": ("T.exp2", "T.atan2"),
             "tvm": ("T.exp2", "T.atan2"),
         }
+
         for backend, fragments in expected_fragments.items():
             artifact = lower(_structured_special_calls_ir(), backend)
             assert artifact.executable
+
             for fragment in fragments:
                 assert fragment in artifact.primary_source
+
             assert "Unsupported" not in artifact.primary_source
 
     def test_structured_memory_and_shape_ops_are_executable(self):
@@ -851,12 +876,15 @@ class TestBackendRegistry:
             ("copy", _structured_copy_ir(), ("out", "x")),
             ("transpose", _structured_transpose_ir(), ("row", "col")),
         ]
+
         for backend in ("cuda", "tilelang", "tvm"):
             for name, kernel, fragments in kernels:
                 artifact = lower(kernel, backend)
                 assert artifact.executable
+
                 for fragment in fragments:
                     assert fragment in artifact.primary_source
+
                 assert "NotImplementedError" not in artifact.primary_source
 
     def test_structured_reductions_are_executable(self):
@@ -864,12 +892,15 @@ class TestBackendRegistry:
             "sum": ("0.0", "+"),
             "max": ("3.4028234663852886e+38", "max"),
         }
+
         for backend in ("cuda", "tilelang", "tvm"):
             for operator, fragments in expected_fragments.items():
                 artifact = lower(_structured_reduction_ir(operator), backend)
                 assert artifact.executable
+
                 for fragment in fragments:
                     assert fragment in artifact.primary_source
+
                 assert "NotImplementedError" not in artifact.primary_source
 
     def test_structured_expression_reduction_is_executable(self):
@@ -882,11 +913,14 @@ class TestBackendRegistry:
             "tilelang": ("x_buf[v1_i] * y_buf[v1_i]", "for v1_i in T.serial(n)"),
             "tvm": ("x_buf[v1_i] * y_buf[v1_i]", "for v1_i in T.serial(n)"),
         }
+
         for backend, fragments in expected_fragments.items():
             artifact = lower(_structured_dot_reduction_ir(), backend)
             assert artifact.executable
+
             for fragment in fragments:
                 assert fragment in artifact.primary_source
+
             assert "Unsupported" not in artifact.primary_source
 
     def test_structured_axis_reductions_are_executable(self):
@@ -921,12 +955,15 @@ class TestBackendRegistry:
             "tilelang": "ssa-unified-tilelang-emitter",
             "tvm": "ssa-unified-tvm-emitter",
         }
+
         for backend, fragments in expected_fragments.items():
             artifact = lower(_structured_axis_reduction_ir(), backend)
             assert artifact.executable
             assert artifact.metadata["source_route"] == expected_routes[backend]
+
             for fragment in fragments:
                 assert fragment in artifact.primary_source
+
             assert "Unsupported" not in artifact.primary_source
 
     def test_structured_axis_multi_reductions_are_executable(self):
@@ -936,6 +973,7 @@ class TestBackendRegistry:
             "tilelang": "ssa-unified-tilelang-emitter",
             "tvm": "ssa-unified-tvm-emitter",
         }
+
         for backend in ("triton", "cuda", "tilelang", "tvm"):
             artifact = lower(_structured_axis_multi_reduction_ir(), backend)
             assert artifact.executable
@@ -965,12 +1003,15 @@ class TestBackendRegistry:
             "tilelang": "ssa-unified-tilelang-emitter",
             "tvm": "ssa-unified-tvm-emitter",
         }
+
         for backend, fragments in expected_fragments.items():
             artifact = lower(_structured_rowwise_softmax_ir(), backend)
             assert artifact.executable
             assert artifact.metadata["source_route"] == expected_routes[backend]
+
             for fragment in fragments:
                 assert fragment in artifact.primary_source
+
             assert "Unsupported" not in artifact.primary_source
 
     def test_structured_rowwise_vector_parameters_are_column_indexed(self):
@@ -998,12 +1039,15 @@ class TestBackendRegistry:
             "tilelang": "ssa-unified-tilelang-emitter",
             "tvm": "ssa-unified-tvm-emitter",
         }
+
         for backend, fragments in expected_fragments.items():
             artifact = lower(_structured_rowwise_layernorm_ir(), backend)
             assert artifact.executable
             assert artifact.metadata["source_route"] == expected_routes[backend]
+
             for fragment in fragments:
                 assert fragment in artifact.primary_source
+
             assert "Unsupported" not in artifact.primary_source
 
     def test_structured_matmul_is_executable(self):
@@ -1018,17 +1062,21 @@ class TestBackendRegistry:
             ),
             "tvm": ("for v10_i in T.serial(k)", "a_buf[(v1_v10_body) * (k) + (v10_i)]"),
         }
+
         for backend, fragments in expected_fragments.items():
             artifact = lower(_structured_matmul_ir(), backend)
             assert artifact.executable
+
             for fragment in fragments:
                 assert fragment in artifact.primary_source
+
             assert "NotImplementedError" not in artifact.primary_source
 
     def test_artifact_can_write_all_sources(self):
         import tempfile
 
         artifact = lower(_structured_add_ir(), "cuda")
+
         with tempfile.TemporaryDirectory() as temp_dir:
             paths = artifact.write_to(temp_dir)
             assert len(paths) == 2

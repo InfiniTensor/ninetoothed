@@ -25,6 +25,7 @@ def register_backend_specific_ssa_passes(registry: "SSAPassRegistry") -> None:
 
 def _validate_backend_pass_contracts(registry: "SSAPassRegistry") -> None:
     missing: list[str] = []
+
     for backend in BackendName:
         for name in _required_backend_pass_names(backend):
             try:
@@ -32,11 +33,13 @@ def _validate_backend_pass_contracts(registry: "SSAPassRegistry") -> None:
             except KeyError:
                 missing.append(name)
                 continue
+
             if not descriptor.supports(backend):
                 missing.append(name)
+
     if missing:
         names = ", ".join(sorted(missing))
-        raise ValueError(f"Backend SSA pass contract is incomplete: {names}")
+        raise ValueError(f"Backend SSA pass contract is incomplete: {names}.")
 
 
 def _required_backend_pass_names(backend: BackendName) -> tuple[str, ...]:

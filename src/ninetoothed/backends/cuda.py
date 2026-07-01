@@ -75,6 +75,7 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
             schedule: Mapping[str, Any],
         ) -> Mapping[str, Any]:
             del backend, analysis
+
             if schedule.get("granularity") == "blocked-linalg":
                 return {
                     "passes": ("block-tiling",),
@@ -91,6 +92,7 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
 
         def memory_scopes(self, context: SSAPassContext) -> Mapping[str, str]:
             del context
+
             return {
                 "register": "thread-local",
                 "shared": "__shared__",
@@ -103,6 +105,7 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
 
         def intrinsics(self, context: SSAPassContext) -> Mapping[str, str]:
             del context
+
             return {
                 "dot": "thread loop or mma.sync candidate",
                 "exp": "__expf/expf",

@@ -21,6 +21,7 @@ from ninetoothed.ssa_passes import (
 def _opcodes(operations):
     for operation in operations:
         yield operation.opcode
+
         for region in operation.regions:
             yield from _opcodes(region.operations)
 
@@ -28,6 +29,7 @@ def _opcodes(operations):
 def _operations(operations):
     for operation in operations:
         yield operation
+
         for region in operation.regions:
             yield from _operations(region.operations)
 
@@ -128,6 +130,7 @@ class TestSSAPassPipeline:
             TensorTypeIR("x", 1, "float32", ("n",)),
             TensorTypeIR("out", 1, "float32", ("n",)),
         )
+
         for backend, expected_program_id in (
             (BackendName.TRITON, "tl.program_id"),
             (BackendName.TILELANG, "T.Kernel + T.get_thread_binding"),
@@ -140,6 +143,7 @@ class TestSSAPassPipeline:
                 lowered.metadata["backend_intrinsics"]["program_id"]
                 == expected_program_id
             )
+
             for operation in _operations(lowered.blocks[0].operations):
                 assert "backend_intrinsic" in operation.attrs
                 assert "optimization" in operation.attrs
