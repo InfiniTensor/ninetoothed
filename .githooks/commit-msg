@@ -84,4 +84,19 @@ else
     exit 1
 fi
 
+if command -v python3 > /dev/null; then
+    python_cmd=python3
+elif command -v python > /dev/null; then
+    python_cmd=python
+else
+    echo "❌ Error: Python not found." >&2
+    exit 1
+fi
+
+echo "Running contributing style checks..." >&2
+if ! "$python_cmd" scripts/check_contributing_style.py; then
+    echo "❌ Error: Contributing style check failed." >&2
+    exit 1
+fi
+
 echo "✅ Code formatting completed." >&2

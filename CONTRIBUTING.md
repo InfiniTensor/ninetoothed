@@ -96,7 +96,19 @@ Run [Ruff](https://docs.astral.sh/ruff/) before every commit:
 ruff format && ruff check
 ```
 
-This is also enforced by the `commit-msg` hook.
+Run the project-specific contributing style checker for Python code:
+
+```bash
+python scripts/check_contributing_style.py
+```
+
+To apply mechanical blank-line fixes before checking:
+
+```bash
+python scripts/check_contributing_style.py --fix
+```
+
+Ruff and the project-specific contributing style checks are also enforced by the `commit-msg` hook.
 
 ### Additional Rules
 
@@ -132,10 +144,26 @@ Run the formatter:
 ruff format
 ```
 
+Run the project-specific contributing style checker:
+
+```bash
+python scripts/check_contributing_style.py
+```
+
+Apply project-specific blank-line fixes:
+
+```bash
+python scripts/check_contributing_style.py --fix
+```
+
 To run a full local CI check before pushing:
 
 ```bash
-ruff format && ruff check && pytest
+python scripts/check_contributing_style.py --fix
+ruff format
+ruff check
+python scripts/check_contributing_style.py
+pytest
 ```
 
 ## Version Release Process
