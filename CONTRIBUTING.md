@@ -55,7 +55,7 @@ We follow [GitHub flow](https://docs.github.com/en/get-started/using-github/gith
 
 ### Branch Naming
 
-Use kebab-case (lowercase letters, numbers, and hyphens) for branch names, with a maximum of 50 characters. This is enforced by the `pre-push` hook.
+Use kebab-case (lowercase letters, numbers, and hyphens) for branch names, with a maximum of 50 characters. This is enforced by the `pre-push` hook and the PR metadata workflow.
 
 - **Valid:** `develop-visualization`, `fix-123-memory-leak`, `add-conv2d-support`
 - **Invalid:** `Develop_Visualization`, `fix_memory_leak`, `myBranch`
@@ -68,7 +68,7 @@ The following rules apply to both commit messages and PR titles:
 - **Do not** end with punctuation (`.`, `!`, `?`, etc.).
 - **Use imperative mood** (e.g., "Add feature" not "Added feature").
 
-These rules are enforced by the `commit-msg` hook.
+Commit messages are enforced by the `commit-msg` hook. PR titles are enforced by the PR metadata workflow.
 
 **Valid examples:**
 
@@ -84,7 +84,7 @@ These rules are enforced by the `commit-msg` hook.
 
 ### Pull Request Requirements
 
-Before merging a PR, you must provide the `pytest` output in the PR description to confirm that all tests pass with your latest changes. The PR template includes a section for this. See [#30](https://github.com/InfiniTensor/ninetoothed/pull/30) for a reference example.
+Before merging a PR, you must provide the `pytest` output in the PR description to confirm that all tests pass with your latest changes. The PR template includes a section for this, and the PR metadata workflow checks that the section is filled in. See [#30](https://github.com/InfiniTensor/ninetoothed/pull/30) for a reference example.
 
 ## Code Style Guide
 

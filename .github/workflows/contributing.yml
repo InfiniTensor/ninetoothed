@@ -1,0 +1,15 @@
+name: Contributing
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check PR metadata
+        run: python3 scripts/check_contributing_metadata.py --event "$GITHUB_EVENT_PATH"
