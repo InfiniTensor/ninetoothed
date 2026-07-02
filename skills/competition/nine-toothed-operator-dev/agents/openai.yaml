@@ -1,0 +1,3 @@
+display_name: NineToothed Operator Dev
+short_description: Build NineToothed operators well
+default_prompt: Use this skill to implement, test, benchmark, and diagnose a NineToothed operator task with a minimal verified patch.
