@@ -226,6 +226,15 @@ output = ntl.where(row == col, 1, 0)        # 对角线检测（eye 算子）
 
 # 6. 张量创建 — ntl.full 可在 application 内创建常量张量
 ntl.full(shape, value, dtype=ntl.float32)
+
+# 7. Triton 原语访问 — 通过全限定名 ninetoothed.language.xxx
+# ntl 模块只暴露 libdevice，但 code generator 会将
+# ninetoothed.language.xxx 自动转换为 triton.language.xxx
+import ninetoothed.language  # 必须导入
+val = ninetoothed.language.cast(input, ninetoothed.language.int32)
+counts = ninetoothed.language.histogram(val, num_bins=256)  # 整数直方图
+# ninetoothed.language.atomic_add(ptr, val)  # 原子加
+# ninetoothed.language.gather(src, indices)  # 按索引收集
 ```
 
 **Torch 层编写规则**：
@@ -727,8 +736,15 @@ NineToothed 自动处理 stride 信息，但非连续输入可能有性能影响
 | 递归算法 | GPU kernel 禁止递归 | 改用迭代实现 |
 | 数据依赖循环（while b!=0） | Triton 不支持 | 改用 range 固定循环。**关键陷阱**：循环体内所有状态变量更新必须条件化 — 一旦算法收敛，所有赋值必须是 no-op（`x = ntl.where(converged, x, new_x)`），详见 pitfalls #15 |
 | 大规模 matmul（Windows） | Windows triton 优化不足 | Linux 环境下性能更好 |
-| **不规则访存 / 分组聚合**（mode, histogram, unique, bincount） | 需要 scatter/gather 或动态索引（`tile[j]`），NineToothed 的 element_wise/reduction/matmul arrangement 均假设 O(N) 规则数据并行 | torch 层用 `torch.unique` + `torch.bincount` 处理分组；kernel 可实现 max/min（reduction）但不支持按值分组计数 |
-| 动态索引访问（`tile[j]`） | Triton JIT 不支持在 application 中按动态变量索引 tile 内元素 | 改用向量操作（`ntl.where(tile == scalar, ...)`），或传 block_size=1 逐元素处理（效率极低） |
+| 动态索引访问（`tile[j]`） | Triton JIT 不支持按动态变量索引 tile 内元素 | 改用向量操作（`ntl.where(tile == scalar, ...)`），或使用 `ninetoothed.language.gather(src, indices)` 按索引收集 |
+| **递归算法** | GPU kernel 禁止递归 | 改写为迭代实现 |
+| 大规模 matmul（Windows） | Windows triton 优化不足 | Linux 环境下性能更好 |
+
+> **注意**：以下能力已通过 `ninetoothed.language.xxx` 直接引用验证通过（参考 §二 Application 编写关键模式 #7）：
+> - `ninetoothed.language.histogram`：整数直方图（需 int32 输入，`num_bins` 参数）
+> - `ninetoothed.language.atomic_add`：原子加（需 pointer）
+> - `ninetoothed.language.gather`：按索引收集元素
+> 这些 Triton 原语通过 code generator 的自动转换（`ninetoothed.language.xxx` → `triton.language.xxx`）可用，绕过了 `ntl` 模块的限制。**注意** `ntl.xxx` 不可用（会报 AttributeError），必须用全限定名 `ninetoothed.language.xxx`。
 
 ---
 

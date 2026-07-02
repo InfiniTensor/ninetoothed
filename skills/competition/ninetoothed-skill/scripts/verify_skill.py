@@ -104,8 +104,8 @@ def main():
         "02_reduction_log_softmax.md",
         "03_binary_add.md",
         "04_broadcast_meshgrid.md",
-        "benchmark_leaky_relu.md",
-        "benchmark_log_softmax.md",
+        "01_benchmark_leaky_relu.md",
+        "02_benchmark_log_softmax.md",
     ]
     for ex in examples:
         file_exists(f"examples/{ex}", ex)

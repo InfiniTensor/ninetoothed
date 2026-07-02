@@ -18,7 +18,7 @@ ninetoothed-skill/
 │   ├── code_templates.md             # 9 种 Arrangement 模式的完整代码模板
 │   ├── ntl_api.md                    # ntl（ninetoothed.language）API 参考
 │   ├── tensor_guide.md               # Tensor 声明与元操作参考
-│   └── pitfalls.md                   # 14 种常见陷阱及修复方法
+│   └── pitfalls.md                   # 15 种常见陷阱及修复方法
 ├── scripts/                          # 可执行脚本
 │   ├── run_tests.py                  # 运行所有自测算子验证
 │   ├── run_benchmark.py              # 性能基准测试（ntops vs PyTorch）
@@ -28,14 +28,15 @@ ninetoothed-skill/
 │   ├── 02_reduction_log_softmax.md   # Reduction + 数值稳定性
 │   ├── 03_binary_add.md              # Binary 算子 + 运行时标量参数
 │   ├── 04_broadcast_meshgrid.md      # 1D→2D 广播 + 自定义 arrangement
-│   ├── benchmark_leaky_relu.md       # 自测任务 1 性能对比详细记录
-│   └── benchmark_log_softmax.md      # 自测任务 2 性能对比详细记录
-└── tests/                            # 5 个自测算子验证任务
+│   ├── 01_benchmark_leaky_relu.md    # 自测任务 1 性能对比详细记录
+│   └── 02_benchmark_log_softmax.md   # 自测任务 2 性能对比详细记录
+└── tests/                            # 6 个自测算子验证任务
     ├── test_leaky_relu.py            # 任务 1：Element-wise 算子（leaky_relu）
     ├── test_log_softmax.py           # 任务 2：Reduction 算子（log_softmax）
     ├── test_non_contiguous.py        # 任务 3：非连续输入/步长场景
     ├── test_benchmark.py             # 任务 4：性能对比与回退分析
-    └── test_meshgrid.py              # 任务 5：广播算子（meshgrid）
+    ├── test_meshgrid.py              # 任务 5：广播算子（meshgrid）
+    └── test_deg2rad.py              # 任务 6：Element-wise 算子（deg2rad）
 ```
 
 ## 安装
@@ -113,15 +114,16 @@ python -c "import ntops; print('ntops: OK')"
 
 ## 自测算子任务
 
-本 Skill 包含 5 个自测算子开发任务，覆盖赛题全部要求：
+本 Skill 包含 6 个自测算子开发任务，覆盖赛题全部要求：
 
 | # | 任务 | 类型 | 测试文件 | Benchmark |
 |---|------|------|------|:---:|
-| 1 | leaky_relu | Element-wise + 标量参数 | `tests/test_leaky_relu.py` | [链接](examples/benchmark_leaky_relu.md) |
-| 2 | log_softmax | Reduction + 数值稳定性 | `tests/test_log_softmax.py` | [链接](examples/benchmark_log_softmax.md) |
+| 1 | leaky_relu | Element-wise + 标量参数 | `tests/test_leaky_relu.py` | [链接](examples/01_benchmark_leaky_relu.md) |
+| 2 | log_softmax | Reduction + 数值稳定性 | `tests/test_log_softmax.py` | [链接](examples/02_benchmark_log_softmax.md) |
 | 3 | 非连续输入 | 转置/步幅/偏移 | `tests/test_non_contiguous.py` | — |
 | 4 | 性能对比 | ntops vs PyTorch 基准测试 | `tests/test_benchmark.py` | — |
 | 5 | meshgrid | 1D→2D 广播 + 自定义 arrangement | `tests/test_meshgrid.py` | — |
+| 6 | deg2rad | Element-wise + constexpr 常量 | `tests/test_deg2rad.py` | — |
 
 ## 开发示例
 
