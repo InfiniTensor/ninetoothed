@@ -9,23 +9,23 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Mapping
 
-from ninetoothed.backends.base import (
+from ninetoothed.backends.core import (
+    Artifact,
     Backend,
-    BackendArtifact,
-    BackendCapability,
-    BackendName,
-    BackendOptions,
+    Capability,
+    Options,
+    Target,
 )
-from ninetoothed.backends.ssa_unified import lower_unified_ssa_artifact
-from ninetoothed.ir import KernelIR
+from ninetoothed.backends.emitters.ssa import emit
+from ninetoothed.ir import Kernel
 
 if TYPE_CHECKING:
-    from ninetoothed.ssa_passes import SSAPassRegistry
+    from ninetoothed.compiler.passes import Registry
 
 
 class TvmBackend(Backend):
-    name = BackendName.TVM
-    capability = BackendCapability(
+    name = Target.TVM
+    capability = Capability(
         name=name,
         emits_source=True,
         can_execute=True,
@@ -36,10 +36,8 @@ class TvmBackend(Backend):
         ),
     )
 
-    def lower(
-        self, kernel: KernelIR, options: BackendOptions | None = None
-    ) -> BackendArtifact:
-        return lower_unified_ssa_artifact(kernel, self.name)
+    def emit(self, kernel: Kernel, options: Options | None = None) -> Artifact:
+        return emit(kernel, self.name)
 
 
 def _scheduled_tir_loop_policy(schedule: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -64,21 +62,21 @@ def _generic_linear_or_reduction_policy(
     }
 
 
-def register_ssa_passes(registry: "SSAPassRegistry") -> None:
-    from ninetoothed.ssa_passes import (
-        BackendIntrinsicsLoweringPass,
-        BackendMemoryScopesLoweringPass,
-        BackendScheduleOptimizationPass,
-        SSAPassContext,
+def register_ssa_passes(registry: "Registry") -> None:
+    from ninetoothed.compiler.passes import (
+        Context,
+        LowerIntrinsics,
+        LowerMemoryScopes,
+        OptimizeSchedule,
     )
 
-    class TvmOptimizeSchedulePass(BackendScheduleOptimizationPass):
+    class TvmOptimizeSchedule(OptimizeSchedule):
         name = "ssa.tvm.optimize_schedule"
-        supported_backends = (BackendName.TVM,)
+        supported_backends = (Target.TVM,)
 
         def optimization_policy(
             self,
-            backend: BackendName,
+            backend: Target,
             analysis: Mapping[str, Any],
             schedule: Mapping[str, Any],
         ) -> Mapping[str, Any]:
@@ -88,13 +86,13 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
                 return _scheduled_tir_loop_policy(schedule)
             return _generic_linear_or_reduction_policy(schedule)
 
-    registry.register(TvmOptimizeSchedulePass, tags=("optimization", "tvm"))
+    registry.register(TvmOptimizeSchedule, tags=("optimization", "tvm"))
 
-    class TvmLowerMemoryScopesPass(BackendMemoryScopesLoweringPass):
+    class TvmLowerMemoryScopesPass(LowerMemoryScopes):
         name = "ssa.tvm.lower_memory_scopes"
-        supported_backends = (BackendName.TVM,)
+        supported_backends = (Target.TVM,)
 
-        def memory_scopes(self, context: SSAPassContext) -> Mapping[str, str]:
+        def memory_scopes(self, context: Context) -> Mapping[str, str]:
             del context
 
             return {
@@ -103,11 +101,11 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
                 "global": "global",
             }
 
-    class TvmLowerIntrinsicsPass(BackendIntrinsicsLoweringPass):
+    class TvmLowerIntrinsicsPass(LowerIntrinsics):
         name = "ssa.tvm.lower_intrinsics"
-        supported_backends = (BackendName.TVM,)
+        supported_backends = (Target.TVM,)
 
-        def intrinsics(self, context: SSAPassContext) -> Mapping[str, str]:
+        def intrinsics(self, context: Context) -> Mapping[str, str]:
             del context
 
             return {

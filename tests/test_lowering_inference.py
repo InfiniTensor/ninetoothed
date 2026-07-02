@@ -2,8 +2,8 @@
 import inspect
 
 import ninetoothed.language as ntl
-from ninetoothed.ir import SSAOperationIR, SSAProgramIR, TensorTypeIR
-from ninetoothed.ssa import application_to_ssa, render_ssa_program
+from ninetoothed.frontend.python import from_application
+from ninetoothed.ir import TensorSpec, ssa
 
 
 def fill_statement(out):
@@ -112,25 +112,25 @@ def rowwise_layernorm(x, weight, bias, out):
     out = (x - mean[:, None]) * ntl.rsqrt(var[:, None] + 1e-05) * weight + bias
 
 
-def _ssa(func, tensors: tuple[TensorTypeIR, ...] | None = None) -> SSAProgramIR:
+def _ssa(func, tensors: tuple[TensorSpec, ...] | None = None) -> ssa.Program:
     if tensors is None:
         tensors = tuple(
             (
-                TensorTypeIR(name, 1, dtype="float32", shape=("n",))
+                TensorSpec(name, 1, dtype="float32", shape=("n",))
                 for name in inspect.signature(func).parameters
             )
         )
 
-    program = application_to_ssa(func, tensor_irs=tensors, kind=func.__name__)
+    program = from_application(func, tensor_irs=tensors, kind=func.__name__)
     assert program is not None
 
     return program
 
 
-def _walk(program: SSAProgramIR) -> tuple[SSAOperationIR, ...]:
-    ops: list[SSAOperationIR] = []
+def _walk(program: ssa.Program) -> tuple[ssa.Operation, ...]:
+    ops: list[ssa.Operation] = []
 
-    def visit(operation: SSAOperationIR) -> None:
+    def visit(operation: ssa.Operation) -> None:
         ops.append(operation)
 
         for region in operation.regions:
@@ -143,14 +143,13 @@ def _walk(program: SSAProgramIR) -> tuple[SSAOperationIR, ...]:
     return tuple(ops)
 
 
-def _opcodes(program: SSAProgramIR) -> tuple[str, ...]:
+def _opcodes(program: ssa.Program) -> tuple[str, ...]:
     return tuple((operation.opcode for operation in _walk(program)))
 
 
 class TestLoweringInference:
-    def _assert_no_coarse_program_ir(self, program: SSAProgramIR) -> None:
-        rendered = render_ssa_program(program)
-        assert "ProgramIR" not in rendered
+    def _assert_no_coarse_ir_nodes(self, program: ssa.Program) -> None:
+        rendered = ssa.render(program)
         assert "ReductionOpIR" not in rendered
         assert "MatmulOpIR" not in rendered
         assert "FlashAttentionOpIR" not in rendered
@@ -166,7 +165,7 @@ class TestLoweringInference:
         ):
             program = _ssa(func)
             assert "mem.store" in _opcodes(program)
-            self._assert_no_coarse_program_ir(program)
+            self._assert_no_coarse_ir_nodes(program)
 
     def test_reductions_lower_to_ssa_reduce_ops(self):
         cases = (
@@ -181,7 +180,7 @@ class TestLoweringInference:
             opcodes = _opcodes(program)
             assert opcode in opcodes
             assert "mem.store" in opcodes
-            self._assert_no_coarse_program_ir(program)
+            self._assert_no_coarse_ir_nodes(program)
 
     def test_transpose_and_matmul_lower_to_ssa_compute_ops(self):
         cases = (
@@ -195,18 +194,18 @@ class TestLoweringInference:
             opcodes = _opcodes(program)
             assert opcode in opcodes
             assert "mem.store" in opcodes
-            self._assert_no_coarse_program_ir(program)
+            self._assert_no_coarse_ir_nodes(program)
 
     def test_unknown_intrinsic_names_stay_as_call_ops_not_coarse_attention_ir(self):
         tensors = tuple(
             (
-                TensorTypeIR(name, 2, dtype="float32", shape=("rows", "cols"))
+                TensorSpec(name, 2, dtype="float32", shape=("rows", "cols"))
                 for name in ("q", "k", "v", "out")
             )
         )
         program = _ssa(flash_attention_call_name, tensors)
         assert "call.flash_attention" in _opcodes(program)
-        self._assert_no_coarse_program_ir(program)
+        self._assert_no_coarse_ir_nodes(program)
 
     def test_multi_output_and_scalar_math_are_generic_ssa(self):
         for func, fragments in (
@@ -221,18 +220,18 @@ class TestLoweringInference:
                 assert fragment in opcodes
 
             assert "mem.store" in opcodes
-            self._assert_no_coarse_program_ir(program)
+            self._assert_no_coarse_ir_nodes(program)
 
     def test_offsets_lower_to_explicit_index_ops(self):
         program = _ssa(
             eye_offsets,
-            (TensorTypeIR("out", 2, dtype="float32", shape=("rows", "cols")),),
+            (TensorSpec("out", 2, dtype="float32", shape=("rows", "cols")),),
         )
         opcodes = _opcodes(program)
         assert opcodes.count("index.offset") == 2
         assert "cmp.eq" in opcodes
         assert "mem.store" in opcodes
-        self._assert_no_coarse_program_ir(program)
+        self._assert_no_coarse_ir_nodes(program)
 
     def test_axis_reductions_are_not_shape_special_cased(self):
         for func, axis in ((axis_zero_call, 0), (rowwise_sum, 1), (rowwise_mean, 1)):
@@ -240,31 +239,31 @@ class TestLoweringInference:
             reduce_ops = [op for op in _walk(program) if op.opcode == "reduce.sum"]
             assert reduce_ops
             assert reduce_ops[0].attrs.get("axis") == axis
-            self._assert_no_coarse_program_ir(program)
+            self._assert_no_coarse_ir_nodes(program)
 
     def test_axis_reduction_fusions_lower_to_generic_dataflow(self):
         tensors = (
-            TensorTypeIR("x", 2, dtype="float32", shape=("rows", "cols")),
-            TensorTypeIR("out0", 1, dtype="float32", shape=("rows",)),
-            TensorTypeIR("out1", 1, dtype="float32", shape=("rows",)),
+            TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
+            TensorSpec("out0", 1, dtype="float32", shape=("rows",)),
+            TensorSpec("out1", 1, dtype="float32", shape=("rows",)),
         )
         program = _ssa(rowwise_aminmax, tensors)
         opcodes = _opcodes(program)
         assert "reduce.min" in opcodes
         assert "reduce.max" in opcodes
         assert opcodes.count("mem.store") == 2
-        self._assert_no_coarse_program_ir(program)
+        self._assert_no_coarse_ir_nodes(program)
 
     def test_rowwise_softmax_and_layernorm_are_dataflow_not_kernel_nodes(self):
         softmax_tensors = (
-            TensorTypeIR("x", 2, dtype="float32", shape=("rows", "cols")),
-            TensorTypeIR("out", 2, dtype="float32", shape=("rows", "cols")),
+            TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
+            TensorSpec("out", 2, dtype="float32", shape=("rows", "cols")),
         )
         layernorm_tensors = (
-            TensorTypeIR("x", 2, dtype="float32", shape=("rows", "cols")),
-            TensorTypeIR("weight", 1, dtype="float32", shape=("cols",)),
-            TensorTypeIR("bias", 1, dtype="float32", shape=("cols",)),
-            TensorTypeIR("out", 2, dtype="float32", shape=("rows", "cols")),
+            TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
+            TensorSpec("weight", 1, dtype="float32", shape=("cols",)),
+            TensorSpec("bias", 1, dtype="float32", shape=("cols",)),
+            TensorSpec("out", 2, dtype="float32", shape=("rows", "cols")),
         )
 
         for func, tensors, fragments in (
@@ -286,10 +285,10 @@ class TestLoweringInference:
                 assert fragment in opcodes
 
             assert "mem.store" in opcodes
-            self._assert_no_coarse_program_ir(program)
+            self._assert_no_coarse_ir_nodes(program)
 
     def test_ssa_textual_rendering_is_the_audit_format(self):
-        rendered = render_ssa_program(_ssa(rowwise_addmv))
+        rendered = ssa.render(_ssa(rowwise_addmv))
         assert rendered.startswith("ssa @rowwise_addmv {")
         assert "reduce.sum" in rendered
         assert "mem.store" in rendered

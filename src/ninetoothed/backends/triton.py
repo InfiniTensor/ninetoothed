@@ -9,23 +9,23 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Mapping
 
-from ninetoothed.backends.base import (
+from ninetoothed.backends.core import (
+    Artifact,
     Backend,
-    BackendArtifact,
-    BackendCapability,
-    BackendName,
-    BackendOptions,
+    Capability,
+    Options,
+    Target,
 )
-from ninetoothed.backends.ssa_unified import lower_unified_ssa_artifact
-from ninetoothed.ir import KernelIR
+from ninetoothed.backends.emitters.ssa import emit
+from ninetoothed.ir import Kernel
 
 if TYPE_CHECKING:
-    from ninetoothed.ssa_passes import SSAPassRegistry
+    from ninetoothed.compiler.passes import Registry
 
 
 class TritonBackend(Backend):
-    name = BackendName.TRITON
-    capability = BackendCapability(
+    name = Target.TRITON
+    capability = Capability(
         name=name,
         emits_source=True,
         can_execute=True,
@@ -36,27 +36,25 @@ class TritonBackend(Backend):
         ),
     )
 
-    def lower(
-        self, kernel: KernelIR, options: BackendOptions | None = None
-    ) -> BackendArtifact:
-        return lower_unified_ssa_artifact(kernel, self.name)
+    def emit(self, kernel: Kernel, options: Options | None = None) -> Artifact:
+        return emit(kernel, self.name)
 
 
-def register_ssa_passes(registry: "SSAPassRegistry") -> None:
-    from ninetoothed.ssa_passes import (
-        BackendIntrinsicsLoweringPass,
-        BackendMemoryScopesLoweringPass,
-        BackendScheduleOptimizationPass,
-        SSAPassContext,
+def register_ssa_passes(registry: "Registry") -> None:
+    from ninetoothed.compiler.passes import (
+        Context,
+        LowerIntrinsics,
+        LowerMemoryScopes,
+        OptimizeSchedule,
     )
 
-    class TritonOptimizeSchedulePass(BackendScheduleOptimizationPass):
+    class TritonOptimizeSchedule(OptimizeSchedule):
         name = "ssa.triton.optimize_schedule"
-        supported_backends = (BackendName.TRITON,)
+        supported_backends = (Target.TRITON,)
 
         def optimization_policy(
             self,
-            backend: BackendName,
+            backend: Target,
             analysis: Mapping[str, Any],
             schedule: Mapping[str, Any],
         ) -> Mapping[str, Any]:
@@ -93,11 +91,11 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
                 "schedule": {"vector_width": 4, "num_warps": 4},
             }
 
-    class TritonLowerMemoryScopesPass(BackendMemoryScopesLoweringPass):
+    class TritonLowerMemoryScopesPass(LowerMemoryScopes):
         name = "ssa.triton.lower_memory_scopes"
-        supported_backends = (BackendName.TRITON,)
+        supported_backends = (Target.TRITON,)
 
-        def memory_scopes(self, context: SSAPassContext) -> Mapping[str, str]:
+        def memory_scopes(self, context: Context) -> Mapping[str, str]:
             del context
 
             return {
@@ -106,11 +104,11 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
                 "global": "pointer",
             }
 
-    class TritonLowerIntrinsicsPass(BackendIntrinsicsLoweringPass):
+    class TritonLowerIntrinsicsPass(LowerIntrinsics):
         name = "ssa.triton.lower_intrinsics"
-        supported_backends = (BackendName.TRITON,)
+        supported_backends = (Target.TRITON,)
 
-        def intrinsics(self, context: SSAPassContext) -> Mapping[str, str]:
+        def intrinsics(self, context: Context) -> Mapping[str, str]:
             del context
 
             return {
@@ -120,7 +118,7 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
                 "load_store": "tl.load/tl.store",
             }
 
-    registry.register(TritonOptimizeSchedulePass, tags=("optimization", "triton"))
+    registry.register(TritonOptimizeSchedule, tags=("optimization", "triton"))
     registry.register(
         TritonLowerMemoryScopesPass, tags=("target-lowering", "memory", "triton")
     )

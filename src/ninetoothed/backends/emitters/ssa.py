@@ -14,17 +14,8 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
-from ninetoothed.backends.base import BackendArtifact, BackendName
-from ninetoothed.ir import (
-    KernelIR,
-    SSABlockIR,
-    SSAOperationIR,
-    SSAProgramIR,
-    SSATypeIR,
-    SSAValueIR,
-    TensorTypeIR,
-    ir_to_dict,
-)
+from ninetoothed.backends.core import Artifact, Target
+from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict, ssa
 
 _BINARY = {
     "add": "+",
@@ -80,7 +71,7 @@ class _TensorInfo:
 
 @dataclass(frozen=True)
 class _Target:
-    backend: BackendName
+    backend: Target
     language: str
     suffix: str
     source_route: str
@@ -93,18 +84,18 @@ class _Target:
 
     def literal(self, value: Any) -> str:
         if isinstance(value, bool):
-            return "true" if self.backend == BackendName.CUDA else "True"
+            return "true" if self.backend == Target.CUDA else "True"
 
         if isinstance(value, float) and math.isinf(value):
-            if self.backend == BackendName.CUDA:
+            if self.backend == Target.CUDA:
                 return "INFINITY" if value > 0 else "-INFINITY"
             return "float('inf')" if value > 0 else "-float('inf')"
 
         if value == "inf":
-            return "INFINITY" if self.backend == BackendName.CUDA else "float('inf')"
+            return "INFINITY" if self.backend == Target.CUDA else "float('inf')"
 
         if value == "-inf":
-            return "-INFINITY" if self.backend == BackendName.CUDA else "-float('inf')"
+            return "-INFINITY" if self.backend == Target.CUDA else "-float('inf')"
         return repr(value)
 
     def tensor_ref(self, tensor: str) -> str:
@@ -113,7 +104,7 @@ class _Target:
     def load(self, tensor: str, index: str, *, mask: str | None = None) -> str:
         ref = self.tensor_ref(tensor)
 
-        if self.backend == BackendName.TRITON:
+        if self.backend == Target.TRITON:
             mask_text = "" if mask is None else f", mask={mask}, other=0.0"
 
             return f"tl.load({ref} + {index}{mask_text})"
@@ -124,36 +115,36 @@ class _Target:
     ) -> str:
         ref = self.tensor_ref(tensor)
 
-        if self.backend == BackendName.TRITON:
+        if self.backend == Target.TRITON:
             mask_text = "" if mask is None else f", mask={mask}"
 
             return f"tl.store({ref} + {index}, {value}{mask_text})"
 
-        suffix = ";" if self.backend == BackendName.CUDA else ""
+        suffix = ";" if self.backend == Target.CUDA else ""
         assignment = f"{ref}[{index}] = {value}{suffix}"
 
         if mask is None:
             return assignment
 
-        if self.backend == BackendName.CUDA:
+        if self.backend == Target.CUDA:
             return f"if ({mask}) {{\n    {assignment}\n}}"
         return f"if {mask}:\n    {assignment}"
 
     def cast(self, dtype: str, value: str) -> str:
         dtype = _normalize_dtype(dtype)
 
-        if self.backend == BackendName.TRITON:
+        if self.backend == Target.TRITON:
             return f"{value}.to(tl.{dtype})"
 
-        if self.backend == BackendName.CUDA:
+        if self.backend == Target.CUDA:
             return f"static_cast<{_cuda_type(dtype)}>({value})"
         return f'T.Cast("{dtype}", {value})'
 
     def where(self, cond: str, yes: str, no: str) -> str:
-        if self.backend == BackendName.TRITON:
+        if self.backend == Target.TRITON:
             return f"tl.where({cond}, {yes}, {no})"
 
-        if self.backend == BackendName.CUDA:
+        if self.backend == Target.CUDA:
             return f"(({cond}) ? ({yes}) : ({no}))"
         return f"T.if_then_else({cond}, {yes}, {no})"
 
@@ -162,29 +153,29 @@ class _Target:
             return self.where(args[0], args[1], args[2])
 
         if name == "atomic_add":
-            if self.backend == BackendName.CUDA:
+            if self.backend == Target.CUDA:
                 return f"atomicAdd({args[0]}, {args[1]})"
 
-            if self.backend == BackendName.TRITON:
+            if self.backend == Target.TRITON:
                 return f"tl.atomic_add({args[0]}, {args[1]})"
             return f"T.atomic_add({args[0]}, {args[1]})"
 
-        if name == "dot" and self.backend == BackendName.CUDA and len(args) == 2:
+        if name == "dot" and self.backend == Target.CUDA and len(args) == 2:
             return f"(({args[0]}) * ({args[1]}))"
 
-        if name == "rand" and self.backend == BackendName.CUDA and len(args) >= 2:
+        if name == "rand" and self.backend == Target.CUDA and len(args) >= 2:
             return f"fabsf(fmodf(sinf(static_cast<float>(({args[0]}) + ({args[1]})) * 12.9898f) * 43758.5453f, 1.0f))"
 
         if name == "expm1" and self.backend in {
-            BackendName.TILELANG,
-            BackendName.TVM,
-            BackendName.TRITON,
+            Target.TILELANG,
+            Target.TVM,
+            Target.TRITON,
         }:
             base = self.call("exp", args)
 
             return f"({base} - 1.0)"
 
-        if self.backend == BackendName.CUDA:
+        if self.backend == Target.CUDA:
             func = {
                 "abs": "fabsf",
                 "acos": "acosf",
@@ -217,7 +208,7 @@ class _Target:
                 "tan": "tanf",
                 "tanh": "tanhf",
             }.get(name)
-        elif self.backend == BackendName.TRITON:
+        elif self.backend == Target.TRITON:
             func = {
                 "abs": "tl.abs",
                 "acos": "tl.acos",
@@ -293,23 +284,23 @@ class _Target:
         if func is None:
             func = (
                 name
-                if self.backend == BackendName.CUDA
+                if self.backend == Target.CUDA
                 else f"T.{name}"
-                if self.backend in {BackendName.TILELANG, BackendName.TVM}
+                if self.backend in {Target.TILELANG, Target.TVM}
                 else name
             )
         return f"{func}({', '.join(args)})"
 
-    def local_decl(self, type_: SSATypeIR, name: str, expr: str) -> str:
-        if self.backend == BackendName.CUDA:
+    def local_decl(self, type_: ssa.Type, name: str, expr: str) -> str:
+        if self.backend == Target.CUDA:
             return f"{_cuda_type(type_.dtype, type_.kind)} {name} = {expr};"
         return f"{name} = {expr}"
 
     def loop_header(self, var: str, lower: str, upper: str, step: str) -> str:
-        if self.backend == BackendName.CUDA:
+        if self.backend == Target.CUDA:
             return f"for (int64_t {var} = {lower}; {var} < {upper}; {var} += {step}) {{"
 
-        if self.backend == BackendName.TRITON:
+        if self.backend == Target.TRITON:
             return f"for {var} in range({lower}, {upper}, {step}):"
 
         serial = (
@@ -326,14 +317,14 @@ class _Target:
         if operator == "sum":
             return f"{acc} + {term}"
 
-        if self.backend == BackendName.CUDA:
+        if self.backend == Target.CUDA:
             return (
                 f"fmaxf({acc}, {term})"
                 if operator == "max"
                 else f"fminf({acc}, {term})"
             )
 
-        if self.backend == BackendName.TRITON:
+        if self.backend == Target.TRITON:
             return (
                 f"tl.maximum({acc}, {term})"
                 if operator == "max"
@@ -345,10 +336,10 @@ class _Target:
 @dataclass
 class _EmitContext:
     target: _Target
-    kernel: KernelIR
-    program: SSAProgramIR
-    operations: Mapping[str, SSAOperationIR]
-    value_types: Mapping[str, SSATypeIR]
+    kernel: Kernel
+    program: ssa.Program
+    operations: Mapping[str, ssa.Operation]
+    value_types: Mapping[str, ssa.Type]
     lines: list[str]
     memo: dict[str, str]
     tensor_infos: Mapping[str, _TensorInfo]
@@ -407,29 +398,26 @@ class _EmitContext:
         return _EmitContext(**data)
 
 
-def lower_unified_ssa_artifact(
-    kernel: KernelIR, backend: BackendName
-) -> BackendArtifact:
+def emit(kernel: Kernel, backend: Target) -> Artifact:
     if kernel.ssa is None:
-        raise ValueError("Unified backend lowering requires SSAProgramIR.")
+        raise ValueError("Backend emission requires ssa.Program.")
 
     target = _target(backend)
-    block = kernel.ssa.blocks[0] if kernel.ssa.blocks else SSABlockIR()
+    block = kernel.ssa.blocks[0] if kernel.ssa.blocks else ssa.Block()
     shape_params = _shape_params(kernel.tensors, block.operations)
     source = _render_source(kernel, target)
     metadata = {
         "backend": backend.value,
         "kernel_name": kernel.kernel_name,
-        "lowering_ir": "SSAProgramIR",
+        "lowering_ir": "ssa.Program",
         "source_route": target.source_route,
-        "program_ir_compat": kernel.program is not None,
         "shape_params": shape_params,
         "ssa": ir_to_dict(kernel.ssa),
         "ssa_metadata": dict(kernel.ssa.metadata),
         "tensors": [tensor.__dict__ for tensor in kernel.tensors],
     }
 
-    return BackendArtifact(
+    return Artifact(
         backend=backend,
         kernel_name=kernel.kernel_name,
         language=target.language,
@@ -445,22 +433,20 @@ def lower_unified_ssa_artifact(
     )
 
 
-def _target(backend: BackendName) -> _Target:
+def _target(backend: Target) -> _Target:
     return {
-        BackendName.TRITON: _Target(
+        Target.TRITON: _Target(
             backend, "python/triton", "triton.py", "ssa-unified-triton-emitter"
         ),
-        BackendName.CUDA: _Target(
-            backend, "cuda/c++", "cu", "ssa-unified-cuda-emitter"
-        ),
-        BackendName.TILELANG: _Target(
+        Target.CUDA: _Target(backend, "cuda/c++", "cu", "ssa-unified-cuda-emitter"),
+        Target.TILELANG: _Target(
             backend,
             "python/tilelang",
             "tilelang.py",
             "ssa-unified-tilelang-emitter",
             buffer_suffix="_buf",
         ),
-        BackendName.TVM: _Target(
+        Target.TVM: _Target(
             backend,
             "python/tvm-script",
             "tvm.py",
@@ -470,10 +456,10 @@ def _target(backend: BackendName) -> _Target:
     }[backend]
 
 
-def _render_source(kernel: KernelIR, target: _Target) -> str:
+def _render_source(kernel: Kernel, target: _Target) -> str:
     program = kernel.ssa
     assert program is not None
-    block = program.blocks[0] if program.blocks else SSABlockIR()
+    block = program.blocks[0] if program.blocks else ssa.Block()
     tensor_infos = {tensor.name: _tensor_info(tensor) for tensor in kernel.tensors}
     walked_ops = tuple(_walk_ops(block.operations))
     operations = {result.name: op for op in walked_ops for result in op.results}
@@ -546,17 +532,17 @@ def _render_source(kernel: KernelIR, target: _Target) -> str:
         inner_index_expr,
     )
 
-    if target.backend == BackendName.TRITON:
+    if target.backend == Target.TRITON:
         return _render_triton_module(
             kernel, target, variables, outputs, shape_params, total, body
         )
 
-    if target.backend == BackendName.CUDA:
+    if target.backend == Target.CUDA:
         return _render_cuda_module(
             kernel, target, variables, outputs, shape_params, total, body, tensor_infos
         )
 
-    if target.backend == BackendName.TILELANG:
+    if target.backend == Target.TILELANG:
         return _render_tilelang_module(
             kernel,
             target,
@@ -582,11 +568,11 @@ def _render_source(kernel: KernelIR, target: _Target) -> str:
 
 
 def _render_body(
-    kernel: KernelIR,
+    kernel: Kernel,
     target: _Target,
-    operations: tuple[SSAOperationIR, ...],
-    op_by_result: Mapping[str, SSAOperationIR],
-    value_types: Mapping[str, SSATypeIR],
+    operations: tuple[ssa.Operation, ...],
+    op_by_result: Mapping[str, ssa.Operation],
+    value_types: Mapping[str, ssa.Type],
     tensor_infos: Mapping[str, _TensorInfo],
     outputs: tuple[str, ...],
     axes: tuple[str, ...],
@@ -598,12 +584,12 @@ def _render_body(
     lines: list[str] = []
     coordinate_exprs: tuple[str, ...] = ()
     enable_index_cse = (
-        target.backend in {BackendName.CUDA, BackendName.TILELANG, BackendName.TVM}
+        target.backend in {Target.CUDA, Target.TILELANG, Target.TVM}
         and outer_index_expr != inner_index_expr
     )
 
     if enable_index_cse:
-        index_type = SSATypeIR("index", dtype="index")
+        index_type = ssa.Type("index", dtype="index")
 
         if outer_index_expr != target.index_name:
             lines.append(
@@ -646,7 +632,7 @@ def _render_body(
         index_expr=inner_index_expr,
         outer_index_expr=outer_index_expr,
         inner_index_expr=inner_index_expr,
-        mask_expr="mask" if target.backend == BackendName.TRITON else None,
+        mask_expr="mask" if target.backend == Target.TRITON else None,
         row_expr=coordinate_exprs[0]
         if len(coordinate_exprs) >= 1
         else _axis_offset_expr(axes, 0, inner_index_expr, target)
@@ -669,13 +655,11 @@ def _render_body(
             _emit_operation(op, ctx)
 
     if not ctx.lines:
-        ctx.lines.append(
-            "pass" if target.backend != BackendName.CUDA else "/* no-op */"
-        )
+        ctx.lines.append("pass" if target.backend != Target.CUDA else "/* no-op */")
     return "\n".join(ctx.lines)
 
 
-def _is_top_level_effect(op: SSAOperationIR) -> bool:
+def _is_top_level_effect(op: ssa.Operation) -> bool:
     """Return whether an operation must be emitted without a value user.
 
     Pure SSA producers are demand-driven: the backend emits them when a store,
@@ -705,7 +689,7 @@ def _nested_local_suffix(ctx: _EmitContext, label: str) -> str:
     return f"{ctx.local_suffix}{suffix}" if ctx.local_suffix else suffix
 
 
-def _emit_operation(op: SSAOperationIR, ctx: _EmitContext) -> None:
+def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
     if op.opcode == "scf.yield":
         return
 
@@ -755,8 +739,8 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
     if not name.startswith("%"):
         if name not in ctx.tensor_infos:
             if _is_bool_scalar_value(name, ctx) and ctx.target.backend in {
-                BackendName.TILELANG,
-                BackendName.TVM,
+                Target.TILELANG,
+                Target.TVM,
             }:
                 return f"({name} != 0)"
             return name
@@ -811,7 +795,7 @@ def _is_bool_scalar_value(name: str, ctx: _EmitContext) -> bool:
     )
 
 
-def _operation_expr(op: SSAOperationIR, ctx: _EmitContext) -> str:
+def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     target = ctx.target
     opcode = op.opcode
 
@@ -893,7 +877,7 @@ def _operation_expr(op: SSAOperationIR, ctx: _EmitContext) -> str:
         if operator == "floordiv":
             return (
                 f"(({args[0]}) // ({args[1]}))"
-                if target.backend != BackendName.CUDA
+                if target.backend != Target.CUDA
                 else f"(({args[0]}) / ({args[1]}))"
             )
 
@@ -944,7 +928,7 @@ def _binary_expr(operator: str, operands: tuple[str, ...], ctx: _EmitContext) ->
 
 
 def _emit_linalg_dot(
-    op: SSAOperationIR, ctx: _EmitContext, coords: tuple[str, ...] | None = None
+    op: ssa.Operation, ctx: _EmitContext, coords: tuple[str, ...] | None = None
 ) -> str:
     if len(op.operands) < 2 or not op.results:
         return ctx.target.call(
@@ -962,10 +946,10 @@ def _emit_linalg_dot(
         )
 
     local = f"{_local_symbol(op.results[0].name, ctx)}_dot"
-    acc_type = SSATypeIR("scalar", dtype=op.results[0].type.dtype or "float32")
+    acc_type = ssa.Type("scalar", dtype=op.results[0].type.dtype or "float32")
     init = "0.0"
 
-    if ctx.target.backend == BackendName.TRITON and ctx.mask_expr is not None:
+    if ctx.target.backend == Target.TRITON and ctx.mask_expr is not None:
         dtype = _normalize_dtype(acc_type.dtype or "float32")
         init = f"tl.full((BLOCK,), {init}, tl.{dtype})"
 
@@ -1005,7 +989,7 @@ def _emit_linalg_dot(
     )
     ctx.lines.extend(_indent_lines(body_lines, ctx.target))
 
-    if ctx.target.backend == BackendName.CUDA:
+    if ctx.target.backend == Target.CUDA:
         ctx.lines.append("}")
     return acc_expr
 
@@ -1123,20 +1107,20 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
     return _emit_value(name, ctx)
 
 
-def _should_emit_tensor_value_as_element(op: SSAOperationIR) -> bool:
+def _should_emit_tensor_value_as_element(op: ssa.Operation) -> bool:
     if not op.results or op.results[0].type.kind != "tensor":
         return False
     return op.opcode in {"index.offset", "tensor.view"}
 
 
 def _element_args(
-    op: SSAOperationIR, coords: tuple[str, ...], ctx: _EmitContext
+    op: ssa.Operation, coords: tuple[str, ...], ctx: _EmitContext
 ) -> tuple[str, ...]:
     return tuple(_emit_element_arg(op, operand, coords, ctx) for operand in op.operands)
 
 
 def _emit_element_arg(
-    op: SSAOperationIR, operand: str, coords: tuple[str, ...], ctx: _EmitContext
+    op: ssa.Operation, operand: str, coords: tuple[str, ...], ctx: _EmitContext
 ) -> str:
     result_axes = (
         tuple(str(dim) for dim in op.results[0].type.shape)
@@ -1151,14 +1135,14 @@ def _emit_element_arg(
 
 
 def _element_binary(
-    operator: str, op: SSAOperationIR, coords: tuple[str, ...], ctx: _EmitContext
+    operator: str, op: ssa.Operation, coords: tuple[str, ...], ctx: _EmitContext
 ) -> str:
     args = _element_args(op, coords, ctx)
 
     if operator == "floordiv":
         return (
             f"(({args[0]}) // ({args[1]}))"
-            if ctx.target.backend != BackendName.CUDA
+            if ctx.target.backend != Target.CUDA
             else f"(({args[0]}) / ({args[1]}))"
         )
 
@@ -1168,7 +1152,7 @@ def _element_binary(
 
 
 def _emit_reduce_element(
-    op: SSAOperationIR,
+    op: ssa.Operation,
     coords: tuple[str, ...],
     ctx: _EmitContext,
     *,
@@ -1194,12 +1178,12 @@ def _emit_reduce_element(
     if local is None:
         local = f"{_local_symbol(op.results[0].name, ctx)}_elem"
 
-    result_type = SSATypeIR(
+    result_type = ssa.Type(
         "scalar", dtype=op.results[0].type.dtype if op.results else "float32"
     )
     init = _REDUCE_INIT[operator]
 
-    if ctx.target.backend == BackendName.TRITON and ctx.mask_expr is not None:
+    if ctx.target.backend == Target.TRITON and ctx.mask_expr is not None:
         dtype = _normalize_dtype(result_type.dtype or "float32")
         init = f"tl.full((BLOCK,), {init}, tl.{dtype})"
 
@@ -1234,13 +1218,13 @@ def _emit_reduce_element(
     )
     ctx.lines.extend(_indent_lines(body_lines, ctx.target))
 
-    if ctx.target.backend == BackendName.CUDA:
+    if ctx.target.backend == Target.CUDA:
         ctx.lines.append("}")
     return acc_expr
 
 
 def _emit_offset_element(
-    op: SSAOperationIR, coords: tuple[str, ...], ctx: _EmitContext
+    op: ssa.Operation, coords: tuple[str, ...], ctx: _EmitContext
 ) -> str:
     operand = op.operands[0]
     dim = int(op.attrs.get("dim", 0) or 0)
@@ -1301,7 +1285,7 @@ def _load_tensor_at(
     source_index = _materialize_index_expr(source_index, ctx)
     mask = _combined_mask(
         ctx.target,
-        ctx.mask_expr if ctx.target.backend == BackendName.TRITON else None,
+        ctx.mask_expr if ctx.target.backend == Target.TRITON else None,
         info,
         view_index,
         ctx=ctx,
@@ -1506,7 +1490,7 @@ def _broadcast_coords(
 
 
 def _view_base_coords(
-    op: SSAOperationIR, coords: tuple[str, ...], ctx: _EmitContext
+    op: ssa.Operation, coords: tuple[str, ...], ctx: _EmitContext
 ) -> tuple[str, ...]:
     subscript = str(op.attrs.get("subscript", ""))
 
@@ -1532,7 +1516,7 @@ def _view_base_coords(
     return tuple(base_coords)
 
 
-def _emit_reduce(local: str, op: SSAOperationIR, ctx: _EmitContext) -> str:
+def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
     operator = op.opcode[len("reduce.") :]
     axis = op.attrs.get("axis")
     axis = None if axis is None else int(axis)
@@ -1552,7 +1536,7 @@ def _emit_reduce(local: str, op: SSAOperationIR, ctx: _EmitContext) -> str:
     result_type = op.results[0].type
     init = _REDUCE_INIT[operator]
 
-    if ctx.target.backend == BackendName.TRITON and axis is not None:
+    if ctx.target.backend == Target.TRITON and axis is not None:
         dtype = _normalize_dtype(result_type.dtype or "float32")
         init = f"tl.full((BLOCK,), {init}, tl.{dtype})"
 
@@ -1585,12 +1569,12 @@ def _emit_reduce(local: str, op: SSAOperationIR, ctx: _EmitContext) -> str:
     )
     ctx.lines.extend(_indent_lines(inner_lines, ctx.target))
 
-    if ctx.target.backend == BackendName.CUDA:
+    if ctx.target.backend == Target.CUDA:
         ctx.lines.append("}")
     return acc_expr
 
 
-def _emit_scf_for(local: str, op: SSAOperationIR, ctx: _EmitContext) -> str | None:
+def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | None:
     lower = _emit_loop_bound(op.operands[0], ctx)
     upper = _emit_loop_bound(op.operands[1], ctx)
     step = _emit_loop_bound(op.operands[2], ctx)
@@ -1604,7 +1588,7 @@ def _emit_scf_for(local: str, op: SSAOperationIR, ctx: _EmitContext) -> str | No
         init = _emit_value(initial_name, ctx)
 
         if (
-            ctx.target.backend == BackendName.TRITON
+            ctx.target.backend == Target.TRITON
             and ctx.mask_expr is not None
             and _needs_triton_block_init(initial_name, value, ctx)
         ):
@@ -1672,7 +1656,7 @@ def _emit_scf_for(local: str, op: SSAOperationIR, ctx: _EmitContext) -> str | No
 
     ctx.lines.extend(_indent_lines(body_lines, ctx.target))
 
-    if ctx.target.backend == BackendName.CUDA:
+    if ctx.target.backend == Target.CUDA:
         ctx.lines.append("}")
     return ctx.memo.get(result_names[0]) if result_names else None
 
@@ -1688,7 +1672,7 @@ def _is_scalar_seed(name: str, ctx: _EmitContext) -> bool:
     return op.results[0].type.kind == "scalar"
 
 
-def _needs_triton_block_init(name: str, value: SSAValueIR, ctx: _EmitContext) -> bool:
+def _needs_triton_block_init(name: str, value: ssa.Value, ctx: _EmitContext) -> bool:
     if _is_scalar_seed(name, ctx):
         return True
 
@@ -1710,7 +1694,7 @@ def _emit_loop_bound(name: str, ctx: _EmitContext) -> str:
     return _emit_value(name, ctx)
 
 
-def _emit_scf_if_statement(op: SSAOperationIR, ctx: _EmitContext) -> None:
+def _emit_scf_if_statement(op: ssa.Operation, ctx: _EmitContext) -> None:
     condition = _emit_value(op.operands[0], ctx)
     ctx.lines.append(_if_header(condition, ctx.target))
     then_lines: list[str] = []
@@ -1730,9 +1714,7 @@ def _emit_scf_if_statement(op: SSAOperationIR, ctx: _EmitContext) -> None:
     )
 
     if len(op.regions) > 1:
-        ctx.lines.append(
-            "} else {" if ctx.target.backend == BackendName.CUDA else "else:"
-        )
+        ctx.lines.append("} else {" if ctx.target.backend == Target.CUDA else "else:")
         else_lines: list[str] = []
         else_ctx = ctx.child(
             lines=else_lines,
@@ -1748,11 +1730,11 @@ def _emit_scf_if_statement(op: SSAOperationIR, ctx: _EmitContext) -> None:
             _indent_lines(else_lines or _empty_block_lines(ctx.target), ctx.target)
         )
 
-    if ctx.target.backend == BackendName.CUDA:
+    if ctx.target.backend == Target.CUDA:
         ctx.lines.append("}")
 
 
-def _emit_scf_if_results(op: SSAOperationIR, ctx: _EmitContext) -> None:
+def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
     result_locals: dict[str, str] = {}
 
     for result in op.results:
@@ -1775,7 +1757,7 @@ def _emit_scf_if_results(op: SSAOperationIR, ctx: _EmitContext) -> None:
     for region_index, region in enumerate(op.regions[:2]):
         if region_index == 1:
             ctx.lines.append(
-                "} else {" if ctx.target.backend == BackendName.CUDA else "else:"
+                "} else {" if ctx.target.backend == Target.CUDA else "else:"
             )
 
         lines: list[str] = []
@@ -1808,11 +1790,11 @@ def _emit_scf_if_results(op: SSAOperationIR, ctx: _EmitContext) -> None:
             _indent_lines(lines or _empty_block_lines(ctx.target), ctx.target)
         )
 
-    if ctx.target.backend == BackendName.CUDA:
+    if ctx.target.backend == Target.CUDA:
         ctx.lines.append("}")
 
 
-def _scf_if_expr(op: SSAOperationIR, ctx: _EmitContext) -> str:
+def _scf_if_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     condition = _emit_value(op.operands[0], ctx)
 
     if len(op.regions) == 1:
@@ -1828,9 +1810,9 @@ def _scf_if_expr(op: SSAOperationIR, ctx: _EmitContext) -> str:
 
 
 def _scf_if_element(
-    op: SSAOperationIR, coords: tuple[str, ...], ctx: _EmitContext
+    op: ssa.Operation, coords: tuple[str, ...], ctx: _EmitContext
 ) -> str:
-    if ctx.target.backend != BackendName.TRITON:
+    if ctx.target.backend != Target.TRITON:
         return _scf_if_element_control_flow(op, coords, ctx)
 
     condition = _emit_value(op.operands[0], ctx)
@@ -1848,7 +1830,7 @@ def _scf_if_element(
 
 
 def _scf_if_element_control_flow(
-    op: SSAOperationIR, coords: tuple[str, ...], ctx: _EmitContext
+    op: ssa.Operation, coords: tuple[str, ...], ctx: _EmitContext
 ) -> str:
     if not op.results:
         _emit_scf_if_statement(op, ctx)
@@ -1875,7 +1857,7 @@ def _scf_if_element_control_flow(
     for region_index, region in enumerate(op.regions[:2]):
         if region_index == 1:
             ctx.lines.append(
-                "} else {" if ctx.target.backend == BackendName.CUDA else "else:"
+                "} else {" if ctx.target.backend == Target.CUDA else "else:"
             )
 
         lines: list[str] = []
@@ -1907,17 +1889,15 @@ def _scf_if_element_control_flow(
         )
 
     if len(op.regions) == 1:
-        ctx.lines.append(
-            "} else {" if ctx.target.backend == BackendName.CUDA else "else:"
-        )
+        ctx.lines.append("} else {" if ctx.target.backend == Target.CUDA else "else:")
         ctx.lines.extend(_indent_lines(_empty_block_lines(ctx.target), ctx.target))
 
-    if ctx.target.backend == BackendName.CUDA:
+    if ctx.target.backend == Target.CUDA:
         ctx.lines.append("}")
     return result_expr
 
 
-def _region_yield_expr(region: SSABlockIR, ctx: _EmitContext) -> str:
+def _region_yield_expr(region: ssa.Block, ctx: _EmitContext) -> str:
     lines: list[str] = []
     child = ctx.child(
         lines=lines,
@@ -1946,7 +1926,7 @@ def _region_yield_expr(region: SSABlockIR, ctx: _EmitContext) -> str:
 
 
 def _region_yield_element(
-    region: SSABlockIR, coords: tuple[str, ...], ctx: _EmitContext
+    region: ssa.Block, coords: tuple[str, ...], ctx: _EmitContext
 ) -> str:
     lines: list[str] = []
     child = ctx.child(
@@ -1984,8 +1964,8 @@ def _tensor_value(name: str, ctx: _EmitContext) -> str:
 
     if info.ndim == 0:
         if _is_bool_scalar_value(name, ctx) and ctx.target.backend in {
-            BackendName.TILELANG,
-            BackendName.TVM,
+            Target.TILELANG,
+            Target.TVM,
         }:
             return f"({name} != 0)"
         return name
@@ -2015,10 +1995,10 @@ def _load_tensor(name: str, view_index: str, ctx: _EmitContext) -> str:
         _source_index_for_value(info, view_index, ctx, level=_dtype_level(name, ctx)),
     )
     source_index = _materialize_index_expr(source_index, ctx)
-    base_mask = ctx.mask_expr if ctx.target.backend == BackendName.TRITON else None
+    base_mask = ctx.mask_expr if ctx.target.backend == Target.TRITON else None
 
     if (
-        ctx.target.backend == BackendName.TRITON
+        ctx.target.backend == Target.TRITON
         and base_mask is not None
         and ctx.target.index_name not in source_index
         and "offsets" not in source_index
@@ -2086,9 +2066,9 @@ def _source_index_from_offsets(
     ctx: _EmitContext,
 ) -> str | None:
     if ctx.target.backend not in {
-        BackendName.CUDA,
-        BackendName.TILELANG,
-        BackendName.TVM,
+        Target.CUDA,
+        Target.TILELANG,
+        Target.TVM,
     }:
         return None
 
@@ -2132,7 +2112,7 @@ def _store_mask(
     *,
     ctx: _EmitContext,
 ) -> str | None:
-    if target.backend in {BackendName.TILELANG, BackendName.TVM}:
+    if target.backend in {Target.TILELANG, Target.TVM}:
         template_mask = _mask_from_template_offsets(info, view_index, ctx)
         masks = []
 
@@ -2325,9 +2305,9 @@ _TVM_INDEX_LITERAL_RE = re.compile(
 
 
 def _target_index_expr(target: _Target, expr: str) -> str:
-    rewritten = _rewrite_index_math(expr, cuda=target.backend == BackendName.CUDA)
+    rewritten = _rewrite_index_math(expr, cuda=target.backend == Target.CUDA)
 
-    if target.backend == BackendName.TVM:
+    if target.backend == Target.TVM:
         return _tvm_index_literals(rewritten)
     return rewritten
 
@@ -2340,9 +2320,9 @@ def _materialize_index_expr(
     expr: str, ctx: _EmitContext, *, threshold: int = 96
 ) -> str:
     if ctx.target.backend not in {
-        BackendName.CUDA,
-        BackendName.TILELANG,
-        BackendName.TVM,
+        Target.CUDA,
+        Target.TILELANG,
+        Target.TVM,
     }:
         return expr
 
@@ -2356,7 +2336,7 @@ def _materialize_index_expr(
 
     local = _fresh_temp(ctx, "nt_idx")
     ctx.lines.append(
-        ctx.target.local_decl(SSATypeIR("index", dtype="index"), local, expr)
+        ctx.target.local_decl(ssa.Type("index", dtype="index"), local, expr)
     )
 
     if ctx.materialized is not None:
@@ -2371,9 +2351,9 @@ def _materialize_bool_expr(
         return None
 
     if ctx.target.backend not in {
-        BackendName.CUDA,
-        BackendName.TILELANG,
-        BackendName.TVM,
+        Target.CUDA,
+        Target.TILELANG,
+        Target.TVM,
     }:
         return expr
 
@@ -2382,7 +2362,7 @@ def _materialize_bool_expr(
 
     local = _fresh_temp(ctx, "nt_pred")
     ctx.lines.append(
-        ctx.target.local_decl(SSATypeIR("scalar", dtype="bool"), local, expr)
+        ctx.target.local_decl(ssa.Type("scalar", dtype="bool"), local, expr)
     )
 
     return local
@@ -2420,7 +2400,7 @@ def _default_tensor_index(name: str, ctx: _EmitContext) -> str:
     return ctx.index_expr
 
 
-def _store_index(op: SSAOperationIR, ctx: _EmitContext) -> str:
+def _store_index(op: ssa.Operation, ctx: _EmitContext) -> str:
     indices = op.attrs.get("indices", ())
 
     if isinstance(indices, str):
@@ -2436,7 +2416,7 @@ def _store_index(op: SSAOperationIR, ctx: _EmitContext) -> str:
 def _emit_index_value(name: str, ctx: _EmitContext) -> str:
     value = _emit_value(name, ctx)
 
-    if ctx.target.backend == BackendName.CUDA and not _integer_expr(value):
+    if ctx.target.backend == Target.CUDA and not _integer_expr(value):
         return f"static_cast<int64_t>({value})"
     return value
 
@@ -2446,7 +2426,7 @@ def _integer_expr(value: str) -> bool:
 
 
 def _render_triton_module(
-    kernel: KernelIR,
+    kernel: Kernel,
     target: _Target,
     variables: tuple[str, ...],
     outputs: tuple[str, ...],
@@ -2465,10 +2445,10 @@ def _render_triton_module(
     launch_params = ", ".join((*variables, *outputs, *shape_params))
     kernel_args = ",\n        ".join((*variables, *outputs, *shape_params))
 
-    return f'''"""Triton lowering generated by NineToothed from SSAProgramIR.
+    return f'''"""Triton lowering generated by NineToothed from ssa.Program.
 
 Kernel: {kernel.kernel_name}
-Lowering IR: SSAProgramIR
+Lowering IR: ssa.Program
 """
 
 import triton
@@ -2499,7 +2479,7 @@ def launch_{kernel.kernel_name}({launch_params}):
 
 
 def _render_cuda_module(
-    kernel: KernelIR,
+    kernel: Kernel,
     target: _Target,
     variables: tuple[str, ...],
     outputs: tuple[str, ...],
@@ -2535,7 +2515,7 @@ def _render_cuda_module(
 
     return f"""// Generated by NineToothed's unified CUDA SSA backend.
 // Kernel: {kernel.kernel_name}
-// Lowering IR: SSAProgramIR
+// Lowering IR: ssa.Program
 
 #include <math.h>
 #include <cuda_runtime.h>
@@ -2569,7 +2549,7 @@ def _render_c_signature_params(params: list[str]) -> str:
 
 
 def _render_tilelang_module(
-    kernel: KernelIR,
+    kernel: Kernel,
     target: _Target,
     variables: tuple[str, ...],
     outputs: tuple[str, ...],
@@ -2577,7 +2557,7 @@ def _render_tilelang_module(
     total: str,
     body: str,
     tensors: Mapping[str, _TensorInfo],
-    value_types: Mapping[str, SSATypeIR],
+    value_types: Mapping[str, ssa.Type],
 ) -> str:
     total = _rewrite_index_math(total, cuda=False)
     body = _rewrite_index_math(body, cuda=False)
@@ -2596,7 +2576,7 @@ def _render_tilelang_module(
         for name in (*variables, *outputs)
     )
 
-    return f'''"""TileLang lowering generated by NineToothed from SSAProgramIR.
+    return f'''"""TileLang lowering generated by NineToothed from ssa.Program.
 
 Kernel: {kernel.kernel_name}
 """
@@ -2629,7 +2609,7 @@ def build_{kernel.kernel_name}():
 
 
 def _render_tvm_module(
-    kernel: KernelIR,
+    kernel: Kernel,
     target: _Target,
     variables: tuple[str, ...],
     outputs: tuple[str, ...],
@@ -2637,7 +2617,7 @@ def _render_tvm_module(
     total: str,
     body: str,
     tensors: Mapping[str, _TensorInfo],
-    value_types: Mapping[str, SSATypeIR],
+    value_types: Mapping[str, ssa.Type],
 ) -> str:
     total = _rewrite_index_math(total, cuda=False)
     body = _rewrite_index_math(body, cuda=False)
@@ -2664,7 +2644,7 @@ def _render_tvm_module(
         for name in (*variables, *outputs)
     )
 
-    return f'''"""TVMScript lowering generated by NineToothed from SSAProgramIR.
+    return f'''"""TVMScript lowering generated by NineToothed from ssa.Program.
 
 Kernel: {kernel.kernel_name}
 """
@@ -2702,7 +2682,7 @@ def build_{kernel.kernel_name}():
 '''
 
 
-def _walk_ops(operations: tuple[SSAOperationIR, ...]):
+def _walk_ops(operations: tuple[ssa.Operation, ...]):
     for op in operations:
         yield op
 
@@ -2711,8 +2691,8 @@ def _walk_ops(operations: tuple[SSAOperationIR, ...]):
 
 
 def _atomic_output_tensors(
-    operations: tuple[SSAOperationIR, ...],
-    op_by_result: Mapping[str, SSAOperationIR],
+    operations: tuple[ssa.Operation, ...],
+    op_by_result: Mapping[str, ssa.Operation],
 ) -> tuple[str, ...]:
     outputs: list[str] = []
 
@@ -2732,7 +2712,7 @@ def _atomic_output_tensors(
     return tuple(outputs)
 
 
-def _program_value_types(program: SSAProgramIR) -> dict[str, SSATypeIR]:
+def _program_value_types(program: ssa.Program) -> dict[str, ssa.Type]:
     value_types = {
         value.name: value.type for value in (*program.inputs, *program.outputs)
     }
@@ -2742,7 +2722,7 @@ def _program_value_types(program: SSAProgramIR) -> dict[str, SSATypeIR]:
     return value_types
 
 
-def _collect_value_types(block: SSABlockIR, value_types: dict[str, SSATypeIR]) -> None:
+def _collect_value_types(block: ssa.Block, value_types: dict[str, ssa.Type]) -> None:
     value_types.update({arg.name: arg.type for arg in block.args})
 
     for operation in block.operations:
@@ -2752,7 +2732,7 @@ def _collect_value_types(block: SSABlockIR, value_types: dict[str, SSATypeIR]) -
             _collect_value_types(region, value_types)
 
 
-def _tensor_info(tensor: TensorTypeIR) -> _TensorInfo:
+def _tensor_info(tensor: TensorSpec) -> _TensorInfo:
     attrs = dict(tensor.attrs)
     source_shape = tuple(str(dim) for dim in attrs.get("source_shape", ()))
     source_strides = tuple(str(dim) for dim in attrs.get("source_strides", ()))
@@ -2803,8 +2783,8 @@ def _source_axes(
 
 
 def _shape_params(
-    tensors: tuple[TensorTypeIR, ...],
-    operations: tuple[SSAOperationIR, ...] = (),
+    tensors: tuple[TensorSpec, ...],
+    operations: tuple[ssa.Operation, ...] = (),
 ) -> tuple[str, ...]:
     include_source_shape = any(
         op.opcode == "shape.dim" and bool(op.attrs.get("source"))
@@ -2883,7 +2863,7 @@ def _value_axes(name: str, ctx: _EmitContext) -> tuple[str, ...]:
     return ctx.output_axes
 
 
-def _value_type_axes(type_: SSATypeIR | None) -> tuple[str, ...]:
+def _value_type_axes(type_: ssa.Type | None) -> tuple[str, ...]:
     if type_ is None:
         return ()
     return tuple(str(dim) for dim in type_.shape if str(dim))
@@ -2903,7 +2883,7 @@ def _axis_offset_expr(
         return _target_index_expr(target, f"({index_expr} % {axes[dim]})")
 
     stride = _product(axes[dim + 1 :])
-    div = "/" if target.backend == BackendName.CUDA else "//"
+    div = "/" if target.backend == Target.CUDA else "//"
     base = f"({index_expr} {div} ({stride}))"
     expr = base if dim == 0 else f"({base} % {axes[dim]})"
 
@@ -3093,20 +3073,20 @@ def _indent_block(text: str, prefix: str) -> str:
 
 
 def _indent_unit(target: _Target) -> str:
-    return "    " if target.backend != BackendName.CUDA else "    "
+    return "    " if target.backend != Target.CUDA else "    "
 
 
 def _if_header(condition: str, target: _Target) -> str:
-    if target.backend == BackendName.CUDA:
+    if target.backend == Target.CUDA:
         return f"if ({condition}) {{"
     return f"if {condition}:"
 
 
 def _empty_block_lines(target: _Target) -> list[str]:
-    return ["/* no-op */"] if target.backend == BackendName.CUDA else ["pass"]
+    return ["/* no-op */"] if target.backend == Target.CUDA else ["pass"]
 
 
-def _zero_value(type_: SSATypeIR, target: _Target) -> str:
+def _zero_value(type_: ssa.Type, target: _Target) -> str:
     if type_.kind == "index" or _normalize_dtype(type_.dtype) in {
         "index",
         "int64",
@@ -3115,26 +3095,26 @@ def _zero_value(type_: SSATypeIR, target: _Target) -> str:
         return "0"
 
     if _normalize_dtype(type_.dtype) == "bool":
-        return "false" if target.backend == BackendName.CUDA else "False"
+        return "false" if target.backend == Target.CUDA else "False"
     return "0.0"
 
 
 def _uses_mutable_scalar_slots(target: _Target) -> bool:
-    return target.backend in {BackendName.TILELANG, BackendName.TVM}
+    return target.backend in {Target.TILELANG, Target.TVM}
 
 
 def _mutable_scalar_decl_lines(
     target: _Target,
-    type_: SSATypeIR,
+    type_: ssa.Type,
     name: str,
     init: str,
 ) -> list[str]:
     dtype = _normalize_dtype(type_.dtype)
 
-    if target.backend == BackendName.TILELANG:
+    if target.backend == Target.TILELANG:
         return [f'{name} = T.alloc_var("{dtype}", {init})']
 
-    if target.backend == BackendName.TVM:
+    if target.backend == Target.TVM:
         return [
             f'{name} = T.alloc_buffer((1,), "{dtype}", scope="local")',
             f"{name}[0] = {init}",
@@ -3143,7 +3123,7 @@ def _mutable_scalar_decl_lines(
 
 
 def _mutable_scalar_read(target: _Target, name: str) -> str:
-    if target.backend == BackendName.TVM:
+    if target.backend == Target.TVM:
         return f"{name}[0]"
     return name
 
@@ -3151,12 +3131,12 @@ def _mutable_scalar_read(target: _Target, name: str) -> str:
 def _assign_scalar(
     target: _Target, name: str, value: str, *, mutable: bool = False
 ) -> str:
-    lhs = f"{name}[0]" if mutable and target.backend == BackendName.TVM else name
+    lhs = f"{name}[0]" if mutable and target.backend == Target.TVM else name
 
-    return f"{lhs} = {value}" + (";" if target.backend == BackendName.CUDA else "")
+    return f"{lhs} = {value}" + (";" if target.backend == Target.CUDA else "")
 
 
-def _resolved_cast_dtype(op: SSAOperationIR, ctx: _EmitContext) -> str:
+def _resolved_cast_dtype(op: ssa.Operation, ctx: _EmitContext) -> str:
     attr = op.attrs.get("dtype")
 
     if isinstance(attr, str):
@@ -3274,7 +3254,7 @@ def _tile_dtype(dtype: str | None) -> str:
     }.get(dtype, "T.float32")
 
 
-def _tile_param_dtype(name: str, value_types: Mapping[str, SSATypeIR]) -> str:
+def _tile_param_dtype(name: str, value_types: Mapping[str, ssa.Type]) -> str:
     type_ = value_types.get(name)
 
     if type_ is not None and type_.kind == "scalar" and type_.dtype:
@@ -3284,7 +3264,7 @@ def _tile_param_dtype(name: str, value_types: Mapping[str, SSATypeIR]) -> str:
     return "T.int64"
 
 
-def _entrypoint(kernel: KernelIR, backend: BackendName) -> str:
-    if backend in {BackendName.TILELANG, BackendName.TVM}:
+def _entrypoint(kernel: Kernel, backend: Target) -> str:
+    if backend in {Target.TILELANG, Target.TVM}:
         return f"build_{kernel.kernel_name}"
     return f"launch_{kernel.kernel_name}"

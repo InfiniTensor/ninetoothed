@@ -9,10 +9,10 @@ import pytest
 
 import ninetoothed.language as ntl
 from ninetoothed import Symbol, Tensor, block_size
-from ninetoothed.backends import lower as lower_kernel_ir
-from ninetoothed.ir import KernelIR, TensorTypeIR
+from ninetoothed.backends import emit as emit_kernel
+from ninetoothed.frontend.python import from_source
+from ninetoothed.ir import Kernel, TensorSpec
 from ninetoothed.lowering import lower as lower_application
-from ninetoothed.ssa import source_to_ssa
 
 
 def arrangement(x, out, BLOCK_SIZE=block_size()):
@@ -83,12 +83,12 @@ def helper_call_application(x, y, out):
 
 
 def _ssa_kernel(
-    source: str, kernel_name: str, tensors: tuple[TensorTypeIR, ...]
-) -> KernelIR:
-    ssa = source_to_ssa(source, tensors, kind=kernel_name)
+    source: str, kernel_name: str, tensors: tuple[TensorSpec, ...]
+) -> Kernel:
+    ssa = from_source(source, tensors, kind=kernel_name)
     assert ssa is not None
 
-    return KernelIR(
+    return Kernel(
         kernel_name=kernel_name,
         source=source,
         source_language="ninetoothed-python",
@@ -121,7 +121,7 @@ class TestSSAFirstBackendLowering:
 
         for filename in ("triton.py", "cuda.py", "tilelang.py", "tvm.py"):
             source = (backend_dir / filename).read_text(encoding="utf-8")
-            assert "lower_unified_ssa_artifact" in source
+            assert "emit" in source
 
             for token in forbidden:
                 assert token not in source
@@ -146,15 +146,14 @@ class TestSSAFirstBackendLowering:
                 kernel_name=f"ssa_fused_expr_{backend}",
             )
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert "select.where" in str(artifact.metadata["ssa"])
 
             for fragment in fragments:
                 assert fragment in artifact.primary_source
 
-    def test_public_lower_does_not_use_program_ir_by_default_for_linear_backends(self):
+    def test_public_lower_uses_ssa_by_default_for_linear_backends(self):
         expected = {
             "triton": ("ssa-unified-triton-emitter", "@triton.jit"),
             "cuda": ("ssa-unified-cuda-emitter", "out[index] = v0;"),
@@ -174,10 +173,9 @@ class TestSSAFirstBackendLowering:
                 kernel_name=f"ssa_first_add_{backend}",
             )
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert "program_kind" not in artifact.metadata
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert "ssa" in artifact.metadata
             assert source_fragment in artifact.primary_source
 
@@ -308,7 +306,7 @@ class TestSSAFirstBackendLowering:
         assert artifact.metadata["source_route"] == "ssa-unified-triton-emitter"
         assert "linalg.matmul" not in str(artifact.metadata.get("ssa", ""))
         assert "@triton.jit" in artifact.primary_source
-        assert "SSAProgramIR" in artifact.primary_source
+        assert "ssa.Program" in artifact.primary_source
 
     def test_public_triton_lower_raises_when_ssa_is_unavailable(self):
         with pytest.raises(Exception, match="Cannot lower `unsupported_application`"):
@@ -320,29 +318,16 @@ class TestSSAFirstBackendLowering:
                 kernel_name="ssa_unavailable_no_generation_fallback",
             )
 
-    def test_public_lower_does_not_use_legacy_program_ir_flag_for_artifact_backend_path(
-        self,
-    ):
-        with pytest.raises(Exception, match="Cannot lower `unsupported_application`"):
-            lower_application(
-                arrangement,
-                unsupported_application,
-                (Tensor(1), Tensor(1)),
-                backend="cuda",
-                kernel_name="ssa_unavailable_no_program_ir_fallback",
-                legacy_program_ir=True,
-            )
-
-    def test_source_to_ssa_generates_extended_linear_tensor_ops_for_native_backends(
+    def test_from_source_generates_extended_linear_tensor_ops_for_native_backends(
         self,
     ):
         cases = {
             "where": (
                 "\ndef where_application(x, y, out):\n    out = where(x > y, x, y)\n",
                 (
-                    TensorTypeIR("x", 1, dtype="float32", shape=("n",)),
-                    TensorTypeIR("y", 1, dtype="float32", shape=("n",)),
-                    TensorTypeIR("out", 1, dtype="float32", shape=("n",)),
+                    TensorSpec("x", 1, dtype="float32", shape=("n",)),
+                    TensorSpec("y", 1, dtype="float32", shape=("n",)),
+                    TensorSpec("out", 1, dtype="float32", shape=("n",)),
                 ),
                 {
                     "triton": "tl.where",
@@ -353,7 +338,7 @@ class TestSSAFirstBackendLowering:
             ),
             "full": (
                 "\ndef full_application(out):\n    out = full((n,), 2.5)\n",
-                (TensorTypeIR("out", 1, dtype="float32", shape=("n",)),),
+                (TensorSpec("out", 1, dtype="float32", shape=("n",)),),
                 {
                     "triton": "v1 = v0",
                     "cuda": "float v1 = v0;",
@@ -363,7 +348,7 @@ class TestSSAFirstBackendLowering:
             ),
             "zeros": (
                 "\ndef zeros_application(out):\n    out = zeros((n,))\n",
-                (TensorTypeIR("out", 1, dtype="float32", shape=("n",)),),
+                (TensorSpec("out", 1, dtype="float32", shape=("n",)),),
                 {
                     "triton": "v0 = 0.0",
                     "cuda": "float v0 = 0.0;",
@@ -374,8 +359,8 @@ class TestSSAFirstBackendLowering:
             "view": (
                 "\ndef view_application(x, out):\n    out = x[:, :]\n",
                 (
-                    TensorTypeIR("x", 2, dtype="float32", shape=("rows", "cols")),
-                    TensorTypeIR("out", 2, dtype="float32", shape=("rows", "cols")),
+                    TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
+                    TensorSpec("out", 2, dtype="float32", shape=("rows", "cols")),
                 ),
                 {
                     "triton": "tl.load(x + ((index // (cols)))",
@@ -387,8 +372,8 @@ class TestSSAFirstBackendLowering:
             "extract": (
                 "\ndef extract_application(x, out):\n    out = x[0]\n",
                 (
-                    TensorTypeIR("x", 1, dtype="float32", shape=("n",)),
-                    TensorTypeIR("out", 1, dtype="float32", shape=("n",)),
+                    TensorSpec("x", 1, dtype="float32", shape=("n",)),
+                    TensorSpec("out", 1, dtype="float32", shape=("n",)),
                 ),
                 {
                     "triton": "tl.load(x + v0",
@@ -400,8 +385,8 @@ class TestSSAFirstBackendLowering:
             "tanh": (
                 "\ndef tanh_application(x, out):\n    out = tanh(x)\n",
                 (
-                    TensorTypeIR("x", 1, dtype="float32", shape=("n",)),
-                    TensorTypeIR("out", 1, dtype="float32", shape=("n",)),
+                    TensorSpec("x", 1, dtype="float32", shape=("n",)),
+                    TensorSpec("out", 1, dtype="float32", shape=("n",)),
                 ),
                 {
                     "triton": "tl.tanh",
@@ -422,22 +407,21 @@ class TestSSAFirstBackendLowering:
             kernel = _ssa_kernel(source, f"ssa_linear_{case_name}", tensors)
 
             for backend, route in routes.items():
-                artifact = lower_kernel_ir(kernel, backend)
+                artifact = emit_kernel(kernel, backend)
                 assert artifact.executable
-                assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+                assert artifact.metadata["lowering_ir"] == "ssa.Program"
                 assert artifact.metadata["source_route"] == route
-                assert not artifact.metadata["program_ir_compat"]
                 assert fragments[backend] in artifact.primary_source
                 assert artifact.metadata["source_route"] != "generic-ssa-emitter"
                 assert artifact.metadata["source_route"] != "existing-triton-generator"
 
-    def test_source_to_ssa_generates_shape_dim_for_native_backends(self):
+    def test_from_source_generates_shape_dim_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef shape_dim_application(x, out):\n    out = x.shape[0]\n",
             "ssa_shape_dim",
             (
-                TensorTypeIR("x", 2, dtype="float32", shape=("rows", "cols")),
-                TensorTypeIR("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
+                TensorSpec("out", 1, dtype="float32", shape=("n",)),
             ),
         )
         operations = kernel.ssa.blocks[0].operations
@@ -463,23 +447,22 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragments) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert artifact.metadata["source_route"] != "generic-ssa-emitter"
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_generates_tensor_stride_for_native_backends(self):
+    def test_from_source_generates_tensor_stride_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef stride_application(x, out):\n    out = x.stride(0) + x.stride(1)\n",
             "ssa_tensor_stride",
             (
-                TensorTypeIR("x", 2, dtype="float32", shape=("rows", "cols")),
-                TensorTypeIR("out", 1, dtype="int64", shape=("n",)),
+                TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
+                TensorSpec("out", 1, dtype="int64", shape=("n",)),
             ),
         )
         operations = kernel.ssa.blocks[0].operations
@@ -511,24 +494,23 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragments) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert "lower_stride" not in artifact.primary_source
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_generates_maximum_minimum_for_native_backends(self):
+    def test_from_source_generates_maximum_minimum_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef max_min_application(x, y, out):\n    tmp = maximum(x, y)\n    out = minimum(tmp, y)\n",
             "ssa_max_min",
             (
-                TensorTypeIR("x", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("y", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec("x", 1, dtype="float32", shape=("n",)),
+                TensorSpec("y", 1, dtype="float32", shape=("n",)),
+                TensorSpec("out", 1, dtype="float32", shape=("n",)),
             ),
         )
         assert [operation.opcode for operation in kernel.ssa.blocks[0].operations] == [
@@ -544,24 +526,23 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragments) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert artifact.metadata["source_route"] != "generic-ssa-emitter"
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_generates_common_math_calls_for_native_backends(self):
+    def test_from_source_generates_common_math_calls_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef common_math_application(x, y, out):\n    out = log1p(abs(x)) + atan2(x, y) + pow(abs(y) + 0.25, 0.5)\n",
             "ssa_common_math",
             (
-                TensorTypeIR("x", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("y", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec("x", 1, dtype="float32", shape=("n",)),
+                TensorSpec("y", 1, dtype="float32", shape=("n",)),
+                TensorSpec("out", 1, dtype="float32", shape=("n",)),
             ),
         )
         opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
@@ -582,25 +563,24 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragments) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert artifact.metadata["source_route"] != "generic-ssa-emitter"
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_generates_python_expression_syntax_for_native_backends(self):
+    def test_from_source_generates_python_expression_syntax_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef python_expression_syntax_application(x, y, z, out):\n    tmp: float = x if 0 < 1 < 2 else y\n    pass\n    out = tmp + z\n    return out\n",
             "ssa_python_expression_syntax",
             (
-                TensorTypeIR("x", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("y", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("z", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec("x", 1, dtype="float32", shape=("n",)),
+                TensorSpec("y", 1, dtype="float32", shape=("n",)),
+                TensorSpec("z", 1, dtype="float32", shape=("n",)),
+                TensorSpec("out", 1, dtype="float32", shape=("n",)),
             ),
         )
         opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
@@ -635,24 +615,23 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragments) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_generates_method_math_and_dim_alias_for_native_backends(
+    def test_from_source_generates_method_math_and_dim_alias_for_native_backends(
         self,
     ):
         kernel = _ssa_kernel(
             "\ndef method_math_application(x, out):\n    denom = x.sqrt().sum(dim=0)\n    out = x.exp() / denom\n",
             "ssa_method_math",
             (
-                TensorTypeIR("x", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec("x", 1, dtype="float32", shape=("n",)),
+                TensorSpec("out", 1, dtype="float32", shape=("n",)),
             ),
         )
         opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
@@ -684,22 +663,21 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragments) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_generates_namespace_math_calls_for_native_backends(self):
+    def test_from_source_generates_namespace_math_calls_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef namespace_math_application(x, out):\n    out = math.exp(x) + tl.sqrt(x)\n",
             "ssa_namespace_math",
             (
-                TensorTypeIR("x", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec("x", 1, dtype="float32", shape=("n",)),
+                TensorSpec("out", 1, dtype="float32", shape=("n",)),
             ),
         )
         opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
@@ -712,24 +690,23 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragments) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert "math[" not in artifact.primary_source
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_generates_extended_math_calls_for_native_backends(self):
+    def test_from_source_generates_extended_math_calls_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef extended_math_application(x, y, out):\n    out = acos(x) + asin(y) + atan(x) + log10(abs(y) + 1.0) + expm1(x) + sinh(x) + cosh(y)\n",
             "ssa_extended_math",
             (
-                TensorTypeIR("x", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("y", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec("x", 1, dtype="float32", shape=("n",)),
+                TensorSpec("y", 1, dtype="float32", shape=("n",)),
+                TensorSpec("out", 1, dtype="float32", shape=("n",)),
             ),
         )
         opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
@@ -765,24 +742,23 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragments) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert artifact.metadata["source_route"] != "generic-ssa-emitter"
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_generates_bitwise_shifts_for_native_backends(self):
+    def test_from_source_generates_bitwise_shifts_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef bitwise_shift_application(x, y, out):\n    out = (x << 1) ^ (y >> 1)\n",
             "ssa_bitwise_shift",
             (
-                TensorTypeIR("x", 1, dtype="int64", shape=("n",)),
-                TensorTypeIR("y", 1, dtype="int64", shape=("n",)),
-                TensorTypeIR("out", 1, dtype="int64", shape=("n",)),
+                TensorSpec("x", 1, dtype="int64", shape=("n",)),
+                TensorSpec("y", 1, dtype="int64", shape=("n",)),
+                TensorSpec("out", 1, dtype="int64", shape=("n",)),
             ),
         )
         opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
@@ -797,23 +773,22 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, route in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert artifact.metadata["source_route"] != "generic-ssa-emitter"
             assert "<<" in artifact.primary_source
             assert ">>" in artifact.primary_source
             assert "^" in artifact.primary_source
 
-    def test_source_to_ssa_preserves_subscript_store_indices_for_native_backends(self):
+    def test_from_source_preserves_subscript_store_indices_for_native_backends(self):
         cases = {
             "one_dimensional": (
                 "\ndef indexed_store_application(x, out):\n    i = x.offsets(0)\n    out[i] = x\n",
                 (
-                    TensorTypeIR("x", 1, dtype="float32", shape=("n",)),
-                    TensorTypeIR("out", 1, dtype="float32", shape=("n",)),
+                    TensorSpec("x", 1, dtype="float32", shape=("n",)),
+                    TensorSpec("out", 1, dtype="float32", shape=("n",)),
                 ),
                 {
                     "triton": "tl.store(out + v0",
@@ -825,8 +800,8 @@ class TestSSAFirstBackendLowering:
             "two_dimensional": (
                 "\ndef indexed_store_2d_application(x, out):\n    i = x.offsets(0)\n    j = x.offsets(1)\n    out[i, j] = x\n",
                 (
-                    TensorTypeIR("x", 2, dtype="float32", shape=("rows", "cols")),
-                    TensorTypeIR("out", 2, dtype="float32", shape=("rows", "cols")),
+                    TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
+                    TensorSpec("out", 2, dtype="float32", shape=("rows", "cols")),
                 ),
                 {
                     "triton": "tl.store(out + (v0) * (cols) + (v1)",
@@ -848,20 +823,19 @@ class TestSSAFirstBackendLowering:
             assert "'indices'" in str(kernel.ssa)
 
             for backend, route in routes.items():
-                artifact = lower_kernel_ir(kernel, backend)
+                artifact = emit_kernel(kernel, backend)
                 assert artifact.executable
-                assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+                assert artifact.metadata["lowering_ir"] == "ssa.Program"
                 assert artifact.metadata["source_route"] == route
-                assert not artifact.metadata["program_ir_compat"]
                 assert fragments[backend] in artifact.primary_source
 
-    def test_source_to_ssa_expands_subscript_augassign_for_native_backends(self):
+    def test_from_source_expands_subscript_augassign_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef indexed_augassign_application(x, out):\n    i = x.offsets(0)\n    out[i] += x\n",
             "ssa_indexed_augassign",
             (
-                TensorTypeIR("x", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec("x", 1, dtype="float32", shape=("n",)),
+                TensorSpec("out", 1, dtype="float32", shape=("n",)),
             ),
         )
         operations = kernel.ssa.blocks[0].operations
@@ -880,20 +854,19 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragment) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_linearizes_multidimensional_extract_by_source_shape(self):
+    def test_from_source_linearizes_multidimensional_extract_by_source_shape(self):
         kernel = _ssa_kernel(
             "\ndef extract_2d_application(x, out):\n    i = x.offsets(0)\n    j = x.offsets(1)\n    out = x[i, j]\n",
             "ssa_extract_2d",
             (
-                TensorTypeIR("x", 2, dtype="float32", shape=("rows", "cols")),
-                TensorTypeIR("out", 2, dtype="float32", shape=("rows", "cols")),
+                TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
+                TensorSpec("out", 2, dtype="float32", shape=("rows", "cols")),
             ),
         )
         expected = {
@@ -910,11 +883,10 @@ class TestSSAFirstBackendLowering:
         assert extract.operands == ("x", "%0", "%1")
 
         for backend, (route, source_fragment) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert source_fragment in artifact.primary_source
             assert "x + v0 + v1" not in artifact.primary_source
             assert "x[v0 + v1]" not in artifact.primary_source
@@ -937,9 +909,8 @@ class TestSSAFirstBackendLowering:
                 kernel_name=f"ssa_dot_reduce_{backend}",
             )
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert source_fragment in artifact.primary_source
             assert "reduce.sum" in str(artifact.metadata["ssa"])
 
@@ -1022,24 +993,23 @@ class TestSSAFirstBackendLowering:
                 kernel_name=f"ssa_helper_inline_{backend}",
             )
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert "call.fused_affine_helper" not in str(artifact.metadata["ssa"])
             assert "fused_affine_helper" not in artifact.primary_source
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_generates_axis_reduction_for_native_backends(self):
+    def test_from_source_generates_axis_reduction_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef axis_addmv_application(bias, a, x, out):\n    out = bias + sum(a * x, axis=1)\n",
             "ssa_axis_addmv",
             (
-                TensorTypeIR("bias", 1, dtype="float32", shape=("rows",)),
-                TensorTypeIR("a", 2, dtype="float32", shape=("rows", "cols")),
-                TensorTypeIR("x", 1, dtype="float32", shape=("cols",)),
-                TensorTypeIR("out", 1, dtype="float32", shape=("rows",)),
+                TensorSpec("bias", 1, dtype="float32", shape=("rows",)),
+                TensorSpec("a", 2, dtype="float32", shape=("rows", "cols")),
+                TensorSpec("x", 1, dtype="float32", shape=("cols",)),
+                TensorSpec("out", 1, dtype="float32", shape=("rows",)),
             ),
         )
         expected = {
@@ -1053,21 +1023,20 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragment) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert source_fragment in artifact.primary_source
             assert "reduce.sum" in str(artifact.metadata["ssa"])
 
-    def test_source_to_ssa_generates_rowwise_reduction_for_native_backends(self):
+    def test_from_source_generates_rowwise_reduction_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef rowwise_norm_application(x, out):\n    out = x / sum(x, axis=1)\n",
             "ssa_rowwise_norm",
             (
-                TensorTypeIR("x", 2, dtype="float32", shape=("rows", "cols")),
-                TensorTypeIR("out", 2, dtype="float32", shape=("rows", "cols")),
+                TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
+                TensorSpec("out", 2, dtype="float32", shape=("rows", "cols")),
             ),
         )
         expected = {
@@ -1078,22 +1047,21 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragment) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert source_fragment in artifact.primary_source
             assert "reduce.sum" in str(artifact.metadata["ssa"])
 
-    def test_source_to_ssa_generates_linalg_matmul_for_native_backends(self):
+    def test_from_source_generates_linalg_matmul_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef matmul_application(a, b, out):\n    out = a @ b\n",
             "ssa_matmul",
             (
-                TensorTypeIR("a", 2, dtype="float32", shape=("m", "k")),
-                TensorTypeIR("b", 2, dtype="float32", shape=("k", "n")),
-                TensorTypeIR("out", 2, dtype="float32", shape=("m", "n")),
+                TensorSpec("a", 2, dtype="float32", shape=("m", "k")),
+                TensorSpec("b", 2, dtype="float32", shape=("k", "n")),
+                TensorSpec("out", 2, dtype="float32", shape=("m", "n")),
             ),
         )
         expected = {
@@ -1107,21 +1075,20 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragment) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert "linalg.matmul" not in str(artifact.metadata["ssa"])
             assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_generates_linalg_transpose_for_native_backends(self):
+    def test_from_source_generates_linalg_transpose_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef transpose_application(x, out):\n    out = transpose(x)\n",
             "ssa_transpose",
             (
-                TensorTypeIR("x", 2, dtype="float32", shape=("rows", "cols")),
-                TensorTypeIR("out", 2, dtype="float32", shape=("cols", "rows")),
+                TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
+                TensorSpec("out", 2, dtype="float32", shape=("cols", "rows")),
             ),
         )
         expected = {
@@ -1135,21 +1102,20 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragment) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert "linalg.transpose" not in str(artifact.metadata["ssa"])
             assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_generates_linalg_transpose_for_attribute_t(self):
+    def test_from_source_generates_linalg_transpose_for_attribute_t(self):
         kernel = _ssa_kernel(
             "\ndef transpose_attribute_application(x, out):\n    out = x.T\n",
             "ssa_transpose_attribute",
             (
-                TensorTypeIR("x", 2, dtype="float32", shape=("rows", "cols")),
-                TensorTypeIR("out", 2, dtype="float32", shape=("cols", "rows")),
+                TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
+                TensorSpec("out", 2, dtype="float32", shape=("cols", "rows")),
             ),
         )
         expected = {
@@ -1166,21 +1132,20 @@ class TestSSAFirstBackendLowering:
         assert transpose.operands == ("x",)
 
         for backend, (route, source_fragment) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert "linalg.transpose" not in str(artifact.metadata["ssa"])
             assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_emits_store_inside_scf_for_without_operator_dispatch(self):
+    def test_from_source_emits_store_inside_scf_for_without_operator_dispatch(self):
         kernel = _ssa_kernel(
             "\ndef loop_store_application(x, out):\n    for i in range(n):\n        out[i] = x[i] + 1.0\n",
             "ssa_loop_store",
             (
-                TensorTypeIR("x", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec("x", 1, dtype="float32", shape=("n",)),
+                TensorSpec("out", 1, dtype="float32", shape=("n",)),
             ),
         )
         expected = {
@@ -1203,24 +1168,23 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragments) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert "scf.for" in str(artifact.metadata["ssa"])
             assert "lower_loop_store" not in artifact.primary_source
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_emits_store_inside_scf_if_without_operator_dispatch(self):
+    def test_from_source_emits_store_inside_scf_if_without_operator_dispatch(self):
         kernel = _ssa_kernel(
             "\ndef if_store_application(x, out):\n    if 1 < 2:\n        i = x.offsets(0)\n        out[i] = x\n",
             "ssa_if_store",
             (
-                TensorTypeIR("x", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec("x", 1, dtype="float32", shape=("n",)),
+                TensorSpec("out", 1, dtype="float32", shape=("n",)),
             ),
         )
         expected = {
@@ -1243,25 +1207,24 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragments) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert "scf.if" in str(artifact.metadata["ssa"])
             assert "lower_if_store" not in artifact.primary_source
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_preserves_else_store_region_for_side_effect_if(self):
+    def test_from_source_preserves_else_store_region_for_side_effect_if(self):
         kernel = _ssa_kernel(
             "\ndef if_else_store_application(x, y, out):\n    if 1 < 2:\n        i = x.offsets(0)\n        out[i] = x\n    else:\n        j = y.offsets(0)\n        out[j] = y\n",
             "ssa_if_else_store",
             (
-                TensorTypeIR("x", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("y", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec("x", 1, dtype="float32", shape=("n",)),
+                TensorSpec("y", 1, dtype="float32", shape=("n",)),
+                TensorSpec("out", 1, dtype="float32", shape=("n",)),
             ),
         )
         expected = {
@@ -1298,24 +1261,23 @@ class TestSSAFirstBackendLowering:
         assert tuple((region.name for region in op.regions)) == ("then", "else")
 
         for backend, (route, source_fragments) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
-    def test_source_to_ssa_emits_multi_result_scf_if_once(self):
+    def test_from_source_emits_multi_result_scf_if_once(self):
         kernel = _ssa_kernel(
             "\ndef multi_result_if_application(x, y, out0, out1):\n    a = x\n    b = y\n    if 1 < 2:\n        a = x + y\n        b = x - y\n    out0 = a\n    out1 = b\n",
             "ssa_multi_result_if",
             (
-                TensorTypeIR("x", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("y", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("out0", 1, dtype="float32", shape=("n",)),
-                TensorTypeIR("out1", 1, dtype="float32", shape=("n",)),
+                TensorSpec("x", 1, dtype="float32", shape=("n",)),
+                TensorSpec("y", 1, dtype="float32", shape=("n",)),
+                TensorSpec("out0", 1, dtype="float32", shape=("n",)),
+                TensorSpec("out1", 1, dtype="float32", shape=("n",)),
             ),
         )
         expected = {
@@ -1326,11 +1288,10 @@ class TestSSAFirstBackendLowering:
         }
 
         for backend, (route, source_fragment) in expected.items():
-            artifact = lower_kernel_ir(kernel, backend)
+            artifact = emit_kernel(kernel, backend)
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert source_fragment in artifact.primary_source
             assert "out0" in artifact.primary_source
             assert "out1" in artifact.primary_source
@@ -1353,9 +1314,8 @@ class TestSSAFirstBackendLowering:
                 kernel_name=f"ssa_loop_{backend}",
             )
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert source_fragment in artifact.primary_source
             assert "scf.for" in str(artifact.metadata["ssa"])
 
@@ -1376,8 +1336,7 @@ class TestSSAFirstBackendLowering:
                 kernel_name=f"ssa_if_{backend}",
             )
             assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "SSAProgramIR"
+            assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["source_route"] == route
-            assert not artifact.metadata["program_ir_compat"]
             assert source_fragment in artifact.primary_source
             assert "scf.if" in str(artifact.metadata["ssa"])

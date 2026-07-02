@@ -21,14 +21,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from ninetoothed.backends.base import BackendName, normalize_backend_name
-from ninetoothed.ir import (
-    SSABlockIR,
-    SSAOperationIR,
-    SSAProgramIR,
-    SSATypeIR,
-    SSAValueIR,
-)
+from ninetoothed.backends.core import Target, normalize_target
+from ninetoothed.ir import ssa
 
 HARDWARE_INDEPENDENT = "hardware_independent"
 HARDWARE_DEPENDENT = "hardware_dependent"
@@ -36,7 +30,7 @@ BACKEND_SPECIFIC = "backend_specific"
 
 
 @dataclass(frozen=True)
-class SSAPipelineSpec:
+class PipelineSpec:
     """Declarative pass pipeline configuration."""
 
     passes: tuple[str, ...]
@@ -47,67 +41,67 @@ class SSAPipelineSpec:
 
 
 @dataclass(frozen=True)
-class SSAPassContext:
+class Context:
     """Context shared by SSA passes."""
 
-    backend: BackendName
+    backend: Target
     compiler_options: Mapping[str, Any]
     kernel_metadata: Mapping[str, Any]
     pass_options: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
-    pipeline_spec: SSAPipelineSpec | None = None
+    pipeline_spec: PipelineSpec | None = None
 
 
-class SSAPass:
+class Pass:
     """Base class for semantics-preserving SSA transforms."""
 
     name = "ssa.pass"
     category = HARDWARE_INDEPENDENT
     phase = "generic"
-    supported_backends: tuple[BackendName, ...] = ()
+    supported_backends: tuple[Target, ...] = ()
 
-    def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         raise NotImplementedError
 
 
 @dataclass(frozen=True)
-class SSAPassDescriptor:
+class Descriptor:
     """Registry metadata for one SSA pass."""
 
     name: str
     category: str
     phase: str
-    factory: Callable[[], SSAPass]
-    supported_backends: tuple[BackendName, ...] = ()
+    factory: Callable[[], Pass]
+    supported_backends: tuple[Target, ...] = ()
     default_enabled: bool = True
     description: str = ""
     tags: tuple[str, ...] = ()
 
-    def create(self) -> SSAPass:
+    def create(self) -> Pass:
         return self.factory()
 
-    def supports(self, backend: BackendName | str | None) -> bool:
+    def supports(self, backend: Target | str | None) -> bool:
         if not self.supported_backends:
             return True
 
-        backend_name = normalize_backend_name(backend)
+        backend_name = normalize_target(backend)
 
         return backend_name in self.supported_backends
 
 
-class SSAPassRegistry:
+class Registry:
     """Registry that owns pass discovery and pipeline construction."""
 
     def __init__(self) -> None:
-        self._descriptors: dict[str, SSAPassDescriptor] = {}
+        self._descriptors: dict[str, Descriptor] = {}
 
     def register(
         self,
-        pass_factory: type[SSAPass] | Callable[[], SSAPass] | SSAPass,
+        pass_factory: type[Pass] | Callable[[], Pass] | Pass,
         *,
         name: str | None = None,
         category: str | None = None,
         phase: str | None = None,
-        supported_backends: Sequence[BackendName | str] | None = None,
+        supported_backends: Sequence[Target | str] | None = None,
         default_enabled: bool | None = None,
         description: str | None = None,
         tags: Sequence[str] = (),
@@ -120,7 +114,7 @@ class SSAPassRegistry:
             raise ValueError(f"SSA pass `{pass_name}` is already registered.")
 
         backends = (
-            tuple(normalize_backend_name(backend) for backend in supported_backends)
+            tuple(normalize_target(backend) for backend in supported_backends)
             if supported_backends is not None
             else tuple(getattr(probe, "supported_backends", ()))
         )
@@ -130,7 +124,7 @@ class SSAPassRegistry:
             raw_doc = (probe.__doc__ or "").strip().splitlines()
             doc = raw_doc[0].strip() if raw_doc else ""
 
-        self._descriptors[pass_name] = SSAPassDescriptor(
+        self._descriptors[pass_name] = Descriptor(
             name=pass_name,
             category=category or probe.category,
             phase=phase or probe.phase,
@@ -143,7 +137,7 @@ class SSAPassRegistry:
             tags=tuple(tags),
         )
 
-    def get(self, name: str) -> SSAPassDescriptor:
+    def get(self, name: str) -> Descriptor:
         try:
             return self._descriptors[name]
         except KeyError as exc:
@@ -156,8 +150,8 @@ class SSAPassRegistry:
         self,
         *,
         category: str | None = None,
-        backend: BackendName | str | None = None,
-    ) -> tuple[SSAPassDescriptor, ...]:
+        backend: Target | str | None = None,
+    ) -> tuple[Descriptor, ...]:
         result = tuple(self._descriptors.values())
 
         if category is not None:
@@ -175,7 +169,7 @@ class SSAPassRegistry:
         self,
         *,
         category: str | None = None,
-        backend: BackendName | str | None = None,
+        backend: Target | str | None = None,
     ) -> tuple[str, ...]:
         return tuple(
             descriptor.name
@@ -183,21 +177,21 @@ class SSAPassRegistry:
         )
 
 
-class SSAPassPipeline:
+class Pipeline:
     """Ordered pass pipeline with a textual trace in SSA metadata."""
 
     def __init__(
         self,
-        passes: tuple[SSAPass, ...],
+        passes: tuple[Pass, ...],
         *,
-        descriptors: tuple[SSAPassDescriptor, ...] = (),
-        spec: SSAPipelineSpec | None = None,
+        descriptors: tuple[Descriptor, ...] = (),
+        spec: PipelineSpec | None = None,
     ):
         self.passes = passes
         self.descriptors = descriptors
         self.spec = spec
 
-    def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         current = _with_metadata(program, pipeline_selection=self._pipeline_metadata())
 
         for pass_ in self.passes:
@@ -243,14 +237,14 @@ class SSAPassPipeline:
         }
 
 
-class CanonicalizeSSAPass(SSAPass):
+class Canonicalize(Pass):
     """Normalize generic SSA into the canonical dialect used by all backends."""
 
     name = "ssa.canonicalize"
     category = HARDWARE_INDEPENDENT
     phase = "canonicalization"
 
-    def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         return _with_metadata(
             program,
             dialect="generic-ssa",
@@ -259,14 +253,14 @@ class CanonicalizeSSAPass(SSAPass):
         )
 
 
-class AnalyzeSSAEffectsPass(SSAPass):
+class AnalyzeEffects(Pass):
     """Collect dataflow facts needed by schedule selection."""
 
     name = "ssa.analyze_effects"
     category = HARDWARE_INDEPENDENT
     phase = "analysis"
 
-    def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         opcodes = tuple(_iter_opcodes(program))
         stores = sum(1 for opcode in opcodes if opcode == "mem.store")
         reductions = sum(1 for opcode in opcodes if opcode.startswith("reduce."))
@@ -287,14 +281,14 @@ class AnalyzeSSAEffectsPass(SSAPass):
         )
 
 
-class DecomposeLinalgPass(SSAPass):
+class DecomposeLinalg(Pass):
     """Lower high-level linalg ops into index/extract/store SSA operations."""
 
     name = "ssa.decompose_linalg"
     category = HARDWARE_INDEPENDENT
     phase = "canonicalization"
 
-    def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         value_types = _program_value_types(program)
         blocks = tuple(
             _decompose_linalg_block(block, value_types) for block in program.blocks
@@ -311,14 +305,14 @@ class DecomposeLinalgPass(SSAPass):
         )
 
 
-class SelectSchedulePass(SSAPass):
+class SelectSchedule(Pass):
     """Attach backend-neutral schedule intent."""
 
     name = "ssa.select_schedule"
     category = HARDWARE_INDEPENDENT
     phase = "schedule_intent"
 
-    def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         analysis = dict(program.metadata.get("analysis", {}))
         options = _pass_options(context, self.name)
         schedule = {
@@ -331,14 +325,14 @@ class SelectSchedulePass(SSAPass):
         return _with_metadata(program, schedule=schedule)
 
 
-class BackendScheduleOptimizationPass(SSAPass):
+class OptimizeSchedule(Pass):
     """Contract for backend-specific schedule optimization passes."""
 
     name = "ssa.optimize_schedule"
     category = BACKEND_SPECIFIC
     phase = "optimization"
 
-    def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         analysis = dict(program.metadata.get("analysis", {}))
         schedule = dict(program.metadata.get("schedule", {}))
         optimization = dict(
@@ -372,48 +366,44 @@ class BackendScheduleOptimizationPass(SSAPass):
 
     def optimization_policy(
         self,
-        backend: BackendName,
+        backend: Target,
         analysis: Mapping[str, Any],
         schedule: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         raise NotImplementedError
 
 
-class OptimizeSchedulePass(BackendScheduleOptimizationPass):
-    """Backward-compatible base name for backend schedule passes."""
-
-
-class BackendMemoryScopesLoweringPass(SSAPass):
+class LowerMemoryScopes(Pass):
     """Contract for backend-specific memory scope materialization passes."""
 
     name = "ssa.lower_memory_scopes"
     category = BACKEND_SPECIFIC
     phase = "target_lowering"
 
-    def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         scopes = dict(self.memory_scopes(context))
 
-        return annotate_ssa_operations(
+        return annotate_operations(
             program,
             attrs={"memory_scope": scopes},
             metadata={"memory_scope": scopes},
         )
 
-    def memory_scopes(self, context: SSAPassContext) -> Mapping[str, str]:
+    def memory_scopes(self, context: Context) -> Mapping[str, str]:
         raise NotImplementedError
 
 
-class BackendIntrinsicsLoweringPass(SSAPass):
+class LowerIntrinsics(Pass):
     """Contract for backend-specific intrinsic materialization passes."""
 
     name = "ssa.lower_intrinsics"
     category = BACKEND_SPECIFIC
     phase = "target_lowering"
 
-    def run(self, program: SSAProgramIR, context: SSAPassContext) -> SSAProgramIR:
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         intrinsic = dict(self.intrinsics(context))
 
-        return annotate_ssa_operations(
+        return annotate_operations(
             program,
             attrs={"backend_intrinsic": intrinsic},
             metadata={
@@ -423,97 +413,93 @@ class BackendIntrinsicsLoweringPass(SSAPass):
             },
         )
 
-    def intrinsics(self, context: SSAPassContext) -> Mapping[str, str]:
+    def intrinsics(self, context: Context) -> Mapping[str, str]:
         raise NotImplementedError
 
 
-def create_default_ssa_pass_registry() -> SSAPassRegistry:
-    registry = SSAPassRegistry()
-    registry.register(CanonicalizeSSAPass, tags=("generic", "required"))
-    registry.register(DecomposeLinalgPass, tags=("generic", "linalg", "decomposition"))
-    registry.register(AnalyzeSSAEffectsPass, tags=("generic", "analysis", "required"))
-    registry.register(SelectSchedulePass, tags=("schedule",))
-    _register_backend_specific_ssa_passes(registry)
+def create_default_registry() -> Registry:
+    registry = Registry()
+    registry.register(Canonicalize, tags=("generic", "required"))
+    registry.register(DecomposeLinalg, tags=("generic", "linalg", "decomposition"))
+    registry.register(AnalyzeEffects, tags=("generic", "analysis", "required"))
+    registry.register(SelectSchedule, tags=("schedule",))
+    _register_backend_passes(registry)
 
     return registry
 
 
-def _register_backend_specific_ssa_passes(registry: SSAPassRegistry) -> None:
-    from ninetoothed.backends.backend_pass_registry import (
-        register_backend_specific_ssa_passes,
-    )
+def _register_backend_passes(registry: Registry) -> None:
+    from ninetoothed.backends.registry import register_passes
 
-    register_backend_specific_ssa_passes(registry)
+    register_passes(registry)
 
 
-def registered_ssa_passes(
+def registered(
     *,
     category: str | None = None,
-    backend: BackendName | str | None = None,
-    registry: SSAPassRegistry | None = None,
-) -> tuple[SSAPassDescriptor, ...]:
+    backend: Target | str | None = None,
+    registry: Registry | None = None,
+) -> tuple[Descriptor, ...]:
     """Return registered SSA pass descriptors."""
-    return (registry or DEFAULT_SSA_PASS_REGISTRY).descriptors(
+    return (registry or DEFAULT_REGISTRY).descriptors(
         category=category, backend=backend
     )
 
 
-def default_ssa_pipeline_spec(
-    backend: BackendName | str | None,
+def default_spec(
+    backend: Target | str | None,
     *,
-    registry: SSAPassRegistry | None = None,
-) -> SSAPipelineSpec:
+    registry: Registry | None = None,
+) -> PipelineSpec:
     """Return the default declarative pipeline for a backend."""
-    backend_name = normalize_backend_name(backend)
+    backend_name = normalize_target(backend)
     pass_names = _default_pass_names(backend_name)
-    _validate_passes(pass_names, backend_name, registry or DEFAULT_SSA_PASS_REGISTRY)
+    _validate_passes(pass_names, backend_name, registry or DEFAULT_REGISTRY)
 
-    return SSAPipelineSpec(
+    return PipelineSpec(
         passes=pass_names,
         mode="default",
         reason="default backend pipeline",
     )
 
 
-def default_ssa_pipeline(backend: BackendName | str | None) -> SSAPassPipeline:
+def default_pipeline(backend: Target | str | None) -> Pipeline:
     """Return the default target-aware SSA lowering pipeline."""
-    backend_name = normalize_backend_name(backend)
+    backend_name = normalize_target(backend)
 
-    return build_ssa_pipeline(
-        default_ssa_pipeline_spec(backend_name), backend=backend_name
-    )
+    return build(default_spec(backend_name), backend=backend_name)
 
 
-def build_ssa_pipeline(
-    spec: SSAPipelineSpec | Sequence[str] | Mapping[str, Any],
+def build(
+    spec: PipelineSpec | Sequence[str] | Mapping[str, Any],
     *,
-    backend: BackendName | str | None,
-    registry: SSAPassRegistry | None = None,
-) -> SSAPassPipeline:
+    backend: Target | str | None,
+    registry: Registry | None = None,
+) -> Pipeline:
     """Build an executable pass pipeline from a declarative spec."""
-    backend_name = normalize_backend_name(backend)
-    registry = registry or DEFAULT_SSA_PASS_REGISTRY
+    backend_name = normalize_target(backend)
+    registry = registry or DEFAULT_REGISTRY
     normalized = _normalize_pipeline_spec(spec, backend_name, registry)
     descriptors = tuple(registry.get(name) for name in normalized.passes)
     passes = tuple(descriptor.create() for descriptor in descriptors)
 
-    return SSAPassPipeline(passes, descriptors=descriptors, spec=normalized)
+    return Pipeline(passes, descriptors=descriptors, spec=normalized)
 
 
-def autotune_ssa_pipeline_spec(
-    program: SSAProgramIR,
-    context: SSAPassContext,
+def autotune_spec(
+    program: ssa.Program,
+    context: Context,
     *,
-    registry: SSAPassRegistry | None = None,
+    registry: Registry | None = None,
     autotune: bool | str | Mapping[str, Any] = True,
-) -> SSAPipelineSpec:
+) -> PipelineSpec:
     """Select a pipeline using a policy-based autotune planner.
 
     This does not run kernels. It records candidate pipelines and chooses the
     best static pipeline for the observed SSA shape. Runtime measurement can be
     layered on top by passing explicit ``passes`` and ``pass_options`` later.
     """
-    registry = registry or DEFAULT_SSA_PASS_REGISTRY
+    registry = registry or DEFAULT_REGISTRY
     default_passes = _default_pass_names(context.backend)
     optimize_pass = _backend_optimize_pass_name(context.backend)
     no_backend_opt = tuple(name for name in default_passes if name != optimize_pass)
@@ -540,7 +526,7 @@ def autotune_ssa_pipeline_spec(
             selected = tuple(str(name) for name in autotune["passes"])
             _validate_passes(selected, context.backend, registry)
 
-            return SSAPipelineSpec(
+            return PipelineSpec(
                 passes=selected,
                 mode="autotune",
                 pass_options=autotune.get("pass_options", {}),
@@ -552,7 +538,7 @@ def autotune_ssa_pipeline_spec(
 
     _validate_passes(default_passes, context.backend, registry)
 
-    return SSAPipelineSpec(
+    return PipelineSpec(
         passes=default_passes,
         mode="autotune",
         pass_options=pass_options,
@@ -561,27 +547,27 @@ def autotune_ssa_pipeline_spec(
     )
 
 
-def lower_ssa_for_backend(
-    program: SSAProgramIR | None,
+def lower_for_target(
+    program: ssa.Program | None,
     *,
-    backend: BackendName | str | None,
+    backend: Target | str | None,
     compiler_options: Mapping[str, Any] | None = None,
     kernel_metadata: Mapping[str, Any] | None = None,
-    pass_pipeline: SSAPassPipeline
-    | SSAPipelineSpec
+    pass_pipeline: Pipeline
+    | PipelineSpec
     | Sequence[str]
     | Mapping[str, Any]
     | None = None,
     pass_options: Mapping[str, Mapping[str, Any]] | None = None,
     autotune: bool | str | Mapping[str, Any] = False,
-    pass_registry: SSAPassRegistry | None = None,
-) -> SSAProgramIR | None:
+    pass_registry: Registry | None = None,
+) -> ssa.Program | None:
     """Run an SSA pass pipeline for a backend."""
     if program is None:
         return None
 
-    backend_name = normalize_backend_name(backend)
-    registry = pass_registry or DEFAULT_SSA_PASS_REGISTRY
+    backend_name = normalize_target(backend)
+    registry = pass_registry or DEFAULT_REGISTRY
     compiler_options = dict(compiler_options or {})
     kernel_metadata = dict(kernel_metadata or {})
     explicit_pass_options = _merge_pass_options(
@@ -589,15 +575,15 @@ def lower_ssa_for_backend(
         kernel_metadata.get("ssa_pass_options", {}),
         pass_options or {},
     )
-    base_context = SSAPassContext(
+    base_context = Context(
         backend=backend_name,
         compiler_options=compiler_options,
         kernel_metadata=kernel_metadata,
         pass_options=explicit_pass_options,
     )
 
-    if isinstance(pass_pipeline, SSAPassPipeline):
-        context = SSAPassContext(
+    if isinstance(pass_pipeline, Pipeline):
+        context = Context(
             backend=backend_name,
             compiler_options=compiler_options,
             kernel_metadata=kernel_metadata,
@@ -607,7 +593,7 @@ def lower_ssa_for_backend(
         return pass_pipeline.run(program, context)
 
     if pass_pipeline is None and _autotune_enabled(autotune):
-        spec = autotune_ssa_pipeline_spec(
+        spec = autotune_spec(
             program,
             base_context,
             registry=registry,
@@ -618,20 +604,20 @@ def lower_ssa_for_backend(
             pass_pipeline
             or compiler_options.get("ssa_pass_pipeline")
             or kernel_metadata.get("ssa_pass_pipeline")
-            or default_ssa_pipeline_spec(backend_name, registry=registry),
+            or default_spec(backend_name, registry=registry),
             backend_name,
             registry,
         )
 
     merged_pass_options = _merge_pass_options(spec.pass_options, explicit_pass_options)
-    spec = SSAPipelineSpec(
+    spec = PipelineSpec(
         passes=spec.passes,
         mode=spec.mode,
         pass_options=merged_pass_options,
         candidate_pipelines=spec.candidate_pipelines,
         reason=spec.reason,
     )
-    context = SSAPassContext(
+    context = Context(
         backend=backend_name,
         compiler_options=compiler_options,
         kernel_metadata=kernel_metadata,
@@ -639,31 +625,29 @@ def lower_ssa_for_backend(
         pipeline_spec=spec,
     )
 
-    return build_ssa_pipeline(spec, backend=backend_name, registry=registry).run(
-        program, context
-    )
+    return build(spec, backend=backend_name, registry=registry).run(program, context)
 
 
 def _normalize_pass_factory(
-    pass_factory: type[SSAPass] | Callable[[], SSAPass] | SSAPass,
-) -> Callable[[], SSAPass]:
-    if isinstance(pass_factory, SSAPass):
+    pass_factory: type[Pass] | Callable[[], Pass] | Pass,
+) -> Callable[[], Pass]:
+    if isinstance(pass_factory, Pass):
         return lambda pass_=pass_factory: pass_
 
-    if isinstance(pass_factory, type) and issubclass(pass_factory, SSAPass):
+    if isinstance(pass_factory, type) and issubclass(pass_factory, Pass):
         return pass_factory
     return pass_factory
 
 
 def _normalize_pipeline_spec(
-    spec: SSAPipelineSpec | Sequence[str] | Mapping[str, Any] | None,
-    backend: BackendName,
-    registry: SSAPassRegistry,
-) -> SSAPipelineSpec:
+    spec: PipelineSpec | Sequence[str] | Mapping[str, Any] | None,
+    backend: Target,
+    registry: Registry,
+) -> PipelineSpec:
     if spec is None:
-        return default_ssa_pipeline_spec(backend, registry=registry)
+        return default_spec(backend, registry=registry)
 
-    if isinstance(spec, SSAPipelineSpec):
+    if isinstance(spec, PipelineSpec):
         _validate_passes(spec.passes, backend, registry)
 
         return spec
@@ -674,7 +658,7 @@ def _normalize_pipeline_spec(
         if passes is None:
             passes = _default_pass_names(backend)
 
-        normalized = SSAPipelineSpec(
+        normalized = PipelineSpec(
             passes=tuple(str(name) for name in passes),
             mode=str(spec.get("mode", "custom")),
             pass_options=spec.get("pass_options", {}),
@@ -687,7 +671,7 @@ def _normalize_pipeline_spec(
 
         return normalized
 
-    normalized = SSAPipelineSpec(
+    normalized = PipelineSpec(
         passes=tuple(str(name) for name in spec),
         mode="custom",
         reason="explicit custom pass sequence",
@@ -699,8 +683,8 @@ def _normalize_pipeline_spec(
 
 def _validate_passes(
     pass_names: Sequence[str],
-    backend: BackendName,
-    registry: SSAPassRegistry,
+    backend: Target,
+    registry: Registry,
 ) -> None:
     for name in pass_names:
         descriptor = registry.get(name)
@@ -711,7 +695,7 @@ def _validate_passes(
             )
 
 
-def _default_pass_names(backend: BackendName) -> tuple[str, ...]:
+def _default_pass_names(backend: Target) -> tuple[str, ...]:
     return (
         "ssa.canonicalize",
         "ssa.analyze_effects",
@@ -723,15 +707,15 @@ def _default_pass_names(backend: BackendName) -> tuple[str, ...]:
     )
 
 
-def _backend_optimize_pass_name(backend: BackendName) -> str:
+def _backend_optimize_pass_name(backend: Target) -> str:
     return f"ssa.{backend.value}.optimize_schedule"
 
 
-def _backend_memory_pass_name(backend: BackendName) -> str:
+def _backend_memory_pass_name(backend: Target) -> str:
     return f"ssa.{backend.value}.lower_memory_scopes"
 
 
-def _backend_intrinsics_pass_name(backend: BackendName) -> str:
+def _backend_intrinsics_pass_name(backend: Target) -> str:
     return f"ssa.{backend.value}.lower_intrinsics"
 
 
@@ -757,7 +741,7 @@ def _merge_pass_options(
     return merged
 
 
-def _pass_options(context: SSAPassContext, *names: str) -> Mapping[str, Any]:
+def _pass_options(context: Context, *names: str) -> Mapping[str, Any]:
     merged: Mapping[str, Any] = {}
 
     for name in ("*", *names):
@@ -776,10 +760,10 @@ def _merge_nested(left: Mapping[str, Any], right: Mapping[str, Any]) -> dict[str
     return merged
 
 
-def _iter_opcodes(program: SSAProgramIR) -> tuple[str, ...]:
+def _iter_opcodes(program: ssa.Program) -> tuple[str, ...]:
     opcodes: list[str] = []
 
-    def visit_block(block: SSABlockIR) -> None:
+    def visit_block(block: ssa.Block) -> None:
         for operation in block.operations:
             opcodes.append(operation.opcode)
 
@@ -816,12 +800,12 @@ def _schedule_granularity(analysis: Mapping[str, Any]) -> str:
     return "elementwise-grid"
 
 
-def annotate_ssa_operations(
-    program: SSAProgramIR,
+def annotate_operations(
+    program: ssa.Program,
     *,
     attrs: Mapping[str, Any],
     metadata: Mapping[str, Any] | None = None,
-) -> SSAProgramIR:
+) -> ssa.Program:
     """Return ``program`` with every operation annotated by ``attrs``."""
     blocks = tuple(
         _map_block(block, lambda op: _annotate_operation(op, **dict(attrs)))
@@ -835,8 +819,8 @@ def annotate_ssa_operations(
     )
 
 
-def _map_block(block: SSABlockIR, fn) -> SSABlockIR:
-    return SSABlockIR(
+def _map_block(block: ssa.Block, fn) -> ssa.Block:
+    return ssa.Block(
         name=block.name,
         args=block.args,
         operations=tuple(
@@ -845,9 +829,9 @@ def _map_block(block: SSABlockIR, fn) -> SSABlockIR:
     )
 
 
-def _map_operation(operation: SSAOperationIR, fn) -> SSAOperationIR:
+def _map_operation(operation: ssa.Operation, fn) -> ssa.Operation:
     mapped_regions = tuple(_map_block(region, fn) for region in operation.regions)
-    operation = SSAOperationIR(
+    operation = ssa.Operation(
         operation.opcode,
         operands=operation.operands,
         results=operation.results,
@@ -859,9 +843,9 @@ def _map_operation(operation: SSAOperationIR, fn) -> SSAOperationIR:
 
 
 def _decompose_linalg_block(
-    block: SSABlockIR,
-    parent_value_types: Mapping[str, SSATypeIR],
-) -> SSABlockIR:
+    block: ssa.Block,
+    parent_value_types: Mapping[str, ssa.Type],
+) -> ssa.Block:
     value_types = dict(parent_value_types)
     value_types.update({arg.name: arg.type for arg in block.args})
 
@@ -902,7 +886,7 @@ def _decompose_linalg_block(
         and operation.operands
         and operation.operands[0] in matmuls
     }
-    operations: list[SSAOperationIR] = []
+    operations: list[ssa.Operation] = []
 
     for operation in block.operations:
         if (
@@ -928,10 +912,10 @@ def _decompose_linalg_block(
             source = transpose.operands[0]
             output = operation.operands[1]
             col, temp_index = _fresh_value(
-                existing_names, temp_index, SSATypeIR("index")
+                existing_names, temp_index, ssa.Type("index")
             )
             row, temp_index = _fresh_value(
-                existing_names, temp_index, SSATypeIR("index")
+                existing_names, temp_index, ssa.Type("index")
             )
             value, temp_index = _fresh_value(
                 existing_names,
@@ -940,25 +924,25 @@ def _decompose_linalg_block(
             )
             operations.extend(
                 (
-                    SSAOperationIR(
+                    ssa.Operation(
                         "index.offset",
                         operands=(output,),
                         results=(col,),
                         attrs={"dim": 0, "decomposition": "transpose"},
                     ),
-                    SSAOperationIR(
+                    ssa.Operation(
                         "index.offset",
                         operands=(output,),
                         results=(row,),
                         attrs={"dim": 1, "decomposition": "transpose"},
                     ),
-                    SSAOperationIR(
+                    ssa.Operation(
                         "tensor.extract",
                         operands=(source, row.name, col.name),
                         results=(value,),
                         attrs={"decomposition": "transpose"},
                     ),
-                    SSAOperationIR(
+                    ssa.Operation(
                         "mem.store",
                         operands=(value.name, output),
                         attrs=dict(operation.attrs)
@@ -993,7 +977,7 @@ def _decompose_linalg_block(
             _decompose_linalg_block(region, value_types) for region in operation.regions
         )
         operations.append(
-            SSAOperationIR(
+            ssa.Operation(
                 operation.opcode,
                 operands=operation.operands,
                 results=operation.results,
@@ -1001,33 +985,33 @@ def _decompose_linalg_block(
                 regions=regions,
             )
         )
-    return SSABlockIR(name=block.name, args=block.args, operations=tuple(operations))
+    return ssa.Block(name=block.name, args=block.args, operations=tuple(operations))
 
 
 def _decompose_matmul_store(
-    matmul: SSAOperationIR,
-    store: SSAOperationIR,
-    value_types: Mapping[str, SSATypeIR],
+    matmul: ssa.Operation,
+    store: ssa.Operation,
+    value_types: Mapping[str, ssa.Type],
     existing_names: set[str],
     temp_index: int,
-) -> tuple[tuple[SSAOperationIR, ...], int]:
+) -> tuple[tuple[ssa.Operation, ...], int]:
     lhs, rhs = matmul.operands
     output = store.operands[1]
     m, n, k = _infer_matmul_symbols(matmul, lhs, rhs, output, value_types)
     output_type = value_types.get(output, matmul.results[0].type)
     scalar_type = _scalar_type(output_type)
 
-    row, temp_index = _fresh_value(existing_names, temp_index, SSATypeIR("index"))
-    col, temp_index = _fresh_value(existing_names, temp_index, SSATypeIR("index"))
+    row, temp_index = _fresh_value(existing_names, temp_index, ssa.Type("index"))
+    col, temp_index = _fresh_value(existing_names, temp_index, ssa.Type("index"))
     zero, temp_index = _fresh_value(
-        existing_names, temp_index, SSATypeIR("scalar", dtype="int64")
+        existing_names, temp_index, ssa.Type("scalar", dtype="int64")
     )
     one, temp_index = _fresh_value(
-        existing_names, temp_index, SSATypeIR("scalar", dtype="int64")
+        existing_names, temp_index, ssa.Type("scalar", dtype="int64")
     )
     acc_init, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
-    kk = SSAValueIR("%kk", SSATypeIR("index"))
-    acc_iter = SSAValueIR("%acc_iter", scalar_type)
+    kk = ssa.Value("%kk", ssa.Type("index"))
+    acc_iter = ssa.Value("%acc_iter", scalar_type)
     lhs_value, temp_index = _fresh_value(
         existing_names, temp_index, _scalar_type(value_types.get(lhs, output_type))
     )
@@ -1038,7 +1022,7 @@ def _decompose_matmul_store(
     acc_next, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
     acc_result, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
 
-    loop = SSAOperationIR(
+    loop = ssa.Operation(
         "scf.for",
         operands=(zero.name, k, one.name, acc_init.name),
         results=(acc_result,),
@@ -1057,35 +1041,35 @@ def _decompose_matmul_store(
             "k": k,
         },
         regions=(
-            SSABlockIR(
+            ssa.Block(
                 name="matmul_k",
                 args=(kk, acc_iter),
                 operations=(
-                    SSAOperationIR(
+                    ssa.Operation(
                         "tensor.extract",
                         operands=(lhs, row.name, kk.name),
                         results=(lhs_value,),
                         attrs={"decomposition": "matmul", "operand": "lhs"},
                     ),
-                    SSAOperationIR(
+                    ssa.Operation(
                         "tensor.extract",
                         operands=(rhs, kk.name, col.name),
                         results=(rhs_value,),
                         attrs={"decomposition": "matmul", "operand": "rhs"},
                     ),
-                    SSAOperationIR(
+                    ssa.Operation(
                         "arith.mul",
                         operands=(lhs_value.name, rhs_value.name),
                         results=(product,),
                         attrs={"decomposition": "matmul"},
                     ),
-                    SSAOperationIR(
+                    ssa.Operation(
                         "arith.add",
                         operands=(acc_iter.name, product.name),
                         results=(acc_next,),
                         attrs={"decomposition": "matmul"},
                     ),
-                    SSAOperationIR("scf.yield", operands=(acc_next.name,)),
+                    ssa.Operation("scf.yield", operands=(acc_next.name,)),
                 ),
             ),
         ),
@@ -1093,35 +1077,35 @@ def _decompose_matmul_store(
 
     return (
         (
-            SSAOperationIR(
+            ssa.Operation(
                 "index.offset",
                 operands=(output,),
                 results=(row,),
                 attrs={"dim": 0, "decomposition": "matmul"},
             ),
-            SSAOperationIR(
+            ssa.Operation(
                 "index.offset",
                 operands=(output,),
                 results=(col,),
                 attrs={"dim": 1, "decomposition": "matmul"},
             ),
-            SSAOperationIR(
+            ssa.Operation(
                 "arith.constant",
                 results=(zero,),
                 attrs={"value": 0, "decomposition": "matmul"},
             ),
-            SSAOperationIR(
+            ssa.Operation(
                 "arith.constant",
                 results=(one,),
                 attrs={"value": 1, "decomposition": "matmul"},
             ),
-            SSAOperationIR(
+            ssa.Operation(
                 "arith.constant",
                 results=(acc_init,),
                 attrs={"value": 0.0, "decomposition": "matmul"},
             ),
             loop,
-            SSAOperationIR(
+            ssa.Operation(
                 "mem.store",
                 operands=(acc_result.name, output),
                 attrs=dict(store.attrs)
@@ -1135,7 +1119,7 @@ def _decompose_matmul_store(
     )
 
 
-def _program_value_types(program: SSAProgramIR) -> dict[str, SSATypeIR]:
+def _program_value_types(program: ssa.Program) -> dict[str, ssa.Type]:
     value_types = {
         value.name: value.type for value in (*program.inputs, *program.outputs)
     }
@@ -1146,7 +1130,7 @@ def _program_value_types(program: SSAProgramIR) -> dict[str, SSATypeIR]:
 
 
 def _collect_block_value_types(
-    block: SSABlockIR, value_types: dict[str, SSATypeIR]
+    block: ssa.Block, value_types: dict[str, ssa.Type]
 ) -> None:
     value_types.update({arg.name: arg.type for arg in block.args})
 
@@ -1158,20 +1142,20 @@ def _collect_block_value_types(
 
 
 def _infer_matmul_symbols(
-    operation: SSAOperationIR,
+    operation: ssa.Operation,
     lhs: str,
     rhs: str,
     output: str,
-    value_types: Mapping[str, SSATypeIR],
+    value_types: Mapping[str, ssa.Type],
 ) -> tuple[str, str, str]:
     lhs_shape = tuple(
-        str(dim) for dim in value_types.get(lhs, SSATypeIR("tensor")).shape
+        str(dim) for dim in value_types.get(lhs, ssa.Type("tensor")).shape
     )
     rhs_shape = tuple(
-        str(dim) for dim in value_types.get(rhs, SSATypeIR("tensor")).shape
+        str(dim) for dim in value_types.get(rhs, ssa.Type("tensor")).shape
     )
     output_shape = tuple(
-        str(dim) for dim in value_types.get(output, SSATypeIR("tensor")).shape
+        str(dim) for dim in value_types.get(output, ssa.Type("tensor")).shape
     )
     m = _first_symbol(
         operation.attrs.get("m"),
@@ -1217,8 +1201,8 @@ def _first_symbol(*candidates: object) -> str:
     return str(candidates[-1])
 
 
-def _scalar_type(type_: SSATypeIR) -> SSATypeIR:
-    return SSATypeIR("scalar", dtype=type_.dtype or "float32")
+def _scalar_type(type_: ssa.Type) -> ssa.Type:
+    return ssa.Type("scalar", dtype=type_.dtype or "float32")
 
 
 def _next_temp_index(existing_names: set[str]) -> int:
@@ -1232,19 +1216,19 @@ def _next_temp_index(existing_names: set[str]) -> int:
 def _fresh_value(
     existing_names: set[str],
     temp_index: int,
-    type_: SSATypeIR,
-) -> tuple[SSAValueIR, int]:
+    type_: ssa.Type,
+) -> tuple[ssa.Value, int]:
     while f"%{temp_index}" in existing_names:
         temp_index += 1
 
     name = f"%{temp_index}"
     existing_names.add(name)
 
-    return SSAValueIR(name, type_), temp_index + 1
+    return ssa.Value(name, type_), temp_index + 1
 
 
-def _annotate_operation(operation: SSAOperationIR, **attrs: Any) -> SSAOperationIR:
-    return SSAOperationIR(
+def _annotate_operation(operation: ssa.Operation, **attrs: Any) -> ssa.Operation:
+    return ssa.Operation(
         operation.opcode,
         operands=operation.operands,
         results=operation.results,
@@ -1253,17 +1237,17 @@ def _annotate_operation(operation: SSAOperationIR, **attrs: Any) -> SSAOperation
     )
 
 
-def _with_metadata(program: SSAProgramIR, **metadata: Any) -> SSAProgramIR:
+def _with_metadata(program: ssa.Program, **metadata: Any) -> ssa.Program:
     return _replace_program(program, metadata=dict(program.metadata) | metadata)
 
 
 def _replace_program(
-    program: SSAProgramIR,
+    program: ssa.Program,
     *,
-    blocks: tuple[SSABlockIR, ...] | None = None,
+    blocks: tuple[ssa.Block, ...] | None = None,
     metadata: Mapping[str, Any] | None = None,
-) -> SSAProgramIR:
-    return SSAProgramIR(
+) -> ssa.Program:
+    return ssa.Program(
         kind=program.kind,
         inputs=program.inputs,
         outputs=program.outputs,
@@ -1272,4 +1256,4 @@ def _replace_program(
     )
 
 
-DEFAULT_SSA_PASS_REGISTRY = create_default_ssa_pass_registry()
+DEFAULT_REGISTRY = create_default_registry()

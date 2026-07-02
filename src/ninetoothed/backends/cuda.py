@@ -9,23 +9,23 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Mapping
 
-from ninetoothed.backends.base import (
+from ninetoothed.backends.core import (
+    Artifact,
     Backend,
-    BackendArtifact,
-    BackendCapability,
-    BackendName,
-    BackendOptions,
+    Capability,
+    Options,
+    Target,
 )
-from ninetoothed.backends.ssa_unified import lower_unified_ssa_artifact
-from ninetoothed.ir import KernelIR
+from ninetoothed.backends.emitters.ssa import emit
+from ninetoothed.ir import Kernel
 
 if TYPE_CHECKING:
-    from ninetoothed.ssa_passes import SSAPassRegistry
+    from ninetoothed.compiler.passes import Registry
 
 
 class CudaBackend(Backend):
-    name = BackendName.CUDA
-    capability = BackendCapability(
+    name = Target.CUDA
+    capability = Capability(
         name=name,
         emits_source=True,
         can_execute=True,
@@ -36,10 +36,8 @@ class CudaBackend(Backend):
         ),
     )
 
-    def lower(
-        self, kernel: KernelIR, options: BackendOptions | None = None
-    ) -> BackendArtifact:
-        return lower_unified_ssa_artifact(kernel, self.name)
+    def emit(self, kernel: Kernel, options: Options | None = None) -> Artifact:
+        return emit(kernel, self.name)
 
 
 def _generic_linear_or_reduction_policy(
@@ -56,21 +54,21 @@ def _generic_linear_or_reduction_policy(
     }
 
 
-def register_ssa_passes(registry: "SSAPassRegistry") -> None:
-    from ninetoothed.ssa_passes import (
-        BackendIntrinsicsLoweringPass,
-        BackendMemoryScopesLoweringPass,
-        BackendScheduleOptimizationPass,
-        SSAPassContext,
+def register_ssa_passes(registry: "Registry") -> None:
+    from ninetoothed.compiler.passes import (
+        Context,
+        LowerIntrinsics,
+        LowerMemoryScopes,
+        OptimizeSchedule,
     )
 
-    class CudaOptimizeSchedulePass(BackendScheduleOptimizationPass):
+    class CudaOptimizeSchedule(OptimizeSchedule):
         name = "ssa.cuda.optimize_schedule"
-        supported_backends = (BackendName.CUDA,)
+        supported_backends = (Target.CUDA,)
 
         def optimization_policy(
             self,
-            backend: BackendName,
+            backend: Target,
             analysis: Mapping[str, Any],
             schedule: Mapping[str, Any],
         ) -> Mapping[str, Any]:
@@ -84,13 +82,13 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
                 }
             return _generic_linear_or_reduction_policy(schedule)
 
-    registry.register(CudaOptimizeSchedulePass, tags=("optimization", "cuda"))
+    registry.register(CudaOptimizeSchedule, tags=("optimization", "cuda"))
 
-    class CudaLowerMemoryScopesPass(BackendMemoryScopesLoweringPass):
+    class CudaLowerMemoryScopesPass(LowerMemoryScopes):
         name = "ssa.cuda.lower_memory_scopes"
-        supported_backends = (BackendName.CUDA,)
+        supported_backends = (Target.CUDA,)
 
-        def memory_scopes(self, context: SSAPassContext) -> Mapping[str, str]:
+        def memory_scopes(self, context: Context) -> Mapping[str, str]:
             del context
 
             return {
@@ -99,11 +97,11 @@ def register_ssa_passes(registry: "SSAPassRegistry") -> None:
                 "global": "__global__ pointer",
             }
 
-    class CudaLowerIntrinsicsPass(BackendIntrinsicsLoweringPass):
+    class CudaLowerIntrinsicsPass(LowerIntrinsics):
         name = "ssa.cuda.lower_intrinsics"
-        supported_backends = (BackendName.CUDA,)
+        supported_backends = (Target.CUDA,)
 
-        def intrinsics(self, context: SSAPassContext) -> Mapping[str, str]:
+        def intrinsics(self, context: Context) -> Mapping[str, str]:
             del context
 
             return {

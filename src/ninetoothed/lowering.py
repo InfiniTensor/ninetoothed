@@ -17,10 +17,10 @@ from typing import Any
 
 import sympy
 
-from ninetoothed.backends import lower as lower_kernel_ir
-from ninetoothed.backends.base import BackendArtifact, normalize_backend_options
-from ninetoothed.ir import KernelIR, TensorTypeIR
-from ninetoothed.ssa import SSALoweringError, application_to_ssa
+from ninetoothed.backends import emit as emit_kernel
+from ninetoothed.backends.core import Artifact, normalize_options
+from ninetoothed.frontend.python import LoweringError, from_application
+from ninetoothed.ir import Kernel, TensorSpec
 
 
 def lower(
@@ -37,7 +37,7 @@ def lower(
     max_num_configs: int | None = None,
     write: bool = False,
     **backend_options: Any,
-) -> BackendArtifact:
+) -> Artifact:
     """Lower a NineToothed kernel to a backend artifact through SSA only."""
     from ninetoothed.utils import calculate_default_configs
 
@@ -59,29 +59,29 @@ def lower(
     if kernel_name is None:
         kernel_name = application.__name__
 
-    options = normalize_backend_options(
+    options = normalize_options(
         backend, caller=caller, emit_only=True, **backend_options
     )
     tensor_irs = _application_tensor_irs(params, arranged)
 
     try:
-        ssa_program = application_to_ssa(
+        ssa_program = from_application(
             application,
             tensor_irs,
             kind=kernel_name or application.__name__,
         )
-    except SSALoweringError as exc:
-        raise SSALoweringError(
+    except LoweringError as exc:
+        raise LoweringError(
             f"Cannot lower `{application.__name__}` through the SSA backend path: {exc}."
         ) from exc
 
     if ssa_program is None:
-        raise SSALoweringError(
+        raise LoweringError(
             f"Cannot lower `{application.__name__}` through the SSA backend path: "
-            "source inspection did not produce SSAProgramIR."
+            "source inspection did not produce ssa.Program."
         )
 
-    kernel_ir = KernelIR(
+    kernel_ir = Kernel(
         kernel_name=kernel_name,
         source=_application_source(application),
         source_language="ninetoothed-python",
@@ -97,12 +97,11 @@ def lower(
             "ssa_ir_source": "application_ast",
             "ssa_tensor_ir_source": "arrangement_views",
             "generation_py_fallback": False,
-            "program_ir_legacy_fallback": False,
         },
         ssa=ssa_program,
     )
 
-    artifact = lower_kernel_ir(kernel_ir, options=options)
+    artifact = emit_kernel(kernel_ir, options=options)
 
     if write:
         if output_dir is None:
@@ -120,8 +119,8 @@ def _application_source(application) -> str:
         return f"def {application.__name__}(...):\n    pass\n"
 
 
-def _public_tensor_irs(params, tensors) -> tuple[TensorTypeIR, ...]:
-    """Return TensorTypeIR objects for public source tensors.
+def _public_tensor_irs(params, tensors) -> tuple[TensorSpec, ...]:
+    """Return TensorSpec objects for public source tensors.
 
     This helper is kept for source-audit scripts.  The public ``lower`` API uses
     ``_application_tensor_irs`` so the SSA sees the arranged application views.
@@ -131,18 +130,18 @@ def _public_tensor_irs(params, tensors) -> tuple[TensorTypeIR, ...]:
     )
 
 
-def _application_tensor_irs(params, tensors) -> tuple[TensorTypeIR, ...]:
+def _application_tensor_irs(params, tensors) -> tuple[TensorSpec, ...]:
     return tuple(
         _application_tensor_ir(name, tensor) for name, tensor in zip(params, tensors)
     )
 
 
-def _public_tensor_ir(name: str, tensor) -> TensorTypeIR:
+def _public_tensor_ir(name: str, tensor) -> TensorSpec:
     source = getattr(tensor, "source", tensor)
     dtype = getattr(source, "dtype", getattr(tensor, "dtype", None))
     shape = getattr(source, "shape", getattr(tensor, "shape", ()))
 
-    return TensorTypeIR(
+    return TensorSpec(
         name=str(name),
         ndim=int(getattr(source, "ndim", getattr(tensor, "ndim", len(shape)))),
         dtype=None if dtype is None else str(dtype),
@@ -155,13 +154,13 @@ def _public_tensor_ir(name: str, tensor) -> TensorTypeIR:
     )
 
 
-def _application_tensor_ir(name: str, tensor) -> TensorTypeIR:
+def _application_tensor_ir(name: str, tensor) -> TensorSpec:
     source = getattr(tensor, "source", tensor)
     dtype = getattr(source, "dtype", getattr(tensor, "dtype", None))
     shape = getattr(tensor, "shape", getattr(source, "shape", ()))
     application_shape = _tensor_application_shape(tensor)
 
-    return TensorTypeIR(
+    return TensorSpec(
         name=str(name),
         ndim=int(getattr(tensor, "ndim", getattr(source, "ndim", len(shape)))),
         dtype=None if dtype is None else str(dtype),
