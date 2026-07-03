@@ -1,7 +1,7 @@
 # ruff: noqa: F841
 import ninetoothed.language as ntl
-from ninetoothed.ir import TensorTypeIR
-from ninetoothed.ssa import application_to_ssa, render_ssa_program
+from ninetoothed.frontend.python import from_application
+from ninetoothed.ir import TensorSpec, ssa
 
 
 def reference_attention(q, k, v, is_causal, o):
@@ -32,11 +32,11 @@ def reference_attention(q, k, v, is_causal, o):
 
 def _attention_tensors():
     return (
-        TensorTypeIR("q", 4, dtype="float16", shape=("B", "H", "M", "D")),
-        TensorTypeIR("k", 4, dtype="float16", shape=("B", "H", "N", "D")),
-        TensorTypeIR("v", 4, dtype="float16", shape=("B", "H", "N", "D")),
-        TensorTypeIR("is_causal", 0, dtype="bool", constexpr=True),
-        TensorTypeIR("o", 4, dtype="float16", shape=("B", "H", "M", "D")),
+        TensorSpec("q", 4, dtype="float16", shape=("B", "H", "M", "D")),
+        TensorSpec("k", 4, dtype="float16", shape=("B", "H", "N", "D")),
+        TensorSpec("v", 4, dtype="float16", shape=("B", "H", "N", "D")),
+        TensorSpec("is_causal", 0, dtype="bool", constexpr=True),
+        TensorSpec("o", 4, dtype="float16", shape=("B", "H", "M", "D")),
     )
 
 
@@ -58,11 +58,11 @@ def _operations(operations):
 
 class TestApplicationSSALowering:
     def test_reference_attention_lowers_to_fine_grained_region_ssa(self):
-        ssa = application_to_ssa(
+        program = from_application(
             reference_attention, _attention_tensors(), kind="reference_attention"
         )
-        assert ssa is not None
-        opcodes = tuple(_opcodes(ssa.blocks[0].operations))
+        assert program is not None
+        opcodes = tuple(_opcodes(program.blocks[0].operations))
         assert "scf.for" in opcodes
         assert "scf.if" in opcodes
         assert "linalg.dot" in opcodes
@@ -74,13 +74,13 @@ class TestApplicationSSALowering:
         assert "index.offset" in opcodes
         assert "mem.store" in opcodes
         assert "linalg.flash_attention" not in opcodes
-        assert not ssa.metadata["coarse_operator_nodes"]
+        assert not program.metadata["coarse_operator_nodes"]
 
     def test_reference_attention_loop_uses_block_args_for_carried_state(self):
-        ssa = application_to_ssa(reference_attention, _attention_tensors())
+        program = from_application(reference_attention, _attention_tensors())
         loops = [
             operation
-            for operation in _operations(ssa.blocks[0].operations)
+            for operation in _operations(program.blocks[0].operations)
             if operation.opcode == "scf.for"
         ]
         assert len(loops) == 1
@@ -92,10 +92,10 @@ class TestApplicationSSALowering:
         assert loop.regions[0].operations[-1].opcode == "scf.yield"
 
     def test_namespace_calls_are_not_treated_as_tensor_methods(self):
-        ssa = application_to_ssa(reference_attention, _attention_tensors())
+        program = from_application(reference_attention, _attention_tensors())
         reductions = [
             operation
-            for operation in _operations(ssa.blocks[0].operations)
+            for operation in _operations(program.blocks[0].operations)
             if operation.opcode in {"reduce.max", "reduce.sum"}
         ]
         assert reductions
@@ -104,8 +104,8 @@ class TestApplicationSSALowering:
             assert "ntl" not in operation.operands
 
     def test_textual_render_is_ssa_not_json_or_coarse_attention_node(self):
-        ssa = application_to_ssa(reference_attention, _attention_tensors())
-        text = render_ssa_program(ssa)
+        program = from_application(reference_attention, _attention_tensors())
+        text = ssa.render(program)
         assert "ssa @reference_attention" in text
         assert "scf.for" in text
         assert "linalg.dot" in text

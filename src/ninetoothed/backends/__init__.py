@@ -2,25 +2,25 @@
 
 from __future__ import annotations
 
-from ninetoothed.backends.base import (
+from ninetoothed.backends.core import (
+    Artifact,
     Backend,
-    BackendArtifact,
-    BackendCapability,
-    BackendName,
-    BackendOptions,
-    BackendRegistry,
-    normalize_backend_name,
-    normalize_backend_options,
+    Capability,
+    Options,
+    Registry,
+    Target,
+    normalize_options,
+    normalize_target,
 )
 from ninetoothed.backends.cuda import CudaBackend
 from ninetoothed.backends.tilelang import TileLangBackend
 from ninetoothed.backends.triton import TritonBackend
 from ninetoothed.backends.tvm import TvmBackend
-from ninetoothed.ir import KernelIR
+from ninetoothed.ir import Kernel
 
 
-def create_default_registry() -> BackendRegistry:
-    registry = BackendRegistry()
+def create_default_registry() -> Registry:
+    registry = Registry()
     registry.register(TritonBackend())
     registry.register(TileLangBackend())
     registry.register(CudaBackend())
@@ -32,23 +32,23 @@ def create_default_registry() -> BackendRegistry:
 DEFAULT_BACKENDS = create_default_registry()
 
 
-def lower(
-    kernel: KernelIR,
-    backend: BackendName | str | None = None,
-    options: BackendOptions | None = None,
-) -> BackendArtifact:
+def emit(
+    kernel: Kernel,
+    backend: Target | str | None = None,
+    options: Options | None = None,
+) -> Artifact:
     if options is None:
-        options = normalize_backend_options(backend)
+        options = normalize_options(backend)
 
     kernel = _prepare_kernel_for_backend(kernel, options)
     backend_impl = DEFAULT_BACKENDS.get(options.name)
-    artifact = backend_impl.lower(kernel, options)
+    artifact = backend_impl.emit(kernel, options)
 
     return _attach_pipeline_metadata(artifact, kernel)
 
 
-def _prepare_kernel_for_backend(kernel: KernelIR, options: BackendOptions) -> KernelIR:
-    from ninetoothed.ssa_passes import lower_ssa_for_backend
+def _prepare_kernel_for_backend(kernel: Kernel, options: Options) -> Kernel:
+    from ninetoothed.compiler.passes import lower_for_target
 
     ssa = kernel.ssa
 
@@ -56,7 +56,7 @@ def _prepare_kernel_for_backend(kernel: KernelIR, options: BackendOptions) -> Ke
         return kernel
 
     if ssa.metadata.get("target_backend") != options.name.value:
-        ssa = lower_ssa_for_backend(
+        ssa = lower_for_target(
             ssa,
             backend=options.name,
             compiler_options=kernel.compiler_options,
@@ -77,17 +77,14 @@ def _prepare_kernel_for_backend(kernel: KernelIR, options: BackendOptions) -> Ke
             "ssa_pipeline": tuple(ssa.metadata.get("pass_trace", ())),
             "ssa_target_backend": ssa.metadata.get("target_backend"),
         },
-        program=kernel.program,
         ssa=ssa,
     )
 
 
-def _attach_pipeline_metadata(
-    artifact: BackendArtifact, kernel: KernelIR
-) -> BackendArtifact:
+def _attach_pipeline_metadata(artifact: Artifact, kernel: Kernel) -> Artifact:
     if kernel.ssa is None:
         return artifact
-    return BackendArtifact(
+    return Artifact(
         backend=artifact.backend,
         kernel_name=artifact.kernel_name,
         language=artifact.language,
@@ -108,26 +105,26 @@ def _attach_pipeline_metadata(
     )
 
 
-def backend_capabilities() -> tuple[BackendCapability, ...]:
+def backend_capabilities() -> tuple[Capability, ...]:
     return DEFAULT_BACKENDS.capabilities()
 
 
 __all__ = [
     "Backend",
-    "BackendArtifact",
-    "BackendCapability",
-    "BackendName",
-    "BackendOptions",
-    "BackendRegistry",
+    "Artifact",
+    "Capability",
+    "Target",
+    "Options",
+    "Registry",
     "CudaBackend",
     "DEFAULT_BACKENDS",
-    "KernelIR",
+    "Kernel",
     "TileLangBackend",
     "TritonBackend",
     "TvmBackend",
     "backend_capabilities",
     "create_default_registry",
-    "lower",
-    "normalize_backend_name",
-    "normalize_backend_options",
+    "emit",
+    "normalize_target",
+    "normalize_options",
 ]

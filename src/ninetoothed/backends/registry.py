@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ninetoothed.backends.base import BackendName
+from ninetoothed.backends.core import Target
 
 if TYPE_CHECKING:
-    from ninetoothed.ssa_passes import SSAPassRegistry
+    from ninetoothed.compiler.passes import Registry
 
 
-def register_backend_specific_ssa_passes(registry: "SSAPassRegistry") -> None:
+def register_passes(registry: "Registry") -> None:
     from ninetoothed.backends.cuda import register_ssa_passes as register_cuda
     from ninetoothed.backends.tilelang import register_ssa_passes as register_tilelang
     from ninetoothed.backends.triton import register_ssa_passes as register_triton
@@ -23,10 +23,10 @@ def register_backend_specific_ssa_passes(registry: "SSAPassRegistry") -> None:
     _validate_backend_pass_contracts(registry)
 
 
-def _validate_backend_pass_contracts(registry: "SSAPassRegistry") -> None:
+def _validate_backend_pass_contracts(registry: "Registry") -> None:
     missing: list[str] = []
 
-    for backend in BackendName:
+    for backend in Target:
         for name in _required_backend_pass_names(backend):
             try:
                 descriptor = registry.get(name)
@@ -42,7 +42,7 @@ def _validate_backend_pass_contracts(registry: "SSAPassRegistry") -> None:
         raise ValueError(f"Backend SSA pass contract is incomplete: {names}.")
 
 
-def _required_backend_pass_names(backend: BackendName) -> tuple[str, ...]:
+def _required_backend_pass_names(backend: Target) -> tuple[str, ...]:
     return (
         f"ssa.{backend.value}.optimize_schedule",
         f"ssa.{backend.value}.lower_memory_scopes",

@@ -1,21 +1,22 @@
-from ninetoothed.backends.base import BackendName
-from ninetoothed.ir import (
-    ElementwiseAssignOpIR,
-    ExprIR,
-    MatmulOpIR,
-    ProgramIR,
-    TensorTypeIR,
-    program_to_ssa,
-)
-from ninetoothed.ssa_passes import (
+from ninetoothed.backends.core import Target
+from ninetoothed.compiler.passes import (
     BACKEND_SPECIFIC,
     HARDWARE_DEPENDENT,
     HARDWARE_INDEPENDENT,
-    SSAPipelineSpec,
-    default_ssa_pipeline_spec,
-    lower_ssa_for_backend,
-    registered_ssa_passes,
+    PipelineSpec,
+    default_spec,
+    lower_for_target,
+    registered,
 )
+from ninetoothed.frontend.python import from_source
+from ninetoothed.ir import TensorSpec
+
+
+def _program(source: str, tensors: tuple[TensorSpec, ...], kind: str):
+    program = from_source(source, tensors, kind=kind)
+    assert program is not None
+
+    return program
 
 
 def _opcodes(operations):
@@ -34,34 +35,20 @@ def _operations(operations):
             yield from _operations(region.operations)
 
 
-class TestSSAPassPipeline:
+class TestPipeline:
     def test_pipeline_attaches_target_schedule_without_coarse_nodes(self):
-        program = ProgramIR(
-            kind="elementwise",
-            operations=(
-                ElementwiseAssignOpIR(
-                    output="out",
-                    expression=ExprIR(
-                        kind="binary",
-                        value="add",
-                        args=(
-                            ExprIR(kind="var", value="x"),
-                            ExprIR(kind="var", value="y"),
-                        ),
-                    ),
-                    extent="n",
-                ),
+        program = _program(
+            "\ndef add(x, y, out):\n    out = x + y\n",
+            (
+                TensorSpec("x", 1, "float32", ("n",)),
+                TensorSpec("y", 1, "float32", ("n",)),
+                TensorSpec("out", 1, "float32", ("n",)),
             ),
+            "add",
         )
-        tensors = (
-            TensorTypeIR("x", 1, "float32", ("n",)),
-            TensorTypeIR("y", 1, "float32", ("n",)),
-            TensorTypeIR("out", 1, "float32", ("n",)),
-        )
-        generic_ssa = program_to_ssa(program, tensors)
-        lowered = lower_ssa_for_backend(
-            generic_ssa,
-            backend=BackendName.CUDA,
+        lowered = lower_for_target(
+            program,
+            backend=Target.CUDA,
             compiler_options={"num_warps": 4, "num_stages": 3},
         )
         assert tuple(lowered.metadata["pass_trace"]) == (
@@ -89,24 +76,18 @@ class TestSSAPassPipeline:
         opcodes = tuple(_opcodes(lowered.blocks[0].operations))
         assert "arith.add" in opcodes
         assert "mem.store" in opcodes
-        assert "AttentionOpIR" not in opcodes
-        assert "FlashAttentionOpIR" not in opcodes
 
     def test_schedule_sees_linalg_before_decomposition(self):
-        program = ProgramIR(
-            kind="matmul",
-            operations=(
-                MatmulOpIR(lhs="a", rhs="b", output="out", m="m", n="n", k="k"),
+        program = _program(
+            "\ndef matmul(a, b, out):\n    out = a @ b\n",
+            (
+                TensorSpec("a", 2, "float32", ("m", "k")),
+                TensorSpec("b", 2, "float32", ("k", "n")),
+                TensorSpec("out", 2, "float32", ("m", "n")),
             ),
+            "matmul",
         )
-        tensors = (
-            TensorTypeIR("a", 2, "float32", ("m", "k")),
-            TensorTypeIR("b", 2, "float32", ("k", "n")),
-            TensorTypeIR("out", 2, "float32", ("m", "n")),
-        )
-        lowered = lower_ssa_for_backend(
-            program_to_ssa(program, tensors), backend=BackendName.CUDA
-        )
+        lowered = lower_for_target(program, backend=Target.CUDA)
         opcodes = tuple(_opcodes(lowered.blocks[0].operations))
         assert lowered.metadata["analysis"]["has_dot"]
         assert lowered.metadata["schedule"]["granularity"] == "blocked-linalg"
@@ -118,27 +99,21 @@ class TestSSAPassPipeline:
         assert "arith.add" in opcodes
 
     def test_backend_specific_intrinsics_are_annotations_not_semantic_ops(self):
-        program = ProgramIR(
-            kind="elementwise",
-            operations=(
-                ElementwiseAssignOpIR(
-                    output="out", expression=ExprIR(kind="var", value="x"), extent="n"
-                ),
+        program = _program(
+            "\ndef copy(x, out):\n    out = x\n",
+            (
+                TensorSpec("x", 1, "float32", ("n",)),
+                TensorSpec("out", 1, "float32", ("n",)),
             ),
-        )
-        tensors = (
-            TensorTypeIR("x", 1, "float32", ("n",)),
-            TensorTypeIR("out", 1, "float32", ("n",)),
+            "copy",
         )
 
         for backend, expected_program_id in (
-            (BackendName.TRITON, "tl.program_id"),
-            (BackendName.TILELANG, "T.Kernel + T.get_thread_binding"),
-            (BackendName.TVM, "T.thread_binding"),
+            (Target.TRITON, "tl.program_id"),
+            (Target.TILELANG, "T.Kernel + T.get_thread_binding"),
+            (Target.TVM, "T.thread_binding"),
         ):
-            lowered = lower_ssa_for_backend(
-                program_to_ssa(program, tensors), backend=backend
-            )
+            lowered = lower_for_target(program, backend=backend)
             assert (
                 lowered.metadata["backend_intrinsics"]["program_id"]
                 == expected_program_id
@@ -147,21 +122,18 @@ class TestSSAPassPipeline:
             for operation in _operations(lowered.blocks[0].operations):
                 assert "backend_intrinsic" in operation.attrs
                 assert "optimization" in operation.attrs
-                assert "AttentionOpIR" not in operation.opcode
 
     def test_pass_registry_classifies_hardware_independent_and_target_passes(self):
         independent = {
-            descriptor.name
-            for descriptor in registered_ssa_passes(category=HARDWARE_INDEPENDENT)
+            descriptor.name for descriptor in registered(category=HARDWARE_INDEPENDENT)
         }
         dependent = {
-            descriptor.name
-            for descriptor in registered_ssa_passes(category=HARDWARE_DEPENDENT)
+            descriptor.name for descriptor in registered(category=HARDWARE_DEPENDENT)
         }
         triton_specific = {
             descriptor.name
-            for descriptor in registered_ssa_passes(
-                category=BACKEND_SPECIFIC, backend=BackendName.TRITON
+            for descriptor in registered(
+                category=BACKEND_SPECIFIC, backend=Target.TRITON
             )
         }
         assert "ssa.canonicalize" in independent
@@ -176,38 +148,32 @@ class TestSSAPassPipeline:
         assert "ssa.cuda.lower_intrinsics" not in triton_specific
 
     def test_each_backend_registers_required_contract_passes(self):
-        for backend in BackendName:
-            registered = {
+        for backend in Target:
+            backend_passes = {
                 descriptor.name
-                for descriptor in registered_ssa_passes(
-                    category=BACKEND_SPECIFIC, backend=backend
-                )
+                for descriptor in registered(category=BACKEND_SPECIFIC, backend=backend)
             }
             required = {
                 f"ssa.{backend.value}.optimize_schedule",
                 f"ssa.{backend.value}.lower_memory_scopes",
                 f"ssa.{backend.value}.lower_intrinsics",
             }
-            assert required <= registered
-            assert required <= set(default_ssa_pipeline_spec(backend).passes)
+            assert required <= backend_passes
+            assert required <= set(default_spec(backend).passes)
 
     def test_custom_pipeline_can_disable_backend_optimization_pass(self):
-        program = ProgramIR(
-            kind="elementwise",
-            operations=(
-                ElementwiseAssignOpIR(
-                    output="out", expression=ExprIR(kind="var", value="x"), extent="n"
-                ),
+        program = _program(
+            "\ndef copy(x, out):\n    out = x\n",
+            (
+                TensorSpec("x", 1, "float32", ("n",)),
+                TensorSpec("out", 1, "float32", ("n",)),
             ),
+            "copy",
         )
-        tensors = (
-            TensorTypeIR("x", 1, "float32", ("n",)),
-            TensorTypeIR("out", 1, "float32", ("n",)),
-        )
-        lowered = lower_ssa_for_backend(
-            program_to_ssa(program, tensors),
-            backend=BackendName.TRITON,
-            pass_pipeline=SSAPipelineSpec(
+        lowered = lower_for_target(
+            program,
+            backend=Target.TRITON,
+            pass_pipeline=PipelineSpec(
                 passes=(
                     "ssa.canonicalize",
                     "ssa.decompose_linalg",
@@ -233,21 +199,15 @@ class TestSSAPassPipeline:
         )
 
     def test_autotune_pipeline_records_candidates_and_selected_passes(self):
-        program = ProgramIR(
-            kind="elementwise",
-            operations=(
-                ElementwiseAssignOpIR(
-                    output="out", expression=ExprIR(kind="var", value="x"), extent="n"
-                ),
+        program = _program(
+            "\ndef copy(x, out):\n    out = x\n",
+            (
+                TensorSpec("x", 1, "float32", ("n",)),
+                TensorSpec("out", 1, "float32", ("n",)),
             ),
+            "copy",
         )
-        tensors = (
-            TensorTypeIR("x", 1, "float32", ("n",)),
-            TensorTypeIR("out", 1, "float32", ("n",)),
-        )
-        lowered = lower_ssa_for_backend(
-            program_to_ssa(program, tensors), backend=BackendName.TRITON, autotune=True
-        )
+        lowered = lower_for_target(program, backend=Target.TRITON, autotune=True)
         selection = lowered.metadata["pipeline_selection"]
         assert selection["mode"] == "autotune"
         assert "ssa.triton.optimize_schedule" in selection["selected_passes"]

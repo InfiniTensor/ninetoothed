@@ -7,10 +7,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping, MutableMapping
 
-from ninetoothed.ir import KernelIR
+from ninetoothed.ir import Kernel
 
 
-class BackendName(str, Enum):
+class Target(str, Enum):
     TRITON = "triton"
     TILELANG = "tilelang"
     CUDA = "cuda"
@@ -18,29 +18,29 @@ class BackendName(str, Enum):
 
 
 _CANONICAL_BACKEND_NAMES = {
-    None: BackendName.TRITON,
-    "triton": BackendName.TRITON,
-    "tilelang": BackendName.TILELANG,
-    "cuda": BackendName.CUDA,
-    "tvm": BackendName.TVM,
+    None: Target.TRITON,
+    "triton": Target.TRITON,
+    "tilelang": Target.TILELANG,
+    "cuda": Target.CUDA,
+    "tvm": Target.TVM,
 }
 
 
 @dataclass(frozen=True)
-class BackendOptions:
+class Options:
     """Options passed from public APIs to a backend lowerer."""
 
-    name: BackendName = BackendName.TRITON
+    name: Target = Target.TRITON
     caller: str | None = None
     emit_only: bool = True
     extra: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
-class BackendCapability:
+class Capability:
     """Human-readable status for a backend implementation."""
 
-    name: BackendName
+    name: Target
     emits_source: bool
     can_execute: bool
     requires_external_compiler: bool = False
@@ -48,10 +48,10 @@ class BackendCapability:
 
 
 @dataclass(frozen=True)
-class BackendArtifact:
-    """The output of lowering a :class:`KernelIR` to a backend."""
+class Artifact:
+    """The output of lowering a :class:`Kernel` to a backend."""
 
-    backend: BackendName
+    backend: Target
     kernel_name: str
     language: str
     sources: Mapping[str, str]
@@ -82,28 +82,26 @@ class BackendArtifact:
 
 
 class Backend:
-    """Base class for source and executable backend lowerers."""
+    """Base class for source and executable backend emitters."""
 
-    name: BackendName
-    capability: BackendCapability
+    name: Target
+    capability: Capability
 
-    def lower(
-        self, kernel: KernelIR, options: BackendOptions | None = None
-    ) -> BackendArtifact:
+    def emit(self, kernel: Kernel, options: Options | None = None) -> Artifact:
         raise NotImplementedError
 
 
-class BackendRegistry:
+class Registry:
     """Small explicit registry to avoid import-time backend guessing."""
 
     def __init__(self):
-        self._backends: MutableMapping[BackendName, Backend] = {}
+        self._backends: MutableMapping[Target, Backend] = {}
 
     def register(self, backend: Backend) -> None:
         self._backends[backend.name] = backend
 
-    def get(self, name: BackendName | str | None) -> Backend:
-        normalized = normalize_backend_name(name)
+    def get(self, name: Target | str | None) -> Backend:
+        normalized = normalize_target(name)
 
         try:
             return self._backends[normalized]
@@ -113,12 +111,12 @@ class BackendRegistry:
                 f"Unsupported backend `{normalized.value}`. Available backends: {available}."
             ) from exc
 
-    def capabilities(self) -> tuple[BackendCapability, ...]:
+    def capabilities(self) -> tuple[Capability, ...]:
         return tuple(backend.capability for backend in self._backends.values())
 
 
-def normalize_backend_name(name: BackendName | str | None) -> BackendName:
-    if isinstance(name, BackendName):
+def normalize_target(name: Target | str | None) -> Target:
+    if isinstance(name, Target):
         return name
 
     key = None if name is None else str(name).lower()
@@ -136,15 +134,15 @@ def normalize_backend_name(name: BackendName | str | None) -> BackendName:
         ) from exc
 
 
-def normalize_backend_options(
-    backend: BackendName | str | None = None,
+def normalize_options(
+    backend: Target | str | None = None,
     *,
     caller: str | None = None,
     emit_only: bool = True,
     **extra: Any,
-) -> BackendOptions:
-    return BackendOptions(
-        name=normalize_backend_name(backend),
+) -> Options:
+    return Options(
+        name=normalize_target(backend),
         caller=caller,
         emit_only=emit_only,
         extra=extra,
