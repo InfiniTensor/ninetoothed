@@ -28,20 +28,12 @@ CACHE_DIR.mkdir(exist_ok=True)
 class CodeGenerator(ast.NodeTransformer):
     def __init__(self):
         super().__init__()
-
-        device = triton.runtime.driver.active.get_current_device()
-        properties = triton.runtime.driver.active.utils.get_device_properties(device)
-
         self._min_num_elements = 1
+        self._max_num_elements = 2**18 // 8
+        self._configs = []
+        self._free_symbols = set()
+        self._block_size = None
 
-        if "max_num_regs" in properties:
-            max_innermost_size = 4 * properties["max_num_regs"]
-        elif "max_nram_size" in properties:
-            max_innermost_size = properties["max_nram_size"]
-        else:
-            max_innermost_size = 2**18
-
-        self._max_num_elements = max_innermost_size // 8
 
     def __call__(
         self,
@@ -724,15 +716,16 @@ class CodeGenerator(ast.NodeTransformer):
     @staticmethod
     def _generate_overall_offsets_and_mask(tensor, indices):
         indices = list(indices)
-
         offsets, mask = CodeGenerator._generate_offsets_and_mask(tensor, indices)
-
         tensor._last_generated_offsets = offsets
 
-        overall_offsets = sum(
-            offsets[source_dim] * Symbol(tensor.source.stride_string(source_dim))
-            for source_dim in range(tensor.source.ndim)
-        )
+        if hasattr(tensor.source, "is_contiguous") and tensor.source.is_contiguous:
+            overall_offsets = indices[0] if len(indices) == 1 else sum(offsets)
+        else:
+            overall_offsets = sum(
+                offsets[source_dim] * Symbol(tensor.source.stride_string(source_dim))
+                for source_dim in range(tensor.source.ndim)
+            )
 
         if tensor.source.jagged_dim is not None:
             overall_offsets += CodeGenerator._name_for_seq_start(tensor) * Symbol(
@@ -740,9 +733,7 @@ class CodeGenerator(ast.NodeTransformer):
             )
 
         tensor._last_generated_overall_offsets = overall_offsets
-
         return overall_offsets, mask
-
     @staticmethod
     def _generate_offsets_and_mask(tensor, indices):
         offsets = [Symbol(0) for _ in range(tensor.source.ndim)]
