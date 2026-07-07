@@ -26,7 +26,7 @@ _CANONICAL_BACKEND_NAMES = {
 }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Options:
     """Options passed from public APIs to a backend lowerer."""
 
@@ -36,7 +36,7 @@ class Options:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Capability:
     """Human-readable status for a backend implementation."""
 
@@ -47,7 +47,7 @@ class Capability:
     notes: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Artifact:
     """The output of lowering a :class:`Kernel` to a backend."""
 

@@ -376,12 +376,12 @@ class _ApplicationSSABuilder:
         self.param_names = tuple(arg.arg for arg in func.args.args)
         self.tensor_types = {
             tensor.name: ssa.Type(
-                "tensor" if tensor.ndim != 0 else "scalar",
-                dtype=tensor.dtype,
+                kind="tensor" if tensor.ndim != 0 else "scalar",
                 shape=tuple(
                     str(dim)
                     for dim in tensor.attrs.get("application_shape", tensor.shape)
                 ),
+                dtype=tensor.dtype,
                 attrs={
                     "ndim": tensor.ndim,
                     "constexpr": tensor.constexpr,
@@ -486,7 +486,7 @@ class _ApplicationSSABuilder:
 
                 operations.append(
                     ssa.Operation(
-                        "mem.store",
+                        opcode="mem.store",
                         operands=(value.name, output.name),
                         attrs={"target": target.id},
                     )
@@ -507,7 +507,7 @@ class _ApplicationSSABuilder:
             )
             operations.append(
                 ssa.Operation(
-                    "mem.store",
+                    opcode="mem.store",
                     operands=(value.name, destination.name),
                     attrs={
                         "subscript": _unparse(target.slice),
@@ -572,7 +572,7 @@ class _ApplicationSSABuilder:
             )
             operations.append(
                 ssa.Operation(
-                    "mem.store",
+                    opcode="mem.store",
                     operands=(result.name, destination.name),
                     attrs={
                         "subscript": _unparse(stmt.target.slice),
@@ -616,7 +616,7 @@ class _ApplicationSSABuilder:
         assigned = _assigned_names(stmt.body)
         carried = tuple(name for name in assigned if name in env)
 
-        induction = ssa.Value(f"%{stmt.target.id}", ssa.Type("index"))
+        induction = ssa.Value(name=f"%{stmt.target.id}", type=ssa.Type(kind="index"))
         block_args = [induction]
         loop_env = dict(env)
         loop_env[stmt.target.id] = induction
@@ -624,7 +624,7 @@ class _ApplicationSSABuilder:
 
         for name in carried:
             current = env[name]
-            arg = ssa.Value(f"%{name}_iter", current.type)
+            arg = ssa.Value(name=f"%{name}_iter", type=current.type)
             block_args.append(arg)
             loop_env[name] = arg
             iter_arg_attrs.append(
@@ -634,12 +634,12 @@ class _ApplicationSSABuilder:
         loop_operations: list[ssa.Operation] = []
         self._lower_statements(stmt.body, loop_operations, loop_env)
         yield_values = tuple(loop_env[name].name for name in carried)
-        loop_operations.append(ssa.Operation("scf.yield", operands=yield_values))
+        loop_operations.append(ssa.Operation(opcode="scf.yield", operands=yield_values))
 
         results = tuple(self._temp(env[name].type, hint=name) for name in carried)
         operations.append(
             ssa.Operation(
-                "scf.for",
+                opcode="scf.for",
                 operands=(
                     lower_bound.name,
                     upper_bound.name,
@@ -690,7 +690,7 @@ class _ApplicationSSABuilder:
 
             operations.append(
                 ssa.Operation(
-                    "scf.if",
+                    opcode="scf.if",
                     operands=(condition.name,),
                     attrs={"has_results": False},
                     regions=tuple(regions),
@@ -704,7 +704,8 @@ class _ApplicationSSABuilder:
         self._lower_statements(stmt.body, then_ops, then_env)
         then_ops.append(
             ssa.Operation(
-                "scf.yield", operands=tuple(then_env[name].name for name in assigned)
+                opcode="scf.yield",
+                operands=tuple(then_env[name].name for name in assigned),
             )
         )
 
@@ -716,14 +717,15 @@ class _ApplicationSSABuilder:
 
         else_ops.append(
             ssa.Operation(
-                "scf.yield", operands=tuple(else_env[name].name for name in assigned)
+                opcode="scf.yield",
+                operands=tuple(else_env[name].name for name in assigned),
             )
         )
 
         results = tuple(self._temp(env[name].type, hint=name) for name in assigned)
         operations.append(
             ssa.Operation(
-                "scf.if",
+                opcode="scf.if",
                 operands=(condition.name,),
                 results=results,
                 attrs={"assigned": assigned},
@@ -826,7 +828,7 @@ class _ApplicationSSABuilder:
                     operations,
                     f"arith.{_boolop_name(node.op)}",
                     operands=(result.name, rhs.name),
-                    result_type=ssa.Type("tensor", dtype="bool"),
+                    result_type=ssa.Type(kind="tensor", dtype="bool"),
                 )
             return result
 
@@ -907,7 +909,7 @@ class _ApplicationSSABuilder:
                 operations,
                 "symbol.attr",
                 attrs={"expr": _unparse(node)},
-                result_type=ssa.Type("symbol"),
+                result_type=ssa.Type(kind="symbol"),
             )
 
         if isinstance(node, ast.Call):
@@ -921,7 +923,7 @@ class _ApplicationSSABuilder:
                 "tuple.construct",
                 operands=tuple(item.name for item in items),
                 attrs={"items": tuple(_unparse(item) for item in node.elts)},
-                result_type=ssa.Type("tuple"),
+                result_type=ssa.Type(kind="tuple"),
             )
 
         raise LoweringError(f"Unsupported expression: {ast.dump(node)}.")
@@ -975,7 +977,7 @@ class _ApplicationSSABuilder:
                     "tensor.stride",
                     operands=(receiver.name,),
                     attrs={"dim": dim},
-                    result_type=ssa.Type("index"),
+                    result_type=ssa.Type(kind="index"),
                 )
 
             if method == "data_ptr":
@@ -983,7 +985,7 @@ class _ApplicationSSABuilder:
                     operations,
                     "mem.data_ptr",
                     operands=(receiver.name,),
-                    result_type=ssa.Type("pointer", dtype=receiver.type.dtype),
+                    result_type=ssa.Type(kind="pointer", dtype=receiver.type.dtype),
                 )
 
             if method in {"sum", "max", "min"}:
@@ -1027,7 +1029,7 @@ class _ApplicationSSABuilder:
                     "dtype": _keyword_text(node, "dtype"),
                 },
                 result_type=ssa.Type(
-                    "tensor", dtype=_keyword_text(node, "dtype"), shape=shape
+                    kind="tensor", shape=shape, dtype=_keyword_text(node, "dtype")
                 ),
             )
 
@@ -1053,7 +1055,7 @@ class _ApplicationSSABuilder:
                     "dtype": _keyword_text(node, "dtype"),
                 },
                 result_type=ssa.Type(
-                    "tensor", dtype=_keyword_text(node, "dtype"), shape=shape
+                    kind="tensor", shape=shape, dtype=_keyword_text(node, "dtype")
                 ),
             )
 
@@ -1111,7 +1113,7 @@ class _ApplicationSSABuilder:
                 "mem.atomic_add",
                 operands=tuple(value.name for value in operands),
                 result_type=ssa.Type(
-                    "scalar",
+                    kind="scalar",
                     dtype=operands[1].type.dtype if len(operands) > 1 else "float32",
                 ),
             )
@@ -1120,7 +1122,7 @@ class _ApplicationSSABuilder:
             result_type = (
                 _matmul_type(operands[0].type, operands[1].type)
                 if len(operands) >= 2
-                else ssa.Type("tensor")
+                else ssa.Type(kind="tensor")
             )
 
             return self._emit(
@@ -1148,7 +1150,7 @@ class _ApplicationSSABuilder:
                 operands=tuple(value.name for value in operands),
                 result_type=_transpose_type(operands[0].type)
                 if operands
-                else ssa.Type("tensor"),
+                else ssa.Type(kind="tensor"),
             )
 
         if name == "where":
@@ -1158,7 +1160,7 @@ class _ApplicationSSABuilder:
                 operands=tuple(value.name for value in operands),
                 result_type=operands[1].type
                 if len(operands) > 1
-                else ssa.Type("tensor"),
+                else ssa.Type(kind="tensor"),
             )
 
         if name in {"sum", "max", "min"}:
@@ -1171,7 +1173,7 @@ class _ApplicationSSABuilder:
                 attrs={"axis": axis},
                 result_type=_reduce_type(operands[0].type, axis)
                 if operands
-                else ssa.Type("tensor"),
+                else ssa.Type(kind="tensor"),
             )
 
         if name in {"maximum", "minimum"}:
@@ -1179,7 +1181,7 @@ class _ApplicationSSABuilder:
                 operations,
                 f"arith.{name}",
                 operands=tuple(value.name for value in operands),
-                result_type=operands[0].type if operands else ssa.Type("tensor"),
+                result_type=operands[0].type if operands else ssa.Type(kind="tensor"),
             )
 
         if name in _SUPPORTED_MATH_CALLS:
@@ -1187,7 +1189,7 @@ class _ApplicationSSABuilder:
                 operations,
                 f"math.{name}",
                 operands=tuple(value.name for value in operands),
-                result_type=operands[0].type if operands else ssa.Type("tensor"),
+                result_type=operands[0].type if operands else ssa.Type(kind="tensor"),
             )
 
         return self._emit(
@@ -1195,7 +1197,7 @@ class _ApplicationSSABuilder:
             f"call.{name}",
             operands=tuple(value.name for value in operands),
             attrs={"callee": _unparse(node.func)},
-            result_type=operands[0].type if operands else ssa.Type("tensor"),
+            result_type=operands[0].type if operands else ssa.Type(kind="tensor"),
         )
 
     def _store_intrinsic_result(
@@ -1210,7 +1212,7 @@ class _ApplicationSSABuilder:
 
         operations.append(
             ssa.Operation(
-                "mem.store",
+                opcode="mem.store",
                 operands=(value.name, destination.name),
                 attrs={"target": destination.name, "intrinsic": intrinsic},
             )
@@ -1240,7 +1242,7 @@ class _ApplicationSSABuilder:
                 operations,
                 "symbol.attr",
                 attrs={"expr": _unparse(node)},
-                result_type=ssa.Type("symbol"),
+                result_type=ssa.Type(kind="symbol"),
             )
         return self._lower_expr(node, operations, env)
 
@@ -1272,7 +1274,7 @@ class _ApplicationSSABuilder:
             "shape.dim",
             operands=(tensor.name,),
             attrs={"dim": _literal_value(node.slice), "source": source},
-            result_type=ssa.Type("index"),
+            result_type=ssa.Type(kind="index"),
         )
 
     def _lower_subscript_values(
@@ -1320,7 +1322,7 @@ class _ApplicationSSABuilder:
             operations,
             "arith.constant",
             attrs={"value": attr_value},
-            result_type=ssa.Type("scalar", dtype=dtype),
+            result_type=ssa.Type(kind="scalar", dtype=dtype),
         )
 
     def _emit(
@@ -1332,10 +1334,10 @@ class _ApplicationSSABuilder:
         attrs: Mapping[str, Any] | None = None,
         result_type: ssa.Type | None = None,
     ) -> ssa.Value:
-        result = self._temp(result_type or ssa.Type("tensor"))
+        result = self._temp(result_type or ssa.Type(kind="tensor"))
         operations.append(
             ssa.Operation(
-                opcode,
+                opcode=opcode,
                 operands=operands,
                 results=(result,),
                 attrs=dict(attrs or {}),
@@ -1347,7 +1349,7 @@ class _ApplicationSSABuilder:
     def _temp(self, type_: ssa.Type, *, hint: str | None = None) -> ssa.Value:
         name = f"%{self.temp_index}" if hint is None else f"%{hint}_{self.temp_index}"
         self.temp_index += 1
-        value = ssa.Value(name, type_)
+        value = ssa.Value(name=name, type=type_)
         self.values[name] = value
 
         return value
@@ -1355,7 +1357,8 @@ class _ApplicationSSABuilder:
     def _named_value(self, name: str, type_: ssa.Type | None = None) -> ssa.Value:
         if name not in self.values:
             self.values[name] = ssa.Value(
-                name, type_ or self.tensor_types.get(name, ssa.Type("tensor"))
+                name=name,
+                type=type_ or self.tensor_types.get(name, ssa.Type(kind="tensor")),
             )
         return self.values[name]
 
@@ -1369,11 +1372,11 @@ class _ApplicationSSABuilder:
             return value
 
         replacement = ssa.Value(
-            value.name,
-            ssa.Type(
-                "scalar",
-                dtype="bool",
+            name=value.name,
+            type=ssa.Type(
+                kind="scalar",
                 shape=value.type.shape,
+                dtype="bool",
                 attrs=dict(value.type.attrs),
             ),
         )
@@ -1519,7 +1522,9 @@ def _value_for_shape_node(
 
         if base is None:
             return None
-        return ssa.Value("<shape-proxy>", _subscript_type(base.type, node.slice))
+        return ssa.Value(
+            name="<shape-proxy>", type=_subscript_type(base.type, node.slice)
+        )
     return None
 
 
@@ -1582,12 +1587,16 @@ def _subscript_type(type_: ssa.Type, slice_node: ast.AST) -> ssa.Type:
             level = int(attrs.get("dtype_level", 0)) + 1
             attrs["dtype_level"] = level
 
-            return ssa.Type("tensor", dtype=type_.dtype, shape=next_shape, attrs=attrs)
-        return ssa.Type("scalar", dtype=type_.dtype, attrs=attrs)
+            return ssa.Type(
+                kind="tensor", shape=next_shape, dtype=type_.dtype, attrs=attrs
+            )
+        return ssa.Type(kind="scalar", dtype=type_.dtype, attrs=attrs)
 
     if consumed:
         attrs["partial_indices"] = int(attrs.get("partial_indices", 0)) + consumed
-    return ssa.Type("tensor", dtype=type_.dtype, shape=tuple(result_shape), attrs=attrs)
+    return ssa.Type(
+        kind="tensor", shape=tuple(result_shape), dtype=type_.dtype, attrs=attrs
+    )
 
 
 def _next_dtype_shape(type_: ssa.Type) -> tuple[str, ...] | None:
@@ -1609,7 +1618,7 @@ def _reduce_type(type_: ssa.Type, axis: Any) -> ssa.Type:
     shape = tuple(str(dim) for dim in type_.shape)
 
     if axis is None:
-        return ssa.Type("scalar", dtype=type_.dtype, attrs=dict(type_.attrs))
+        return ssa.Type(kind="scalar", dtype=type_.dtype, attrs=dict(type_.attrs))
 
     index = int(axis)
 
@@ -1622,15 +1631,15 @@ def _reduce_type(type_: ssa.Type, axis: Any) -> ssa.Type:
     result_shape = shape[:index] + shape[index + 1 :]
 
     if not result_shape:
-        return ssa.Type("scalar", dtype=type_.dtype, attrs=dict(type_.attrs))
+        return ssa.Type(kind="scalar", dtype=type_.dtype, attrs=dict(type_.attrs))
     return ssa.Type(
-        "tensor", dtype=type_.dtype, shape=result_shape, attrs=dict(type_.attrs)
+        kind="tensor", shape=result_shape, dtype=type_.dtype, attrs=dict(type_.attrs)
     )
 
 
 def _offset_type(type_: ssa.Type, dim: Any) -> ssa.Type:
     if type_.kind != "tensor":
-        return ssa.Type("scalar", dtype="index")
+        return ssa.Type(kind="scalar", dtype="index")
 
     shape = tuple(str(item) for item in type_.shape)
     dtype_target_dims = tuple(
@@ -1641,7 +1650,7 @@ def _offset_type(type_: ssa.Type, dim: Any) -> ssa.Type:
     target_dims = dtype_target_dims[level] if level < len(dtype_target_dims) else ()
 
     if not target_dims:
-        return ssa.Type("tensor", dtype="index", shape=shape)
+        return ssa.Type(kind="tensor", shape=shape, dtype="index")
 
     source_ndim = int(type_.attrs.get("source_ndim", len(target_dims)))
     source_dim = int(dim or 0)
@@ -1656,8 +1665,8 @@ def _offset_type(type_: ssa.Type, dim: Any) -> ssa.Type:
     )
 
     if not kept:
-        return ssa.Type("scalar", dtype="index")
-    return ssa.Type("tensor", dtype="index", shape=kept)
+        return ssa.Type(kind="scalar", dtype="index")
+    return ssa.Type(kind="tensor", shape=kept, dtype="index")
 
 
 def _matmul_type(lhs: ssa.Type, rhs: ssa.Type) -> ssa.Type:
@@ -1668,17 +1677,20 @@ def _matmul_type(lhs: ssa.Type, rhs: ssa.Type) -> ssa.Type:
 
     if len(lhs_shape) >= 2 and len(rhs_shape) >= 2:
         return ssa.Type(
-            "tensor", dtype=dtype, shape=(lhs_shape[-2], rhs_shape[-1]), attrs=attrs
+            kind="tensor",
+            shape=(lhs_shape[-2], rhs_shape[-1]),
+            dtype=dtype,
+            attrs=attrs,
         )
 
     if len(lhs_shape) >= 2 and len(rhs_shape) == 1:
-        return ssa.Type("tensor", dtype=dtype, shape=(lhs_shape[-2],), attrs=attrs)
+        return ssa.Type(kind="tensor", shape=(lhs_shape[-2],), dtype=dtype, attrs=attrs)
 
     if len(lhs_shape) == 1 and len(rhs_shape) >= 2:
-        return ssa.Type("tensor", dtype=dtype, shape=(rhs_shape[-1],), attrs=attrs)
+        return ssa.Type(kind="tensor", shape=(rhs_shape[-1],), dtype=dtype, attrs=attrs)
 
     if len(lhs_shape) == 1 and len(rhs_shape) == 1:
-        return ssa.Type("scalar", dtype=dtype, attrs=attrs)
+        return ssa.Type(kind="scalar", dtype=dtype, attrs=attrs)
     return _broadcast_type(lhs, rhs)
 
 
@@ -1714,18 +1726,18 @@ def _broadcast_type(lhs: ssa.Type, rhs: ssa.Type) -> ssa.Type:
     dtype = lhs.dtype or rhs.dtype
     attrs = dict(lhs.attrs if lhs.kind == "tensor" else rhs.attrs)
 
-    return ssa.Type("tensor", dtype=dtype, shape=shape, attrs=attrs)
+    return ssa.Type(kind="tensor", shape=shape, dtype=dtype, attrs=attrs)
 
 
 def _bool_type(lhs: ssa.Value, rhs: ssa.Value | None = None) -> ssa.Type:
     if rhs is not None and rhs.type.kind == "tensor":
         shape = _broadcast_type(lhs.type, rhs.type).shape
 
-        return ssa.Type("tensor", dtype="bool", shape=shape)
+        return ssa.Type(kind="tensor", shape=shape, dtype="bool")
 
     if lhs.type.kind == "tensor":
-        return ssa.Type("tensor", dtype="bool", shape=lhs.type.shape)
-    return ssa.Type("scalar", dtype="bool")
+        return ssa.Type(kind="tensor", shape=lhs.type.shape, dtype="bool")
+    return ssa.Type(kind="scalar", dtype="bool")
 
 
 _SUPPORTED_MATH_CALLS = {
@@ -1760,9 +1772,9 @@ def _transpose_type(type_: ssa.Type) -> ssa.Type:
     if type_.kind != "tensor" or len(type_.shape) < 2:
         return type_
     return ssa.Type(
-        type_.kind,
-        dtype=type_.dtype,
+        kind=type_.kind,
         shape=tuple(reversed(type_.shape)),
+        dtype=type_.dtype,
         attrs=dict(type_.attrs),
     )
 

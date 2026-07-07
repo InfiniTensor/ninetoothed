@@ -116,7 +116,7 @@ def _ssa(func, tensors: tuple[TensorSpec, ...] | None = None) -> ssa.Program:
     if tensors is None:
         tensors = tuple(
             (
-                TensorSpec(name, 1, dtype="float32", shape=("n",))
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name=name)
                 for name in inspect.signature(func).parameters
             )
         )
@@ -199,7 +199,7 @@ class TestLoweringInference:
     def test_unknown_intrinsic_names_stay_as_call_ops_not_coarse_attention_ir(self):
         tensors = tuple(
             (
-                TensorSpec(name, 2, dtype="float32", shape=("rows", "cols"))
+                TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name=name)
                 for name in ("q", "k", "v", "out")
             )
         )
@@ -225,7 +225,7 @@ class TestLoweringInference:
     def test_offsets_lower_to_explicit_index_ops(self):
         program = _ssa(
             eye_offsets,
-            (TensorSpec("out", 2, dtype="float32", shape=("rows", "cols")),),
+            (TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="out"),),
         )
         opcodes = _opcodes(program)
         assert opcodes.count("index.offset") == 2
@@ -243,9 +243,9 @@ class TestLoweringInference:
 
     def test_axis_reduction_fusions_lower_to_generic_dataflow(self):
         tensors = (
-            TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
-            TensorSpec("out0", 1, dtype="float32", shape=("rows",)),
-            TensorSpec("out1", 1, dtype="float32", shape=("rows",)),
+            TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="x"),
+            TensorSpec(ndim=1, shape=("rows",), dtype="float32", name="out0"),
+            TensorSpec(ndim=1, shape=("rows",), dtype="float32", name="out1"),
         )
         program = _ssa(rowwise_aminmax, tensors)
         opcodes = _opcodes(program)
@@ -256,14 +256,14 @@ class TestLoweringInference:
 
     def test_rowwise_softmax_and_layernorm_are_dataflow_not_kernel_nodes(self):
         softmax_tensors = (
-            TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
-            TensorSpec("out", 2, dtype="float32", shape=("rows", "cols")),
+            TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="x"),
+            TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="out"),
         )
         layernorm_tensors = (
-            TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
-            TensorSpec("weight", 1, dtype="float32", shape=("cols",)),
-            TensorSpec("bias", 1, dtype="float32", shape=("cols",)),
-            TensorSpec("out", 2, dtype="float32", shape=("rows", "cols")),
+            TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="x"),
+            TensorSpec(ndim=1, shape=("cols",), dtype="float32", name="weight"),
+            TensorSpec(ndim=1, shape=("cols",), dtype="float32", name="bias"),
+            TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="out"),
         )
 
         for func, tensors, fragments in (

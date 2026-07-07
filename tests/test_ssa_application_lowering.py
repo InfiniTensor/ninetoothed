@@ -32,11 +32,11 @@ def reference_attention(q, k, v, is_causal, o):
 
 def _attention_tensors():
     return (
-        TensorSpec("q", 4, dtype="float16", shape=("B", "H", "M", "D")),
-        TensorSpec("k", 4, dtype="float16", shape=("B", "H", "N", "D")),
-        TensorSpec("v", 4, dtype="float16", shape=("B", "H", "N", "D")),
-        TensorSpec("is_causal", 0, dtype="bool", constexpr=True),
-        TensorSpec("o", 4, dtype="float16", shape=("B", "H", "M", "D")),
+        TensorSpec(ndim=4, shape=("B", "H", "M", "D"), dtype="float16", name="q"),
+        TensorSpec(ndim=4, shape=("B", "H", "N", "D"), dtype="float16", name="k"),
+        TensorSpec(ndim=4, shape=("B", "H", "N", "D"), dtype="float16", name="v"),
+        TensorSpec(ndim=0, dtype="bool", constexpr=True, name="is_causal"),
+        TensorSpec(ndim=4, shape=("B", "H", "M", "D"), dtype="float16", name="o"),
     )
 
 

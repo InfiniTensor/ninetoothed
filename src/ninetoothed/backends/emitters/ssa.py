@@ -55,12 +55,12 @@ _REDUCE_INIT = {
 }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _TensorInfo:
-    name: str
-    dtype: str = "float32"
-    shape: tuple[str, ...] = ()
     ndim: int = 1
+    shape: tuple[str, ...] = ()
+    dtype: str = "float32"
+    name: str
     source_name: str | None = None
     source_shape: tuple[str, ...] = ()
     source_strides: tuple[str, ...] = ()
@@ -69,7 +69,7 @@ class _TensorInfo:
     attrs: Mapping[str, Any] | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _Target:
     backend: Target
     language: str
@@ -333,7 +333,7 @@ class _Target:
         return f"T.max({acc}, {term})" if operator == "max" else f"T.min({acc}, {term})"
 
 
-@dataclass
+@dataclass(kw_only=True)
 class _EmitContext:
     target: _Target
     kernel: Kernel
@@ -436,21 +436,29 @@ def emit(kernel: Kernel, backend: Target) -> Artifact:
 def _target(backend: Target) -> _Target:
     return {
         Target.TRITON: _Target(
-            backend, "python/triton", "triton.py", "ssa-unified-triton-emitter"
+            backend=backend,
+            language="python/triton",
+            suffix="triton.py",
+            source_route="ssa-unified-triton-emitter",
         ),
-        Target.CUDA: _Target(backend, "cuda/c++", "cu", "ssa-unified-cuda-emitter"),
+        Target.CUDA: _Target(
+            backend=backend,
+            language="cuda/c++",
+            suffix="cu",
+            source_route="ssa-unified-cuda-emitter",
+        ),
         Target.TILELANG: _Target(
-            backend,
-            "python/tilelang",
-            "tilelang.py",
-            "ssa-unified-tilelang-emitter",
+            backend=backend,
+            language="python/tilelang",
+            suffix="tilelang.py",
+            source_route="ssa-unified-tilelang-emitter",
             buffer_suffix="_buf",
         ),
         Target.TVM: _Target(
-            backend,
-            "python/tvm-script",
-            "tvm.py",
-            "ssa-unified-tvm-emitter",
+            backend=backend,
+            language="python/tvm-script",
+            suffix="tvm.py",
+            source_route="ssa-unified-tvm-emitter",
             buffer_suffix="_buf",
         ),
     }[backend]
@@ -589,7 +597,7 @@ def _render_body(
     )
 
     if enable_index_cse:
-        index_type = ssa.Type("index", dtype="index")
+        index_type = ssa.Type(kind="index", dtype="index")
 
         if outer_index_expr != target.index_name:
             lines.append(
@@ -946,7 +954,7 @@ def _emit_linalg_dot(
         )
 
     local = f"{_local_symbol(op.results[0].name, ctx)}_dot"
-    acc_type = ssa.Type("scalar", dtype=op.results[0].type.dtype or "float32")
+    acc_type = ssa.Type(kind="scalar", dtype=op.results[0].type.dtype or "float32")
     init = "0.0"
 
     if ctx.target.backend == Target.TRITON and ctx.mask_expr is not None:
@@ -1179,7 +1187,7 @@ def _emit_reduce_element(
         local = f"{_local_symbol(op.results[0].name, ctx)}_elem"
 
     result_type = ssa.Type(
-        "scalar", dtype=op.results[0].type.dtype if op.results else "float32"
+        kind="scalar", dtype=op.results[0].type.dtype if op.results else "float32"
     )
     init = _REDUCE_INIT[operator]
 
@@ -1960,7 +1968,7 @@ def _region_yield_element(
 
 
 def _tensor_value(name: str, ctx: _EmitContext) -> str:
-    info = ctx.tensor_infos.get(name, _TensorInfo(name))
+    info = ctx.tensor_infos.get(name, _TensorInfo(name=name))
 
     if info.ndim == 0:
         if _is_bool_scalar_value(name, ctx) and ctx.target.backend in {
@@ -2336,7 +2344,7 @@ def _materialize_index_expr(
 
     local = _fresh_temp(ctx, "nt_idx")
     ctx.lines.append(
-        ctx.target.local_decl(ssa.Type("index", dtype="index"), local, expr)
+        ctx.target.local_decl(ssa.Type(kind="index", dtype="index"), local, expr)
     )
 
     if ctx.materialized is not None:
@@ -2362,7 +2370,7 @@ def _materialize_bool_expr(
 
     local = _fresh_temp(ctx, "nt_pred")
     ctx.lines.append(
-        ctx.target.local_decl(ssa.Type("scalar", dtype="bool"), local, expr)
+        ctx.target.local_decl(ssa.Type(kind="scalar", dtype="bool"), local, expr)
     )
 
     return local
@@ -2379,7 +2387,7 @@ def _fresh_temp(ctx: _EmitContext, prefix: str) -> str:
 
 
 def _default_tensor_index(name: str, ctx: _EmitContext) -> str:
-    info = ctx.tensor_infos.get(name, _TensorInfo(name))
+    info = ctx.tensor_infos.get(name, _TensorInfo(name=name))
 
     if info.ndim <= 1:
         if (
@@ -2738,10 +2746,10 @@ def _tensor_info(tensor: TensorSpec) -> _TensorInfo:
     source_strides = tuple(str(dim) for dim in attrs.get("source_strides", ()))
 
     return _TensorInfo(
-        name=tensor.name,
-        dtype=_normalize_dtype(tensor.dtype or "float32"),
-        shape=tuple(str(dim) for dim in tensor.shape),
         ndim=max(tensor.ndim, len(tensor.shape)),
+        shape=tuple(str(dim) for dim in tensor.shape),
+        dtype=_normalize_dtype(tensor.dtype or "float32"),
+        name=tensor.name,
         source_name=str(attrs.get("source_name")) if attrs.get("source_name") else None,
         source_shape=source_shape,
         source_strides=source_strides,
