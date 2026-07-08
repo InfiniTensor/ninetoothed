@@ -1,0 +1,72 @@
+{
+  "benchmark_name": "T1-2-1 Specialization",
+  "timestamp": "2026-06-12 09:37:55",
+  "device": "cuda",
+  "results": [
+    {
+      "scenario": "contiguous_divisible_hit",
+      "size": 2048,
+      "variant_name": "contiguous_divisible_fast",
+      "baseline_runtime_ms": 0.0183,
+      "submitted_runtime_ms": 0.0182,
+      "speedup": 1.0056,
+      "specialization_hit": true,
+      "baseline_metrics": { "mask_complexity": 2, "mask_expr_count": 2, "stride_expr_count": 2, "pointer_expr_count": 2, "source_line_count": 14 },
+      "submitted_metrics": { "mask_complexity": 0, "mask_expr_count": 2, "stride_expr_count": 0, "pointer_expr_count": 2, "source_line_count": 14 }
+    },
+    {
+      "scenario": "contiguous_only_hit",
+      "size": 1027,
+      "variant_name": "contiguous_fast",
+      "baseline_runtime_ms": 0.0178,
+      "submitted_runtime_ms": 0.018,
+      "speedup": 0.9886,
+      "specialization_hit": true,
+      "baseline_metrics": { "mask_complexity": 2, "mask_expr_count": 2, "stride_expr_count": 2, "pointer_expr_count": 2, "source_line_count": 14 },
+      "submitted_metrics": { "mask_complexity": 2, "mask_expr_count": 2, "stride_expr_count": 0, "pointer_expr_count": 2, "source_line_count": 14 }
+    },
+    {
+      "scenario": "divisible_only_hit",
+      "size": 2048,
+      "variant_name": "divisible_fast",
+      "baseline_runtime_ms": 0.0176,
+      "submitted_runtime_ms": 0.0179,
+      "speedup": 0.9849,
+      "specialization_hit": true,
+      "baseline_metrics": { "mask_complexity": 2, "mask_expr_count": 2, "stride_expr_count": 2, "pointer_expr_count": 2, "source_line_count": 14 },
+      "submitted_metrics": { "mask_complexity": 0, "mask_expr_count": 2, "stride_expr_count": 2, "pointer_expr_count": 2, "source_line_count": 14 }
+    },
+    {
+      "scenario": "pure_fallback",
+      "size": 1027,
+      "variant_name": "general_fallback",
+      "baseline_runtime_ms": 0.0176,
+      "submitted_runtime_ms": 0.0176,
+      "speedup": 0.997,
+      "specialization_hit": false,
+      "baseline_metrics": { "mask_complexity": 2, "mask_expr_count": 2, "stride_expr_count": 2, "pointer_expr_count": 2, "source_line_count": 14 },
+      "submitted_metrics": { "mask_complexity": 2, "mask_expr_count": 2, "stride_expr_count": 2, "pointer_expr_count": 2, "source_line_count": 14 }
+    },
+    {
+      "scenario": "2d_divisible_hit",
+      "size": "(512, 512)",
+      "baseline_runtime_ms": 0.0205,
+      "submitted_runtime_ms": 0.0203,
+      "speedup": 1.0097,
+      "specialization_hit": true,
+      "baseline_metrics": { "mask_complexity": 2, "mask_expr_count": 2, "stride_expr_count": 4, "pointer_expr_count": 2, "source_line_count": 16 },
+      "submitted_metrics": { "mask_complexity": 0, "mask_expr_count": 2, "stride_expr_count": 4, "pointer_expr_count": 2, "source_line_count": 16 }
+    },
+    {
+      "scenario": "2d_non_divisible_fallback",
+      "size": "(519, 519)",
+      "baseline_runtime_ms": 0.0199,
+      "submitted_runtime_ms": 0.0199,
+      "speedup": 0.9975,
+      "specialization_hit": false,
+      "baseline_metrics": { "mask_complexity": 2, "mask_expr_count": 2, "stride_expr_count": 4, "pointer_expr_count": 2, "source_line_count": 16 },
+      "submitted_metrics": { "mask_complexity": 2, "mask_expr_count": 2, "stride_expr_count": 4, "pointer_expr_count": 2, "source_line_count": 16 }
+    }
+  ],
+  "summary": { "total_scenarios": 6, "specialization_hit_scenarios": 4, "fallback_scenarios": 2 }
+}
