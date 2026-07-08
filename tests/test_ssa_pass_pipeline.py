@@ -40,9 +40,9 @@ class TestPipeline:
         program = _program(
             "\ndef add(x, y, out):\n    out = x + y\n",
             (
-                TensorSpec("x", 1, "float32", ("n",)),
-                TensorSpec("y", 1, "float32", ("n",)),
-                TensorSpec("out", 1, "float32", ("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="y"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
             "add",
         )
@@ -81,9 +81,9 @@ class TestPipeline:
         program = _program(
             "\ndef matmul(a, b, out):\n    out = a @ b\n",
             (
-                TensorSpec("a", 2, "float32", ("m", "k")),
-                TensorSpec("b", 2, "float32", ("k", "n")),
-                TensorSpec("out", 2, "float32", ("m", "n")),
+                TensorSpec(ndim=2, shape=("m", "k"), dtype="float32", name="a"),
+                TensorSpec(ndim=2, shape=("k", "n"), dtype="float32", name="b"),
+                TensorSpec(ndim=2, shape=("m", "n"), dtype="float32", name="out"),
             ),
             "matmul",
         )
@@ -102,8 +102,8 @@ class TestPipeline:
         program = _program(
             "\ndef copy(x, out):\n    out = x\n",
             (
-                TensorSpec("x", 1, "float32", ("n",)),
-                TensorSpec("out", 1, "float32", ("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
             "copy",
         )
@@ -165,8 +165,8 @@ class TestPipeline:
         program = _program(
             "\ndef copy(x, out):\n    out = x\n",
             (
-                TensorSpec("x", 1, "float32", ("n",)),
-                TensorSpec("out", 1, "float32", ("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
             "copy",
         )
@@ -202,8 +202,8 @@ class TestPipeline:
         program = _program(
             "\ndef copy(x, out):\n    out = x\n",
             (
-                TensorSpec("x", 1, "float32", ("n",)),
-                TensorSpec("out", 1, "float32", ("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
             "copy",
         )

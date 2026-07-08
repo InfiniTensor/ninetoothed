@@ -29,7 +29,7 @@ HARDWARE_DEPENDENT = "hardware_dependent"
 BACKEND_SPECIFIC = "backend_specific"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class PipelineSpec:
     """Declarative pass pipeline configuration."""
 
@@ -40,7 +40,7 @@ class PipelineSpec:
     reason: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Context:
     """Context shared by SSA passes."""
 
@@ -63,7 +63,7 @@ class Pass:
         raise NotImplementedError
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Descriptor:
     """Registry metadata for one SSA pass."""
 
@@ -832,7 +832,7 @@ def _map_block(block: ssa.Block, fn) -> ssa.Block:
 def _map_operation(operation: ssa.Operation, fn) -> ssa.Operation:
     mapped_regions = tuple(_map_block(region, fn) for region in operation.regions)
     operation = ssa.Operation(
-        operation.opcode,
+        opcode=operation.opcode,
         operands=operation.operands,
         results=operation.results,
         attrs=operation.attrs,
@@ -912,10 +912,10 @@ def _decompose_linalg_block(
             source = transpose.operands[0]
             output = operation.operands[1]
             col, temp_index = _fresh_value(
-                existing_names, temp_index, ssa.Type("index")
+                existing_names, temp_index, ssa.Type(kind="index")
             )
             row, temp_index = _fresh_value(
-                existing_names, temp_index, ssa.Type("index")
+                existing_names, temp_index, ssa.Type(kind="index")
             )
             value, temp_index = _fresh_value(
                 existing_names,
@@ -925,25 +925,25 @@ def _decompose_linalg_block(
             operations.extend(
                 (
                     ssa.Operation(
-                        "index.offset",
+                        opcode="index.offset",
                         operands=(output,),
                         results=(col,),
                         attrs={"dim": 0, "decomposition": "transpose"},
                     ),
                     ssa.Operation(
-                        "index.offset",
+                        opcode="index.offset",
                         operands=(output,),
                         results=(row,),
                         attrs={"dim": 1, "decomposition": "transpose"},
                     ),
                     ssa.Operation(
-                        "tensor.extract",
+                        opcode="tensor.extract",
                         operands=(source, row.name, col.name),
                         results=(value,),
                         attrs={"decomposition": "transpose"},
                     ),
                     ssa.Operation(
-                        "mem.store",
+                        opcode="mem.store",
                         operands=(value.name, output),
                         attrs=dict(operation.attrs)
                         | {
@@ -978,7 +978,7 @@ def _decompose_linalg_block(
         )
         operations.append(
             ssa.Operation(
-                operation.opcode,
+                opcode=operation.opcode,
                 operands=operation.operands,
                 results=operation.results,
                 attrs=operation.attrs,
@@ -1001,17 +1001,17 @@ def _decompose_matmul_store(
     output_type = value_types.get(output, matmul.results[0].type)
     scalar_type = _scalar_type(output_type)
 
-    row, temp_index = _fresh_value(existing_names, temp_index, ssa.Type("index"))
-    col, temp_index = _fresh_value(existing_names, temp_index, ssa.Type("index"))
+    row, temp_index = _fresh_value(existing_names, temp_index, ssa.Type(kind="index"))
+    col, temp_index = _fresh_value(existing_names, temp_index, ssa.Type(kind="index"))
     zero, temp_index = _fresh_value(
-        existing_names, temp_index, ssa.Type("scalar", dtype="int64")
+        existing_names, temp_index, ssa.Type(kind="scalar", dtype="int64")
     )
     one, temp_index = _fresh_value(
-        existing_names, temp_index, ssa.Type("scalar", dtype="int64")
+        existing_names, temp_index, ssa.Type(kind="scalar", dtype="int64")
     )
     acc_init, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
-    kk = ssa.Value("%kk", ssa.Type("index"))
-    acc_iter = ssa.Value("%acc_iter", scalar_type)
+    kk = ssa.Value(name="%kk", type=ssa.Type(kind="index"))
+    acc_iter = ssa.Value(name="%acc_iter", type=scalar_type)
     lhs_value, temp_index = _fresh_value(
         existing_names, temp_index, _scalar_type(value_types.get(lhs, output_type))
     )
@@ -1023,7 +1023,7 @@ def _decompose_matmul_store(
     acc_result, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
 
     loop = ssa.Operation(
-        "scf.for",
+        opcode="scf.for",
         operands=(zero.name, k, one.name, acc_init.name),
         results=(acc_result,),
         attrs={
@@ -1046,30 +1046,30 @@ def _decompose_matmul_store(
                 args=(kk, acc_iter),
                 operations=(
                     ssa.Operation(
-                        "tensor.extract",
+                        opcode="tensor.extract",
                         operands=(lhs, row.name, kk.name),
                         results=(lhs_value,),
                         attrs={"decomposition": "matmul", "operand": "lhs"},
                     ),
                     ssa.Operation(
-                        "tensor.extract",
+                        opcode="tensor.extract",
                         operands=(rhs, kk.name, col.name),
                         results=(rhs_value,),
                         attrs={"decomposition": "matmul", "operand": "rhs"},
                     ),
                     ssa.Operation(
-                        "arith.mul",
+                        opcode="arith.mul",
                         operands=(lhs_value.name, rhs_value.name),
                         results=(product,),
                         attrs={"decomposition": "matmul"},
                     ),
                     ssa.Operation(
-                        "arith.add",
+                        opcode="arith.add",
                         operands=(acc_iter.name, product.name),
                         results=(acc_next,),
                         attrs={"decomposition": "matmul"},
                     ),
-                    ssa.Operation("scf.yield", operands=(acc_next.name,)),
+                    ssa.Operation(opcode="scf.yield", operands=(acc_next.name,)),
                 ),
             ),
         ),
@@ -1078,35 +1078,35 @@ def _decompose_matmul_store(
     return (
         (
             ssa.Operation(
-                "index.offset",
+                opcode="index.offset",
                 operands=(output,),
                 results=(row,),
                 attrs={"dim": 0, "decomposition": "matmul"},
             ),
             ssa.Operation(
-                "index.offset",
+                opcode="index.offset",
                 operands=(output,),
                 results=(col,),
                 attrs={"dim": 1, "decomposition": "matmul"},
             ),
             ssa.Operation(
-                "arith.constant",
+                opcode="arith.constant",
                 results=(zero,),
                 attrs={"value": 0, "decomposition": "matmul"},
             ),
             ssa.Operation(
-                "arith.constant",
+                opcode="arith.constant",
                 results=(one,),
                 attrs={"value": 1, "decomposition": "matmul"},
             ),
             ssa.Operation(
-                "arith.constant",
+                opcode="arith.constant",
                 results=(acc_init,),
                 attrs={"value": 0.0, "decomposition": "matmul"},
             ),
             loop,
             ssa.Operation(
-                "mem.store",
+                opcode="mem.store",
                 operands=(acc_result.name, output),
                 attrs=dict(store.attrs)
                 | {
@@ -1149,13 +1149,13 @@ def _infer_matmul_symbols(
     value_types: Mapping[str, ssa.Type],
 ) -> tuple[str, str, str]:
     lhs_shape = tuple(
-        str(dim) for dim in value_types.get(lhs, ssa.Type("tensor")).shape
+        str(dim) for dim in value_types.get(lhs, ssa.Type(kind="tensor")).shape
     )
     rhs_shape = tuple(
-        str(dim) for dim in value_types.get(rhs, ssa.Type("tensor")).shape
+        str(dim) for dim in value_types.get(rhs, ssa.Type(kind="tensor")).shape
     )
     output_shape = tuple(
-        str(dim) for dim in value_types.get(output, ssa.Type("tensor")).shape
+        str(dim) for dim in value_types.get(output, ssa.Type(kind="tensor")).shape
     )
     m = _first_symbol(
         operation.attrs.get("m"),
@@ -1202,7 +1202,7 @@ def _first_symbol(*candidates: object) -> str:
 
 
 def _scalar_type(type_: ssa.Type) -> ssa.Type:
-    return ssa.Type("scalar", dtype=type_.dtype or "float32")
+    return ssa.Type(kind="scalar", dtype=type_.dtype or "float32")
 
 
 def _next_temp_index(existing_names: set[str]) -> int:
@@ -1224,12 +1224,12 @@ def _fresh_value(
     name = f"%{temp_index}"
     existing_names.add(name)
 
-    return ssa.Value(name, type_), temp_index + 1
+    return ssa.Value(name=name, type=type_), temp_index + 1
 
 
 def _annotate_operation(operation: ssa.Operation, **attrs: Any) -> ssa.Operation:
     return ssa.Operation(
-        operation.opcode,
+        opcode=operation.opcode,
         operands=operation.operands,
         results=operation.results,
         attrs=dict(operation.attrs) | attrs,

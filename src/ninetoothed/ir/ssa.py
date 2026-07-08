@@ -7,17 +7,17 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Type:
     """A compact SSA value type."""
 
     kind: str
-    dtype: str | None = None
     shape: tuple[str, ...] = ()
+    dtype: str | None = None
     attrs: Mapping[str, Any] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Value:
     """A named SSA value such as ``%0`` or a public tensor argument."""
 
@@ -25,7 +25,7 @@ class Value:
     type: Type
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Operation:
     """A single SSA operation."""
 
@@ -36,7 +36,7 @@ class Operation:
     regions: tuple["Block", ...] = ()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Block:
     """A straight-line SSA block."""
 
@@ -45,7 +45,7 @@ class Block:
     operations: tuple[Operation, ...] = ()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Program:
     """Canonical SSA-like IR for backend generation."""
 

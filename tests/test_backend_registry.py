@@ -20,9 +20,9 @@ def _source_only_kernel():
             name="launch_add", args=("x", "y", "out"), grid="lambda meta: (1,)"
         ),
         tensors=(
-            TensorSpec("x", 1, dtype="float32", shape=("n",)),
-            TensorSpec("y", 1, dtype="float32", shape=("n",)),
-            TensorSpec("out", 1, dtype="float32", shape=("n",)),
+            TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+            TensorSpec(ndim=1, shape=("n",), dtype="float32", name="y"),
+            TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
         ),
         compiler_options={"num_warps": 4, "num_stages": 3},
     )
@@ -52,9 +52,9 @@ def _add_kernel(dtype: str = "float32") -> Kernel:
         "\ndef add(x, y, out):\n    out = x + y\n",
         name="add",
         tensors=(
-            TensorSpec("x", 1, dtype=dtype, shape=("n",)),
-            TensorSpec("y", 1, dtype=dtype, shape=("n",)),
-            TensorSpec("out", 1, dtype=dtype, shape=("n",)),
+            TensorSpec(ndim=1, shape=("n",), dtype=dtype, name="x"),
+            TensorSpec(ndim=1, shape=("n",), dtype=dtype, name="y"),
+            TensorSpec(ndim=1, shape=("n",), dtype=dtype, name="out"),
         ),
     )
 
@@ -64,9 +64,9 @@ def _matmul_kernel() -> Kernel:
         "\ndef matmul(a, b, out):\n    out = a @ b\n",
         name="matmul",
         tensors=(
-            TensorSpec("a", 2, dtype="float32", shape=("m", "k")),
-            TensorSpec("b", 2, dtype="float32", shape=("k", "n")),
-            TensorSpec("out", 2, dtype="float32", shape=("m", "n")),
+            TensorSpec(ndim=2, shape=("m", "k"), dtype="float32", name="a"),
+            TensorSpec(ndim=2, shape=("k", "n"), dtype="float32", name="b"),
+            TensorSpec(ndim=2, shape=("m", "n"), dtype="float32", name="out"),
         ),
     )
 

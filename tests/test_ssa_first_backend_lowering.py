@@ -325,9 +325,9 @@ class TestSSAFirstBackendLowering:
             "where": (
                 "\ndef where_application(x, y, out):\n    out = where(x > y, x, y)\n",
                 (
-                    TensorSpec("x", 1, dtype="float32", shape=("n",)),
-                    TensorSpec("y", 1, dtype="float32", shape=("n",)),
-                    TensorSpec("out", 1, dtype="float32", shape=("n",)),
+                    TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                    TensorSpec(ndim=1, shape=("n",), dtype="float32", name="y"),
+                    TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
                 ),
                 {
                     "triton": "tl.where",
@@ -338,7 +338,7 @@ class TestSSAFirstBackendLowering:
             ),
             "full": (
                 "\ndef full_application(out):\n    out = full((n,), 2.5)\n",
-                (TensorSpec("out", 1, dtype="float32", shape=("n",)),),
+                (TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),),
                 {
                     "triton": "v1 = v0",
                     "cuda": "float v1 = v0;",
@@ -348,7 +348,7 @@ class TestSSAFirstBackendLowering:
             ),
             "zeros": (
                 "\ndef zeros_application(out):\n    out = zeros((n,))\n",
-                (TensorSpec("out", 1, dtype="float32", shape=("n",)),),
+                (TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),),
                 {
                     "triton": "v0 = 0.0",
                     "cuda": "float v0 = 0.0;",
@@ -359,8 +359,12 @@ class TestSSAFirstBackendLowering:
             "view": (
                 "\ndef view_application(x, out):\n    out = x[:, :]\n",
                 (
-                    TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
-                    TensorSpec("out", 2, dtype="float32", shape=("rows", "cols")),
+                    TensorSpec(
+                        ndim=2, shape=("rows", "cols"), dtype="float32", name="x"
+                    ),
+                    TensorSpec(
+                        ndim=2, shape=("rows", "cols"), dtype="float32", name="out"
+                    ),
                 ),
                 {
                     "triton": "tl.load(x + ((index // (cols)))",
@@ -372,8 +376,8 @@ class TestSSAFirstBackendLowering:
             "extract": (
                 "\ndef extract_application(x, out):\n    out = x[0]\n",
                 (
-                    TensorSpec("x", 1, dtype="float32", shape=("n",)),
-                    TensorSpec("out", 1, dtype="float32", shape=("n",)),
+                    TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                    TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
                 ),
                 {
                     "triton": "tl.load(x + v0",
@@ -385,8 +389,8 @@ class TestSSAFirstBackendLowering:
             "tanh": (
                 "\ndef tanh_application(x, out):\n    out = tanh(x)\n",
                 (
-                    TensorSpec("x", 1, dtype="float32", shape=("n",)),
-                    TensorSpec("out", 1, dtype="float32", shape=("n",)),
+                    TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                    TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
                 ),
                 {
                     "triton": "tl.tanh",
@@ -420,8 +424,8 @@ class TestSSAFirstBackendLowering:
             "\ndef shape_dim_application(x, out):\n    out = x.shape[0]\n",
             "ssa_shape_dim",
             (
-                TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
-                TensorSpec("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
         )
         operations = kernel.ssa.blocks[0].operations
@@ -461,8 +465,8 @@ class TestSSAFirstBackendLowering:
             "\ndef stride_application(x, out):\n    out = x.stride(0) + x.stride(1)\n",
             "ssa_tensor_stride",
             (
-                TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
-                TensorSpec("out", 1, dtype="int64", shape=("n",)),
+                TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="int64", name="out"),
             ),
         )
         operations = kernel.ssa.blocks[0].operations
@@ -508,9 +512,9 @@ class TestSSAFirstBackendLowering:
             "\ndef max_min_application(x, y, out):\n    tmp = maximum(x, y)\n    out = minimum(tmp, y)\n",
             "ssa_max_min",
             (
-                TensorSpec("x", 1, dtype="float32", shape=("n",)),
-                TensorSpec("y", 1, dtype="float32", shape=("n",)),
-                TensorSpec("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="y"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
         )
         assert [operation.opcode for operation in kernel.ssa.blocks[0].operations] == [
@@ -540,9 +544,9 @@ class TestSSAFirstBackendLowering:
             "\ndef common_math_application(x, y, out):\n    out = log1p(abs(x)) + atan2(x, y) + pow(abs(y) + 0.25, 0.5)\n",
             "ssa_common_math",
             (
-                TensorSpec("x", 1, dtype="float32", shape=("n",)),
-                TensorSpec("y", 1, dtype="float32", shape=("n",)),
-                TensorSpec("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="y"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
         )
         opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
@@ -577,10 +581,10 @@ class TestSSAFirstBackendLowering:
             "\ndef python_expression_syntax_application(x, y, z, out):\n    tmp: float = x if 0 < 1 < 2 else y\n    pass\n    out = tmp + z\n    return out\n",
             "ssa_python_expression_syntax",
             (
-                TensorSpec("x", 1, dtype="float32", shape=("n",)),
-                TensorSpec("y", 1, dtype="float32", shape=("n",)),
-                TensorSpec("z", 1, dtype="float32", shape=("n",)),
-                TensorSpec("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="y"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="z"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
         )
         opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
@@ -630,8 +634,8 @@ class TestSSAFirstBackendLowering:
             "\ndef method_math_application(x, out):\n    denom = x.sqrt().sum(dim=0)\n    out = x.exp() / denom\n",
             "ssa_method_math",
             (
-                TensorSpec("x", 1, dtype="float32", shape=("n",)),
-                TensorSpec("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
         )
         opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
@@ -676,8 +680,8 @@ class TestSSAFirstBackendLowering:
             "\ndef namespace_math_application(x, out):\n    out = math.exp(x) + tl.sqrt(x)\n",
             "ssa_namespace_math",
             (
-                TensorSpec("x", 1, dtype="float32", shape=("n",)),
-                TensorSpec("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
         )
         opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
@@ -704,9 +708,9 @@ class TestSSAFirstBackendLowering:
             "\ndef extended_math_application(x, y, out):\n    out = acos(x) + asin(y) + atan(x) + log10(abs(y) + 1.0) + expm1(x) + sinh(x) + cosh(y)\n",
             "ssa_extended_math",
             (
-                TensorSpec("x", 1, dtype="float32", shape=("n",)),
-                TensorSpec("y", 1, dtype="float32", shape=("n",)),
-                TensorSpec("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="y"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
         )
         opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
@@ -756,9 +760,9 @@ class TestSSAFirstBackendLowering:
             "\ndef bitwise_shift_application(x, y, out):\n    out = (x << 1) ^ (y >> 1)\n",
             "ssa_bitwise_shift",
             (
-                TensorSpec("x", 1, dtype="int64", shape=("n",)),
-                TensorSpec("y", 1, dtype="int64", shape=("n",)),
-                TensorSpec("out", 1, dtype="int64", shape=("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="int64", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="int64", name="y"),
+                TensorSpec(ndim=1, shape=("n",), dtype="int64", name="out"),
             ),
         )
         opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
@@ -787,8 +791,8 @@ class TestSSAFirstBackendLowering:
             "one_dimensional": (
                 "\ndef indexed_store_application(x, out):\n    i = x.offsets(0)\n    out[i] = x\n",
                 (
-                    TensorSpec("x", 1, dtype="float32", shape=("n",)),
-                    TensorSpec("out", 1, dtype="float32", shape=("n",)),
+                    TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                    TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
                 ),
                 {
                     "triton": "tl.store(out + v0",
@@ -800,8 +804,12 @@ class TestSSAFirstBackendLowering:
             "two_dimensional": (
                 "\ndef indexed_store_2d_application(x, out):\n    i = x.offsets(0)\n    j = x.offsets(1)\n    out[i, j] = x\n",
                 (
-                    TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
-                    TensorSpec("out", 2, dtype="float32", shape=("rows", "cols")),
+                    TensorSpec(
+                        ndim=2, shape=("rows", "cols"), dtype="float32", name="x"
+                    ),
+                    TensorSpec(
+                        ndim=2, shape=("rows", "cols"), dtype="float32", name="out"
+                    ),
                 ),
                 {
                     "triton": "tl.store(out + (v0) * (cols) + (v1)",
@@ -834,8 +842,8 @@ class TestSSAFirstBackendLowering:
             "\ndef indexed_augassign_application(x, out):\n    i = x.offsets(0)\n    out[i] += x\n",
             "ssa_indexed_augassign",
             (
-                TensorSpec("x", 1, dtype="float32", shape=("n",)),
-                TensorSpec("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
         )
         operations = kernel.ssa.blocks[0].operations
@@ -865,8 +873,8 @@ class TestSSAFirstBackendLowering:
             "\ndef extract_2d_application(x, out):\n    i = x.offsets(0)\n    j = x.offsets(1)\n    out = x[i, j]\n",
             "ssa_extract_2d",
             (
-                TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
-                TensorSpec("out", 2, dtype="float32", shape=("rows", "cols")),
+                TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="x"),
+                TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="out"),
             ),
         )
         expected = {
@@ -1006,10 +1014,10 @@ class TestSSAFirstBackendLowering:
             "\ndef axis_addmv_application(bias, a, x, out):\n    out = bias + sum(a * x, axis=1)\n",
             "ssa_axis_addmv",
             (
-                TensorSpec("bias", 1, dtype="float32", shape=("rows",)),
-                TensorSpec("a", 2, dtype="float32", shape=("rows", "cols")),
-                TensorSpec("x", 1, dtype="float32", shape=("cols",)),
-                TensorSpec("out", 1, dtype="float32", shape=("rows",)),
+                TensorSpec(ndim=1, shape=("rows",), dtype="float32", name="bias"),
+                TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="a"),
+                TensorSpec(ndim=1, shape=("cols",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("rows",), dtype="float32", name="out"),
             ),
         )
         expected = {
@@ -1035,8 +1043,8 @@ class TestSSAFirstBackendLowering:
             "\ndef rowwise_norm_application(x, out):\n    out = x / sum(x, axis=1)\n",
             "ssa_rowwise_norm",
             (
-                TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
-                TensorSpec("out", 2, dtype="float32", shape=("rows", "cols")),
+                TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="x"),
+                TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="out"),
             ),
         )
         expected = {
@@ -1059,9 +1067,9 @@ class TestSSAFirstBackendLowering:
             "\ndef matmul_application(a, b, out):\n    out = a @ b\n",
             "ssa_matmul",
             (
-                TensorSpec("a", 2, dtype="float32", shape=("m", "k")),
-                TensorSpec("b", 2, dtype="float32", shape=("k", "n")),
-                TensorSpec("out", 2, dtype="float32", shape=("m", "n")),
+                TensorSpec(ndim=2, shape=("m", "k"), dtype="float32", name="a"),
+                TensorSpec(ndim=2, shape=("k", "n"), dtype="float32", name="b"),
+                TensorSpec(ndim=2, shape=("m", "n"), dtype="float32", name="out"),
             ),
         )
         expected = {
@@ -1087,8 +1095,8 @@ class TestSSAFirstBackendLowering:
             "\ndef transpose_application(x, out):\n    out = transpose(x)\n",
             "ssa_transpose",
             (
-                TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
-                TensorSpec("out", 2, dtype="float32", shape=("cols", "rows")),
+                TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="x"),
+                TensorSpec(ndim=2, shape=("cols", "rows"), dtype="float32", name="out"),
             ),
         )
         expected = {
@@ -1114,8 +1122,8 @@ class TestSSAFirstBackendLowering:
             "\ndef transpose_attribute_application(x, out):\n    out = x.T\n",
             "ssa_transpose_attribute",
             (
-                TensorSpec("x", 2, dtype="float32", shape=("rows", "cols")),
-                TensorSpec("out", 2, dtype="float32", shape=("cols", "rows")),
+                TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="x"),
+                TensorSpec(ndim=2, shape=("cols", "rows"), dtype="float32", name="out"),
             ),
         )
         expected = {
@@ -1144,8 +1152,8 @@ class TestSSAFirstBackendLowering:
             "\ndef loop_store_application(x, out):\n    for i in range(n):\n        out[i] = x[i] + 1.0\n",
             "ssa_loop_store",
             (
-                TensorSpec("x", 1, dtype="float32", shape=("n",)),
-                TensorSpec("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
         )
         expected = {
@@ -1183,8 +1191,8 @@ class TestSSAFirstBackendLowering:
             "\ndef if_store_application(x, out):\n    if 1 < 2:\n        i = x.offsets(0)\n        out[i] = x\n",
             "ssa_if_store",
             (
-                TensorSpec("x", 1, dtype="float32", shape=("n",)),
-                TensorSpec("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
         )
         expected = {
@@ -1222,9 +1230,9 @@ class TestSSAFirstBackendLowering:
             "\ndef if_else_store_application(x, y, out):\n    if 1 < 2:\n        i = x.offsets(0)\n        out[i] = x\n    else:\n        j = y.offsets(0)\n        out[j] = y\n",
             "ssa_if_else_store",
             (
-                TensorSpec("x", 1, dtype="float32", shape=("n",)),
-                TensorSpec("y", 1, dtype="float32", shape=("n",)),
-                TensorSpec("out", 1, dtype="float32", shape=("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="y"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
         )
         expected = {
@@ -1274,10 +1282,10 @@ class TestSSAFirstBackendLowering:
             "\ndef multi_result_if_application(x, y, out0, out1):\n    a = x\n    b = y\n    if 1 < 2:\n        a = x + y\n        b = x - y\n    out0 = a\n    out1 = b\n",
             "ssa_multi_result_if",
             (
-                TensorSpec("x", 1, dtype="float32", shape=("n",)),
-                TensorSpec("y", 1, dtype="float32", shape=("n",)),
-                TensorSpec("out0", 1, dtype="float32", shape=("n",)),
-                TensorSpec("out1", 1, dtype="float32", shape=("n",)),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="y"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out0"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out1"),
             ),
         )
         expected = {

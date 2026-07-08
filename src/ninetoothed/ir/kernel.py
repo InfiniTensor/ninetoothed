@@ -12,16 +12,20 @@ import sympy
 from ninetoothed.ir.ssa import Program
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class TensorSpec:
-    """A backend-neutral view of an application tensor parameter."""
+    """A backend-neutral view of an application tensor parameter.
 
-    name: str
+    ``name`` is the application parameter and SSA binding name. Source tensor
+    provenance lives in ``attrs["source_name"]`` when available.
+    """
+
     ndim: int
-    dtype: str | None = None
     shape: tuple[str, ...] = ()
-    constexpr: bool = False
+    dtype: str | None = None
     jagged_dim: int | None = None
+    constexpr: bool = False
+    name: str
     attrs: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -35,16 +39,16 @@ class TensorSpec:
         )
 
         return cls(
-            name=str(getattr(source, "name", getattr(tensor, "name", "tensor"))),
             ndim=int(getattr(tensor, "ndim", getattr(source, "ndim", len(shape)))),
-            dtype=None if dtype is None else str(dtype),
             shape=tuple(_shape_text(size) for size in shape),
-            constexpr=bool(
-                getattr(source, "constexpr", getattr(tensor, "constexpr", False))
-            ),
+            dtype=None if dtype is None else str(dtype),
             jagged_dim=getattr(
                 source, "jagged_dim", getattr(tensor, "jagged_dim", None)
             ),
+            constexpr=bool(
+                getattr(source, "constexpr", getattr(tensor, "constexpr", False))
+            ),
+            name=str(getattr(source, "name", getattr(tensor, "name", "tensor"))),
             attrs={
                 "source_name": str(
                     getattr(source, "name", getattr(tensor, "name", "tensor"))
@@ -65,7 +69,7 @@ class TensorSpec:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Launch:
     """Runtime launch metadata shared by generated backends."""
 
@@ -74,7 +78,7 @@ class Launch:
     grid: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Kernel:
     """A kernel-level IR record consumed by backend emitters."""
 

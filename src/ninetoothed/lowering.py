@@ -142,14 +142,14 @@ def _public_tensor_ir(name: str, tensor) -> TensorSpec:
     shape = getattr(source, "shape", getattr(tensor, "shape", ()))
 
     return TensorSpec(
-        name=str(name),
         ndim=int(getattr(source, "ndim", getattr(tensor, "ndim", len(shape)))),
-        dtype=None if dtype is None else str(dtype),
         shape=tuple(_shape_text(size) for size in shape),
+        dtype=None if dtype is None else str(dtype),
+        jagged_dim=getattr(source, "jagged_dim", getattr(tensor, "jagged_dim", None)),
         constexpr=bool(
             getattr(source, "constexpr", getattr(tensor, "constexpr", False))
         ),
-        jagged_dim=getattr(source, "jagged_dim", getattr(tensor, "jagged_dim", None)),
+        name=str(name),
         attrs=_tensor_source_attrs(tensor),
     )
 
@@ -161,14 +161,14 @@ def _application_tensor_ir(name: str, tensor) -> TensorSpec:
     application_shape = _tensor_application_shape(tensor)
 
     return TensorSpec(
-        name=str(name),
         ndim=int(getattr(tensor, "ndim", getattr(source, "ndim", len(shape)))),
-        dtype=None if dtype is None else str(dtype),
         shape=tuple(_shape_text(size) for size in shape),
+        dtype=None if dtype is None else str(dtype),
+        jagged_dim=getattr(source, "jagged_dim", getattr(tensor, "jagged_dim", None)),
         constexpr=bool(
             getattr(source, "constexpr", getattr(tensor, "constexpr", False))
         ),
-        jagged_dim=getattr(source, "jagged_dim", getattr(tensor, "jagged_dim", None)),
+        name=str(name),
         attrs=_tensor_source_attrs(tensor)
         | {
             "application_shape": application_shape,
