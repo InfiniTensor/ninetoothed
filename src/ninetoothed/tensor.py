@@ -1,3 +1,4 @@
+import ast
 import copy
 import functools
 import itertools
@@ -6,6 +7,115 @@ import re
 
 import ninetoothed.naming as naming
 from ninetoothed.symbol import Symbol
+
+
+def _is_known_non_negative_index(index):
+    node = _unwrap_index_node(Symbol(index).node)
+
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, int) and node.value >= 0
+
+    if isinstance(node, ast.Name) and _has_non_negative_lower_bound(node):
+        return True
+
+    if _is_named_call(node, "arange"):
+        return len(node.args) >= 2 and _is_zero(node.args[0])
+
+    if _is_named_call(node, "program_id"):
+        return True
+
+    if isinstance(node, ast.BinOp):
+        if isinstance(node.op, (ast.Add, ast.Mult)):
+            return _is_known_non_negative_index(Symbol(node.left)) and (
+                _is_known_non_negative_index(Symbol(node.right))
+            )
+
+        if isinstance(node.op, (ast.FloorDiv, ast.Mod)):
+            return _is_known_non_negative_index(Symbol(node.left)) and (
+                _is_positive_integer(node.right)
+            )
+
+    return False
+
+
+def _is_strict_upper_bound_check_redundant(index, size):
+    node = _unwrap_index_node(Symbol(index).node)
+
+    return (
+        _is_named_call(node, "arange")
+        and len(node.args) >= 2
+        and _is_zero(node.args[0])
+        and _ast_equal(node.args[1], Symbol(size).node)
+    ) or (isinstance(node, ast.Name) and _has_matching_upper_bound(node, size))
+
+
+def _unwrap_index_node(node):
+    while isinstance(node, ast.Subscript):
+        node = node.value
+
+    return node
+
+
+def _is_named_call(node, name):
+    return isinstance(node, ast.Call) and _attribute_name(node.func) == name
+
+
+def _has_non_negative_lower_bound(node):
+    symbol = getattr(node, "symbol", None)
+    lower_bound = getattr(symbol, "lower_bound", None)
+
+    return lower_bound is not None and lower_bound >= 0
+
+
+def _has_matching_upper_bound(node, size):
+    symbol = getattr(node, "symbol", None)
+    upper_bound = getattr(symbol, "upper_bound", None)
+
+    if upper_bound is None:
+        return False
+
+    return _ast_equal(Symbol(upper_bound).node, Symbol(size - 1).node)
+
+
+def _attribute_name(node):
+    if isinstance(node, ast.Name):
+        return node.id
+
+    if isinstance(node, ast.Attribute):
+        return node.attr
+
+    return None
+
+
+def _is_zero(node):
+    return isinstance(node, ast.Constant) and node.value == 0
+
+
+def _is_positive_integer(node):
+    return (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, int)
+        and node.value > 0
+    )
+
+
+def _ast_equal(left, right):
+    return ast.dump(left, include_attributes=False) == ast.dump(
+        right, include_attributes=False
+    )
+
+
+def _broadcast_zero_offset(index):
+    if _contains_named_call(Symbol(index).node, "arange"):
+        return 0 * index
+
+    return 0
+
+
+def _contains_named_call(node, name):
+    return _is_named_call(node, name) or any(
+        _contains_named_call(child, name) for child in ast.iter_child_nodes(node)
+    )
 
 
 class Tensor:
@@ -297,7 +407,7 @@ class Tensor:
         def _offsets(indices):
             return (
                 tuple(
-                    index if new_size == -1 else 0 * index
+                    index if new_size == -1 else _broadcast_zero_offset(index)
                     for index, new_size in zip(indices, shape)
                 ),
             )
@@ -570,8 +680,11 @@ class Tensor:
         for index, size in zip(indices, self.shape):
             index = Symbol(index)
 
-            self.source._mask &= index < size
-            self.source._mask &= index >= 0
+            if not _is_strict_upper_bound_check_redundant(index, size):
+                self.source._mask &= index < size
+
+            if not _is_known_non_negative_index(index):
+                self.source._mask &= index >= 0
 
         for output_, output in zip(self._outputs, outputs):
             output_.clear()
@@ -628,7 +741,7 @@ class Tensor:
         if self.jagged_dim is not None and dim == 0:
             return 0
 
-        return naming.auto_generate(f"{self.name}_stride_{dim}")
+        return naming.make_constexpr(naming.auto_generate(f"{self.name}_s_{dim}"))
 
     def values_string(self):
         return naming.auto_generate(f"{self.name}_values")
@@ -738,7 +851,9 @@ class Tensor:
     @staticmethod
     def stride_pattern():
         return re.compile(
-            naming.auto_generate(rf"({_identifier_pattern_raw_string()})_(stride)_(.+)")
+            naming.auto_generate(
+                rf"({_identifier_pattern_raw_string()})_(stride|s)_(.+)"
+            )
         )
 
     @staticmethod

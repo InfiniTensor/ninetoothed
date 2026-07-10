@@ -255,9 +255,8 @@ def _build_variant(
                 param_types.append(f"{size_type}:16")
             else:
                 param_types.append(size_type)
-        elif match := Tensor.stride_pattern().fullmatch(param):
-            source_name = match.group(1)
-            dim_index = int(match.group(3))
+        elif stride_param := _match_stride_parameter(param):
+            source_name, dim_index = stride_param
             bare_source_name = naming.remove_prefixes(source_name)
 
             if (bare_source_name, dim_index) in contiguity_set:
@@ -338,6 +337,18 @@ def _build_variant(
     output_contents.pop(c_source_file_name)
 
     return output_contents
+
+
+def _match_stride_parameter(param):
+    normalized_param = naming.remove_prefixes(param)
+
+    if match := Tensor.stride_pattern().fullmatch(normalized_param):
+        return match.group(1), int(match.group(3))
+
+    if match := Tensor.stride_pattern().fullmatch(param):
+        return naming.remove_prefixes(match.group(1)), int(match.group(3))
+
+    return None
 
 
 def _enumerate_variant_specs(launch_arg_names, tensors, find_tensor):
@@ -592,7 +603,9 @@ class _Unparser:
     def __init__(self, param_types, constexpr_inner_strides=()):
         self._param_types = param_types
 
-        self._constexpr_inner_strides = set(constexpr_inner_strides)
+        self._constexpr_inner_strides = {
+            (naming.remove_prefixes(name), dim) for name, dim in constexpr_inner_strides
+        }
 
     def unparse(self, node):
         method_name = "_unparse_" + node.__class__.__name__
@@ -608,28 +621,43 @@ class _Unparser:
     def _unparse_Expr(self, node):
         return self.unparse(node.value)
 
+    def _unparse_Assign(self, node):
+        if len(node.targets) != 1:
+            return self._generic_unparse(node)
+
+        target = node.targets[0]
+
+        if not isinstance(target, ast.Name) or self._is_excluded(target):
+            return ""
+
+        return f"auto {target.id} = {self._generic_unparse(node.value)}"
+
     def _unparse_Call(self, node):
-        call = ast.Call(
-            func=node.func,
-            args=[ast.Name(id="stream", ctx=ast.Load())]
-            + [arg for arg in node.args if not self._is_excluded(arg)],
-            keywords=[],
+        call_args = [ast.Name(id="stream", ctx=ast.Load())] + [
+            arg for arg in node.args if not self._is_excluded(arg)
+        ]
+
+        if len(call_args) != len(self._param_types):
+            raise ValueError(
+                "Launch call argument count does not match the compiled signature."
+            )
+
+        formatted_args = [
+            self._format_call_arg(arg, param_type, index)
+            for index, (arg, param_type) in enumerate(zip(call_args, self._param_types))
+        ]
+
+        return (
+            f"return {self._generic_unparse(node.func)}({', '.join(formatted_args)});"
         )
 
-        unparsed = f"return {self._generic_unparse(call)};"
+    def _format_call_arg(self, arg, param_type, index):
+        source = self._generic_unparse(arg)
 
-        pattern = rf"\((stream), {', '.join(r'([^,]*)' for _ in range(len(self._param_types) - 1))}\)"
-        args = re.search(pattern, unparsed).groups()
+        if index != 0 and isinstance(arg, ast.Name) and not naming.is_constexpr(arg.id):
+            return f"*({param_type} *){source}.data"
 
-        for i, (arg, type) in enumerate(zip(args, self._param_types)):
-            if i != 0 and "." not in arg:
-                new_arg = f"*({type} *){arg}.data"
-            else:
-                new_arg = f"({type}){arg}"
-
-            unparsed = unparsed.replace(arg, new_arg)
-
-        return unparsed
+        return f"({param_type}){source}"
 
     def _unparse_FunctionDef(self, node):
         params = ["NineToothedStream stream"]
@@ -641,10 +669,10 @@ class _Unparser:
         body_lines = []
 
         for stmt in node.body:
-            if isinstance(stmt, ast.Assign):
-                continue
-
             stmt_unparsed = self.unparse(stmt)
+
+            if not stmt_unparsed:
+                continue
 
             if isinstance(stmt, ast.Expr):
                 stmt_unparsed = stmt_unparsed.strip()
@@ -660,6 +688,9 @@ class _Unparser:
 
     def _is_excluded(self, arg):
         if isinstance(arg, ast.Name) and naming.is_constexpr(arg.id):
+            if stride_param := _match_stride_parameter(arg.id):
+                return stride_param in self._constexpr_inner_strides
+
             return True
 
         if (
@@ -670,7 +701,7 @@ class _Unparser:
             and isinstance(arg.value.value, ast.Name)
         ):
             return (
-                arg.value.value.id,
+                naming.remove_prefixes(arg.value.value.id),
                 arg.slice.value,
             ) in self._constexpr_inner_strides
 
