@@ -160,11 +160,19 @@ class CodeGenerator(ast.NodeTransformer):
         for target, value in reversed(self._invariants.items()):
             node.body.insert(0, ast.Assign(targets=[target.node], value=value.node))
 
-        symbols = {
+        all_symbols = {
             name.node.id: name
             for arg in self._args
             for name in arg.names()
             if name != "ninetoothed"
+        }
+        used_kernel_names = {
+            name.node.id for name in Symbol(node).names() if name != "ninetoothed"
+        }
+        symbols = {
+            name: symbol
+            for name, symbol in all_symbols.items()
+            if name in used_kernel_names or naming.is_meta(name)
         }
         names = symbols.keys()
         meta_names = {name for name in names if naming.is_meta(name)}
@@ -175,7 +183,7 @@ class CodeGenerator(ast.NodeTransformer):
             if naming.is_next_power_of_2(name.node.id)
         }
 
-        self._symbols = symbols
+        self._symbols = all_symbols
 
         non_meta_names = sorted(non_meta_names)
         meta_names = sorted(meta_names)
@@ -538,6 +546,7 @@ class CodeGenerator(ast.NodeTransformer):
             param
             for param in non_next_power_of_2_constexpr_params_without_prefixes
             if not Tensor.size_pattern().fullmatch(param)
+            and not Tensor.stride_pattern().fullmatch(param)
             and not Tensor.seq_len_pattern().fullmatch(param)
             and param not in arg_names
         ]
@@ -642,12 +651,116 @@ class CodeGenerator(ast.NodeTransformer):
         pointers, mask = self._generate_pointers_and_mask(tensor, indices)
         other = type(self)._generate_other(tensor)
 
-        return call("load", pointers, mask=mask, other=other).node
+        if type(self)._is_uniform_scalar_load(tensor):
+            pointers = type(self)._name_for_pointers(tensor)
+            mask = type(self)._generate_nonempty_source_mask(tensor.source)
+
+        return type(self)._generate_memory_call(
+            "load", pointers, mask=mask, other=other
+        )
 
     def _generate_store(self, tensor, value, indices=()):
         pointers, mask = self._generate_pointers_and_mask(tensor, indices)
 
-        return call("store", pointers, value, mask=mask).node
+        return type(self)._generate_memory_call("store", pointers, value, mask=mask)
+
+    @staticmethod
+    def _generate_memory_call(func, *args, mask, **kwargs):
+        call_kwargs = {}
+        mask = CodeGenerator._simplify_literal_true_conjunction(mask)
+
+        if not CodeGenerator._is_literal_true(mask):
+            call_kwargs["mask"] = mask
+
+        call_kwargs.update(kwargs)
+
+        return call(func, *args, **call_kwargs).node
+
+    @staticmethod
+    def _is_literal_true(value):
+        node = Symbol(value).node
+
+        return isinstance(node, ast.Constant) and node.value is True
+
+    @staticmethod
+    def _simplify_literal_true_conjunction(value):
+        class _Simplifier(ast.NodeTransformer):
+            def visit_BinOp(self, node):
+                node = self.generic_visit(node)
+
+                if not isinstance(node.op, ast.BitAnd):
+                    return node
+
+                left_is_true = CodeGenerator._is_literal_true(Symbol(node.left))
+                right_is_true = CodeGenerator._is_literal_true(Symbol(node.right))
+
+                if left_is_true and right_is_true:
+                    return ast.Constant(value=True)
+
+                if left_is_true:
+                    return node.right
+
+                if right_is_true:
+                    return node.left
+
+                return node
+
+        simplified = _Simplifier().visit(Symbol(value).node)
+        ast.fix_missing_locations(simplified)
+
+        return Symbol(simplified)
+
+    @staticmethod
+    def _is_uniform_scalar_load(tensor):
+        offsets = getattr(tensor, "_last_generated_offsets", None)
+
+        return (
+            tensor.source.jagged_dim is None
+            and offsets is not None
+            and len(offsets) == tensor.source.ndim
+            and all(CodeGenerator._is_zero_like(offset) for offset in offsets)
+        )
+
+    @staticmethod
+    def _generate_nonempty_source_mask(tensor):
+        mask = Symbol(True)
+
+        for size in tensor.shape:
+            if CodeGenerator._is_static_positive(size):
+                continue
+
+            if CodeGenerator._is_static_zero(size):
+                return Symbol(False)
+
+            mask &= Symbol(size) > 0
+
+        return mask
+
+    @staticmethod
+    def _is_static_positive(value):
+        node = Symbol(value).node
+
+        return isinstance(node, ast.Constant) and node.value > 0
+
+    @staticmethod
+    def _is_static_zero(value):
+        node = Symbol(value).node
+
+        return isinstance(node, ast.Constant) and node.value == 0
+
+    @staticmethod
+    def _is_zero_like(value):
+        node = Symbol(value).node
+
+        if isinstance(node, ast.Constant):
+            return node.value == 0
+
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+            return CodeGenerator._is_zero_like(Symbol(node.left)) or (
+                CodeGenerator._is_zero_like(Symbol(node.right))
+            )
+
+        return False
 
     def _generate_pointers_and_mask(self, tensor, indices):
         if tensor is not tensor.source:
@@ -679,7 +792,9 @@ class CodeGenerator(ast.NodeTransformer):
         indices = list(Tensor._unravel_index(type(self)._NAME_FOR_PID, tensor.shape))
 
         for dim, index in enumerate(indices):
-            name = type(self)._name_for_index(tensor, dim)
+            name = type(self)._name_for_index(
+                tensor, dim, upper_bound=tensor.shape[dim] - 1
+            )
             self._invariants[name] = index
             indices[dim] = name
 
@@ -691,7 +806,9 @@ class CodeGenerator(ast.NodeTransformer):
                 size.find_and_replace(seq_len_name, max_seq_len_name)
 
             offsets_name = Symbol(tensor.source.offsets_string())
-            batch_dim_index_name = type(self)._name_for_index(tensor, 0)
+            batch_dim_index_name = type(self)._name_for_index(
+                tensor, 0, upper_bound=tensor.shape[0] - 1
+            )
             seq_start_name = type(self)._name_for_seq_start(tensor)
             seq_end_name = type(self)._name_for_seq_end(tensor)
 
@@ -833,8 +950,12 @@ class CodeGenerator(ast.NodeTransformer):
         return Symbol(f"{tensor.source.name}_seq_end")
 
     @staticmethod
-    def _name_for_index(tensor, dim):
-        return Symbol(f"{tensor.source.name}_index_{dim}")
+    def _name_for_index(tensor, dim, upper_bound=None):
+        return Symbol(
+            f"{tensor.source.name}_index_{dim}",
+            lower_bound=0,
+            upper_bound=upper_bound,
+        )
 
 
 class Tritonizer(ast.NodeTransformer):

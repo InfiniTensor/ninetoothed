@@ -22,6 +22,10 @@ class Torchifier(ast.NodeTransformer):
             return f"{match.group(1)}.{match.group(2)}({match.group(3)})"
 
         source = Tensor.size_pattern().sub(repl, source)
+
+        def repl(match):
+            return f"{match.group(1)}.stride({match.group(3)})"
+
         source = Tensor.stride_pattern().sub(repl, source)
 
         def repl(match):
