@@ -14,3 +14,5 @@ Seven self-test tasks covering the four required categories. Tasks 05 and 06 are
 
 Benchmark coverage: tasks 01, 02, 05, 06, 07 (requirement: at least 2).
 Failure-diagnosis coverage: tasks 02 (harness tolerance), 03 (silent rank mismatch), 04 (missing nvcc → re-verified), 05 (application globals NameError).
+
+Automated tests: `tests/test_scripts.py` covers the four helper scripts as subprocesses (`9 passed`): repository scan and pattern-index content, non-existent-input errors, unicode/space paths, self-test template creation and overwrite refusal, and structure-check pass plus missing-file detection. Run with `python -m pytest tests/test_scripts.py -q` (standard library only, no GPU needed).

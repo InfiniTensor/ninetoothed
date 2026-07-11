@@ -29,6 +29,7 @@ def main() -> int:
     args = parser.parse_args()
 
     repo = Path(args.repo).resolve()
+
     if not repo.exists():
         raise SystemExit(f"repo does not exist: {repo}")
 
@@ -38,15 +39,18 @@ def main() -> int:
 
     for category, needles in PATTERNS.items():
         matches: list[Path] = []
+
         for path in py_files:
             try:
                 text = path.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
+
             if any(needle in text for needle in needles):
                 matches.append(path)
 
         print(f"\n[{category}] {len(matches)} candidate files")
+
         for path in matches[: args.limit]:
             print(path.relative_to(repo).as_posix())
 
@@ -55,6 +59,7 @@ def main() -> int:
     print(
         'rg -n "softmax|add|relu|gelu|max_pool|stride|offset|benchmark|generated|aot" .'
     )
+
     return 0
 
 

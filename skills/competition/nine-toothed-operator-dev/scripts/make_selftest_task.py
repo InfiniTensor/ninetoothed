@@ -90,11 +90,13 @@ def main() -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "task.md"
+
     if path.exists():
         raise SystemExit(f"refusing to overwrite existing file: {path}")
 
     path.write_text(TEMPLATE.format(name=args.name, kind=args.kind), encoding="utf-8")
     print(path)
+
     return 0
 
 

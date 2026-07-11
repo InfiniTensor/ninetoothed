@@ -35,6 +35,7 @@ def main() -> int:
 
     repo = Path(args.repo).resolve()
     out = Path(args.out).resolve()
+
     if not repo.exists():
         raise SystemExit(f"repo does not exist: {repo}")
 
@@ -46,7 +47,9 @@ def main() -> int:
             text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
+
         rel = path.relative_to(repo).as_posix()
+
         for category, pattern in CATEGORY_PATTERNS.items():
             if pattern.search(text):
                 sections[category].append(rel)
@@ -63,18 +66,22 @@ def main() -> int:
     for category, paths in sections.items():
         lines.append(f"## {category}")
         lines.append("")
+
         if not paths:
             lines.append("- No matches found.")
         else:
             for rel in sorted(paths)[: args.max_per_category]:
                 lines.append(f"- `{rel}`")
+
             if len(paths) > args.max_per_category:
                 lines.append(f"- ... {len(paths) - args.max_per_category} more")
+
         lines.append("")
 
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines), encoding="utf-8")
     print(out)
+
     return 0
 
 
