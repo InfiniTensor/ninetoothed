@@ -49,7 +49,10 @@ class TaskSpec:
         }
 
 
-_NUMBERED_HEADING = re.compile(r"^## (\d+)\.\s+(.+)$", re.MULTILINE)
+_SECTION_HEADING = re.compile(
+    r"^##\s+(?:(\d+)[.)]\s*)?(.+?)\s*$",
+    re.MULTILINE,
+)
 _SEMANTICS = re.compile(r"semantics\s*=\s*`([^`]+)`", re.IGNORECASE)
 _OUTPUT_EQ = re.compile(r"output\s*=\s*`([^`]+)`", re.IGNORECASE)
 _IO_TENSOR = re.compile(r"`?(\w+)`?\s*\(([^)]+)\)")
@@ -85,7 +88,7 @@ _KNOWN_OPS = frozenset(
 
 
 def _section_map(text: str) -> dict[str, str]:
-    matches = list(_NUMBERED_HEADING.finditer(text))
+    matches = list(_SECTION_HEADING.finditer(text))
     sections: dict[str, str] = {}
     for i, match in enumerate(matches):
         title = match.group(2).strip().lower()
@@ -223,6 +226,11 @@ def _parse_md_io_tables(text: str) -> tuple[list[str], list[str]]:
         if i < len(lines) and re.match(r"^\|?\s*-+", lines[i]):
             i += 1
         has_layout = any("layout" in h for h in headers)
+        direction_headers = {
+            h
+            for h in headers
+            if h in {"role", "direction", "io", "i/o", "kind"} or "direction" in h
+        }
         while (
             i < len(lines) and "|" in lines[i] and not re.match(r"^\|?\s*-+", lines[i])
         ):
@@ -259,7 +267,18 @@ def _parse_md_io_tables(text: str) -> tuple[list[str], list[str]]:
                 r"\bbool\b", dtype_cell, re.IGNORECASE
             ):
                 dtype = "bool"
-            if has_layout:
+            direction = ""
+            for header in direction_headers:
+                value = row.get(header, "").strip().lower()
+                if re.search(r"\b(output|result|return|returns)\b", value):
+                    direction = "output"
+                    break
+                if re.search(r"\b(input|operand|argument|arg)\b", value):
+                    direction = "input"
+                    break
+            if direction == "output":
+                outputs.append(f"| {name} | {shape} | {dtype} |")
+            elif direction == "input" or has_layout:
                 layout_cell = ""
                 for h, v in row.items():
                     if "layout" in h:
@@ -286,6 +305,8 @@ def _parse_bullet_io(text: str) -> tuple[list[str], list[str]]:
         low = body.lower()
         is_output = (
             low.startswith("output")
+            or low.startswith("result")
+            or low.startswith("return")
             or low.startswith("out ")
             or re.match(r"out\b", low) is not None
         )
@@ -339,13 +360,22 @@ def _parse_inline_tensors(text: str) -> tuple[list[str], list[str]]:
     for i, match in enumerate(matches):
         name = match.group(1)
         shape = match.group(2).replace(" ", "")
+        prefix_start = matches[i - 1].end() if i > 0 else 0
+        prefix = scrubbed[prefix_start : match.start()]
+        has_output_label = bool(
+            re.search(
+                r"(?:^|[.;]\s*)(?:outputs?|results?|returns?)\s*:?[\s`]*$",
+                prefix,
+                re.IGNORECASE,
+            )
+        )
         # Attribute span: current match → next tensor match (exclusive).
         span_end = matches[i + 1].start() if i + 1 < len(matches) else len(scrubbed)
         local = scrubbed[match.start() : span_end]
         # Also trim at sentence / bullet boundaries inside the span.
         local = re.split(r"(?<=[.])\s+(?=[A-Z`])", local, maxsplit=1)[0]
         dtype, layout = _attrs_from_local(name, local)
-        if name.lower() in {"output", "out"}:
+        if name.lower() in {"output", "out"} or has_output_label:
             outputs.append(f"| {name} | ({shape}) | {dtype} |")
         else:
             inputs.append(f"| {name} | ({shape}) | {dtype} | {layout} |")
@@ -386,7 +416,11 @@ def _parse_io_table(
             inputs, outputs = _parse_inline_tensors(contract)
 
     if not outputs:
-        m = re.search(r"output\s*\(([^)]+)\)", contract, re.IGNORECASE)
+        m = re.search(
+            r"(?:output|result|returns?)\s*\(([^)]+)\)",
+            contract,
+            re.IGNORECASE,
+        )
         if m:
             local = _local_clause(contract, m.start(), m.end())
             dtype = _explicit_dtype(local) or TODO_VERIFY

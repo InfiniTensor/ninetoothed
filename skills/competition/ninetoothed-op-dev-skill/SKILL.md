@@ -42,6 +42,10 @@ Output a short card with **all** of:
 
 If any field is unknown → search the repo (D3) or mark `TODO: verify`; do not invent.
 
+If `make_task_card.py --strict` cannot parse the task, do not use a partial card and
+do not stop the task. Read the original task directly and complete the same card
+manually. Resolve remaining unknowns through D3; never infer them from a task ID.
+
 ### D2 — Route by family → nearest pattern
 
 Pick **one** primary family, then open the listed starting points (under `--repo-root`):
@@ -60,8 +64,8 @@ Read `references/03`–`05` / `07`–`09` only for the chosen family. **Reuse** 
 From the NineToothed repo root, search then read hits **before** editing:
 
 ```bash
-rg -n "arrangement|application|ninetoothed.make" tests/ -g "*.py" | head
-rg -n "<op_keyword>" tests/ src/ninetoothed/ -g "*.py" | head
+rg -n -m 20 "arrangement|application|ninetoothed.make" tests/ -g "*.py"
+rg -n -m 20 "<op_keyword>" tests/ src/ninetoothed/ -g "*.py"
 ```
 
 Record: nearest test path + nearest kernel/example path. No `rg` → no patch.
@@ -70,7 +74,9 @@ Record: nearest test path + nearest kernel/example path. No `rg` → no patch.
 
 - Touch only files the task needs; mirror `tests/test_<op>.py` layout.
 - Prefer `ninetoothed.make` / `@ninetoothed.jit` patterns already in-repo.
-- fp16 defaults: `atol=2e-2, rtol=1e-2` unless the task tightens.
+- Reuse the task's tolerance or the nearest upstream test's tolerance. Only when
+  neither exists, use `atol=2e-2, rtol=1e-2` as a starting point and verify it
+  against the reference; never treat it as a universal pass threshold.
 
 ### D5 — Layout branch (if layout ≠ contiguous-only)
 
@@ -159,6 +165,7 @@ kernel = ninetoothed.make(arrangement, application, tensors)
 |------|------|
 | `00_repo_map.md` | repo layout |
 | `01_ninetoothed_concepts.md` | arrangement / application |
+| `02_arrangement_application_patterns.md` | implementing arrangement / application |
 | `03_elementwise_broadcast_patterns.md` | elementwise / broadcast |
 | `04_reduction_block_patterns.md` | reduce / block |
 | `05_layout_stride_offset_patterns.md` | stride / offset |

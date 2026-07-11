@@ -154,6 +154,100 @@ pytest vs `torch.where(mask, x, y)`.
 Benchmark not required.
 """
 
+UNNUMBERED_HEADINGS_TASK = """# Task — unnumbered headings
+
+## Background
+
+Implement **elementwise add**.
+
+## Operator contract
+
+- input `x` (N,) float32 contiguous
+- input `y` (N,) float32 contiguous
+- output `z` (N,) float32
+
+semantics = `torch.add(x, y)`.
+
+## Layout / broadcast / dtype
+
+Contiguous. Broadcast: none.
+
+## Boundary cases
+
+Odd N.
+
+## Correctness requirements
+
+pytest vs `torch.add`.
+
+## Benchmark requirements
+
+Benchmark not required.
+"""
+
+COMBINED_ROLE_TABLE_TASK = """# Task — combined role table
+
+## 1. Background
+
+Implement **masked where**.
+
+## 2. Operator contract
+
+| Role | Tensor | Shape | dtype | Layout |
+|------|--------|-------|-------|--------|
+| input | x | (M,1) | float16 | non-contiguous |
+| input | y | (1,N) | float16 | contiguous |
+| input | mask | (M,N) | bool | contiguous |
+| output | z | (M,N) | float16 | contiguous |
+
+semantics = `torch.where(mask, x, y)`.
+
+## 3. Layout / broadcast / dtype
+
+Per-tensor layouts as listed. Broadcast: x over N and y over M.
+
+## 4. Boundary cases
+
+Odd M,N and all-false mask.
+
+## 5. Correctness requirements
+
+pytest vs `torch.where(mask, x, y)`.
+
+## 6. Benchmark requirements
+
+Benchmark not required.
+"""
+
+INLINE_NAMED_OUTPUT_TASK = """# Task — inline named output
+
+## 1. Background
+
+Implement **elementwise add**.
+
+## 2. Operator contract
+
+Inputs: `x` (N,) float32 contiguous; `y` (N,) float32 contiguous. Output `z` (N,) float32.
+
+semantics = `torch.add(x, y)`.
+
+## 3. Layout / broadcast / dtype
+
+Contiguous. Broadcast: none.
+
+## 4. Boundary cases
+
+Odd N.
+
+## 5. Correctness requirements
+
+pytest vs `torch.add`.
+
+## 6. Benchmark requirements
+
+Benchmark not required.
+"""
+
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -442,3 +536,50 @@ Implement **masked where**.
     assert results[0]["y"] == ("float16", "contiguous")
     assert results[0]["mask"] == ("bool", "contiguous")
     assert results[0]["out"] == ("float16",)
+
+
+def _strict_card(tmp_path: Path, name: str, body: str) -> str:
+    task = tmp_path / f"{name}.md"
+    out = tmp_path / f"{name}_card.md"
+    task.write_text(body, encoding="utf-8")
+    proc = _run(
+        [
+            "make_task_card.py",
+            "--task-file",
+            str(task),
+            "--output",
+            str(out),
+            "--strict",
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    text = out.read_text(encoding="utf-8")
+    assert "TODO: verify" not in text
+    return text
+
+
+def test_task_card_accepts_unnumbered_headings(tmp_path: Path):
+    text = _strict_card(tmp_path, "unnumbered", UNNUMBERED_HEADINGS_TASK)
+    by_name = _io_rows_by_name(text)
+    assert by_name["x"][2:] == ["float32", "contiguous"]
+    assert by_name["y"][2:] == ["float32", "contiguous"]
+    assert by_name["z"][1:] == ["(N,)", "float32"]
+    assert "Odd N" in text
+
+
+def test_task_card_combined_role_table_routes_output(tmp_path: Path):
+    text = _strict_card(tmp_path, "role_table", COMBINED_ROLE_TABLE_TASK)
+    by_name = _io_rows_by_name(text)
+    assert by_name["x"][2:] == ["float16", "non-contiguous"]
+    assert by_name["y"][2:] == ["float16", "contiguous"]
+    assert by_name["mask"][2:] == ["bool", "contiguous"]
+    assert by_name["z"][1:] == ["(M,N)", "float16"]
+    assert "Odd M,N and all-false mask" in text
+
+
+def test_task_card_inline_named_output_routes_output(tmp_path: Path):
+    text = _strict_card(tmp_path, "inline_output", INLINE_NAMED_OUTPUT_TASK)
+    by_name = _io_rows_by_name(text)
+    assert by_name["x"][2:] == ["float32", "contiguous"]
+    assert by_name["y"][2:] == ["float32", "contiguous"]
+    assert by_name["z"][1:] == ["(N,)", "float32"]
