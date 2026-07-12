@@ -1,0 +1,50 @@
+diff --git a/docs/perf_aot_integration_notes.md b/docs/perf_aot_integration_notes.md
+new file mode 100644
+index 00000000..15a501d1
+--- /dev/null
++++ b/docs/perf_aot_integration_notes.md
+@@ -0,0 +1,44 @@
++# SELFTEST-PERF-AOT-001 Perf/AOT Integration Notes
++
++Scope: scan-only notes for `relu`, `silu`, and `softmax`. This document records code paths and planned evidence collection; it does not claim correctness, AOT build success, generated artifact success, benchmark timing, or speedup.
++
++## Runtime Generation Path
++
++- In `ntops`, `src/ntops/torch/{relu,silu,softmax}.py` call `_cached_make(...)`, which delegates to `ninetoothed.make(...)` through `src/ntops/torch/utils.py`.
++- `relu` and `silu` use `src/ntops/kernels/element_wise.py` arrangement and per-op `premake(...)` definitions.
++- `softmax` uses `src/ntops/kernels/reduction.py` arrangement and a numerically stable two-pass reduction in `src/ntops/kernels/softmax.py`.
++
++## InfiniCore Dispatch Path
++
++- `src/infinicore/ops/{relu,silu,softmax}/*.cc` implement the C++ op wrappers and call an `OpDispatcher`.
++- `src/infinicore/ops/{relu,silu,softmax}/*_infiniop.cc` register infiniop-backed implementations with the dispatcher.
++- `src/infiniop/ops/{relu,silu,softmax}/operator.cc` route descriptor creation, workspace size, execution, and destruction to device-specific implementations.
++- `python/infinicore/nn/functional/silu.py` has an `ntops` fast path when `infinicore.use_ntops` is enabled and the input device is `cuda` or `musa`.
++
++## AOT Evidence Path
++
++- `scripts/build_ntops.py` scans `src/infiniop/ops/*/ninetoothed/build.py`.
++- `src/infiniop/ops/relu/ninetoothed/build.py` currently defines a relu AOT generation grid.
++- `xmake.lua` defines the `ninetoothed` option and adds `ENABLE_NINETOOTHED`.
++- `xmake/nvidia.lua`, `xmake/metax.lua`, and `xmake/qy.lua` add `../build/ninetoothed/*.c` and `../build/ninetoothed/*.cpp` when the `ninetoothed` option is enabled.
++- `src/infiniop/ops/relu/nvidia/relu_nvidia.cu` includes `build/ninetoothed/relu.h` and calls `launch_relu(...)` under `ENABLE_NINETOOTHED`.
++
++## Validation Plan
++
++1. Run non-benchmark correctness for `ntops` relu/silu/softmax against PyTorch where CUDA is available.
++2. Run InfiniCore `test/infinicore/ops/silu.py` through `test/infinicore/run.py`.
++3. Run direct infiniop tests `test/infiniop/{relu,silu,softmax}.py` on supported devices.
++4. Add or confirm Python functional/pybind coverage before claiming high-level InfiniCore `relu` or `softmax` Python API support.
++
++## Benchmark Plan
++
++- Use existing `test/infinicore/run.py --bench host|device|both` only after correctness passes.
++- Record device, dtype, shape, strides, warmup count, iteration count, and whether `infinicore.use_ntops` is enabled.
++- Report raw PyTorch and InfiniCore host/device timings before deriving any speedup.
++
++## Risks And Open Checks
++
++- `relu` and `softmax` have C++/infiniop paths but were not found in the scanned Python `nn.functional` exports.
++- Only `relu` currently shows a `ninetoothed/build.py` path in the scanned operator set.
++- A generated `build/ninetoothed` directory was not present during this scan.
++- No AOT build, benchmark timing, or hidden evaluation result has been run or claimed.
