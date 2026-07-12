@@ -56,6 +56,7 @@ class TritonOptimizeSchedule(OptimizeSchedule):
         context: Context,
     ) -> tuple[ScheduleCandidate, ...]:
         del analysis, context
+
         if schedule.get("granularity") != "blocked-linalg":
             return ()
         return (
@@ -113,6 +114,7 @@ class TritonOptimizeSchedule(OptimizeSchedule):
             preserve_linalg = bool(
                 analysis.get("dot_supports_low_precision_intrinsic", False)
             )
+
             return {
                 "passes": ("linalg-block-tiling", "strict-fp32-dot-selection"),
                 "lowering": (
@@ -172,10 +174,12 @@ class TritonLowerIntrinsicsPass(LowerIntrinsics):
 
 
 def register_ssa_passes(registry: "Registry") -> None:
-    registry.register(TritonOptimizeSchedule, tags=("optimization", "triton"))
-    registry.register(
-        TritonLowerMemoryScopesPass, tags=("target-lowering", "memory", "triton")
-    )
-    registry.register(
-        TritonLowerIntrinsicsPass, tags=("target-lowering", "intrinsics", "triton")
+    from ninetoothed.backends.registry import register_pass_bundle
+
+    register_pass_bundle(
+        registry,
+        backend=Target.TRITON,
+        optimize_schedule=TritonOptimizeSchedule,
+        lower_memory_scopes=TritonLowerMemoryScopesPass,
+        lower_intrinsics=TritonLowerIntrinsicsPass,
     )

@@ -57,8 +57,6 @@ class TestPipeline:
             "ssa.select_schedule",
             "ssa.cuda.optimize_schedule",
             "ssa.decompose_linalg",
-            "ssa.cuda.lower_memory_scopes",
-            "ssa.cuda.lower_intrinsics",
         )
         assert lowered.metadata["target_backend"] == "cuda"
         assert lowered.metadata["schedule"]["granularity"] == "elementwise-grid"
@@ -71,7 +69,8 @@ class TestPipeline:
         )
         forbidden = "tem" + "plate"
         assert forbidden not in str(lowered.metadata["optimization"]).lower()
-        assert lowered.metadata["memory_scope"]["register"] == "thread-local"
+        assert "memory_scope" not in lowered.metadata
+        assert "backend_intrinsics" not in lowered.metadata
         assert not lowered.metadata["coarse_operator_nodes"]
         opcodes = tuple(_opcodes(lowered.blocks[0].operations))
         assert "arith.add" in opcodes
@@ -113,7 +112,14 @@ class TestPipeline:
             (Target.TILELANG, "T.Kernel + T.get_thread_binding"),
             (Target.TVM, "T.thread_binding"),
         ):
-            lowered = lower_for_target(program, backend=backend)
+            lowered = lower_for_target(
+                program,
+                backend=backend,
+                pass_pipeline=PipelineSpec(
+                    passes=(f"ssa.{backend.value}.lower_intrinsics",),
+                    mode="explicit-target-lowering",
+                ),
+            )
             assert (
                 lowered.metadata["backend_intrinsics"]["program_id"]
                 == expected_program_id
@@ -121,7 +127,10 @@ class TestPipeline:
 
             for operation in _operations(lowered.blocks[0].operations):
                 assert "backend_intrinsic" in operation.attrs
-                assert "optimization" in operation.attrs
+                target_opcode = operation.attrs["target_opcode"]
+                assert target_opcode is None or target_opcode.startswith(
+                    f"{backend.value}."
+                )
 
     def test_pass_registry_classifies_hardware_independent_and_target_passes(self):
         independent = {
@@ -159,7 +168,17 @@ class TestPipeline:
                 f"ssa.{backend.value}.lower_intrinsics",
             }
             assert required <= backend_passes
-            assert required <= set(default_spec(backend).passes)
+            assert (
+                f"ssa.{backend.value}.optimize_schedule" in default_spec(backend).passes
+            )
+            assert (
+                f"ssa.{backend.value}.lower_memory_scopes"
+                not in default_spec(backend).passes
+            )
+            assert (
+                f"ssa.{backend.value}.lower_intrinsics"
+                not in default_spec(backend).passes
+            )
 
     def test_custom_pipeline_can_disable_backend_optimization_pass(self):
         program = _program(

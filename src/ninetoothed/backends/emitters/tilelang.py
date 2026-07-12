@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from ninetoothed.backends.core import Target
-from ninetoothed.backends.emitters import common
+from ninetoothed.backends.emitters import ssa as common
 from ninetoothed.backends.emitters.base import EmitterTarget, ModuleRenderContext
 from ninetoothed.ir import Kernel, ssa
 
@@ -75,18 +75,22 @@ class TileLangTarget(EmitterTarget):
     def literal(self, value: Any) -> str:
         if isinstance(value, float) and math.isinf(value):
             return "float('inf')" if value > 0 else "-float('inf')"
+
         if value == "inf":
             return "float('inf')"
+
         if value == "-inf":
             return "-float('inf')"
         return repr(value)
 
     def load(self, tensor, index, *, mask=None, other=0.0):
         del mask, other
+
         return f"{self.tensor_ref(tensor)}[{index}]"
 
     def store(self, tensor, index, value, *, mask=None):
         assignment = f"{self.tensor_ref(tensor)}[{index}] = {value}"
+
         return assignment if mask is None else f"if {mask}:\n    {assignment}"
 
     def cast(self, dtype, value):
@@ -98,25 +102,34 @@ class TileLangTarget(EmitterTarget):
     def call(self, name, args):
         if name == "where":
             return self.where(args[0], args[1], args[2])
+
         if name == "atomic_add":
             return f"T.atomic_add({args[0]}[0], {args[1]})"
+
         if name == "load" and args:
             return f"{args[0]}[0]"
+
         if name == "block_dot" and len(args) == 2:
             return f"T.dot({args[0]}, {args[1]})"
+
         if name == "rand":
             mixed = (
                 f'T.Cast("uint32", T.bitwise_xor({args[0]}, {args[1]})) '
                 "* 1664525 + 1013904223"
             )
+
             return f'T.Cast("float32", T.bitwise_and({mixed}, 16777215)) / 16777216.0'
+
         if name == "expm1":
             return f"({self.call('exp', args)} - 1.0)"
+
         function = _TIR_FUNCTIONS.get(name, f"T.{name}")
+
         return f"{function}({', '.join(args)})"
 
     def local_decl(self, type_: ssa.Type, name: str, expr: str) -> str:
         del type_
+
         return f"{name} = {expr}"
 
     def loop_header(self, var, lower, upper, step):
@@ -127,12 +140,15 @@ class TileLangTarget(EmitterTarget):
             if step == "1"
             else f"T.serial({lower}, {upper}, {step})"
         )
+
         return f"for {var} in {serial}:"
 
     def reduce_update(self, operator, acc, term):
         if operator == "sum":
             return f"{acc} + {term}"
+
         function = "T.max" if operator == "max" else "T.min"
+
         return f"{function}({acc}, {term})"
 
     def render_module(self, context: ModuleRenderContext) -> str:
@@ -148,6 +164,7 @@ class TileLangTarget(EmitterTarget):
             context.stores,
             context.outer_axes,
         )
+
         if cooperative is not None:
             return cooperative
         return _render_tilelang_module(
@@ -176,6 +193,7 @@ def _render_tilelang_cooperative_dot_module(
     outer_axes: tuple[str, ...],
 ) -> str | None:
     plan = _cooperative_dot_plan(operations, stores, value_types)
+
     if plan is None or kernel.ssa is None:
         return None
 
@@ -217,6 +235,7 @@ def _render_tilelang_cooperative_dot_module(
         bindings: Mapping[str, str] | None = None,
     ) -> _EmitContext:
         inner_index = _linearized_index(coordinates, result_axes)
+
         return _EmitContext(
             target=target,
             kernel=kernel,
@@ -246,6 +265,7 @@ def _render_tilelang_cooperative_dot_module(
     lower = _emit_loop_bound(loop.operands[0], bound_ctx)
     upper = _emit_loop_bound(loop.operands[1], bound_ctx)
     step = _emit_loop_bound(loop.operands[2], bound_ctx)
+
     if lower != "0" or step != "1":
         return None
 
@@ -275,6 +295,7 @@ def _render_tilelang_cooperative_dot_module(
         bindings={loop.results[0].name: "c_local[mi, ni]"},
     )
     _emit_operation(plan.store, output_ctx)
+
     if not output_lines:
         return None
 
@@ -286,11 +307,13 @@ def _render_tilelang_cooperative_dot_module(
         "float8_e4m3fn",
         "float8_e5m2",
     }
+
     if (
         lhs_storage_dtype not in supported_storage_dtypes
         or rhs_storage_dtype not in supported_storage_dtypes
     ):
         return None
+
     lhs_dtype = _tile_dtype(lhs_storage_dtype)
     rhs_dtype = _tile_dtype(rhs_storage_dtype)
     accumulator_dtype = _tile_dtype(_dot_accumulator_dtype(dot, output_ctx))
@@ -447,6 +470,7 @@ def _tile_dtype(dtype: str | None) -> str:
         "uint64": "T.uint64",
         "bool": "T.bool",
     }
+
     if dtype not in types:
         raise ValueError(f"Unsupported TileLang SSA dtype: {dtype!r}.")
     return types[dtype]
@@ -454,6 +478,7 @@ def _tile_dtype(dtype: str | None) -> str:
 
 def _tile_param_dtype(name: str, value_types: Mapping[str, ssa.Type]) -> str:
     type_ = value_types.get(name)
+
     if type_ is not None and type_.kind == "scalar" and type_.dtype:
         if common._normalize_dtype(type_.dtype) == "bool":
             return "T.int64"
@@ -463,6 +488,7 @@ def _tile_param_dtype(name: str, value_types: Mapping[str, ssa.Type]) -> str:
 
 def _tile_scalar_abi_dtype(dtype: str | None) -> str:
     dtype = common._normalize_dtype(dtype)
+
     if dtype in {"float16", "bfloat16", "float8_e4m3fn", "float8_e5m2"}:
         return "T.float32"
     return _tile_dtype(dtype)

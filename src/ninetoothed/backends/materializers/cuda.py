@@ -31,6 +31,7 @@ class CudaMaterializer(Materializer):
     def load_built_artifact(self, built: BuiltArtifact):
         if built.binary_path is None:
             raise ValueError("CUDA built artifact does not contain a binary path.")
+
         from ninetoothed.compiler.runtime import (
             _launch_abi_from_dict,
             _runtime_specs,
@@ -40,6 +41,7 @@ class CudaMaterializer(Materializer):
         function = getattr(library, built.source.entrypoint)
         function.restype = ctypes.c_int
         specs = _runtime_specs(built.source)
+
         return _cuda_wrapper(function, _launch_abi_from_dict(built.abi), specs)
 
 
@@ -59,13 +61,16 @@ def _materialize(compilation, *, output_dir=None):
         cache_key=cache_key,
     )
     cache_library = artifact_directory(cache_key) / f"{artifact.kernel_name}.cuda.so"
+
     with cache_lock(cache_library):
         if not cache_library.is_file():
             _compile_library(source, cache_library)
+
         write_manifest(
             cache_library.with_suffix(".manifest.json"),
             _built_manifest(compilation, cache_key, source, cache_library),
         )
+
     library_path = _publish_library(
         cache_library,
         output_dir,
@@ -77,6 +82,7 @@ def _materialize(compilation, *, output_dir=None):
     wrapped = _cuda_wrapper(
         function, compilation.launch_abi, compilation.kernel.tensors
     )
+
     return Handle(compilation, function, wrapped, source, library_path)
 
 
@@ -104,6 +110,7 @@ def _cuda_wrapper(function, abi, tensor_specs):
         stream = torch.cuda.current_stream().cuda_stream
         result = function(*values, ctypes.c_void_p(stream))
         del keepalive
+
         if result != 0:
             raise KernelLaunchError(result)
         return _first_output(abi, public)
@@ -119,6 +126,7 @@ def _cuda_scalar(value, dtype):
         "fp64": "float64",
         "bf16": "bfloat16",
     }.get(dtype, dtype)
+
     if dtype in {"float16", "bfloat16", "float8_e4m3fn", "float8_e5m2"}:
         import torch
 
@@ -132,6 +140,7 @@ def _cuda_scalar(value, dtype):
             else torch.tensor(value)
         )
         bits = scalar.to(dtype=torch_dtype).view(storage_dtype).item()
+
         return (ctypes.c_uint16 if storage_dtype == torch.uint16 else ctypes.c_uint8)(
             bits
         )
@@ -149,6 +158,7 @@ def _cuda_scalar(value, dtype):
         "uint64": ctypes.c_uint64,
         "bool": ctypes.c_bool,
     }.get(dtype)
+
     if ctype is None:
         raise TypeError(f"Unsupported CUDA scalar dtype: {dtype!r}.")
     return ctype(value.item() if hasattr(value, "item") else value)
@@ -164,6 +174,7 @@ def _compile_library(source: Path, library: Path) -> None:
     os.close(descriptor)
     temporary = Path(temporary_name)
     temporary.unlink()
+
     try:
         with cache_lock(TOOLCHAIN_LOCK_DIR / "nvcc"):
             subprocess.run(
@@ -180,6 +191,7 @@ def _compile_library(source: Path, library: Path) -> None:
                 ],
                 check=True,
             )
+
         os.replace(temporary, library)
     finally:
         temporary.unlink(missing_ok=True)
@@ -190,9 +202,11 @@ def _nvcc() -> str:
         shutil.which("nvcc"),
         str(Path(os.environ.get("CUDA_HOME", "/usr/local/cuda")) / "bin" / "nvcc"),
     ]
+
     for candidate in candidates:
         if candidate and Path(candidate).exists():
             return candidate
+
     raise RuntimeError("CUDA backend requires nvcc; set CUDA_HOME or add nvcc to PATH.")
 
 

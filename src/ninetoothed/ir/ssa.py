@@ -90,15 +90,19 @@ def verify_program(program: Program) -> Program:
         )
 
     definitions: set[str] = set()
+
     for value in program.inputs:
         if value.name in definitions:
             raise VerificationError(f"Duplicate SSA input `{value.name}`.")
+
         definitions.add(value.name)
 
     symbols = set(str(name) for name in program.metadata.get("symbols", ()))
+
     for value in (*program.inputs, *program.outputs):
         for dimension in value.type.shape:
             symbols.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", str(dimension)))
+
     _verify_block(
         program.blocks[0], definitions | symbols, set(definitions), path="entry"
     )
@@ -113,6 +117,7 @@ def verify_program(program: Program) -> Program:
         for value in program.outputs
         if value.name not in top_level_definitions
     )
+
     if missing_outputs:
         raise VerificationError(f"Undefined SSA outputs: {', '.join(missing_outputs)}.")
     return program
@@ -127,11 +132,13 @@ def _verify_block(
 ) -> None:
     local_visible = set(visible)
     block_arguments: list[str] = []
+
     for argument in block.args:
         if argument.name in all_definitions:
             raise VerificationError(
                 f"Duplicate SSA definition `{argument.name}` in block `{path}`."
             )
+
         local_visible.add(argument.name)
         all_definitions.add(argument.name)
         block_arguments.append(argument.name)
@@ -141,6 +148,7 @@ def _verify_block(
         missing = tuple(
             operand for operand in operation.operands if operand not in local_visible
         )
+
         if missing:
             raise VerificationError(
                 f"Operation `{location}` uses undefined values: {', '.join(missing)}."
@@ -151,6 +159,7 @@ def _verify_block(
                 raise VerificationError(
                     f"Duplicate SSA definition `{result.name}` at `{location}`."
                 )
+
             local_visible.add(result.name)
             all_definitions.add(result.name)
 
@@ -170,12 +179,16 @@ def _verify_block(
 def _verify_region_contract(operation: Operation, location: str) -> None:
     if operation.opcode == "scf.for":
         if len(operation.regions) != 1:
-            raise VerificationError(f"`{location}` requires exactly one region.")
+            raise VerificationError(
+                f"Operation `{location}` requires exactly one region."
+            )
+
         expected = len(operation.results)
         _verify_yield(operation.regions[0], expected, location)
+
         if len(operation.regions[0].args) != expected + 1:
             raise VerificationError(
-                f"`{location}` requires one induction argument and {expected} "
+                f"Operation `{location}` requires one induction argument and {expected} "
                 "loop-carried arguments."
             )
     elif operation.opcode == "scf.if":
@@ -183,17 +196,22 @@ def _verify_region_contract(operation: Operation, location: str) -> None:
             raise VerificationError(
                 f"Result-producing `{location}` requires then and else regions."
             )
+
         for region in operation.regions:
             if operation.results:
                 _verify_yield(region, len(operation.results), location)
     elif operation.opcode == "scf.yield" and operation.regions:
-        raise VerificationError(f"`{location}` cannot contain nested regions.")
+        raise VerificationError(
+            f"Operation `{location}` cannot contain nested regions."
+        )
 
 
 def _verify_yield(block: Block, expected: int, location: str) -> None:
     if not block.operations or block.operations[-1].opcode != "scf.yield":
         raise VerificationError(f"Region of `{location}` must end with `scf.yield`.")
+
     actual = len(block.operations[-1].operands)
+
     if actual != expected:
         raise VerificationError(
             f"Region of `{location}` yields {actual} values; expected {expected}."

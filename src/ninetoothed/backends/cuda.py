@@ -70,9 +70,12 @@ class CudaOptimizeSchedule(OptimizeSchedule):
         context: Context,
     ) -> tuple[ScheduleCandidate, ...]:
         del analysis, context
+
         if schedule.get("granularity") != "blocked-linalg":
             return ()
+
         mma = {"m": 16, "n": 16, "k": 16}
+
         return (
             ScheduleCandidate(
                 name="wmma-16x16",
@@ -116,6 +119,7 @@ class CudaOptimizeSchedule(OptimizeSchedule):
             preserve_linalg = bool(
                 analysis.get("dot_supports_low_precision_intrinsic", False)
             )
+
             return {
                 "passes": ("block-tiling", "wmma-intrinsic-selection"),
                 "lowering": (
@@ -159,10 +163,12 @@ class CudaLowerIntrinsicsPass(LowerIntrinsics):
 
 
 def register_ssa_passes(registry: "Registry") -> None:
-    registry.register(CudaOptimizeSchedule, tags=("optimization", "cuda"))
-    registry.register(
-        CudaLowerMemoryScopesPass, tags=("target-lowering", "memory", "cuda")
-    )
-    registry.register(
-        CudaLowerIntrinsicsPass, tags=("target-lowering", "intrinsics", "cuda")
+    from ninetoothed.backends.registry import register_pass_bundle
+
+    register_pass_bundle(
+        registry,
+        backend=Target.CUDA,
+        optimize_schedule=CudaOptimizeSchedule,
+        lower_memory_scopes=CudaLowerMemoryScopesPass,
+        lower_intrinsics=CudaLowerIntrinsicsPass,
     )

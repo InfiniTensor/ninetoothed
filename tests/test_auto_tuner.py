@@ -14,6 +14,7 @@ def test_auto_tuner(args, kwargs, _):
 
     def benchmark(function, candidate_args, candidate_kwargs):
         benchmark_calls.append(function)
+
         return _deterministic_benchmark(function, candidate_args, candidate_kwargs)
 
     auto_tuner = AutoTuner(
@@ -74,6 +75,8 @@ def _bar(*args, **kwargs):
 def _deterministic_benchmark(function, args, kwargs):
     if function is _foo:
         return _foo_delay(*args, **kwargs)
+
     if function is _bar:
         return _bar_delay(*args, **kwargs)
-    raise AssertionError(f"Unexpected tuning candidate: {function!r}")
+
+    raise AssertionError(f"Unexpected tuning candidate: {function!r}.")

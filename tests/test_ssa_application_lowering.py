@@ -1,4 +1,3 @@
-# ruff: noqa: F841
 import ninetoothed.language as ntl
 from ninetoothed.frontend.python import from_application
 from ninetoothed.ir import TensorSpec, ssa
@@ -27,7 +26,7 @@ def reference_attention(q, k, v, is_causal, o):
         l_i = l_i * alpha + l_ij
 
     acc /= l_i[:, None]
-    o = acc
+    o = acc  # noqa: F841
 
 
 def _attention_tensors():

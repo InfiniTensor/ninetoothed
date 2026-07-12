@@ -13,13 +13,18 @@ def value_depends_on(
 ) -> bool:
     if value == dependency:
         return True
+
     if not value.startswith("%"):
         return False
+
     seen = set() if seen is None else seen
+
     if value in seen:
         return False
+
     seen.add(value)
     producer = operations.get(value)
+
     return bool(
         producer is not None
         and any(
@@ -32,6 +37,7 @@ def value_depends_on(
 def walk_ops(operations: tuple[ssa.Operation, ...]) -> Iterator[ssa.Operation]:
     for operation in operations:
         yield operation
+
         for region in operation.regions:
             yield from walk_ops(region.operations)
 
@@ -41,13 +47,18 @@ def atomic_output_tensors(
     op_by_result: Mapping[str, ssa.Operation],
 ) -> tuple[str, ...]:
     outputs: list[str] = []
+
     for operation in operations:
         if operation.opcode != "mem.atomic_add" or not operation.operands:
             continue
+
         pointer = op_by_result.get(operation.operands[0])
+
         if pointer is None or pointer.opcode != "mem.data_ptr" or not pointer.operands:
             continue
+
         tensor = pointer.operands[0]
+
         if tensor not in outputs:
             outputs.append(tensor)
     return tuple(outputs)
@@ -57,6 +68,7 @@ def program_value_types(program: ssa.Program) -> dict[str, ssa.Type]:
     value_types = {
         value.name: value.type for value in (*program.inputs, *program.outputs)
     }
+
     for block in program.blocks:
         collect_value_types(block, value_types)
     return value_types
@@ -67,8 +79,10 @@ def collect_value_types(
     value_types: dict[str, ssa.Type],
 ) -> None:
     value_types.update({argument.name: argument.type for argument in block.args})
+
     for operation in block.operations:
         value_types.update({result.name: result.type for result in operation.results})
+
         for region in operation.regions:
             collect_value_types(region, value_types)
 

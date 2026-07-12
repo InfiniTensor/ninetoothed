@@ -24,6 +24,7 @@ class AutoTuner:
 
         manifest = read_manifest(self._cache_path) or {}
         self._timings = dict(manifest.get("timings", {}))
+
         for key in self._key_ids:
             self._timings.setdefault(key, {})
 
@@ -131,13 +132,17 @@ def _default_benchmark(function, args, kwargs):
 
     for _ in range(3):
         function(*args, **kwargs)
+
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
     start.record()
+
     for _ in range(10):
         function(*args, **kwargs)
+
     end.record()
     end.synchronize()
+
     return start.elapsed_time(end) / 10
 
 

@@ -193,9 +193,11 @@ def lower(
         )
     )
     artifact = compilation.artifact
+
     if write:
         if output_dir is None:
             raise ValueError("Output directory is required when `write=True`.")
+
         artifact.write_to(output_dir)
     return artifact
 
@@ -207,6 +209,7 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
 
     if request.arrangement is None:
         annotations = inspect.get_annotations(application, eval_str=False)
+
         try:
             arranged = tuple(copy.deepcopy(annotations[name]) for name in params)
         except KeyError as exc:
@@ -229,6 +232,7 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
 
     for name, tensor in zip(params, arranged):
         dtype = (request.tensor_dtypes or {}).get(name)
+
         if dtype is not None:
             getattr(tensor, "source", tensor).dtype = dtype
 
@@ -317,6 +321,7 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
             "generation_py_fallback": False,
         },
     )
+
     return Compilation(
         request=request,
         kernel=kernel,
@@ -375,6 +380,7 @@ def _launch_abi(
         )
 
     shape_params = tuple(artifact.metadata.get("shape_params", ()))
+
     for name in shape_params:
         binding = _derived_binding(name, specs)
         bindings.append(
@@ -429,6 +435,7 @@ def _launch_plan(
         )
     )
     candidates = tuple(metadata.get("ssa_metadata", {}).get("schedule_candidates", ()))
+
     return LaunchPlan(
         abi=abi,
         grid=grid,
@@ -442,32 +449,38 @@ def _launch_plan(
 def _derived_binding(name: str, specs):
     for spec in specs:
         attrs = spec.attrs
+
         if name == attrs.get("jagged_values_numel_param"):
             return LaunchBinding(
                 name=name,
                 kind="jagged_values_numel",
                 source=spec.name,
             )
+
         if name == attrs.get("jagged_offsets_numel_param"):
             return LaunchBinding(
                 name=name,
                 kind="jagged_offsets_numel",
                 source=spec.name,
             )
+
         if name == attrs.get("jagged_max_seq_len_param"):
             return LaunchBinding(
                 name=name,
                 kind="jagged_max_seq_len",
                 source=spec.name,
             )
+
         for dim, symbol in enumerate(attrs.get("source_shape", ())):
             if name == symbol:
                 return LaunchBinding(name=name, kind="shape", source=spec.name, dim=dim)
+
         for dim, symbol in enumerate(attrs.get("source_strides", ())):
             if name == symbol:
                 return LaunchBinding(
                     name=name, kind="stride", source=spec.name, dim=dim
                 )
+
         if spec.constexpr and name == spec.name:
             return LaunchBinding(name=name, kind="constexpr", source=spec.name)
     return None
@@ -475,22 +488,28 @@ def _derived_binding(name: str, specs):
 
 def _meta_defaults(arranged) -> dict[str, int]:
     defaults = {}
+
     for tensor in arranged:
         for symbol in tensor.names():
             name = str(symbol)
+
             if not hasattr(symbol, "lower_bound"):
                 continue
+
             lower = int(symbol.lower_bound)
             upper = int(symbol.upper_bound)
             value = min(max(256, lower), upper)
+
             if getattr(symbol, "power_of_two", False):
                 value = 1 << max(0, value.bit_length() - 1)
+
             defaults[name] = value
     return defaults
 
 
 def _runtime_shape_params(specs) -> tuple[str, ...]:
     params = []
+
     for spec in specs:
         attrs = spec.attrs
         values = (
@@ -500,8 +519,10 @@ def _runtime_shape_params(specs) -> tuple[str, ...]:
             attrs.get("jagged_offsets_numel_param"),
             attrs.get("jagged_max_seq_len_param"),
         )
+
         for value in values:
             name = str(value or "")
+
             if (
                 name.isidentifier()
                 and "constexpr_prefix" not in name

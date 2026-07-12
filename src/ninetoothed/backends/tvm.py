@@ -78,6 +78,7 @@ class TvmOptimizeSchedule(OptimizeSchedule):
         context: Context,
     ) -> tuple[ScheduleCandidate, ...]:
         del analysis, context
+
         if schedule.get("granularity") != "blocked-linalg":
             return ()
         return (
@@ -141,10 +142,12 @@ class TvmLowerIntrinsicsPass(LowerIntrinsics):
 
 
 def register_ssa_passes(registry: "Registry") -> None:
-    registry.register(TvmOptimizeSchedule, tags=("optimization", "tvm"))
-    registry.register(
-        TvmLowerMemoryScopesPass, tags=("target-lowering", "memory", "tvm")
-    )
-    registry.register(
-        TvmLowerIntrinsicsPass, tags=("target-lowering", "intrinsics", "tvm")
+    from ninetoothed.backends.registry import register_pass_bundle
+
+    register_pass_bundle(
+        registry,
+        backend=Target.TVM,
+        optimize_schedule=TvmOptimizeSchedule,
+        lower_memory_scopes=TvmLowerMemoryScopesPass,
+        lower_intrinsics=TvmLowerIntrinsicsPass,
     )

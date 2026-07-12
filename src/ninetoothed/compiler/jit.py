@@ -45,8 +45,9 @@ class JIT:
     def __init__(
         self,
         func,
-        caller,
+        *,
         backend,
+        caller,
         kernel_name,
         num_warps,
         num_stages,

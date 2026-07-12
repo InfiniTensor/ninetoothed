@@ -233,7 +233,12 @@ def emit(kernel: Kernel, target: EmitterTarget, options=None) -> Artifact:
     )
     shape_params = _shape_params(kernel.tensors, block.operations)
     backend_options = dict(getattr(options, "extra", {}) or {})
-    source, render_context = _render_source(kernel, target, backend_options)
+    source, render_context = _render_source(
+        kernel,
+        target,
+        backend_options,
+        shape_params=shape_params,
+    )
     metadata = {
         "backend": backend.value,
         "kernel_name": kernel.kernel_name,
@@ -244,7 +249,14 @@ def emit(kernel: Kernel, target: EmitterTarget, options=None) -> Artifact:
         "outputs": outputs,
         "auxiliary_bindings": auxiliary_bindings,
         "ssa": ir_to_dict(kernel.ssa),
+        "kernel_metadata": dict(kernel.metadata),
         "ssa_metadata": dict(kernel.ssa.metadata),
+        "ssa_pass_trace": tuple(kernel.ssa.metadata.get("pass_trace", ())),
+        "ssa_schedule": dict(kernel.ssa.metadata.get("schedule", {})),
+        "ssa_pipeline_selection": dict(
+            kernel.ssa.metadata.get("pipeline_selection", {})
+        ),
+        "ssa_optimization": dict(kernel.ssa.metadata.get("optimization", {})),
         "tensors": [ir_to_dict(tensor) for tensor in kernel.tensors],
         "backend_options": backend_options,
         "launch_grid": (render_context.grid_total,),
@@ -274,7 +286,11 @@ def emit(kernel: Kernel, target: EmitterTarget, options=None) -> Artifact:
 
 
 def _render_source(
-    kernel: Kernel, target: _Target, backend_options: Mapping[str, Any]
+    kernel: Kernel,
+    target: _Target,
+    backend_options: Mapping[str, Any],
+    *,
+    shape_params: tuple[str, ...],
 ) -> tuple[str, ModuleRenderContext]:
     program = kernel.ssa
     assert program is not None
@@ -310,7 +326,6 @@ def _render_source(
     variables = public_variables + tuple(
         binding["name"] for binding in auxiliary_bindings
     )
-    shape_params = _shape_params(kernel.tensors, block.operations)
 
     if "index" in {*variables, *outputs, *shape_params}:
         target = replace(target, index_name="__nt_index")
@@ -327,6 +342,7 @@ def _render_source(
     )
     store_value_axes = _store_value_axes(primary_store, value_types)
     primary_atomic = None
+
     if store_value_axes is None:
         primary_atomic = next(
             (
@@ -336,10 +352,12 @@ def _render_source(
             ),
             None,
         )
+
         if primary_atomic is not None:
             store_value_axes = _value_type_axes(
                 value_types.get(primary_atomic.operands[-1])
             )
+
     if store_value_axes is None:
         value_axes = (
             _operation_domain_axes(walked_ops, value_types)
@@ -351,6 +369,7 @@ def _render_source(
         )
     else:
         value_axes = store_value_axes
+
     output_attrs = output_info.attrs or {} if output_info is not None else {}
     split_outer_inner = bool(
         value_axes
@@ -483,14 +502,17 @@ def _render_source(
         scalar_program=triton_scalar_program,
         backend_options=backend_options,
     )
+
     return target.render_module(context), context
 
 
 def _launch_block(kernel: Kernel) -> tuple[str, ...]:
     if kernel.ssa is None:
         return ()
+
     schedule = dict(kernel.ssa.metadata.get("schedule", {}))
     threads = schedule.get("threads")
+
     if threads is None:
         warps = kernel.compiler_options.get("num_warps")
         threads = 32 * warps if isinstance(warps, int) else 256
@@ -515,6 +537,7 @@ def _with_contiguous_1d_fast_path(
     vector_program: bool,
 ) -> str:
     logical_infos = tuple(tensor_infos[tensor.name] for tensor in kernel.tensors)
+
     if not logical_infos or any(
         info.ndim != 1
         or info.attrs is None
@@ -529,18 +552,22 @@ def _with_contiguous_1d_fast_path(
         for info in logical_infos
         if not _is_one_expr(info.source_strides[0])
     )
+
     if not stride_params:
         return generic_body
 
     contiguous_infos = dict(tensor_infos)
+
     for info in logical_infos:
         attrs = dict(info.attrs or {})
         replacements = {stride: "1" for stride in info.source_strides}
         attrs["source_strides"] = ("1",)
+
         if attrs.get("view_linear_offset"):
             attrs["view_linear_offset"] = _simplify_unit_stride_expr(
                 _replace_symbols(str(attrs["view_linear_offset"]), replacements)
             )
+
         attrs["access_templates"] = tuple(
             dict(template)
             | {
@@ -585,6 +612,7 @@ def _with_contiguous_1d_fast_path(
         if target.is_cuda
         else " and ".join(f"({stride} == 1)" for stride in stride_params)
     )
+
     if target.is_cuda:
         return (
             f"if ({predicate}) {{\n"
@@ -756,6 +784,7 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
         tensor = op.operands[1]
         view_index = _store_index(op, ctx)
         info = ctx.tensor_infos.get(tensor)
+
         if op.attrs.get("source"):
             rendered = tuple(
                 _emit_index_value(str(index), ctx)
@@ -763,14 +792,18 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
             )
             source_axes = _source_axes(info, fallback=())
             remaining = max(0, len(source_axes) - len(rendered))
+
             if remaining:
                 value_axes = _value_axes(value_name, ctx)
                 implicit = _current_coords(value_axes, ctx)
+
                 if len(implicit) < remaining:
                     implicit = _coords_from_linear(
                         ctx.inner_index_expr, source_axes[-remaining:], ctx.target
                     )
+
                 rendered = (*rendered, *implicit[-remaining:])
+
             store_index = _target_index_expr(
                 ctx.target, _source_linear_index(info, rendered)
             )
@@ -782,6 +815,7 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
                 op.attrs.get("base_dtype_level", _dtype_level(tensor, ctx))
             )
             extract_indices: tuple[str, ...] = ()
+
             if target_level > base_level:
                 target_axes = tuple(
                     str(dim) for dim in op.attrs.get("target_shape", ())
@@ -792,6 +826,7 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
                 )
                 extract_indices = rendered
                 view_index = ctx.inner_index_expr
+
             store_index = _target_index_expr(
                 ctx.target,
                 _source_index_for_value(
@@ -802,7 +837,9 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
                     extract_indices=extract_indices,
                 ),
             )
+
         store_index = _materialize_index_expr(store_index, ctx)
+
         if op.attrs.get("source"):
             mask = _source_bounds_mask(info, rendered, ctx)
         else:
@@ -815,6 +852,7 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
                 level=target_level,
                 extract_indices=extract_indices,
             )
+
         mask = _materialize_bool_expr(mask, ctx)
         ctx.lines.append(ctx.target.store(tensor, store_index, value, mask=mask))
 
@@ -823,6 +861,7 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
     if op.opcode == "mem.atomic_add":
         expression = _operation_expr(op, ctx)
         ctx.lines.append(expression + (";" if ctx.target.is_cuda else ""))
+
         return
 
     if op.opcode == "scf.for" and not op.results:
@@ -864,6 +903,7 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
             expr = f"tl.{operator}({operand}, axis={axis})"
             ctx.lines.append(ctx.target.local_decl(op.results[0].type, local, expr))
             ctx.memo[name] = local
+
             return local
 
         if op.results and op.results[0].type.kind == "tensor":
@@ -911,13 +951,18 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
 def _reduction_value_coords(name: str, ctx: _EmitContext) -> tuple[str, ...]:
     axes = _value_axes(name, ctx)
     coords = list(_current_coords(axes, ctx))
+
     if ctx.reduce_index is None:
         return tuple(coords)
+
     if ctx.reduce_flattened:
         return _coords_from_linear(ctx.reduce_index, axes, ctx.target)
+
     if ctx.reduce_axis is None:
         return tuple(coords)
+
     axis = ctx.reduce_axis if ctx.reduce_axis >= 0 else ctx.reduce_axis + len(axes)
+
     if 0 <= axis < len(coords):
         coords[axis] = ctx.reduce_index
     return tuple(coords)
@@ -942,6 +987,7 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
 
     if opcode == "index.offset":
         axes = op.results[0].type.shape if op.results else ()
+
         return _emit_offset_element(
             op,
             _current_coords(tuple(str(axis) for axis in axes), ctx),
@@ -962,10 +1008,13 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     if opcode == "tensor.stride":
         tensor = op.operands[0]
         info = ctx.tensor_infos.get(tensor)
+
         if op.attrs.get("source"):
             strides = _source_strides(info)
             dim = int(op.attrs.get("dim", 0) or 0)
+
             return strides[dim] if dim < len(strides) else "1"
+
         axes = _tensor_axes(ctx.tensor_infos.get(tensor), fallback=ctx.output_axes)
 
         return _stride_dim(axes, op.attrs.get("dim", 0))
@@ -982,9 +1031,11 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
 
     if opcode == "mem.atomic_add":
         operands = tuple(_emit_value(operand, ctx) for operand in op.operands)
+
         if target.is_tvm:
             value_type = ctx.value_types.get(op.operands[-1])
             dtype = _normalize_dtype(None if value_type is None else value_type.dtype)
+
             return (
                 f'T.call_extern("{dtype}", "atomicAdd", '
                 f'{operands[0]}.access_ptr("w"), {operands[1]})'
@@ -1007,8 +1058,10 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     if opcode == "tensor.extract":
         tensor = op.operands[0]
         indices = tuple(_emit_index_value(operand, ctx) for operand in op.operands[1:])
+
         if op.attrs.get("source"):
             return _load_source_tensor(tensor, indices, ctx)
+
         index = _linearized_index(indices, _value_axes(tensor, ctx))
 
         return _load_tensor(tensor, index, ctx)
@@ -1052,6 +1105,7 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     if opcode.startswith("math."):
         name = opcode[len("math.") :]
         callee = str(op.attrs.get("callee", ""))
+
         if target.is_triton and "libdevice." in callee:
             name = f"libdevice.{name}"
         return target.call(
@@ -1096,6 +1150,7 @@ def _binary_expr(operator: str, op: ssa.Operation, ctx: _EmitContext) -> str:
             _current_coords(_value_axes(op.results[0].name, ctx), ctx),
             ctx,
         )
+
     args = tuple(_emit_value(operand, ctx) for operand in op.operands)
     args = ctx.target.coerce_binary_args(op, args, ctx)
     symbol = _BINARY[operator]
@@ -1118,12 +1173,14 @@ def _emit_linalg_dot(
 
     if ctx.cuda_block_program and len(lhs_axes) == 2 and len(rhs_axes) == 2:
         result = ctx.target.emit_block_dot(op, ctx, coords=coords)
+
         if result is not None:
             return result
 
     if ctx.block_program and len(lhs_axes) == 2 and len(rhs_axes) == 2:
         lhs_value = _emit_element(lhs, ctx.target.block_coords(lhs_axes), ctx)
         rhs_value = _emit_element(rhs, ctx.target.block_coords(rhs_axes), ctx)
+
         return ctx.target.call("block_dot", (lhs_value, rhs_value))
 
     if not lhs_axes or not rhs_axes:
@@ -1170,9 +1227,11 @@ def _emit_linalg_dot(
     rhs_value = _cast_dot_operand(rhs, rhs_value, accumulator_dtype, ctx)
     product = f"({lhs_value} * {rhs_value})"
     product_masks = tuple(mask for mask in (lhs_mask, rhs_mask) if mask)
+
     if product_masks:
         product_mask = " && ".join(f"({mask})" for mask in product_masks)
         product = f"(({product_mask}) ? ({product}) : 0.0)"
+
     body_lines.append(
         _assign_scalar(
             ctx.target,
@@ -1192,6 +1251,7 @@ def _emit_dot_operand(
     name: str, coords: tuple[str, ...], ctx: _EmitContext
 ) -> tuple[str, str | None]:
     specialized = ctx.target.emit_dot_operand(name, coords, ctx)
+
     if specialized is not None:
         return specialized
     return _emit_element(name, coords, ctx), None
@@ -1203,6 +1263,7 @@ def _dot_accumulator_dtype(op: ssa.Operation, ctx: _EmitContext) -> str:
         for operand in op.operands[:2]
         if (type_ := ctx.value_types.get(operand)) is not None
     }
+
     if operand_dtypes & {
         "float8_e4m3fn",
         "float8_e5m2",
@@ -1219,6 +1280,7 @@ def _cast_dot_operand(
     type_ = ctx.value_types.get(operand)
     operand_dtype = _normalize_dtype(type_.dtype if type_ is not None else None)
     producer = ctx.operations.get(operand)
+
     if producer is not None and producer.opcode == "tensor.cast":
         operand_dtype = _normalize_dtype(_resolved_cast_dtype(producer, ctx))
 
@@ -1261,6 +1323,7 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
         if base in ctx.tensor_infos:
             if op.attrs.get("source"):
                 return _load_source_tensor(base, (*extract_indices, *coords), ctx)
+
             level = int(
                 op.results[0].type.attrs.get("dtype_level", _dtype_level(base, ctx))
             )
@@ -1329,6 +1392,7 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
     if op.opcode.startswith("math."):
         name = op.opcode[len("math.") :]
         callee = str(op.attrs.get("callee", ""))
+
         if ctx.target.is_triton and "libdevice." in callee:
             name = f"libdevice.{name}"
         return ctx.target.call(
@@ -1385,6 +1449,7 @@ def _element_binary(
     operator: str, op: ssa.Operation, coords: tuple[str, ...], ctx: _EmitContext
 ) -> str:
     masks: tuple[str, ...] = ()
+
     if ctx.target.is_cuda and operator in {"mul", "multiply"}:
         result_axes = (
             tuple(str(dim) for dim in op.results[0].type.shape)
@@ -1403,6 +1468,7 @@ def _element_binary(
         masks = tuple(mask for _, mask in values_and_masks if mask)
     else:
         args = _element_args(op, coords, ctx)
+
     args = ctx.target.coerce_binary_args(op, args, ctx)
 
     if operator == "floordiv":
@@ -1414,6 +1480,7 @@ def _element_binary(
 
     symbol = _BINARY[operator]
     result = f"({args[0]} {symbol} {args[1]})"
+
     if masks:
         result_type = ctx.target.arithmetic_result_type(op, ctx)
         local = _local_symbol(op.results[0].name, ctx)
@@ -1422,6 +1489,7 @@ def _element_binary(
             f"{local} = {result}; */"
         )
         mask = " && ".join(f"({item})" for item in masks)
+
         return f"(({mask}) ? ({result}) : 0.0)"
     return result
 
@@ -1433,6 +1501,7 @@ def _emit_pointer_load(pointer: str, coords: tuple[str, ...], ctx: _EmitContext)
         return ctx.target.call("load", (_emit_element(pointer, coords, ctx),))
 
     base, offset = address
+
     return ctx.target.load(base, offset)
 
 
@@ -1478,6 +1547,7 @@ def _reduction_identity(operator: str, type_: ssa.Type, target: _Target) -> str:
         return "0.0"
 
     dtype = _normalize_dtype(type_.dtype or "float32")
+
     if dtype == "bool":
         return target.literal(operator == "min")
 
@@ -1497,9 +1567,12 @@ def _reduction_identity(operator: str, type_: ssa.Type, target: _Target) -> str:
         "int64": (-9223372036854775808, 9223372036854775807),
         "uint64": (0, 18446744073709551615),
     }
+
     if dtype not in limits:
         raise ValueError(f"Unsupported reduction identity dtype: {dtype!r}.")
+
     minimum, maximum = limits[dtype]
+
     return target.literal(minimum if operator == "max" else maximum)
 
 
@@ -1561,6 +1634,7 @@ def _emit_reduce_element(
         memo=dict(ctx.memo),
         local_suffix=_nested_local_suffix(ctx, local),
     )
+
     if axis is None:
         operand_coords = tuple(
             _axis_offset_expr(operand_axes, dim, loop_var, ctx.target)
@@ -1568,6 +1642,7 @@ def _emit_reduce_element(
         )
     else:
         operand_coords = coords[:axis] + (loop_var,) + coords[axis:]
+
     term = _emit_element(operand, operand_coords, body)
     body_lines.append(
         _assign_scalar(
@@ -1631,6 +1706,7 @@ def _load_tensor_at(
 ) -> str:
     if name.startswith("%") and name in ctx.operations:
         producer = ctx.operations[name]
+
         if producer.opcode in {"tensor.view", "mem.data_ptr"} and producer.operands:
             name = producer.operands[0]
 
@@ -1673,15 +1749,19 @@ def _masked_load(
 ) -> str:
     other = _load_other(info)
     load = ctx.target.load(name, source_index, mask=mask, other=other)
+
     if ctx.target.is_cuda and mask is not None:
         predicate = _materialize_bool_expr(mask, ctx) or mask
         other_value = ctx.target.literal(other)
+
         if info is not None:
             other_value = ctx.target.cast(info.dtype, other_value)
         return f"(({predicate}) ? ({load}) : ({other_value}))"
+
     if ctx.target.is_tir and mask is not None:
         predicate = _materialize_bool_expr(mask, ctx) or mask
         other_value = ctx.target.literal(other)
+
         if info is not None:
             other_value = ctx.target.cast(info.dtype, other_value)
         return ctx.target.where(predicate, load, other_value)
@@ -1718,6 +1798,7 @@ def _offset_from_template(
 
     if template is None:
         axes = _tensor_axes(info, fallback=ctx.output_axes)
+
         if not axes:
             return "0"
         return _axis_offset_expr(axes, dim, ctx.inner_index_expr, ctx.target)
@@ -1732,12 +1813,14 @@ def _offset_from_template(
         return "0"
 
     shape = tuple(str(axis) for axis in template.get("shape", ())) or ctx.output_axes
+
     if len(coords) == len(shape):
         value_coords = coords
     else:
         value_coords = _offset_value_coords(
             info, shape, coords, level=level, dim=dim, ctx=ctx
         )
+
     replacements = {"outer_index": ctx.outer_index_expr}
     replacements.update(
         {f"value_{index}": coord for index, coord in enumerate(value_coords)}
@@ -1766,6 +1849,7 @@ def _offset_value_coords(
     if target_dims and coords:
         result: list[str] = []
         coord_index = 0
+
         for target_dim in target_dims:
             if target_dim is not None and int(target_dim) == source_dim:
                 result.append(coords[min(coord_index, len(coords) - 1)])
@@ -1964,6 +2048,7 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
         operand = _emit_value(op.operands[0], ctx)
         expr = f"tl.{operator}({operand}, axis=0)"
         ctx.lines.append(ctx.target.local_decl(op.results[0].type, local, expr))
+
         return local
 
     if axis is None:
@@ -2024,6 +2109,7 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
 def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | None:
     if ctx.cuda_block_program:
         fused = ctx.target.emit_reduction_loop(local, op, ctx)
+
         if fused is not None:
             return fused
 
@@ -2448,12 +2534,14 @@ def _load_source_tensor(name: str, indices: tuple[str, ...], ctx: _EmitContext) 
     info = ctx.tensor_infos.get(name)
     source_index = _target_index_expr(ctx.target, _source_linear_index(info, indices))
     mask = _source_bounds_mask(info, indices, ctx)
+
     return _masked_load(name, source_index, mask, info, ctx)
 
 
 def _source_linear_index(info: _TensorInfo | None, indices: tuple[str, ...]) -> str:
     strides = _source_strides(info)
     terms = []
+
     for dim, index in enumerate(indices):
         stride = strides[dim] if dim < len(strides) else "1"
         terms.append(
@@ -2466,12 +2554,16 @@ def _source_bounds_mask(
     info: _TensorInfo | None, indices: tuple[str, ...], ctx: _EmitContext
 ) -> str | None:
     checks = []
+
     if ctx.mask_expr:
         checks.append(ctx.mask_expr)
+
     shape = () if info is None else info.source_shape
+
     for dim, index in enumerate(indices):
         if dim < len(shape):
             checks.extend((f"({index}) >= 0", f"({index}) < ({shape[dim]})"))
+
     if not checks:
         return None
     return " & ".join(f"({check})" for check in checks)
@@ -2480,7 +2572,9 @@ def _source_bounds_mask(
 def _load_other(info: _TensorInfo | None):
     if info is None or info.attrs is None:
         return 0.0
+
     value = info.attrs.get("other")
+
     return 0.0 if value is None else value
 
 
@@ -2564,6 +2658,7 @@ def _jagged_runtime_replacements(
         mask=ctx.mask_expr if ctx.target.is_triton else None,
         other=0,
     )
+
     return {
         str(jagged["seq_start"]): seq_start,
         str(jagged["seq_len"]): f"(({seq_end}) - ({seq_start}))",
@@ -2600,6 +2695,7 @@ def _add_jagged_base_offset(
 
     stride = _replace_symbols(str(jagged["stride"]), replacements)
     base = seq_start if _is_one_expr(stride) else f"({seq_start}) * ({stride})"
+
     return f"({index}) + ({base})"
 
 
@@ -2753,6 +2849,7 @@ def _source_strides(
 
 def _buffer_storage_extent(info: _TensorInfo, *, fallback: str) -> str:
     values_numel = (info.attrs or {}).get("jagged_values_numel_param")
+
     if values_numel:
         return str(values_numel)
 
@@ -2763,6 +2860,7 @@ def _buffer_storage_extent(info: _TensorInfo, *, fallback: str) -> str:
         return fallback
 
     terms = [f"(({dim}) - 1) * ({stride})" for dim, stride in zip(shape, strides)]
+
     return "1 + " + " + ".join(terms)
 
 
@@ -2783,6 +2881,7 @@ def _combined_mask(
         masks.append(_target_index_expr(target, base))
 
     template = None
+
     if ctx is not None:
         dtype_level = (
             _dtype_level(info.name, ctx)
@@ -2945,6 +3044,7 @@ def _default_tensor_index(name: str, ctx: _EmitContext) -> str:
         return ctx.index_expr
 
     coords = _current_coords(axes, ctx)
+
     return _linearized_index(coords, axes) if coords else ctx.index_expr
 
 
@@ -2958,6 +3058,7 @@ def _store_index(op: ssa.Operation, ctx: _EmitContext) -> str:
         rendered = tuple(_emit_index_value(str(index), ctx) for index in indices)
 
         return _linearized_index(rendered, _value_axes(op.operands[1], ctx))
+
     if ctx.block_program and ctx.coordinate_exprs:
         return _linearized_index(ctx.coordinate_exprs, ctx.output_axes)
     return ctx.index_expr
@@ -2996,6 +3097,7 @@ def _python_tuning_header(kernel: Kernel) -> str:
         f"# num_warps={options.get('num_warps')}",
         f"# num_stages={options.get('num_stages')}",
     ]
+
     if kernel.metadata.get("autotune"):
         lines.append(f"# {kernel.kernel_name}_with_auto_tuning: Launch IR tuning plan")
     return "\n".join(lines)
@@ -3025,11 +3127,14 @@ def _logical_ssa_audit(kernel: Kernel, target: _Target) -> str:
         )
 
     lines = []
+
     for operation in operations:
         if operation.opcode.startswith("arith.") and operation.results:
             operator = operation.opcode[len("arith.") :]
+
             if operator not in _BINARY or len(operation.operands) != 2:
                 continue
+
             operands = tuple(operand(name, "index") for name in operation.operands)
             lines.append(
                 f"# {target.symbol(operation.results[0].name)} = "
@@ -3039,12 +3144,17 @@ def _logical_ssa_audit(kernel: Kernel, target: _Target) -> str:
 
         if not operation.opcode.startswith("reduce.") or not operation.results:
             continue
+
         producer = by_result.get(operation.operands[0])
+
         if producer is None or not producer.opcode.startswith("arith."):
             continue
+
         operator = producer.opcode[len("arith.") :]
+
         if operator not in _BINARY or len(producer.operands) != 2:
             continue
+
         loop_index = f"{target.symbol(operation.results[0].name)}_i"
         operands = tuple(operand(name, loop_index) for name in producer.operands)
         lines.append(f"# {operands[0]} {_BINARY[operator]} {operands[1]}")
@@ -3061,10 +3171,14 @@ def _cooperative_dot_plan(
     for loop in unique_operations:
         if loop.opcode != "scf.for" or len(loop.results) != 1 or len(loop.regions) != 1:
             continue
+
         iter_args = tuple(loop.attrs.get("iter_args", ()))
+
         if len(iter_args) != 1 or len(loop.operands) < 4:
             continue
+
         initial = operations.get(str(iter_args[0].get("initial", "")))
+
         if initial is None or not _is_zero_initializer(initial):
             continue
 
@@ -3076,8 +3190,10 @@ def _cooperative_dot_plan(
             and len(op.operands) >= 2
             and len(op.results) == 1
         )
+
         if len(dots) != 1:
             continue
+
         dot = dots[0]
         block_arg = str(iter_args[0].get("block_arg", ""))
         add = next(
@@ -3093,6 +3209,7 @@ def _cooperative_dot_plan(
         yield_op = next(
             (op for op in region.operations if op.opcode == "scf.yield"), None
         )
+
         if (
             add is None
             or yield_op is None
@@ -3103,8 +3220,10 @@ def _cooperative_dot_plan(
         lhs_axes = _value_axes_from_types(dot.operands[0], value_types)
         rhs_axes = _value_axes_from_types(dot.operands[1], value_types)
         result_axes = tuple(str(dim) for dim in dot.results[0].type.shape)
+
         if not _static_cooperative_dot_shape(lhs_axes, rhs_axes, result_axes):
             continue
+
         for store in stores:
             if _value_depends_on(store.operands[0], loop.results[0].name, operations):
                 return _CooperativeDotPlan(loop=loop, dot=dot, store=store)
@@ -3113,6 +3232,7 @@ def _cooperative_dot_plan(
 
 def _resolved_dot_operand_dtype(name: str, ctx: _EmitContext) -> str:
     producer = ctx.operations.get(name)
+
     if producer is None:
         info = ctx.tensor_infos.get(name)
         type_ = ctx.value_types.get(name)
@@ -3123,9 +3243,12 @@ def _resolved_dot_operand_dtype(name: str, ctx: _EmitContext) -> str:
             if type_ is not None
             else None
         )
+
         return _normalize_dtype(dtype)
+
     if producer.opcode == "tensor.cast":
         return _normalize_dtype(_resolved_cast_dtype(producer, ctx))
+
     if (
         producer.opcode
         in {
@@ -3136,8 +3259,10 @@ def _resolved_dot_operand_dtype(name: str, ctx: _EmitContext) -> str:
         and producer.operands
     ):
         return _resolved_dot_operand_dtype(producer.operands[0], ctx)
+
     if producer.results and producer.results[0].type.dtype:
         return _normalize_dtype(producer.results[0].type.dtype)
+
     if producer.operands:
         return _resolved_dot_operand_dtype(producer.operands[0], ctx)
     return "float32"
@@ -3147,6 +3272,7 @@ def _value_axes_from_types(
     name: str, value_types: Mapping[str, ssa.Type]
 ) -> tuple[str, ...]:
     type_ = value_types.get(name)
+
     return () if type_ is None else tuple(str(dim) for dim in type_.shape)
 
 
@@ -3157,8 +3283,10 @@ def _static_cooperative_dot_shape(
 ) -> bool:
     if len(lhs_axes) != 2 or len(rhs_axes) != 2 or len(result_axes) != 2:
         return False
+
     if lhs_axes[-1] != rhs_axes[0]:
         return False
+
     try:
         dimensions = tuple(int(axis) for axis in (*lhs_axes, *rhs_axes, *result_axes))
     except ValueError:
@@ -3355,6 +3483,7 @@ def _store_value_axes(
 
     if not store.attrs.get("source") and "target_shape" in store.attrs:
         return tuple(str(dim) for dim in store.attrs.get("target_shape", ()))
+
     if store.operands:
         axes = _value_type_axes(value_types.get(store.operands[0]))
 
@@ -3530,8 +3659,10 @@ def _cast_value(op: ssa.Operation, value: str, ctx: _EmitContext) -> str:
 
     if ctx.target.is_triton and isinstance(attr, str):
         text = attr.strip().strip("'\"")
+
         if text.endswith(".dtype"):
             match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", text)
+
             if match and match.group(1) in ctx.tensor_infos:
                 return f"{value}.to({match.group(1)}.dtype.element_ty)"
     return ctx.target.cast(_resolved_cast_dtype(op, ctx), value)

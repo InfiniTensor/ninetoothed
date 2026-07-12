@@ -29,10 +29,13 @@ def _specs():
 def test_runtime_binding_rejects_unknown_duplicate_and_missing_arguments():
     x = _Tensor((2, 3))
     out = _Tensor((2, 3))
+
     with pytest.raises(TypeError, match="Unknown kernel arguments"):
         _public_values(_abi(), (x, out), {"extra": 1}, specs=_specs())
+
     with pytest.raises(TypeError, match="passed twice"):
         _public_values(_abi(), (x,), {"x": x, "out": out}, specs=_specs())
+
     with pytest.raises(TypeError, match="Missing kernel arguments"):
         _public_values(_abi(), (x,), {}, specs=_specs())
 
@@ -68,6 +71,7 @@ def test_concurrent_source_writes_are_atomic(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path)
     source = "def kernel():\n    return 1\n"
+
     with ThreadPoolExecutor(max_workers=8) as executor:
         paths = tuple(
             executor.map(
@@ -75,5 +79,6 @@ def test_concurrent_source_writes_are_atomic(tmp_path, monkeypatch):
                 range(32),
             )
         )
+
     assert len(set(paths)) == 1
     assert paths[0].read_text(encoding="utf-8") == source

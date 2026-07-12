@@ -74,10 +74,13 @@ def _specialize_type(type_: ssa.Type, values: Mapping[str, Any]) -> ssa.Type:
 def _specialize_value(value: Any, values: Mapping[str, Any]) -> Any:
     if isinstance(value, str):
         return _specialize_text(value, values)
+
     if isinstance(value, tuple):
         return tuple(_specialize_value(item, values) for item in value)
+
     if isinstance(value, list):
         return [_specialize_value(item, values) for item in value]
+
     if isinstance(value, Mapping):
         return {key: _specialize_value(item, values) for key, item in value.items()}
     return value
@@ -85,12 +88,14 @@ def _specialize_value(value: Any, values: Mapping[str, Any]) -> Any:
 
 def _specialize_text(text: str, values: Mapping[str, Any]) -> str:
     result = text
+
     for symbol in sorted(values, key=len, reverse=True):
         result = re.sub(
             rf"(?<!\w){re.escape(symbol)}(?!\w)",
             repr(values[symbol]),
             result,
         )
+
     if result == text:
         return text
 
@@ -102,10 +107,12 @@ def _evaluate_constant_expression(text: str) -> str:
         tree = ast.parse(text, mode="eval")
     except SyntaxError:
         return text
+
     if any(
         isinstance(node, (ast.Name, ast.Call, ast.Attribute)) for node in ast.walk(tree)
     ):
         return text
+
     try:
         value = eval(
             compile(tree, "<ssa-specialization>", "eval"), {"__builtins__": {}}

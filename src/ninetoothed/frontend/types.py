@@ -175,11 +175,13 @@ def _matmul_type(lhs: ssa.Type, rhs: ssa.Type, *, strict: bool = True) -> ssa.Ty
 
     lhs_k = lhs_shape[-1]
     rhs_k = rhs_shape[-2] if len(rhs_shape) >= 2 else rhs_shape[0]
+
     if lhs_k != rhs_k:
         if strict:
             raise LoweringError(
                 f"Matrix multiplication contracting dimensions differ: {lhs_k} vs {rhs_k}."
             )
+
         if len(lhs_shape) >= 2 and len(rhs_shape) >= 2:
             return ssa.Type(
                 kind="tensor",
@@ -192,8 +194,10 @@ def _matmul_type(lhs: ssa.Type, rhs: ssa.Type, *, strict: bool = True) -> ssa.Ty
     lhs_batch = lhs_shape[:-2] if len(lhs_shape) >= 2 else ()
     rhs_batch = rhs_shape[:-2] if len(rhs_shape) >= 2 else ()
     batch = _broadcast_shapes(lhs_batch, rhs_batch)
+
     if len(lhs_shape) == 1 and len(rhs_shape) == 1:
         return ssa.Type(kind="scalar", dtype=dtype, attrs=attrs)
+
     if len(lhs_shape) == 1:
         result_shape = (*batch, rhs_shape[-1])
     elif len(rhs_shape) == 1:
@@ -221,9 +225,11 @@ def _dot_accumulator_dtype(dtype: str | None) -> str | None:
 def _binary_type(operator: ast.operator, lhs: ssa.Type, rhs: ssa.Type) -> ssa.Type:
     if isinstance(operator, ast.MatMult):
         return _matmul_type(lhs, rhs)
+
     if isinstance(operator, ast.Add):
         if lhs.kind == "pointer" and rhs.kind != "pointer":
             return _offset_pointer_type(lhs, rhs)
+
         if rhs.kind == "pointer" and lhs.kind != "pointer":
             return _offset_pointer_type(rhs, lhs)
 
@@ -231,6 +237,7 @@ def _binary_type(operator: ast.operator, lhs: ssa.Type, rhs: ssa.Type) -> ssa.Ty
         if rhs.kind == "pointer":
             shape = _broadcast_shape(lhs, rhs)
             kind = "tensor" if shape else "index"
+
             return ssa.Type(kind=kind, shape=shape, dtype="index")
         return _offset_pointer_type(lhs, rhs)
 
@@ -248,6 +255,7 @@ def _offset_pointer_type(pointer: ssa.Type, offset: ssa.Type) -> ssa.Type:
 
 def _load_type(pointer: ssa.Type) -> ssa.Type:
     shape = tuple(str(dim) for dim in pointer.shape)
+
     return ssa.Type(
         kind="tensor" if shape else "scalar",
         shape=shape,
@@ -277,10 +285,12 @@ def _broadcast_shapes(
                 raise LoweringError(
                     f"Cannot broadcast dimensions `{lhs_dim}` and `{rhs_dim}`."
                 )
+
             result.append(lhs_dim)
 
     longer = lhs_shape if len(lhs_shape) > len(rhs_shape) else rhs_shape
     prefix = longer[: abs(len(lhs_shape) - len(rhs_shape))]
+
     return tuple(prefix) + tuple(reversed(result))
 
 
@@ -321,11 +331,13 @@ def _math_result_type(name: str, operands: tuple[ssa.Value, ...]) -> ssa.Type:
         return ssa.Type(kind="scalar", dtype="float32")
 
     result = operands[0].type
+
     for operand in operands[1:]:
         result = _broadcast_type(result, operand.type)
 
     if name == "rand":
         shape = tuple(str(dim) for dim in result.shape)
+
         return ssa.Type(
             kind="tensor" if shape else "scalar",
             shape=shape,
@@ -350,6 +362,7 @@ def _promote_dtype(lhs: str | None, rhs: str | None) -> str | None:
 
     if lhs is None:
         return rhs
+
     if rhs is None or lhs == rhs:
         return lhs
 
@@ -374,6 +387,7 @@ def _promote_dtype(lhs: str | None, rhs: str | None) -> str | None:
         "float32": 7,
         "float64": 8,
     }
+
     if lhs not in ranks or rhs not in ranks:
         raise LoweringError(f"Cannot promote unsupported dtypes `{lhs}` and `{rhs}`.")
     return lhs if ranks[lhs] >= ranks[rhs] else rhs
@@ -381,14 +395,17 @@ def _promote_dtype(lhs: str | None, rhs: str | None) -> str | None:
 
 def _cast_type(type_: ssa.Type, dtype: str) -> ssa.Type:
     normalized = dtype.rsplit(".", 1)[-1]
+
     if normalized == "dtype":
         normalized = type_.dtype
+
     normalized = {
         "fp16": "float16",
         "fp32": "float32",
         "fp64": "float64",
         "bf16": "bfloat16",
     }.get(normalized, normalized)
+
     return ssa.Type(
         kind=type_.kind,
         shape=type_.shape,

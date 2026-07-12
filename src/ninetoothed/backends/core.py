@@ -25,15 +25,12 @@ _CANONICAL_BACKEND_NAMES = {
 
 
 @dataclass(frozen=True, kw_only=True)
-class BackendOptions:
+class Options:
     """Options passed from public APIs to a backend lowerer."""
 
     target: Target = Target.TRITON
     caller: str | None = None
     extra: Mapping[str, Any] = field(default_factory=dict)
-
-
-Options = BackendOptions
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -59,11 +56,6 @@ class Artifact:
     stage: str = "source"
     materializable: bool = True
     metadata: Mapping[str, Any] = field(default_factory=dict)
-
-    @property
-    def executable(self) -> bool:
-        """Compatibility alias for source artifacts that can be materialized."""
-        return self.materializable
 
     @property
     def primary_source_name(self) -> str:
@@ -105,7 +97,7 @@ class Backend:
     name: Target | str
     capability: Capability
 
-    def emit(self, kernel: Kernel, options: BackendOptions | None = None) -> Artifact:
+    def emit(self, kernel: Kernel, options: Options | None = None) -> Artifact:
         raise NotImplementedError
 
 
@@ -117,8 +109,10 @@ class Registry:
 
     def register(self, backend: Backend, *, replace: bool = False) -> None:
         backend_id = backend_id_for(backend.name)
+
         if backend_id in self._backends and not replace:
             raise ValueError(f"Backend `{backend_id}` is already registered.")
+
         self._backends[backend_id] = backend
 
     def get(self, name: Target | str | None) -> Backend:
@@ -140,6 +134,7 @@ def backend_id_for(name: Target | str) -> str:
     """Return a normalized registry id without restricting plugin backends."""
     value = name.value if isinstance(name, Target) else str(name)
     backend_id = value.strip().lower()
+
     if not backend_id:
         raise ValueError("Backend id must not be empty.")
     return backend_id
@@ -169,12 +164,13 @@ def normalize_options(
     *,
     caller: str | None = None,
     **extra: Any,
-) -> BackendOptions:
+) -> Options:
     if "emit_only" in extra:
         raise TypeError(
-            "`emit_only` was removed; use Artifact and BuiltArtifact stages."
+            "The `emit_only` option was removed; use Artifact and BuiltArtifact stages."
         )
-    return BackendOptions(
+
+    return Options(
         target=normalize_target(backend),
         caller=caller,
         extra=extra,

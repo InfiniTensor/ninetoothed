@@ -303,7 +303,7 @@ def is_skippable_comment_line(text: str) -> bool:
         return True
 
     if lower.startswith(
-        ("noqa", "type:", "pragma:", "fmt:", "isort:", "pylint:", "flake8:", "ruff:")
+        ("noqa", "type:", "pragma:", "fmt:", "isort:", "pylint:", "flake8:")
     ):
         return True
 

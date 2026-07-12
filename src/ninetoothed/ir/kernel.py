@@ -26,31 +26,45 @@ class IndexExpr:
     def parse(cls, value: Any) -> "IndexExpr":
         if isinstance(value, cls):
             return value
+
         if isinstance(value, (bool, int, float)):
             return cls(op="constant", value=value)
+
         node = ast.parse(str(value), mode="eval").body
+
         return _index_expr_from_ast(node)
 
     def render(self) -> str:
         if self.op == "constant":
             return repr(self.value)
+
         if self.op == "symbol":
             return str(self.value)
+
         if self.op == "attribute":
             return f"{self.operands[0].render()}.{self.value}"
+
         if self.op == "call":
             return f"{self.value}({', '.join(item.render() for item in self.operands)})"
+
         if self.op == "subscript":
             return f"{self.operands[0].render()}[{self.operands[1].render()}]"
+
         if self.op == "tuple":
             values = ", ".join(item.render() for item in self.operands)
+
             return f"({values}{',' if len(self.operands) == 1 else ''})"
+
         if self.op in {"neg", "pos", "invert", "not"}:
             token = {"neg": "-", "pos": "+", "invert": "~", "not": "not "}[self.op]
+
             return f"({token}{self.operands[0].render()})"
+
         if len(self.operands) == 2:
             token = _INDEX_BINARY_TOKENS.get(self.op, self.op)
+
             return f"({self.operands[0].render()} {token} {self.operands[1].render()})"
+
         raise ValueError(f"Cannot render index expression operation `{self.op}`.")
 
 
@@ -214,11 +228,6 @@ class LaunchPlan:
             tuple(freeze(candidate) for candidate in self.tuning_candidates),
         )
 
-    @property
-    def specialization_keys(self) -> tuple[str, ...]:
-        """Compatibility alias for the original plural field name."""
-        return self.specialization_key
-
 
 @dataclass(frozen=True, kw_only=True)
 class Kernel:
@@ -309,7 +318,7 @@ def _index_expr_from_ast(node: ast.AST) -> IndexExpr:
     try:
         handler = _INDEX_AST_HANDLERS[type(node)]
     except KeyError as exc:
-        raise ValueError(f"Unsupported index expression: {ast.dump(node)}") from exc
+        raise ValueError(f"Unsupported index expression: {ast.dump(node)}.") from exc
     return handler(node)
 
 
@@ -342,11 +351,12 @@ def _index_binary(node: ast.BinOp) -> IndexExpr:
         ast.BitOr: "bitor",
         ast.BitXor: "bitxor",
     }
+
     try:
         operation = operations[type(node.op)]
     except KeyError as exc:
         raise ValueError(
-            f"Unsupported index binary operator: {ast.dump(node.op)}"
+            f"Unsupported index binary operator: {ast.dump(node.op)}."
         ) from exc
     return IndexExpr(
         op=operation,
@@ -361,11 +371,12 @@ def _index_unary(node: ast.UnaryOp) -> IndexExpr:
         ast.Invert: "invert",
         ast.Not: "not",
     }
+
     try:
         operation = operations[type(node.op)]
     except KeyError as exc:
         raise ValueError(
-            f"Unsupported index unary operator: {ast.dump(node.op)}"
+            f"Unsupported index unary operator: {ast.dump(node.op)}."
         ) from exc
     return IndexExpr(op=operation, operands=(_index_expr_from_ast(node.operand),))
 
@@ -373,6 +384,7 @@ def _index_unary(node: ast.UnaryOp) -> IndexExpr:
 def _index_bool(node: ast.BoolOp) -> IndexExpr:
     operation = "and" if isinstance(node.op, ast.And) else "or"
     result = _index_expr_from_ast(node.values[0])
+
     for value in node.values[1:]:
         result = IndexExpr(
             op=operation,
@@ -384,6 +396,7 @@ def _index_bool(node: ast.BoolOp) -> IndexExpr:
 def _index_compare(node: ast.Compare) -> IndexExpr:
     if len(node.ops) != 1 or len(node.comparators) != 1:
         raise ValueError("Index comparisons must contain exactly two operands.")
+
     operations = {
         ast.Eq: "eq",
         ast.NotEq: "ne",
@@ -392,11 +405,12 @@ def _index_compare(node: ast.Compare) -> IndexExpr:
         ast.Gt: "gt",
         ast.GtE: "ge",
     }
+
     try:
         operation = operations[type(node.ops[0])]
     except KeyError as exc:
         raise ValueError(
-            f"Unsupported index comparison: {ast.dump(node.ops[0])}"
+            f"Unsupported index comparison: {ast.dump(node.ops[0])}."
         ) from exc
     return IndexExpr(
         op=operation,

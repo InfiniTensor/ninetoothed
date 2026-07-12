@@ -11,6 +11,7 @@ _TVM_INDEX_LITERAL_RE = re.compile(
 def default_strides(shape: tuple[str, ...]) -> tuple[str, ...]:
     strides: list[str] = []
     acc = "1"
+
     for dim in reversed(shape):
         strides.append(acc)
         acc = dim if is_one_expr(acc) else f"({dim}) * ({acc})"
@@ -41,6 +42,7 @@ def tvm_index_literals(expr: str) -> str:
 
 def shape_dim(axes: tuple[str, ...], dim) -> str:
     dim = int(dim or 0)
+
     if dim < 0:
         dim += len(axes)
     return axes[dim]
@@ -48,8 +50,10 @@ def shape_dim(axes: tuple[str, ...], dim) -> str:
 
 def stride_dim(axes: tuple[str, ...], dim) -> str:
     dim = int(dim or 0)
+
     if dim < 0:
         dim += len(axes)
+
     if dim >= len(axes):
         return "1"
     return product(axes[dim + 1 :])
@@ -58,7 +62,9 @@ def stride_dim(axes: tuple[str, ...], dim) -> str:
 def linearized_index(indices: tuple[str, ...], axes: tuple[str, ...]) -> str:
     if len(indices) == 1 and len(axes) <= 1:
         return indices[0]
+
     terms: list[str] = []
+
     for position, index in enumerate(indices):
         stride = product(axes[position + 1 :])
         terms.append(f"({index}) * ({stride})" if stride != "1" else f"({index})")
@@ -67,6 +73,7 @@ def linearized_index(indices: tuple[str, ...], axes: tuple[str, ...]) -> str:
 
 def product(terms: tuple[str, ...]) -> str:
     items = tuple(str(term) for term in terms if str(term) not in {"", "1"})
+
     return " * ".join(factor(item) for item in items) if items else "1"
 
 
@@ -77,6 +84,7 @@ def factor(term: str) -> str:
 def rewrite_index_math(expr: str, *, cuda: bool) -> str:
     previous = None
     current = expr
+
     while current != previous:
         previous = current
         current = _rewrite_named_call(
@@ -96,10 +104,13 @@ def rewrite_index_math(expr: str, *, cuda: bool) -> str:
 
 def _rewrite_floor_arg(arg: str, *, cuda: bool) -> str:
     split = split_top_level_binary(arg, "/")
+
     if split is None:
         return f"floor({arg})"
+
     lhs, rhs = split
     operator = "/" if cuda else "//"
+
     return f"(({lhs}) {operator} ({rhs}))"
 
 
@@ -107,17 +118,22 @@ def _rewrite_named_call(expr: str, name: str, render) -> str:
     result: list[str] = []
     cursor = 0
     prefix = f"{name}("
+
     while True:
         start = expr.find(prefix, cursor)
+
         if start < 0:
             result.append(expr[cursor:])
             break
+
         result.append(expr[cursor:start])
         args_start = start + len(prefix)
         args_end = _matching_paren(expr, args_start - 1)
+
         if args_end is None:
             result.append(expr[start:])
             break
+
         args = _split_call_args(expr[args_start:args_end])
         rendered = render(args)
         result.append(expr[start : args_end + 1] if rendered is None else rendered)
@@ -127,11 +143,13 @@ def _rewrite_named_call(expr: str, name: str, render) -> str:
 
 def _matching_paren(expr: str, open_index: int) -> int | None:
     depth = 0
+
     for index in range(open_index, len(expr)):
         if expr[index] == "(":
             depth += 1
         elif expr[index] == ")":
             depth -= 1
+
             if depth == 0:
                 return index
     return None
@@ -141,6 +159,7 @@ def _split_call_args(args: str) -> list[str]:
     parts: list[str] = []
     start = 0
     depth = 0
+
     for index, char in enumerate(args):
         if char == "(":
             depth += 1
@@ -149,7 +168,9 @@ def _split_call_args(args: str) -> list[str]:
         elif char == "," and depth == 0:
             parts.append(args[start:index].strip())
             start = index + 1
+
     tail = args[start:].strip()
+
     if tail:
         parts.append(tail)
     return parts
@@ -157,6 +178,7 @@ def _split_call_args(args: str) -> list[str]:
 
 def split_top_level_binary(expr: str, operator: str) -> tuple[str, str] | None:
     depth = 0
+
     for index, char in enumerate(expr):
         if char == "(":
             depth += 1
@@ -187,6 +209,7 @@ def symbols_in_text(value: str) -> tuple[str, ...]:
         "ceiling",
         "Mod",
     }
+
     return tuple(
         symbol
         for symbol in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", value)
@@ -199,8 +222,10 @@ def symbols_in_text(value: str) -> tuple[str, ...]:
 def normalize_dtype(dtype: str | None) -> str:
     if dtype is not None:
         dtype = dtype.strip().strip("'\"")
+
         if "." in dtype:
             dtype = dtype.split(".")[-1]
+
     mapping = {
         "fp16": "float16",
         "fp32": "float32",
@@ -208,6 +233,7 @@ def normalize_dtype(dtype: str | None) -> str:
         "bf16": "bfloat16",
         "float": "float32",
     }
+
     return mapping.get(dtype or "float32", dtype or "float32")
 
 

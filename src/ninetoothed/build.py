@@ -8,7 +8,7 @@ from ninetoothed.auto_tuner import AutoTuner
 from ninetoothed.compiler import DEFAULT_COMPILER, CompileRequest
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _Variant:
     key: tuple
     handle: object
@@ -66,11 +66,14 @@ class _BuildHandle:
         key = args[-self._num_key_args :] if self._num_key_args else ()
         tensor_args = args[: -self._num_key_args] if self._num_key_args else args
         normalized = tuple(_arg_key(value) for value in key)
+
         for variant in self._variants:
             if variant.key == normalized:
                 result = variant.handle(*tensor_args, **kwargs)
                 self._sync(variant.handle)
+
                 return result
+
         raise ValueError(f"No compiled kernel configuration matches {normalized}.")
 
     def _sync(self, handle):
@@ -193,6 +196,7 @@ def build(
 
     if not grouped:
         raise ValueError("At least one build configuration is required.")
+
     variants = tuple(
         _Variant(
             key=key,
@@ -204,6 +208,7 @@ def build(
         )
         for key, group in grouped.items()
     )
+
     return _BuildHandle(variants, len(runtime_names))
 
 

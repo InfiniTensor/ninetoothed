@@ -83,6 +83,7 @@ def _cache_debug_application_source(source: str) -> Path:
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
     path = CACHE_DIR / "debug" / f"{digest}.py"
     atomic_write_text(path, source)
+
     return path
 
 

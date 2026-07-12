@@ -15,10 +15,13 @@ def test_ssa_mappings_and_nested_sequences_are_immutable():
         blocks=(ssa.Block(operations=(operation,)),),
         metadata={"trace": ["frontend"]},
     )
+
     with pytest.raises(TypeError):
         program.metadata["new"] = True
+
     with pytest.raises(TypeError):
         operation.attrs["nested"]["new"] = True
+
     assert operation.attrs["nested"]["values"] == (1, 2)
     assert program.metadata["trace"] == ("frontend",)
 
@@ -34,5 +37,6 @@ def test_kernel_mappings_are_immutable_and_pickle_safe():
     restored = pickle.loads(pickle.dumps(kernel))
     assert restored == kernel
     assert restored.compiler_options["passes"] == ("canonicalize",)
+
     with pytest.raises(TypeError):
         restored.metadata["nested"]["value"] = 2

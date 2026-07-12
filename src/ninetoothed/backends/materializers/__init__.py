@@ -15,6 +15,7 @@ def create_default_registry() -> MaterializerRegistry:
     registry.register(CudaMaterializer())
     registry.register(TileLangMaterializer())
     registry.register(TvmMaterializer())
+
     return registry
 
 
@@ -23,6 +24,7 @@ _DEFAULT_REGISTRY: MaterializerRegistry | None = None
 
 def materializer_for(target: Target | str):
     global _DEFAULT_REGISTRY
+
     if _DEFAULT_REGISTRY is None:
         _DEFAULT_REGISTRY = create_default_registry()
     return _DEFAULT_REGISTRY.get(target)

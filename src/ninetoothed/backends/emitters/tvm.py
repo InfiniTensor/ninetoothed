@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from ninetoothed.backends.core import Target
-from ninetoothed.backends.emitters import common
+from ninetoothed.backends.emitters import ssa as common
 from ninetoothed.backends.emitters.base import EmitterTarget, ModuleRenderContext
 from ninetoothed.ir import Kernel, ssa
 
@@ -69,18 +69,22 @@ class TvmTarget(EmitterTarget):
     def literal(self, value: Any) -> str:
         if isinstance(value, float) and math.isinf(value):
             return "float('inf')" if value > 0 else "-float('inf')"
+
         if value == "inf":
             return "float('inf')"
+
         if value == "-inf":
             return "-float('inf')"
         return repr(value)
 
     def load(self, tensor, index, *, mask=None, other=0.0):
         del mask, other
+
         return f"{self.tensor_ref(tensor)}[{index}]"
 
     def store(self, tensor, index, value, *, mask=None):
         assignment = f"{self.tensor_ref(tensor)}[{index}] = {value}"
+
         return assignment if mask is None else f"if {mask}:\n    {assignment}"
 
     def cast(self, dtype, value):
@@ -92,25 +96,34 @@ class TvmTarget(EmitterTarget):
     def call(self, name, args):
         if name == "where":
             return self.where(args[0], args[1], args[2])
+
         if name == "atomic_add":
             return f"T.atomic_add({args[0]}, {args[1]})"
+
         if name == "load" and args:
             return f"{args[0]}[0]"
+
         if name == "block_dot" and len(args) == 2:
             return f"T.dot({args[0]}, {args[1]})"
+
         if name == "rand":
             mixed = (
                 f'T.Cast("uint32", T.bitwise_xor({args[0]}, {args[1]})) '
                 "* 1664525 + 1013904223"
             )
+
             return f'T.Cast("float32", T.bitwise_and({mixed}, 16777215)) / 16777216.0'
+
         if name == "expm1":
             return f"({self.call('exp', args)} - 1.0)"
+
         function = _TIR_FUNCTIONS.get(name, f"T.{name}")
+
         return f"{function}({', '.join(args)})"
 
     def local_decl(self, type_: ssa.Type, name: str, expr: str) -> str:
         del type_
+
         return f"{name} = {expr}"
 
     def loop_header(self, var, lower, upper, step):
@@ -122,6 +135,7 @@ class TvmTarget(EmitterTarget):
             else f"T.serial({lower}, {upper}, {step})"
         )
         raw = f"{var}_raw"
+
         return (
             f"# for {var} in {serial}:\n"
             f'for {raw} in {serial}:\n    {var} = T.Cast("int64", {raw})'
@@ -130,7 +144,9 @@ class TvmTarget(EmitterTarget):
     def reduce_update(self, operator, acc, term):
         if operator == "sum":
             return f"{acc} + {term}"
+
         function = "T.max" if operator == "max" else "T.min"
+
         return f"{function}({acc}, {term})"
 
     def render_module(self, context: ModuleRenderContext) -> str:
@@ -145,6 +161,7 @@ class TvmTarget(EmitterTarget):
             context.operations,
             context.stores,
         )
+
         if cooperative is not None:
             return cooperative
         return _render_tvm_module(
@@ -172,8 +189,10 @@ def _render_tvm_cooperative_dot_module(
     stores: tuple[ssa.Operation, ...],
 ) -> str | None:
     plan = _cooperative_dot_plan(operations, stores, value_types)
+
     if plan is None or shape_params or len(outputs) != 1:
         return None
+
     if not _is_cast_only_store(
         plan.store.operands[0], plan.loop.results[0].name, operations
     ):
@@ -183,8 +202,10 @@ def _render_tvm_cooperative_dot_module(
     lhs = _root_tensor_name(lhs_value, operations, tensors)
     rhs = _root_tensor_name(rhs_value, operations, tensors)
     output = plan.store.operands[1]
+
     if lhs is None or rhs is None or output not in tensors:
         return None
+
     if set(variables) != {lhs, rhs}:
         return None
 
@@ -194,17 +215,20 @@ def _render_tvm_cooperative_dot_module(
     lhs_shape = lhs_info.source_shape or lhs_info.shape
     rhs_shape = rhs_info.source_shape or rhs_info.shape
     output_shape = output_info.source_shape or output_info.shape
+
     if not (
         len(lhs_shape) == len(rhs_shape) == len(output_shape) == 2
         and lhs_shape[1] == rhs_shape[0]
         and output_shape == (lhs_shape[0], rhs_shape[1])
     ):
         return None
+
     try:
         m, k = (int(dim) for dim in lhs_shape)
         rhs_k, n = (int(dim) for dim in rhs_shape)
     except ValueError:
         return None
+
     if rhs_k != k or any(dim <= 0 or dim % 16 for dim in (m, n, k)):
         return None
 
@@ -217,9 +241,11 @@ def _render_tvm_cooperative_dot_module(
         )
     ):
         return None
+
     lhs_dtype = _normalize_dtype(lhs_info.dtype)
     rhs_dtype = _normalize_dtype(rhs_info.dtype)
     output_dtype = _normalize_dtype(output_info.dtype)
+
     if lhs_dtype != "float16" or rhs_dtype != "float16" or output_dtype != "float16":
         return None
 
@@ -333,7 +359,9 @@ def _is_cast_only_store(
 ) -> bool:
     if value == source:
         return True
+
     producer = operations.get(value)
+
     return bool(
         producer is not None
         and producer.opcode == "tensor.cast"
@@ -349,13 +377,18 @@ def _root_tensor_name(
 ) -> str | None:
     if value in tensors:
         return value
+
     producer = operations.get(value)
+
     if producer is None or not producer.operands:
         return None
+
     if producer.opcode == "tensor.extract":
         return _root_tensor_name(producer.operands[0], operations, tensors)
+
     if producer.opcode not in {"tensor.cast", "tensor.view"}:
         return None
+
     if len(producer.operands) != 1:
         return None
     return _root_tensor_name(producer.operands[0], operations, tensors)
@@ -363,6 +396,7 @@ def _root_tensor_name(
 
 def _is_contiguous_matrix(info: _TensorInfo, shape: tuple[str, ...]) -> bool:
     strides = info.source_strides or _default_strides(shape)
+
     return strides == (shape[1], "1")
 
 
@@ -487,6 +521,7 @@ def _tile_dtype(dtype: str | None) -> str:
         "uint64": "T.uint64",
         "bool": "T.bool",
     }
+
     if dtype not in types:
         raise ValueError(f"Unsupported TVM SSA dtype: {dtype!r}.")
     return types[dtype]
@@ -494,6 +529,7 @@ def _tile_dtype(dtype: str | None) -> str:
 
 def _tile_param_dtype(name: str, value_types: Mapping[str, ssa.Type]) -> str:
     type_ = value_types.get(name)
+
     if type_ is not None and type_.kind == "scalar" and type_.dtype:
         if common._normalize_dtype(type_.dtype) == "bool":
             return "T.int64"
@@ -503,6 +539,7 @@ def _tile_param_dtype(name: str, value_types: Mapping[str, ssa.Type]) -> str:
 
 def _tile_scalar_abi_dtype(dtype: str | None) -> str:
     dtype = common._normalize_dtype(dtype)
+
     if dtype in {"float16", "bfloat16", "float8_e4m3fn", "float8_e5m2"}:
         return "T.float32"
     return _tile_dtype(dtype)

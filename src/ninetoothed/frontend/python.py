@@ -86,6 +86,7 @@ def from_source(
     builder.lower()
     program = builder.finish()
     ssa.verify_program(program)
+
     return program
 
 
@@ -121,11 +122,13 @@ class _InlineHelperCalls:
             ast.If: self._inline_if_statement,
             ast.For: self._inline_for_statement,
         }.get(type(stmt))
+
         return [stmt] if handler is None else handler(stmt)
 
     def _inline_value_statement(self, stmt) -> list[ast.stmt]:
         value, prefix = self._inline_expr(stmt.value)
         stmt.value = value
+
         return [*prefix, stmt]
 
     def _inline_optional_value_statement(self, stmt) -> list[ast.stmt]:
@@ -136,6 +139,7 @@ class _InlineHelperCalls:
     def _inline_expression_statement(self, stmt: ast.Expr) -> list[ast.stmt]:
         value, prefix = self._inline_expr(stmt.value)
         stmt.value = value
+
         if isinstance(value, ast.Constant) and value.value is None:
             return prefix
         return [*prefix, stmt]
@@ -145,6 +149,7 @@ class _InlineHelperCalls:
         stmt.test = test
         stmt.body = self._inline_statements(stmt.body)
         stmt.orelse = self._inline_statements(stmt.orelse)
+
         return [*prefix, stmt]
 
     def _inline_for_statement(self, stmt: ast.For) -> list[ast.stmt]:
@@ -152,6 +157,7 @@ class _InlineHelperCalls:
         stmt.iter = iterator
         stmt.body = self._inline_statements(stmt.body)
         stmt.orelse = self._inline_statements(stmt.orelse)
+
         return [*prefix, stmt]
 
     def _inline_expr(self, expr: ast.AST) -> tuple[ast.AST, list[ast.stmt]]:
@@ -162,26 +168,35 @@ class _InlineHelperCalls:
     def _inline_call_expr(self, expr: ast.Call) -> tuple[ast.AST, list[ast.stmt]]:
         function, prefix = self._inline_expr(expr.func)
         args = []
+
         for argument in expr.args:
             lowered, argument_prefix = self._inline_expr(argument)
             prefix.extend(argument_prefix)
             args.append(lowered)
+
         keywords = []
+
         for keyword in expr.keywords:
             if keyword.arg is None:
                 return expr, prefix
+
             value, keyword_prefix = self._inline_expr(keyword.value)
             prefix.extend(keyword_prefix)
             keywords.append(ast.keyword(arg=keyword.arg, value=value))
+
         call = ast.Call(func=function, args=args, keywords=keywords)
         inlined = self._inline_call(call)
+
         if inlined is None:
             return call, prefix
+
         value, statements = inlined
+
         return value, [*prefix, *statements]
 
     def _inline_expr_fields(self, expr: ast.AST) -> tuple[ast.AST, list[ast.stmt]]:
         prefix: list[ast.stmt] = []
+
         for field, value in ast.iter_fields(expr):
             if isinstance(value, ast.AST):
                 lowered, field_prefix = self._inline_expr(value)
@@ -196,10 +211,12 @@ class _InlineHelperCalls:
     def _inline_expr_items(self, values: list) -> tuple[list, list[ast.stmt]]:
         items = []
         prefix: list[ast.stmt] = []
+
         for item in values:
             if not isinstance(item, ast.AST):
                 items.append(item)
                 continue
+
             lowered, item_prefix = self._inline_expr(item)
             prefix.extend(item_prefix)
             items.append(lowered)
@@ -316,6 +333,7 @@ class _ReplaceParameters(ast.NodeTransformer):
             if isinstance(node.ctx, ast.Store):
                 if not isinstance(replacement, ast.Name):
                     return node
+
                 replacement.ctx = ast.Store()
 
             return ast.copy_location(replacement, node)
@@ -459,6 +477,7 @@ class _ApplicationSSABuilder:
             ast.Return: self._lower_return_statement,
             ast.Pass: self._lower_pass_statement,
         }
+
         for statement in statements:
             try:
                 handler = handlers[type(statement)]
@@ -466,6 +485,7 @@ class _ApplicationSSABuilder:
                 raise LoweringError(
                     f"Unsupported statement: {ast.dump(statement)}."
                 ) from exc
+
             handler(statement, operations, env)
 
     def _lower_expression_statement(self, statement, operations, env) -> None:
@@ -817,6 +837,7 @@ class _ApplicationSSABuilder:
             ast.Tuple: self._lower_sequence_expr,
             ast.List: self._lower_sequence_expr,
         }
+
         try:
             handler = handlers[type(node)]
         except KeyError as exc:
@@ -825,22 +846,29 @@ class _ApplicationSSABuilder:
 
     def _lower_constant_expr(self, node, operations, env) -> ssa.Value:
         del env
+
         return self._constant(operations, node.value)
 
     def _lower_name_expr(self, node, operations, env) -> ssa.Value:
         del operations
+
         if node.id in env:
             return env[node.id]
+
         if node.id in self.symbol_names:
             return self._named_value(node.id, ssa.Type(kind="index", dtype="index"))
+
         raise _lowering_error(node, f"Unknown value `{node.id}`")
 
     def _lower_unary_expr(self, node, operations, env) -> ssa.Value:
         if isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant):
             value = node.operand.value
+
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 return self._constant(operations, -value)
+
         operand = self._lower_expr(node.operand, operations, env)
+
         return self._emit(
             operations,
             f"arith.{_unaryop_name(node.op)}",
@@ -856,6 +884,7 @@ class _ApplicationSSABuilder:
             if isinstance(node.op, ast.MatMult)
             else f"arith.{_binop_name(node.op)}"
         )
+
         return self._emit(
             operations,
             opcode,
@@ -865,9 +894,12 @@ class _ApplicationSSABuilder:
 
     def _lower_bool_expr(self, node, operations, env) -> ssa.Value:
         values = [self._lower_expr(value, operations, env) for value in node.values]
+
         if not values:
             raise LoweringError("Empty BoolOp is unsupported.")
+
         result = values[0]
+
         for rhs in values[1:]:
             result = self._emit(
                 operations,
@@ -880,6 +912,7 @@ class _ApplicationSSABuilder:
     def _lower_compare_expr(self, node, operations, env) -> ssa.Value:
         lhs = self._lower_expr(node.left, operations, env)
         comparisons = []
+
         for operator, comparator in zip(node.ops, node.comparators):
             rhs = self._lower_expr(comparator, operations, env)
             comparisons.append(
@@ -891,9 +924,12 @@ class _ApplicationSSABuilder:
                 )
             )
             lhs = rhs
+
         if not comparisons:
             raise LoweringError("Empty comparison is unsupported.")
+
         result = comparisons[0]
+
         for rhs in comparisons[1:]:
             result = self._emit(
                 operations,
@@ -907,6 +943,7 @@ class _ApplicationSSABuilder:
         condition = self._lower_expr(node.test, operations, env)
         body = self._lower_expr(node.body, operations, env)
         orelse = self._lower_expr(node.orelse, operations, env)
+
         return self._emit(
             operations,
             "select.where",
@@ -916,14 +953,17 @@ class _ApplicationSSABuilder:
 
     def _lower_subscript_expr(self, node, operations, env) -> ssa.Value:
         shape_dim = self._lower_shape_dim(node, operations, env)
+
         if shape_dim is not None:
             return shape_dim
+
         base = self._lower_expr(node.value, operations, env)
         index_values = tuple(
             value.name
             for value in self._lower_subscript_values(node.slice, operations, env)
         )
         source = isinstance(node.value, ast.Attribute) and node.value.attr == "source"
+
         return self._emit(
             operations,
             "tensor.extract" if index_values else "tensor.view",
@@ -935,6 +975,7 @@ class _ApplicationSSABuilder:
     def _lower_attribute_expr(self, node, operations, env) -> ssa.Value:
         if node.attr == "T":
             value = self._lower_expr(node.value, operations, env)
+
             return self._emit(
                 operations,
                 "linalg.transpose",
@@ -942,6 +983,7 @@ class _ApplicationSSABuilder:
                 attrs={"python": _unparse(node)},
                 result_type=_transpose_type(value.type),
             )
+
         if node.attr == "source":
             return self._lower_expr(node.value, operations, env)
         return self._emit(
@@ -953,6 +995,7 @@ class _ApplicationSSABuilder:
 
     def _lower_sequence_expr(self, node, operations, env) -> ssa.Value:
         items = tuple(self._lower_expr(item, operations, env) for item in node.elts)
+
         return self._emit(
             operations,
             "tuple.construct",
@@ -963,15 +1006,21 @@ class _ApplicationSSABuilder:
 
     def _lower_call(self, node, operations, env) -> ssa.Value:
         special = self._lower_float_literal_call(node, operations)
+
         if special is not None:
             return special
+
         method = self._lower_tensor_method_call(node, operations, env)
+
         if method is not None:
             return method
+
         name = _call_leaf_name(node.func)
         constructor = self._lower_constructor_call(name, node, operations, env)
+
         if constructor is not None:
             return constructor
+
         operands = tuple(self._lower_expr(arg, operations, env) for arg in node.args)
         handlers = (
             self._lower_memory_call,
@@ -979,10 +1028,13 @@ class _ApplicationSSABuilder:
             self._lower_linalg_call,
             self._lower_elementwise_call,
         )
+
         for handler in handlers:
             result = handler(name, node, operands, operations)
+
             if result is not None:
                 return result
+
         raise _lowering_error(
             node,
             f"Unsupported function call `{_unparse(node.func)}`; helper calls must "
@@ -992,9 +1044,12 @@ class _ApplicationSSABuilder:
     def _lower_float_literal_call(self, node, operations):
         if _call_leaf_name(node.func) != "float" or len(node.args) != 1:
             return None
+
         literal = _literal_value(node.args[0])
+
         if literal == "-inf":
             return self._constant(operations, float("-inf"))
+
         if literal == "inf":
             return self._constant(operations, float("inf"))
         return None
@@ -1004,12 +1059,16 @@ class _ApplicationSSABuilder:
             node.func.value
         ):
             return None
+
         method = node.func.attr
         receiver = self._lower_tensor_ref(node.func.value, operations, env)
+
         if method == "to":
             if not node.args:
                 raise _lowering_error(node, "`to()` requires a destination dtype")
+
             dtype = _unparse(node.args[0])
+
             return self._emit(
                 operations,
                 "tensor.cast",
@@ -1017,8 +1076,10 @@ class _ApplicationSSABuilder:
                 attrs={"dtype": dtype},
                 result_type=_cast_type(receiver.type, dtype),
             )
+
         if method == "offsets":
             dim = _literal_value(node.args[0]) if node.args else None
+
             return self._emit(
                 operations,
                 "index.offset",
@@ -1026,8 +1087,10 @@ class _ApplicationSSABuilder:
                 attrs={"dim": dim},
                 result_type=_offset_type(receiver.type, dim),
             )
+
         if method == "stride":
             return self._lower_stride_method(node, receiver, operations)
+
         if method == "data_ptr":
             return self._emit(
                 operations,
@@ -1035,10 +1098,13 @@ class _ApplicationSSABuilder:
                 operands=(receiver.name,),
                 result_type=ssa.Type(kind="pointer", dtype=receiver.type.dtype),
             )
+
         if method in {"sum", "max", "min"}:
             return self._lower_reduce_method(method, node, receiver, operations)
+
         if method in _SUPPORTED_MATH_CALLS:
             args = tuple(self._lower_expr(arg, operations, env) for arg in node.args)
+
             return self._emit(
                 operations,
                 f"math.{method}",
@@ -1053,6 +1119,7 @@ class _ApplicationSSABuilder:
             isinstance(node.func.value, ast.Attribute)
             and node.func.value.attr == "source"
         )
+
         return self._emit(
             operations,
             "tensor.stride",
@@ -1063,6 +1130,7 @@ class _ApplicationSSABuilder:
 
     def _lower_reduce_method(self, method, node, receiver, operations):
         axis = _axis_from_call(node, positional_index=0)
+
         return self._emit(
             operations,
             f"reduce.{method}",
@@ -1074,12 +1142,14 @@ class _ApplicationSSABuilder:
     def _lower_constructor_call(self, name, node, operations, env):
         if name not in {"zeros", "empty", "full"}:
             return None
+
         shape = (
             _shape_tuple_from_ast(node.args[0], operations, env, self)
             if node.args
             else ()
         )
         dtype = _keyword_text(node, "dtype")
+
         if name in {"zeros", "empty"}:
             return self._emit(
                 operations,
@@ -1090,9 +1160,11 @@ class _ApplicationSSABuilder:
                 },
                 result_type=ssa.Type(kind="tensor", shape=shape, dtype=dtype),
             )
+
         operands = tuple(
             self._lower_expr(argument, operations, env) for argument in node.args[1:]
         )
+
         return self._emit(
             operations,
             "tensor.full",
@@ -1108,25 +1180,34 @@ class _ApplicationSSABuilder:
     def _lower_memory_call(self, name, node, operands, operations):
         if name == "load":
             if len(operands) != 1 or operands[0].type.kind != "pointer":
-                raise LoweringError("`load()` requires exactly one pointer operand.")
+                raise LoweringError(
+                    "The `load()` operation requires exactly one pointer operand."
+                )
             return self._emit(
                 operations,
                 "mem.load",
                 operands=(operands[0].name,),
                 result_type=_load_type(operands[0].type),
             )
+
         if name == "fill" and operands:
             if len(operands) == 1:
                 return operands[0]
+
             destination, value = operands[0], operands[1]
             self._store_intrinsic_result(operations, destination, value, name)
+
             return destination
+
         if name == "copy" and len(operands) >= 2:
             source, destination = operands[0], operands[1]
             self._store_intrinsic_result(operations, destination, source, name)
+
             return destination
+
         if name == "atomic_add":
             dtype = operands[1].type.dtype if len(operands) > 1 else "float32"
+
             return self._emit(
                 operations,
                 "mem.atomic_add",
@@ -1138,6 +1219,7 @@ class _ApplicationSSABuilder:
     def _lower_reduction_call(self, name, node, operands, operations):
         if name.startswith("reduce_") and operands:
             operator = name.removeprefix("reduce_")
+
             if operator in {"sum", "max", "min"}:
                 axis = _axis_from_call(node, positional_index=2)
                 reduced = self._emit(
@@ -1151,15 +1233,21 @@ class _ApplicationSSABuilder:
                         strict=self.strict,
                     ),
                 )
+
                 if len(operands) > 1:
                     self._store_intrinsic_result(operations, operands[1], reduced, name)
+
                     return operands[1]
                 return reduced
+
         if name not in {"sum", "max", "min"}:
             return None
+
         if not operands:
             raise _lowering_error(node, f"`{name}()` requires an input operand")
+
         axis = _axis_from_call(node, positional_index=1)
+
         return self._emit(
             operations,
             f"reduce.{name}",
@@ -1177,7 +1265,9 @@ class _ApplicationSSABuilder:
                 result_type=operands[2].type,
             )
             self._store_intrinsic_result(operations, operands[2], result, name)
+
             return operands[2]
+
         if name in {"dot", "matmul"}:
             result_type = (
                 _matmul_type(
@@ -1188,12 +1278,14 @@ class _ApplicationSSABuilder:
                 if len(operands) >= 2
                 else ssa.Type(kind="tensor")
             )
+
             return self._emit(
                 operations,
                 "linalg.dot" if name == "dot" else "linalg.matmul",
                 operands=tuple(value.name for value in operands),
                 result_type=result_type,
             )
+
         if name in {"trans", "transpose"} and len(operands) >= 2:
             result = self._emit(
                 operations,
@@ -1202,13 +1294,16 @@ class _ApplicationSSABuilder:
                 result_type=operands[1].type,
             )
             self._store_intrinsic_result(operations, operands[1], result, name)
+
             return operands[1]
+
         if name in {"trans", "transpose"}:
             result_type = (
                 _transpose_type(operands[0].type)
                 if operands
                 else ssa.Type(kind="tensor")
             )
+
             return self._emit(
                 operations,
                 "linalg.transpose",
@@ -1227,14 +1322,17 @@ class _ApplicationSSABuilder:
                 operands=tuple(value.name for value in operands),
                 result_type=_broadcast_type(operands[1].type, operands[2].type),
             )
+
         if name in {"maximum", "minimum"}:
             result_type = operands[0].type if operands else ssa.Type(kind="tensor")
+
             return self._emit(
                 operations,
                 f"arith.{name}",
                 operands=tuple(value.name for value in operands),
                 result_type=result_type,
             )
+
         if name in _SUPPORTED_MATH_CALLS:
             return self._emit(
                 operations,
@@ -1243,8 +1341,10 @@ class _ApplicationSSABuilder:
                 attrs={"callee": _unparse(node.func)},
                 result_type=_math_result_type(name, operands),
             )
+
         if isinstance(node.func, ast.Attribute) and _is_namespace_ref(node.func.value):
             result_type = operands[0].type if operands else ssa.Type(kind="tensor")
+
             return self._emit(
                 operations,
                 f"call.{name}",
@@ -1286,8 +1386,10 @@ class _ApplicationSSABuilder:
         if isinstance(node, ast.Name):
             if node.id in env:
                 return env[node.id]
+
             if node.id in self.symbol_names:
                 return self._named_value(node.id, ssa.Type(kind="index", dtype="index"))
+
             raise _lowering_error(node, f"Unknown tensor value `{node.id}`")
 
         if isinstance(node, ast.Subscript):
@@ -1457,10 +1559,12 @@ class _AssignedNameVisitor(ast.NodeVisitor):
     def visit_Assign(self, node: ast.Assign) -> None:
         for target in node.targets:
             self._record(target)
+
         self.generic_visit(node.value)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         self._record(node.target)
+
         if node.value is not None:
             self.visit(node.value)
 
@@ -1470,12 +1574,14 @@ class _AssignedNameVisitor(ast.NodeVisitor):
 
     def visit_For(self, node: ast.For) -> None:
         self._record(node.target)
+
         for statement in (*node.body, *node.orelse):
             self.visit(statement)
 
 
 def _assigned_names(statements: Iterable[ast.stmt]) -> tuple[str, ...]:
     visitor = _AssignedNameVisitor()
+
     for statement in statements:
         visitor.visit(statement)
     return tuple(visitor.names)
@@ -1692,6 +1798,7 @@ def _lowering_error(node: ast.AST, message: str) -> LoweringError:
         if line is not None and column is not None
         else ""
     )
+
     return LoweringError(f"{message}{location}.")
 
 

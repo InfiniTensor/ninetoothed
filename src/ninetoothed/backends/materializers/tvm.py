@@ -26,6 +26,7 @@ class TvmMaterializer(Materializer):
     def load_built_artifact(self, built: BuiltArtifact):
         if built.binary_path is None:
             raise ValueError("TVM built artifact does not contain a binary path.")
+
         import tilelang  # noqa: F401 -- exposes the bundled TVM runtime
         import tvm
 
@@ -39,6 +40,7 @@ class TvmMaterializer(Materializer):
         abi = _launch_abi_from_dict(built.abi)
         source_module = import_python_module(built.source_path)
         runtime_config = getattr(source_module, "NINETOOTHED_TVM_RUNTIME", None)
+
         if runtime_config is not None:
             ir_module = getattr(source_module, built.source.entrypoint)()
             metadata = _device_launch_metadata(ir_module, tvm)
@@ -48,8 +50,11 @@ class TvmMaterializer(Materializer):
             cast = _device_function(
                 runtime_module, metadata, str(runtime_config["cast"])
             )
+
             return _device_pipeline_wrapper(compute, cast, runtime_config, abi)
+
         function = runtime_module[built.source.kernel_name]
+
         return _host_wrapper(
             function,
             abi,
@@ -79,14 +84,17 @@ def _materialize(compilation, *, output_dir=None):
     import tvm
 
     cache_library = artifact_directory(cache_key) / f"{artifact.kernel_name}.tvm.so"
+
     with cache_lock(cache_library):
         if not cache_library.is_file():
             runtime_module = _build_module(ir_module, tvm)
             _export_library_atomic(runtime_module, cache_library)
+
         write_manifest(
             cache_library.with_suffix(".manifest.json"),
             _built_manifest(compilation, cache_key, source, cache_library),
         )
+
     runtime_module = tvm.runtime.load_module(str(cache_library))
     library_path = _publish_library(
         cache_library,
@@ -94,6 +102,7 @@ def _materialize(compilation, *, output_dir=None):
         f"{artifact.kernel_name}.tvm.so",
     )
     runtime_config = getattr(module, "NINETOOTHED_TVM_RUNTIME", None)
+
     if runtime_config is not None:
         device_metadata = _device_launch_metadata(ir_module, tvm)
         compute = _device_function(
@@ -112,6 +121,7 @@ def _materialize(compilation, *, output_dir=None):
             runtime_config,
             compilation.launch_abi,
         )
+
         return Handle(
             compilation,
             (runtime_module, compute[0], cast[0]),
@@ -119,12 +129,14 @@ def _materialize(compilation, *, output_dir=None):
             source,
             library_path,
         )
+
     kernel = runtime_module[artifact.kernel_name]
     wrapped = _host_wrapper(
         kernel,
         compilation.launch_abi,
         specs=compilation.kernel.tensors,
     )
+
     return Handle(compilation, (runtime_module, kernel), wrapped, source, library_path)
 
 
@@ -138,12 +150,16 @@ def _device_launch_metadata(ir_module, tvm):
 
     for global_var, function in lowered.functions_items():
         attrs = function.attrs
+
         if int(attrs.get("calling_conv", 0)) != 2:
             continue
+
         symbol = str(attrs.get("global_symbol", global_var.name_hint))
         thread_extent = {}
+
         for name, value in dict(attrs.get("thread_extent", {})).items():
             simplified = analyzer.simplify(value)
+
             try:
                 thread_extent[str(name)] = int(simplified)
             except TypeError as exc:
@@ -151,13 +167,17 @@ def _device_launch_metadata(ir_module, tvm):
                     f"TVM launch extent `{name}` is not static after specialization: "
                     f"{simplified!r}."
                 ) from exc
+
         launch_values = []
+
         for tag_value in attrs.get("tirx.kernel_launch_params", ()):
             tag = str(tag_value)
+
             if tag == "tirx.use_dyn_shared_memory":
                 launch_values.append(int(attrs.get("dyn_shared_memory_buf", 0)))
             else:
                 launch_values.append(thread_extent[tag])
+
         metadata[symbol] = {
             "function": symbol,
             "parameters": tuple(str(param) for param in function.params),
@@ -169,13 +189,16 @@ def _device_launch_metadata(ir_module, tvm):
 def _device_function(runtime_module, metadata, source_name):
     candidates = (f"{source_name}_kernel", source_name)
     symbol = next((name for name in candidates if name in metadata), None)
+
     if symbol is None:
         raise RuntimeError(f"TVM did not lower device function `{source_name}`.")
+
     for imported in runtime_module.imports_:
         try:
             return imported[symbol], metadata[symbol]
         except AttributeError:
             continue
+
     raise RuntimeError(f"TVM runtime module does not export `{symbol}`.")
 
 
@@ -199,13 +222,16 @@ def _device_pipeline_wrapper(compute, cast, config, abi):
 
         def values(argument_map, metadata):
             result = []
+
             for parameter in metadata["parameters"]:
                 name = argument_map[str(parameter)]
                 value = workspace if name == "$workspace" else public[str(name)]
+
                 if hasattr(value, "data_ptr"):
                     value = value.data_ptr()
                 elif hasattr(value, "item"):
                     value = value.item()
+
                 result.append(value)
             return result
 
@@ -219,6 +245,7 @@ def _device_pipeline_wrapper(compute, cast, config, abi):
             *values(config["cast_args"], cast_metadata),
             *cast_metadata["launch_values"],
         )
+
         return output
 
     return launch
@@ -238,8 +265,10 @@ def _host_wrapper(function, abi, *, specs=()):
         import tvm
 
         public = _public_values(abi, args, kwargs, specs=specs)
+
         if _empty_launch(abi, public):
             return _first_output(abi, public)
+
         values, keepalive = _bound_values(abi, public, scalar_mode="value")
         values, flattened = _flatten_ffi_tensor_args(abi.kernel_args, values)
         keepalive.extend(flattened)
@@ -255,6 +284,7 @@ def _host_wrapper(function, abi, *, specs=()):
         tvm.cuda(device).set_raw_stream(torch.cuda.current_stream(device).cuda_stream)
         function(*converted)
         del keepalive
+
         return _first_output(abi, public)
 
     return launch
@@ -266,6 +296,7 @@ def _build_module(ir_module, tvm):
     nvcc_dir = str(Path(_nvcc()).parent)
     previous_path = os.environ.get("PATH", "")
     os.environ["PATH"] = os.pathsep.join((nvcc_dir, previous_path))
+
     try:
         return tvm.tirx.build(ir_module, target="cuda")
     finally:

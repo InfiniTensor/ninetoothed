@@ -312,6 +312,7 @@ class DecomposeLinalg(Pass):
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         optimization = dict(program.metadata.get("optimization", {}))
+
         if optimization.get("preserve_linalg"):
             return _with_metadata(
                 program,
@@ -371,13 +372,17 @@ class OptimizeSchedule(Pass):
         )
         legal = []
         rejected = []
+
         for candidate in proposed:
             reason = _candidate_rejection_reason(candidate, analysis, context)
+
             if reason is None:
                 legal.append(candidate)
             else:
                 rejected.append(candidate.as_metadata() | {"reason": reason})
+
         max_num_configs = context.compiler_options.get("max_num_configs")
+
         if max_num_configs is not None:
             limit = max(0, int(max_num_configs))
             rejected.extend(
@@ -386,11 +391,14 @@ class OptimizeSchedule(Pass):
                 for candidate in legal[limit:]
             )
             legal = legal[:limit]
+
         candidates = tuple(legal)
         rejected = tuple(rejected)
         selected = self.select_candidate(candidates, context)
+
         if selected is not None:
             schedule = _merge_nested(schedule, selected.schedule)
+
         optimization = dict(
             self.optimization_policy(context.backend, analysis, schedule)
         )
@@ -403,9 +411,11 @@ class OptimizeSchedule(Pass):
             dict(optimization.get("schedule", {})),
         )
         candidate_metadata = tuple(candidate.as_metadata() for candidate in candidates)
+
         if candidate_metadata and selected is not None:
             optimization["schedule_candidates"] = candidate_metadata
             optimization["selected_schedule_candidate"] = selected.name
+
         if rejected:
             optimization["rejected_schedule_candidates"] = rejected
 
@@ -439,6 +449,7 @@ class OptimizeSchedule(Pass):
     ) -> tuple[ScheduleCandidate, ...]:
         """Return legal schedule candidates in deterministic fallback order."""
         del analysis, schedule, context
+
         return ()
 
     def select_candidate(
@@ -449,13 +460,17 @@ class OptimizeSchedule(Pass):
         """Select a fallback candidate; an autotuner may replace this policy later."""
         if not candidates:
             return None
+
         options = _pass_options(context, self.name, "ssa.optimize_schedule")
         requested = options.get("candidate")
+
         if requested is None:
             return candidates[0]
+
         for candidate in candidates:
             if candidate.name == requested:
                 return candidate
+
         available = ", ".join(candidate.name for candidate in candidates)
         raise ValueError(
             f"Unknown schedule candidate `{requested}` for `{self.name}`. "
@@ -477,6 +492,7 @@ class LowerMemoryScopes(Pass):
     name = "ssa.lower_memory_scopes"
     category = BACKEND_SPECIFIC
     phase = "target_lowering"
+    default_enabled = False
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         scopes = dict(self.memory_scopes(context))
@@ -494,6 +510,7 @@ class LowerMemoryScopes(Pass):
             )
             for block in program.blocks
         )
+
         return _replace_program(
             program,
             blocks=blocks,
@@ -510,6 +527,7 @@ class LowerIntrinsics(Pass):
     name = "ssa.lower_intrinsics"
     category = BACKEND_SPECIFIC
     phase = "target_lowering"
+    default_enabled = False
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         intrinsic = dict(self.intrinsics(context))
@@ -528,6 +546,7 @@ class LowerIntrinsics(Pass):
             )
             for block in program.blocks
         )
+
         return _replace_program(
             program,
             blocks=blocks,
@@ -672,7 +691,7 @@ def autotune_spec(
 
 
 def lower_for_target(
-    program: ssa.Program | None,
+    program: ssa.Program,
     *,
     backend: Target | str | None,
     compiler_options: Mapping[str, Any] | None = None,
@@ -685,11 +704,8 @@ def lower_for_target(
     pass_options: Mapping[str, Mapping[str, Any]] | None = None,
     autotune: bool | str | Mapping[str, Any] = False,
     pass_registry: Registry | None = None,
-) -> ssa.Program | None:
+) -> ssa.Program:
     """Run an SSA pass pipeline for a backend."""
-    if program is None:
-        return None
-
     backend_name = normalize_target(backend)
     registry = _default_registry(pass_registry)
     compiler_options = dict(compiler_options or {})
@@ -714,7 +730,13 @@ def lower_for_target(
             pass_options=explicit_pass_options,
         )
 
-        return pass_pipeline.run(program, context)
+        lowered = pass_pipeline.run(program, context)
+
+        return _with_metadata(
+            lowered,
+            target_backend=backend_name.value,
+            lowering_stage="scheduled-ssa",
+        )
 
     if pass_pipeline is None and _autotune_enabled(autotune):
         spec = autotune_spec(
@@ -749,7 +771,13 @@ def lower_for_target(
         pipeline_spec=spec,
     )
 
-    return build(spec, backend=backend_name, registry=registry).run(program, context)
+    lowered = build(spec, backend=backend_name, registry=registry).run(program, context)
+
+    return _with_metadata(
+        lowered,
+        target_backend=backend_name.value,
+        lowering_stage="scheduled-ssa",
+    )
 
 
 def _normalize_pass_factory(
@@ -826,8 +854,6 @@ def _default_pass_names(backend: Target) -> tuple[str, ...]:
         "ssa.select_schedule",
         _backend_optimize_pass_name(backend),
         "ssa.decompose_linalg",
-        _backend_memory_pass_name(backend),
-        _backend_intrinsics_pass_name(backend),
     )
 
 
@@ -857,10 +883,13 @@ def _deduplicate_candidates(
 ) -> tuple[ScheduleCandidate, ...]:
     unique = []
     seen = set()
+
     for candidate in candidates:
         key = repr(candidate.as_metadata())
+
         if key in seen:
             continue
+
         seen.add(key)
         unique.append(candidate)
     return tuple(unique)
@@ -875,33 +904,42 @@ def _candidate_rejection_reason(
     backend_options = dict(context.compiler_options.get("backend_options", {}))
     required_capability = constraints.get("minimum_compute_capability")
     actual_capability = backend_options.get("compute_capability")
+
     if required_capability is not None and actual_capability is not None:
         required = tuple(int(part) for part in str(required_capability).split("."))
         actual = tuple(int(part) for part in str(actual_capability).split("."))
+
         if actual < required:
             return (
                 f"requires compute capability {required_capability}, "
                 f"target is {actual_capability}"
             )
+
     dtype_constraint = constraints.get("dtypes")
+
     if dtype_constraint is not None:
         input_dtypes = set(analysis.get("dot_input_dtypes", ()))
+
         if input_dtypes and not input_dtypes <= set(dtype_constraint):
             return (
                 f"dtypes {sorted(input_dtypes)} are outside {sorted(dtype_constraint)}"
             )
+
     max_threads = backend_options.get("max_threads_per_block")
     threads = candidate.schedule.get("threads")
+
     if (
         max_threads is not None
         and threads is not None
         and int(threads) > int(max_threads)
     ):
         return f"uses {threads} threads, target limit is {max_threads}"
+
     max_shared = backend_options.get("max_shared_memory_bytes")
     shared = candidate.constraints.get(
         "shared_memory_bytes", candidate.schedule.get("shared_memory_bytes")
     )
+
     if max_shared is not None and shared is not None and int(shared) > int(max_shared):
         return f"uses {shared} shared-memory bytes, target limit is {max_shared}"
     return None
@@ -912,10 +950,13 @@ def _intrinsic_for_operation(
 ) -> str:
     if operation.opcode in {"linalg.dot", "linalg.matmul"}:
         return str(intrinsics.get("dot", "generic"))
+
     if operation.opcode in {"math.exp", "math.exp2", "math.expm1"}:
         return str(intrinsics.get("exp", "generic"))
+
     if operation.opcode.startswith("mem."):
         return str(intrinsics.get("load_store", "generic"))
+
     if operation.opcode in {"index.offset", "shape.dim"}:
         return str(intrinsics.get("program_id", "generic"))
     return "generic"
@@ -977,6 +1018,7 @@ def _linalg_input_dtypes(program: ssa.Program) -> tuple[str, ...]:
             if operation.opcode in {"linalg.dot", "linalg.matmul"}:
                 for operand in operation.operands[:2]:
                     dtype = value_types.get(operand, ssa.Type(kind="unknown")).dtype
+
                     if dtype is not None:
                         dtypes.append(
                             {
@@ -1484,8 +1526,10 @@ _DEFAULT_REGISTRY: Registry | None = None
 def _default_registry(registry: Registry | None = None) -> Registry:
     """Return the lazily initialized registry without backend import cycles."""
     global _DEFAULT_REGISTRY
+
     if registry is not None:
         return registry
+
     if _DEFAULT_REGISTRY is None:
         _DEFAULT_REGISTRY = create_default_registry()
     return _DEFAULT_REGISTRY

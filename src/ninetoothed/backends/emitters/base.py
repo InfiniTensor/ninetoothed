@@ -60,40 +60,52 @@ class EmitterTarget(ABC):
 
     def type_name(self, dtype: str | None, kind: str | None = None) -> str:
         raise NotImplementedError(
-            f"{type(self).__name__} does not expose a C-style type spelling."
+            f"Emitter {type(self).__name__} does not expose a C-style type spelling."
         )
 
     def block_coords(self, axes: tuple[str, ...]) -> tuple[str, ...]:
-        raise NotImplementedError(f"{type(self).__name__} has no block value domain.")
+        raise NotImplementedError(
+            f"Emitter {type(self).__name__} has no block value domain."
+        )
 
     def block_shape(self, axes: tuple[str, ...]) -> str:
-        raise NotImplementedError(f"{type(self).__name__} has no block value domain.")
+        raise NotImplementedError(
+            f"Emitter {type(self).__name__} has no block value domain."
+        )
 
     def render_view(self, operation, context) -> str:
-        raise NotImplementedError(f"{type(self).__name__} has no block view syntax.")
+        raise NotImplementedError(
+            f"Emitter {type(self).__name__} has no block view syntax."
+        )
 
     def needs_block_init(self, name: str, value: ssa.Value, context) -> bool:
         del name, value, context
+
         return False
 
     def arithmetic_result_type(self, operation, context) -> ssa.Type:
         del context
+
         return operation.results[0].type
 
     def coerce_binary_args(self, operation, args, context):
         del operation, context
+
         return args
 
     def emit_dot_operand(self, name, coords, context):
         del name, coords, context
+
         return None
 
     def emit_block_dot(self, operation, context, coords=None):
         del operation, context, coords
+
         return None
 
     def emit_reduction_loop(self, local, operation, context):
         del local, operation, context
+
         return None
 
     @abstractmethod

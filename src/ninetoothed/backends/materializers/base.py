@@ -30,12 +30,15 @@ class MaterializerRegistry:
 
     def register(self, materializer: Materializer, *, replace: bool = False) -> None:
         backend_id = backend_id_for(materializer.target)
+
         if backend_id in self._materializers and not replace:
             raise ValueError(f"Materializer `{backend_id}` is already registered.")
+
         self._materializers[backend_id] = materializer
 
     def get(self, target: Target | str) -> Materializer:
         backend_id = backend_id_for(target)
+
         try:
             return self._materializers[backend_id]
         except KeyError as exc:

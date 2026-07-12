@@ -3,7 +3,6 @@
 from ninetoothed.backends.core import (
     Artifact,
     Backend,
-    BackendOptions,
     BuiltArtifact,
     Capability,
     Options,
@@ -35,6 +34,7 @@ _DEFAULT_BACKENDS: Registry | None = None
 
 def default_registry() -> Registry:
     global _DEFAULT_BACKENDS
+
     if _DEFAULT_BACKENDS is None:
         _DEFAULT_BACKENDS = create_default_registry()
     return _DEFAULT_BACKENDS
@@ -50,9 +50,8 @@ def emit(
 
     kernel = _prepare_kernel_for_backend(kernel, options)
     backend_impl = default_registry().get(options.target)
-    artifact = backend_impl.emit(kernel, options)
 
-    return _attach_pipeline_metadata(artifact, kernel)
+    return backend_impl.emit(kernel, options)
 
 
 def _prepare_kernel_for_backend(kernel: Kernel, options: Options) -> Kernel:
@@ -93,38 +92,12 @@ def _prepare_kernel_for_backend(kernel: Kernel, options: Options) -> Kernel:
     )
 
 
-def _attach_pipeline_metadata(artifact: Artifact, kernel: Kernel) -> Artifact:
-    if kernel.ssa is None:
-        return artifact
-    return Artifact(
-        backend=artifact.backend,
-        kernel_name=artifact.kernel_name,
-        language=artifact.language,
-        sources=artifact.sources,
-        entrypoint=artifact.entrypoint,
-        stage=artifact.stage,
-        materializable=artifact.materializable,
-        metadata=dict(artifact.metadata)
-        | {
-            "kernel_metadata": dict(kernel.metadata),
-            "ssa_metadata": dict(kernel.ssa.metadata),
-            "ssa_pass_trace": tuple(kernel.ssa.metadata.get("pass_trace", ())),
-            "ssa_schedule": dict(kernel.ssa.metadata.get("schedule", {})),
-            "ssa_pipeline_selection": dict(
-                kernel.ssa.metadata.get("pipeline_selection", {})
-            ),
-            "ssa_optimization": dict(kernel.ssa.metadata.get("optimization", {})),
-        },
-    )
-
-
 def backend_capabilities() -> tuple[Capability, ...]:
     return default_registry().capabilities()
 
 
 __all__ = [
     "Backend",
-    "BackendOptions",
     "BuiltArtifact",
     "Artifact",
     "Capability",

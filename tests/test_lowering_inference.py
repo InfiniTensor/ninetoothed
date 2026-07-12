@@ -1,4 +1,3 @@
-# ruff: noqa: F841
 import inspect
 
 import ninetoothed.language as ntl
@@ -11,7 +10,7 @@ def fill_statement(out):
 
 
 def negative_fill_assignment(out):
-    out = ntl.fill(-7.25)
+    out = ntl.fill(-7.25)  # noqa: F841
 
 
 def copy_statement(x, out):
@@ -23,11 +22,11 @@ def sum_statement(x, out):
 
 
 def max_assignment(x, out):
-    out = ntl.reduce_max(x)
+    out = ntl.reduce_max(x)  # noqa: F841
 
 
 def transpose_assignment(x, out):
-    out = x.T
+    out = x.T  # noqa: F841
 
 
 def matmul_statement(a, b, out):
@@ -35,7 +34,7 @@ def matmul_statement(a, b, out):
 
 
 def matmul_assignment(a, b, out):
-    out = a @ b
+    out = a @ b  # noqa: F841
 
 
 def flash_attention_call_name(q, k, v, out):
@@ -43,28 +42,28 @@ def flash_attention_call_name(q, k, v, out):
 
 
 def method_sum_assignment(x, out):
-    out = x.sum()
+    out = x.sum()  # noqa: F841
 
 
 def dot_reduction_assignment(x, y, out):
-    out = ntl.sum(x * y)
+    out = ntl.sum(x * y)  # noqa: F841
 
 
 def plain_copy_assignment(x, out):
-    out = x
+    out = x  # noqa: F841
 
 
 def multi_output_elementwise(x0, x1, cos, sin, out0, out1):
-    out0 = x0 * cos - x1 * sin
-    out1 = x0 * sin + x1 * cos
+    out0 = x0 * cos - x1 * sin  # noqa: F841
+    out1 = x0 * sin + x1 * cos  # noqa: F841
 
 
 def bitwise_shift(x, y, out):
-    out = x << y
+    out = x << y  # noqa: F841
 
 
 def compare_float_inf(x, out):
-    out = (x == x) & (x != float("inf")) & (x != -float("inf"))
+    out = (x == x) & (x != float("inf")) & (x != -float("inf"))  # noqa: F841
 
 
 def eye_offsets(out):
@@ -72,44 +71,46 @@ def eye_offsets(out):
 
 
 def axis_zero_call(x, out):
-    out = ntl.sum(x, axis=0)
+    out = ntl.sum(x, axis=0)  # noqa: F841
 
 
 def rowwise_sum(x, out):
-    out = ntl.sum(x, axis=1)
+    out = ntl.sum(x, axis=1)  # noqa: F841
 
 
 def rowwise_mean(x, out):
-    out = ntl.sum(x, axis=1) / 32.0
+    out = ntl.sum(x, axis=1) / 32.0  # noqa: F841
 
 
 def rowwise_aminmax(x, out0, out1):
-    out0 = ntl.min(x, axis=1)
-    out1 = ntl.max(x, axis=1)
+    out0 = ntl.min(x, axis=1)  # noqa: F841
+    out1 = ntl.max(x, axis=1)  # noqa: F841
 
 
 def rowwise_var_mean(x, out0, out1):
     mean = ntl.sum(x, axis=1) / 32.0
     var = ntl.sum(x * x, axis=1) / 32.0 - mean * mean
-    out0 = var
-    out1 = mean
+    out0 = var  # noqa: F841
+    out1 = mean  # noqa: F841
 
 
 def rowwise_addmv(bias, a, x, out):
-    out = bias + ntl.sum(a * x, axis=1)
+    out = bias + ntl.sum(a * x, axis=1)  # noqa: F841
 
 
 def rowwise_softmax(x, out):
     m = ntl.max(x, axis=1)
     e = ntl.exp(x - m[:, None])
-    out = e / ntl.sum(e, axis=1)[:, None]
+    out = e / ntl.sum(e, axis=1)[:, None]  # noqa: F841
 
 
 def rowwise_layernorm(x, weight, bias, out):
     mean = ntl.sum(x, axis=1) / 32.0
     mean_square = ntl.sum(x * x, axis=1) / 32.0
     var = mean_square - mean * mean
-    out = (x - mean[:, None]) * ntl.rsqrt(var[:, None] + 1e-05) * weight + bias
+    out = (  # noqa: F841
+        (x - mean[:, None]) * ntl.rsqrt(var[:, None] + 1e-05) * weight + bias
+    )
 
 
 def _ssa(func, tensors: tuple[TensorSpec, ...] | None = None) -> ssa.Program:

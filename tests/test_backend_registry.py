@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from ninetoothed.backends import (
@@ -8,7 +10,7 @@ from ninetoothed.backends import (
     normalize_target,
 )
 from ninetoothed.frontend.python import from_source
-from ninetoothed.ir import Kernel, TensorSpec
+from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict
 
 
 def _source_only_kernel():
@@ -110,7 +112,7 @@ class TestRegistry:
 
         for backend, (language, fragment) in expected.items():
             artifact = emit(_add_kernel(), backend)
-            assert artifact.executable
+            assert artifact.materializable
             assert artifact.language == language
             assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["ssa_metadata"]["target_backend"] == backend
@@ -133,7 +135,7 @@ class TestRegistry:
 
         for backend, fragment in expected_fragments.items():
             artifact = emit(_matmul_kernel(), backend)
-            assert artifact.executable
+            assert artifact.materializable
             assert fragment in artifact.primary_source
             assert "linalg.matmul" not in artifact.primary_source
 
@@ -142,3 +144,13 @@ class TestRegistry:
         paths = artifact.write_to(tmp_path)
         assert len(paths) == 2
         assert all((path.exists() for path in paths))
+
+    def test_manifest_and_in_memory_metadata_share_one_builder(self):
+        artifact = emit(_add_kernel(), "cuda")
+        manifest = next(
+            content
+            for name, content in artifact.sources.items()
+            if name.endswith(".json")
+        )
+
+        assert json.loads(manifest) == ir_to_dict(artifact.metadata)

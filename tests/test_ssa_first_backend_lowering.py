@@ -1,4 +1,3 @@
-# ruff: noqa: F841
 import importlib.util
 import re
 import sys
@@ -24,7 +23,7 @@ def offset_arrangement(x, out, BLOCK_SIZE=block_size()):
 
 
 def add_application(x, out):
-    out = x + x
+    out = x + x  # noqa: F841
 
 
 def loop_application(x, out):
@@ -33,12 +32,12 @@ def loop_application(x, out):
     for _ in range(2):
         acc = acc + x
 
-    out = acc
+    out = acc  # noqa: F841
 
 
 def unsupported_application(x, out):
     tmp = {"value": x}
-    out = tmp["value"]
+    out = tmp["value"]  # noqa: F841
 
 
 def if_application(x, out):
@@ -47,13 +46,13 @@ def if_application(x, out):
     if x > x:
         acc = acc + x
 
-    out = acc
+    out = acc  # noqa: F841
 
 
 def fused_expression_application(x, y, z, out):
     cond = (x > y) & (y < z)
     tmp = ntl.where(cond, ntl.exp(x) + ntl.sqrt(ntl.abs(y)), z)
-    out = tmp * 2.0 - x
+    out = tmp * 2.0 - x  # noqa: F841
 
 
 def reduction_arrangement(x, y, out, BLOCK_SIZE=block_size()):
@@ -69,7 +68,7 @@ def ternary_arrangement(x, y, z, out, BLOCK_SIZE=block_size()):
 
 
 def dot_reduction_application(x, y, out):
-    out = (x * y).sum()
+    out = (x * y).sum()  # noqa: F841
 
 
 def fused_affine_helper(x, y, scale=2.0):
@@ -79,7 +78,7 @@ def fused_affine_helper(x, y, scale=2.0):
 
 
 def helper_call_application(x, y, out):
-    out = fused_affine_helper(x, y, scale=3.0)
+    out = fused_affine_helper(x, y, scale=3.0)  # noqa: F841
 
 
 def _ssa_kernel(
@@ -98,33 +97,41 @@ def _ssa_kernel(
     )
 
 
+def _assert_ssa_artifact(artifact, *, route):
+    assert artifact.materializable
+    assert artifact.metadata["lowering_ir"] == "ssa.Program"
+    assert artifact.metadata["source_route"] == route
+
+
 class TestSSAFirstBackendLowering:
-    def test_backend_entrypoints_do_not_contain_kernel_specialized_lowering(self):
-        backend_dir = (
-            Path(__file__).resolve().parents[1] / "src" / "ninetoothed" / "backends"
+    def test_backend_entrypoints_require_ssa_and_emit_one_program_for_all_targets(self):
+        missing_ssa = Kernel(
+            kernel_name="missing_ssa",
+            source="def missing_ssa(x, out): out = x",
         )
-        forbidden = (
-            "lower_matmul",
-            "lower_reduction",
-            "lower_flash",
-            "build_ssa_linear_plan",
-            "build_ssa_reduction_plan",
-            "build_scf_elementwise_plan",
-            "FlashAttentionOpIR",
-            "MatmulOpIR",
-            "ReductionOpIR",
-            "detect_online",
-            "_single_op",
-            "source_passthrough",
-            "existing_triton",
+        tensors = (
+            TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+            TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
         )
+        program = _ssa_kernel(
+            "\ndef add(x, out):\n    out = x + x\n",
+            "shared_ssa_add",
+            tensors,
+        )
+        routes = {
+            "triton": "ssa-unified-triton-emitter",
+            "cuda": "ssa-unified-cuda-emitter",
+            "tilelang": "ssa-unified-tilelang-emitter",
+            "tvm": "ssa-unified-tvm-emitter",
+        }
 
-        for filename in ("triton.py", "cuda.py", "tilelang.py", "tvm.py"):
-            source = (backend_dir / filename).read_text(encoding="utf-8")
-            assert "emit" in source
+        for backend, route in routes.items():
+            with pytest.raises(ValueError, match="requires ssa.Program"):
+                emit_kernel(missing_ssa, backend)
 
-            for token in forbidden:
-                assert token not in source
+            artifact = emit_kernel(program, backend)
+            _assert_ssa_artifact(artifact, route=route)
+            assert "arith.add" in str(artifact.metadata["ssa"])
 
     def test_cuda_injects_curand_support_only_for_rand_operations(self):
         add_artifact = lower_application(
@@ -175,9 +182,7 @@ def random_application(seed, out):
                 backend=backend,
                 kernel_name=f"ssa_fused_expr_{backend}",
             )
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert "select.where" in str(artifact.metadata["ssa"])
 
             for fragment in fragments:
@@ -202,7 +207,7 @@ def random_application(seed, out):
                 backend=backend,
                 kernel_name=f"ssa_first_add_{backend}",
             )
-            assert artifact.executable
+            assert artifact.materializable
             assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert "program_kind" not in artifact.metadata
             assert artifact.metadata["source_route"] == route
@@ -272,7 +277,7 @@ def random_application(seed, out):
             )
 
         def tiled_application(x, out):
-            out = x + x
+            out = x + x  # noqa: F841
 
         artifact = lower_application(
             tiled_arrangement,
@@ -332,7 +337,7 @@ def random_application(seed, out):
             backend="triton",
             kernel_name="public_triton_codegen_matmul_process",
         )
-        assert artifact.executable
+        assert artifact.materializable
         assert artifact.metadata["source_route"] == "ssa-unified-triton-emitter"
         assert "linalg.matmul" not in str(artifact.metadata.get("ssa", ""))
         assert "@triton.jit" in artifact.primary_source
@@ -442,12 +447,10 @@ def random_application(seed, out):
 
             for backend, route in routes.items():
                 artifact = emit_kernel(kernel, backend)
-                assert artifact.executable
+                assert artifact.materializable
                 assert artifact.metadata["lowering_ir"] == "ssa.Program"
                 assert artifact.metadata["source_route"] == route
                 assert fragments[backend] in artifact.primary_source
-                assert artifact.metadata["source_route"] != "generic-ssa-emitter"
-                assert artifact.metadata["source_route"] != "existing-triton-generator"
 
     def test_from_source_generates_shape_dim_for_native_backends(self):
         kernel = _ssa_kernel(
@@ -482,10 +485,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragments) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
-            assert artifact.metadata["source_route"] != "generic-ssa-emitter"
+            _assert_ssa_artifact(artifact, route=route)
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
@@ -529,9 +529,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragments) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert "lower_stride" not in artifact.primary_source
 
             for source_fragment in source_fragments:
@@ -561,10 +559,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragments) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
-            assert artifact.metadata["source_route"] != "generic-ssa-emitter"
+            _assert_ssa_artifact(artifact, route=route)
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
@@ -598,10 +593,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragments) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
-            assert artifact.metadata["source_route"] != "generic-ssa-emitter"
+            _assert_ssa_artifact(artifact, route=route)
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
@@ -650,9 +642,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragments) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
@@ -698,9 +688,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragments) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
@@ -725,9 +713,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragments) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert "math[" not in artifact.primary_source
 
             for source_fragment in source_fragments:
@@ -777,10 +763,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragments) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
-            assert artifact.metadata["source_route"] != "generic-ssa-emitter"
+            _assert_ssa_artifact(artifact, route=route)
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
@@ -808,10 +791,7 @@ def random_application(seed, out):
 
         for backend, route in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
-            assert artifact.metadata["source_route"] != "generic-ssa-emitter"
+            _assert_ssa_artifact(artifact, route=route)
             assert "<<" in artifact.primary_source
             assert ">>" in artifact.primary_source
             assert "^" in artifact.primary_source
@@ -862,7 +842,7 @@ def random_application(seed, out):
 
             for backend, route in routes.items():
                 artifact = emit_kernel(kernel, backend)
-                assert artifact.executable
+                assert artifact.materializable
                 assert artifact.metadata["lowering_ir"] == "ssa.Program"
                 assert artifact.metadata["source_route"] == route
                 assert fragments[backend] in artifact.primary_source
@@ -893,9 +873,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragment) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert source_fragment in artifact.primary_source
 
     def test_from_source_linearizes_multidimensional_extract_by_source_shape(self):
@@ -922,9 +900,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragment) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert source_fragment in artifact.primary_source
             assert "x + v0 + v1" not in artifact.primary_source
             assert "x[v0 + v1]" not in artifact.primary_source
@@ -946,9 +922,7 @@ def random_application(seed, out):
                 backend=backend,
                 kernel_name=f"ssa_dot_reduce_{backend}",
             )
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert source_fragment in artifact.primary_source
             assert "reduce.sum" in str(artifact.metadata["ssa"])
 
@@ -975,8 +949,6 @@ def random_application(seed, out):
             module_name = "tvm_reduction_artifact"
             spec = importlib.util.spec_from_file_location(module_name, path)
             assert spec is not None
-            assert spec is not None
-            assert spec.loader is not None
             assert spec.loader is not None
             module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = module
@@ -1030,9 +1002,7 @@ def random_application(seed, out):
                 backend=backend,
                 kernel_name=f"ssa_helper_inline_{backend}",
             )
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert "call.fused_affine_helper" not in str(artifact.metadata["ssa"])
             assert "fused_affine_helper" not in artifact.primary_source
 
@@ -1062,9 +1032,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragment) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert source_fragment in artifact.primary_source
             assert "reduce.sum" in str(artifact.metadata["ssa"])
 
@@ -1086,9 +1054,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragment) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert source_fragment in artifact.primary_source
             assert "reduce.sum" in str(artifact.metadata["ssa"])
 
@@ -1114,9 +1080,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragment) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert "linalg.matmul" not in str(artifact.metadata["ssa"])
             assert source_fragment in artifact.primary_source
 
@@ -1141,9 +1105,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragment) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert "linalg.transpose" not in str(artifact.metadata["ssa"])
             assert source_fragment in artifact.primary_source
 
@@ -1171,9 +1133,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragment) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert "linalg.transpose" not in str(artifact.metadata["ssa"])
             assert source_fragment in artifact.primary_source
 
@@ -1207,9 +1167,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragments) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert "scf.for" in str(artifact.metadata["ssa"])
             assert "lower_loop_store" not in artifact.primary_source
 
@@ -1246,9 +1204,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragments) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert "scf.if" in str(artifact.metadata["ssa"])
             assert "lower_if_store" not in artifact.primary_source
 
@@ -1300,9 +1256,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragments) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
@@ -1327,9 +1281,7 @@ def random_application(seed, out):
 
         for backend, (route, source_fragment) in expected.items():
             artifact = emit_kernel(kernel, backend)
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert source_fragment in artifact.primary_source
             assert "out0" in artifact.primary_source
             assert "out1" in artifact.primary_source
@@ -1351,9 +1303,7 @@ def random_application(seed, out):
                 backend=backend,
                 kernel_name=f"ssa_loop_{backend}",
             )
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert source_fragment in artifact.primary_source
             assert "scf.for" in str(artifact.metadata["ssa"])
 
@@ -1373,8 +1323,6 @@ def random_application(seed, out):
                 backend=backend,
                 kernel_name=f"ssa_if_{backend}",
             )
-            assert artifact.executable
-            assert artifact.metadata["lowering_ir"] == "ssa.Program"
-            assert artifact.metadata["source_route"] == route
+            _assert_ssa_artifact(artifact, route=route)
             assert source_fragment in artifact.primary_source
             assert "scf.if" in str(artifact.metadata["ssa"])

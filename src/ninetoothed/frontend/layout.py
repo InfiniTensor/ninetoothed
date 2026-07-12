@@ -90,6 +90,7 @@ def offsets_and_mask(tensor, indices):
         offsets[dim] += offset
 
     current = tensor
+
     while _tensor_like(current):
         current._inputs.clear()
         current = current.dtype
@@ -100,6 +101,7 @@ def innermost_indices(tensor, *, use_power_of_2_sizes: bool = True):
     class NextPowerOfTwo(ast.NodeTransformer):
         def visit_Constant(self, node):
             value = node.value
+
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 return ast.copy_location(
                     ast.Constant(value=1 << (value - 1).bit_length()), node
@@ -113,9 +115,11 @@ def innermost_indices(tensor, *, use_power_of_2_sizes: bool = True):
 
     result = []
     innermost = tensor.innermost()
+
     for size, target_dim in zip(innermost.shape, innermost.target_dims):
         if use_power_of_2_sizes:
             size = NextPowerOfTwo().visit(Symbol(copy.deepcopy(size)).node)
+
         slices = tuple(
             slice(None) if candidate == target_dim else None
             for candidate in innermost.target_dims
@@ -147,6 +151,7 @@ def _source_attrs(tensor) -> dict[str, Any]:
         "view_ndim": int(getattr(tensor, "ndim", source_ndim)),
         "view_shape": tuple(_text(size) for size in getattr(tensor, "shape", ())),
     }
+
     if getattr(source, "jagged_dim", None) is not None:
         attrs |= {
             "jagged_values_param": str(source.values_string()),
@@ -168,12 +173,14 @@ def _launch_shape(tensor) -> tuple[str, ...]:
 
     seq_len = str(source.seq_len_string())
     max_seq_len = str(source.max_seq_len_string())
+
     return tuple(size.replace(seq_len, max_seq_len) for size in shape)
 
 
 def _application_shape(tensor) -> tuple[str, ...]:
     dtype = getattr(tensor, "dtype", None)
     value = dtype if _tensor_like(dtype) else tensor
+
     return tuple(_text(size) for size in getattr(value, "shape", ()))
 
 
@@ -181,6 +188,7 @@ def _dtype_shapes(tensor) -> tuple[tuple[str, ...], ...]:
     result = []
     current = getattr(tensor, "dtype", None)
     seen = set()
+
     while _tensor_like(current) and id(current) not in seen:
         seen.add(id(current))
         result.append(tuple(_text(size) for size in current.shape))
@@ -192,6 +200,7 @@ def _dtype_target_dims(tensor) -> tuple[tuple[str | None, ...], ...]:
     result = []
     current = getattr(tensor, "dtype", None)
     seen = set()
+
     while _tensor_like(current) and id(current) not in seen:
         seen.add(id(current))
         result.append(
@@ -203,6 +212,7 @@ def _dtype_target_dims(tensor) -> tuple[tuple[str | None, ...], ...]:
 
 def _access_templates(tensor) -> tuple[dict[str, Any], ...]:
     shapes = _dtype_shapes(tensor)
+
     if not shapes:
         return ()
 
@@ -221,18 +231,21 @@ def _access_templates(tensor) -> tuple[dict[str, Any], ...]:
         indices.extend(
             Symbol(f"extract_{prior_level}_{dim}") for dim in range(len(prior_shape))
         )
+
     indices.extend(Symbol(f"value_{dim}") for dim in range(len(shape)))
 
     try:
         offsets, mask = offsets_and_mask(view, tuple(indices))
     except Exception as exc:
         raise LoweringError(
-            f"Cannot derive value access map for tensor `{view.source.name}`: {exc}"
+            f"Cannot derive value access map for tensor `{view.source.name}`: {exc}."
         ) from exc
 
     linear = Symbol(0)
+
     for offset, stride in zip(offsets, source_strides):
         linear += Symbol(offset) * Symbol(stride)
+
     template = {
         "level": level,
         "shape": tuple(shape),
@@ -257,22 +270,27 @@ def _access_templates(tensor) -> tuple[dict[str, Any], ...]:
 def _view_index_attrs(tensor) -> dict[str, str]:
     if int(getattr(tensor, "ndim", 0)) == 0:
         return {}
+
     view = copy.deepcopy(tensor)
     _replace_jagged_view_extent(view)
     source_shape = getattr(view.source, "shape", ())
     view_indices = tuple(type(view)._unravel_index(Symbol("index"), view.shape))
+
     try:
         offsets, mask = offsets_and_mask(view, view_indices)
     except Exception as exc:
         if _dtype_shapes(view):
             return {}
+
         raise LoweringError(
-            f"Cannot derive view access map for tensor `{view.source.name}`: {exc}"
+            f"Cannot derive view access map for tensor `{view.source.name}`: {exc}."
         ) from exc
+
     source_strides = tuple(
         Symbol(view.source.stride_string(dim)) for dim in range(len(source_shape))
     )
     linear = Symbol(0)
+
     for offset, stride in zip(offsets, source_strides):
         linear += Symbol(offset) * Symbol(stride)
     return {
@@ -305,6 +323,7 @@ def _tensor_layout(attrs: dict[str, Any]) -> TensorLayout:
         for template in attrs.get("access_templates", ())
     )
     view_access = None
+
     if attrs.get("view_linear_offset") is not None:
         view_access = AccessMap(
             source_indices=tuple(

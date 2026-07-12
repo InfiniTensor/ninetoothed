@@ -77,6 +77,7 @@ class TileLangOptimizeSchedule(OptimizeSchedule):
         context: Context,
     ) -> tuple[ScheduleCandidate, ...]:
         del analysis, context
+
         if schedule.get("granularity") != "blocked-linalg":
             return ()
         return (
@@ -152,12 +153,12 @@ class TileLangLowerIntrinsicsPass(LowerIntrinsics):
 
 
 def register_ssa_passes(registry: "Registry") -> None:
-    registry.register(TileLangOptimizeSchedule, tags=("optimization", "tilelang"))
-    registry.register(
-        TileLangLowerMemoryScopesPass,
-        tags=("target-lowering", "memory", "tilelang"),
-    )
-    registry.register(
-        TileLangLowerIntrinsicsPass,
-        tags=("target-lowering", "intrinsics", "tilelang"),
+    from ninetoothed.backends.registry import register_pass_bundle
+
+    register_pass_bundle(
+        registry,
+        backend=Target.TILELANG,
+        optimize_schedule=TileLangOptimizeSchedule,
+        lower_memory_scopes=TileLangLowerMemoryScopesPass,
+        lower_intrinsics=TileLangLowerIntrinsicsPass,
     )
