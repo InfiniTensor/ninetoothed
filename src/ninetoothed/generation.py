@@ -678,6 +678,7 @@ class CodeGenerator(ast.NodeTransformer):
         pointers = name_for_pointers + overall_offsets
 
         innermost = tensor.innermost()
+
         if len(innermost.shape) == 1:
             tile_size_val = CodeGenerator._try_get_constant_int(
                 innermost.shape[0]
@@ -686,6 +687,7 @@ class CodeGenerator(ast.NodeTransformer):
                 hasattr(overall_offsets, "_node")
                 and "arange" in ast.unparse(overall_offsets._node)
             )
+
             if has_arange and tile_size_val is not None and tile_size_val > 1:
                 pointers = call(
                     "max_contiguous",
@@ -779,19 +781,23 @@ class CodeGenerator(ast.NodeTransformer):
         if all_contiguous and tensor.source.ndim > 0:
             linear_offset = Symbol(0)
             running_stride = Symbol(1)
+
             for dim in reversed(range(tensor.source.ndim)):
                 linear_offset = linear_offset + offsets[dim] * running_stride
                 running_stride = running_stride * Symbol(
                     tensor.source.shape[dim]
                 )
+
             overall_offsets = linear_offset
         else:
             overall_offsets = Symbol(0)
+
             for source_dim in range(tensor.source.ndim):
                 if CodeGenerator._is_effectively_zero_stride(
                     tensor, source_dim, offsets
                 ):
                     continue
+
                 overall_offsets = (
                     overall_offsets
                     + offsets[source_dim]
@@ -813,6 +819,7 @@ class CodeGenerator(ast.NodeTransformer):
             return True
 
         offset_node = offsets[dim].node
+
         if (
             isinstance(offset_node, ast.BinOp)
             and isinstance(offset_node.op, ast.Mult)
@@ -827,8 +834,10 @@ class CodeGenerator(ast.NodeTransformer):
     def _try_get_constant_int(value):
         if isinstance(value, Symbol) and isinstance(value.node, ast.Constant):
             v = value.node.value
+
             if isinstance(v, int) and not isinstance(v, bool):
                 return v
+
         if isinstance(value, int) and not isinstance(value, bool):
             return value
         return None
@@ -859,6 +868,7 @@ class CodeGenerator(ast.NodeTransformer):
         )
 
         source_skip_upper = set()
+
         if not has_unary_level:
             for source_dim in range(tensor.source.ndim):
                 source_size_val = CodeGenerator._try_get_constant_int(
@@ -867,6 +877,7 @@ class CodeGenerator(ast.NodeTransformer):
                 # AOT divisibility hint: strongest guarantee, skip upper bound
                 # regardless of compile-time constant analysis
                 hint_key = (tensor.source.name, source_dim)
+
                 if (
                     divisibility_hints is not None
                     and hint_key in divisibility_hints
@@ -878,6 +889,7 @@ class CodeGenerator(ast.NodeTransformer):
                             tile_size_val = CodeGenerator._try_get_constant_int(
                                 tile_size
                             )
+
                             if (
                                 tile_size_val is not None
                                 and tile_size_val
@@ -885,22 +897,27 @@ class CodeGenerator(ast.NodeTransformer):
                                 == 0
                             ):
                                 source_skip_upper.add(source_dim)
+
                             break
+
                     continue
 
                 # Compile-time divisible check (v0.0.2)
                 if source_size_val is None:
                     continue
+
                 for target_dim, tile_size in zip(
                     innermost.target_dims, innermost.shape
                 ):
                     if target_dim == source_dim:
                         tile_size_val = CodeGenerator._try_get_constant_int(tile_size)
+
                         if (
                             tile_size_val is not None
                             and source_size_val % tile_size_val == 0
                         ):
                             source_skip_upper.add(source_dim)
+
                         break
 
         for level in reversed(tensor._levels):

@@ -7,6 +7,7 @@ from ninetoothed import Symbol, Tensor
 
 def _get_generated_source(arrangement, application, tensors):
     kernel = ninetoothed.make(arrangement, application, tensors)
+
     with open(kernel._source) as f:
         return f.read()
 
@@ -14,9 +15,12 @@ def _get_generated_source(arrangement, application, tensors):
 def _mask_section(source):
     """Extract the mask expression from a triton.load/store call."""
     idx = source.find("mask=")
+
     if idx < 0:
         return ""
+
     end = source.find(",", idx)
+
     return source[idx:end]
 
 
@@ -38,13 +42,16 @@ def _get_ntops_source(kwargs):
         key=lambda x: os.path.getmtime(os.path.join(cache, x)),
         reverse=True,
     )
+
     for f in files[:30]:
         path = os.path.join(cache, f)
+
         try:
             with open(path) as fh:
                 src = fh.read()
         except Exception:
             continue
+
         if "@triton.jit" in src and "def " in src:
             return src
     return ""
@@ -241,6 +248,7 @@ class TestGeneratedSourceStructure:
             output = x
         source = _get_generated_source(arrangement, application, (Tensor(1), Tensor(1)))
         idx = source.find("@triton.jit")
+
         if idx >= 0:
             func_body = source[idx:]
             unsimplified = len(re.findall(r'\+\s*\w+\s*\*\s*1\b', func_body))
