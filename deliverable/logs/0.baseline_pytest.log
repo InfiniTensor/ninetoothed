@@ -1,0 +1,374 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /data/ninetoothed/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /data/ninetoothed
+configfile: pyproject.toml
+plugins: anyio-4.14.1
+collecting ... collected 216 items
+
+tests/test_add.py::test[98432-dtype0-cuda] PASSED                        [  0%]
+tests/test_addmm.py::test[512-512-512-dtype0-0.075-cuda] PASSED          [  0%]
+tests/test_addmm.py::test[512-512-512-dtype1-0.125-cuda] PASSED          [  1%]
+tests/test_aot.py::test_add[False-45327-dtype0-bf16-cuda] PASSED         [  1%]
+tests/test_aot.py::test_add[True-45327-dtype0-bf16-cuda] SKIPPED (mu...) [  2%]
+tests/test_aot.py::test_addmm[512-512-512-dtype0-fp16-0.075-cuda] FAILED [  2%]
+tests/test_aot.py::test_attention[2-4-1024-64-dtype0-fp16-0.01-0.01-cuda] PASSED [  3%]
+tests/test_aot.py::test_matmul[512-512-512-dtype0-fp16-cuda] PASSED      [  3%]
+tests/test_aot.py::test_conv2d[False-4-64-16-16-512-3-3-dtype0-fp16-0.001-0.001-cuda-False] PASSED [  4%]
+tests/test_aot.py::test_conv2d[False-4-64-16-16-512-3-3-dtype0-fp16-0.001-0.001-cuda-True] PASSED [  4%]
+tests/test_aot.py::test_conv2d[True-4-64-16-16-512-3-3-dtype0-fp16-0.001-0.001-cuda-False] PASSED [  5%]
+tests/test_aot.py::test_conv2d[True-4-64-16-16-512-3-3-dtype0-fp16-0.001-0.001-cuda-True] PASSED [  5%]
+tests/test_aot.py::test_fp32_scalar[cuda] PASSED                         [  6%]
+tests/test_aot.py::test_aot_with_static_non_power_of_two_innermost_sizes[cuda] PASSED [  6%]
+tests/test_aot.py::test_overflow_terms PASSED                            [  6%]
+tests/test_aot_auto_tuning.py::test_auto_tuning[20260128-dtype0-fp32-1e-05-1e-05-cuda] PASSED [  7%]
+tests/test_aot_auto_tuning.py::test_auto_tuning[20260128-dtype1-fp16-0.001-0.001-cuda] PASSED [  7%]
+tests/test_aot_auto_tuning.py::test_auto_tuning[1127-dtype0-fp32-1e-05-1e-05-cuda] PASSED [  8%]
+tests/test_aot_auto_tuning.py::test_auto_tuning[1127-dtype1-fp16-0.001-0.001-cuda] PASSED [  8%]
+tests/test_attention.py::test[2-4-1024-64-dtype0-0.025-0.025-cuda-False] PASSED [  9%]
+tests/test_attention.py::test[2-4-1024-64-dtype0-0.025-0.025-cuda-True] PASSED [  9%]
+tests/test_attention.py::test[2-4-1024-64-dtype1-0.01-0.01-cuda-False] PASSED [ 10%]
+tests/test_attention.py::test[2-4-1024-64-dtype1-0.01-0.01-cuda-True] PASSED [ 10%]
+tests/test_attention.py::test[2-4-1-64-dtype0-0.025-0.025-cuda-False] PASSED [ 11%]
+tests/test_attention.py::test[2-4-1-64-dtype0-0.025-0.025-cuda-True] PASSED [ 11%]
+tests/test_attention.py::test[2-4-1-64-dtype1-0.01-0.01-cuda-False] PASSED [ 12%]
+tests/test_attention.py::test[2-4-1-64-dtype1-0.01-0.01-cuda-True] PASSED [ 12%]
+tests/test_auto_tuner.py::test_auto_tuner[args0-kwargs0-cuda] PASSED     [ 12%]
+tests/test_auto_tuner.py::test_auto_tuner[args0-kwargs1-cuda] PASSED     [ 13%]
+tests/test_auto_tuner.py::test_auto_tuner[args1-kwargs0-cuda] PASSED     [ 13%]
+tests/test_auto_tuner.py::test_auto_tuner[args1-kwargs1-cuda] PASSED     [ 14%]
+tests/test_clone.py::test_clone[0-641-700-280-300-cuda] PASSED           [ 14%]
+tests/test_clone.py::test_clone[1-641-700-280-300-cuda] PASSED           [ 15%]
+tests/test_clone.py::test_clone[2-641-700-280-300-cuda] PASSED           [ 15%]
+tests/test_clone.py::test_clone[3-641-700-280-300-cuda] PASSED           [ 16%]
+tests/test_conv2d.py::test[4-64-16-16-512-3-3-0-dtype0-0.001-0.001-cuda] PASSED [ 16%]
+tests/test_conv2d.py::test[4-64-16-16-512-3-3-padding1-dtype0-0.001-0.001-cuda] PASSED [ 17%]
+tests/test_conv2d.py::test[4-64-16-16-512-3-3-padding2-dtype0-0.001-0.001-cuda] PASSED [ 17%]
+tests/test_conv2d.py::test[4-64-16-16-512-3-3-padding3-dtype0-0.001-0.001-cuda] FAILED [ 18%]
+tests/test_data_ptr.py::test_data_ptr[64180-cuda] PASSED                 [ 18%]
+tests/test_debugging.py::test_addmm[cuda] PASSED                         [ 18%]
+tests/test_dropout.py::test[349-dtype0-cuda] PASSED                      [ 19%]
+tests/test_eval.py::test_eval[False-False-None] PASSED                   [ 19%]
+tests/test_eval.py::test_eval[False-False-shape_options1] PASSED         [ 20%]
+tests/test_eval.py::test_eval[False-True-None] PASSED                    [ 20%]
+tests/test_eval.py::test_eval[False-True-shape_options1] PASSED          [ 21%]
+tests/test_eval.py::test_eval[True-False-None] PASSED                    [ 21%]
+tests/test_eval.py::test_eval[True-False-shape_options1] PASSED          [ 22%]
+tests/test_eval.py::test_eval[True-True-None] PASSED                     [ 22%]
+tests/test_eval.py::test_eval[True-True-shape_options1] PASSED           [ 23%]
+tests/test_expand.py::test_expand[cuda] PASSED                           [ 23%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-block_size_k0-None-None-cuda] PASSED [ 24%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-block_size_k0-None-3-cuda] PASSED [ 24%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-block_size_k0-None-num_stages2-cuda] PASSED [ 25%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-block_size_k0-4-None-cuda] PASSED [ 25%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-block_size_k0-4-3-cuda] PASSED [ 25%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-block_size_k0-4-num_stages2-cuda] PASSED [ 26%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-block_size_k0-num_warps2-None-cuda] PASSED [ 26%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-block_size_k0-num_warps2-3-cuda] PASSED [ 27%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-block_size_k0-num_warps2-num_stages2-cuda] PASSED [ 27%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-64-None-None-cuda] PASSED [ 28%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-64-None-3-cuda] PASSED [ 28%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-64-None-num_stages2-cuda] PASSED [ 29%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-64-4-None-cuda] PASSED [ 29%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-64-4-3-cuda] PASSED [ 30%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-64-4-num_stages2-cuda] PASSED [ 30%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-64-num_warps2-None-cuda] PASSED [ 31%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-64-num_warps2-3-cuda] PASSED [ 31%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-block_size_n0-64-num_warps2-num_stages2-cuda] PASSED [ 31%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-block_size_k0-None-None-cuda] PASSED [ 32%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-block_size_k0-None-3-cuda] PASSED [ 32%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-block_size_k0-None-num_stages2-cuda] PASSED [ 33%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-block_size_k0-4-None-cuda] PASSED [ 33%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-block_size_k0-4-3-cuda] PASSED [ 34%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-block_size_k0-4-num_stages2-cuda] PASSED [ 34%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-block_size_k0-num_warps2-None-cuda] PASSED [ 35%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-block_size_k0-num_warps2-3-cuda] PASSED [ 35%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-block_size_k0-num_warps2-num_stages2-cuda] PASSED [ 36%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-64-None-None-cuda] PASSED [ 36%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-64-None-3-cuda] PASSED [ 37%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-64-None-num_stages2-cuda] PASSED [ 37%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-64-4-None-cuda] PASSED [ 37%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-64-4-3-cuda] PASSED [ 38%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-64-4-num_stages2-cuda] PASSED [ 38%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-64-num_warps2-None-cuda] PASSED [ 39%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-64-num_warps2-3-cuda] PASSED [ 39%]
+tests/test_generation.py::test_auto_tuning_generation[block_size_m0-64-64-num_warps2-num_stages2-cuda] PASSED [ 40%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-block_size_k0-None-None-cuda] PASSED [ 40%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-block_size_k0-None-3-cuda] PASSED [ 41%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-block_size_k0-None-num_stages2-cuda] PASSED [ 41%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-block_size_k0-4-None-cuda] PASSED [ 42%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-block_size_k0-4-3-cuda] PASSED [ 42%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-block_size_k0-4-num_stages2-cuda] PASSED [ 43%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-block_size_k0-num_warps2-None-cuda] PASSED [ 43%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-block_size_k0-num_warps2-3-cuda] PASSED [ 43%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-block_size_k0-num_warps2-num_stages2-cuda] PASSED [ 44%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-64-None-None-cuda] PASSED [ 44%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-64-None-3-cuda] PASSED [ 45%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-64-None-num_stages2-cuda] PASSED [ 45%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-64-4-None-cuda] PASSED [ 46%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-64-4-3-cuda] PASSED [ 46%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-64-4-num_stages2-cuda] PASSED [ 47%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-64-num_warps2-None-cuda] PASSED [ 47%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-64-num_warps2-3-cuda] PASSED [ 48%]
+tests/test_generation.py::test_auto_tuning_generation[64-block_size_n0-64-num_warps2-num_stages2-cuda] PASSED [ 48%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-block_size_k0-None-None-cuda] PASSED [ 49%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-block_size_k0-None-3-cuda] PASSED [ 49%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-block_size_k0-None-num_stages2-cuda] PASSED [ 50%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-block_size_k0-4-None-cuda] PASSED [ 50%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-block_size_k0-4-3-cuda] PASSED [ 50%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-block_size_k0-4-num_stages2-cuda] PASSED [ 51%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-block_size_k0-num_warps2-None-cuda] PASSED [ 51%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-block_size_k0-num_warps2-3-cuda] PASSED [ 52%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-block_size_k0-num_warps2-num_stages2-cuda] PASSED [ 52%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-64-None-None-cuda] PASSED [ 53%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-64-None-3-cuda] PASSED [ 53%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-64-None-num_stages2-cuda] PASSED [ 54%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-64-4-None-cuda] PASSED [ 54%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-64-4-3-cuda] PASSED [ 55%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-64-4-num_stages2-cuda] PASSED [ 55%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-64-num_warps2-None-cuda] PASSED [ 56%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-64-num_warps2-3-cuda] PASSED [ 56%]
+tests/test_generation.py::test_auto_tuning_generation[64-64-64-num_warps2-num_stages2-cuda] PASSED [ 56%]
+tests/test_generation.py::test_arrangement_returning_a_single_tensor[cuda] PASSED [ 57%]
+tests/test_generation.py::test_squeezing_the_innermost_level[1024-128-10-cuda] PASSED [ 57%]
+tests/test_generation.py::test_unsqueezing_the_outermost_level[cuda] PASSED [ 58%]
+tests/test_generation.py::test_non_int_constexpr[1086-cuda] PASSED       [ 58%]
+tests/test_getitem.py::test_getitem[shape0-indices0] PASSED              [ 59%]
+tests/test_getitem.py::test_getitem[shape1-indices1] PASSED              [ 59%]
+tests/test_getitem.py::test_getitem[shape2-indices2] PASSED              [ 60%]
+tests/test_getitem.py::test_getitem[shape3-indices3] PASSED              [ 60%]
+tests/test_getitem.py::test_getitem[shape4-indices4] PASSED              [ 61%]
+tests/test_getitem.py::test_getitem[shape5-indices5] PASSED              [ 61%]
+tests/test_getitem.py::test_getitem[shape6-indices6] PASSED              [ 62%]
+tests/test_getitem.py::test_getitem[shape7-indices7] PASSED              [ 62%]
+tests/test_getitem.py::test_getitem[shape8-indices8] PASSED              [ 62%]
+tests/test_getitem.py::test_getitem[shape9-indices9] PASSED              [ 63%]
+tests/test_ipynb.py::test_ipynb[cuda] PASSED                             [ 63%]
+tests/test_jagged.py::test_to_padded_tensor[3-1-2--1-cuda] PASSED        [ 64%]
+tests/test_jagged.py::test_to_padded_tensor[3-1-3--1-cuda] PASSED        [ 64%]
+tests/test_jagged.py::test_to_padded_tensor[3-1-7--1-cuda] PASSED        [ 65%]
+tests/test_jagged.py::test_to_padded_tensor[3-1-16--1-cuda] PASSED       [ 65%]
+tests/test_jagged.py::test_to_padded_tensor[3-2-2--1-cuda] PASSED        [ 66%]
+tests/test_jagged.py::test_to_padded_tensor[3-2-3--1-cuda] PASSED        [ 66%]
+tests/test_jagged.py::test_to_padded_tensor[3-2-7--1-cuda] PASSED        [ 67%]
+tests/test_jagged.py::test_to_padded_tensor[3-2-16--1-cuda] PASSED       [ 67%]
+tests/test_jagged.py::test_expand[3-1-2-cuda] PASSED                     [ 68%]
+tests/test_jagged.py::test_expand[3-1-3-cuda] PASSED                     [ 68%]
+tests/test_jagged.py::test_expand[3-1-7-cuda] PASSED                     [ 68%]
+tests/test_jagged.py::test_expand[3-1-16-cuda] PASSED                    [ 69%]
+tests/test_jagged.py::test_expand[3-2-2-cuda] PASSED                     [ 69%]
+tests/test_jagged.py::test_expand[3-2-3-cuda] PASSED                     [ 70%]
+tests/test_jagged.py::test_expand[3-2-7-cuda] PASSED                     [ 70%]
+tests/test_jagged.py::test_expand[3-2-16-cuda] PASSED                    [ 71%]
+tests/test_matmul.py::test[512-512-512-dtype0-1e-08-cuda] PASSED         [ 71%]
+tests/test_matmul.py::test[512-512-512-dtype1-0.125-cuda] PASSED         [ 72%]
+tests/test_max_pool2d.py::test[32-3-64-64-3-3-dtype0-cuda-False] PASSED  [ 72%]
+tests/test_max_pool2d.py::test[32-3-64-64-3-3-dtype0-cuda-True] PASSED   [ 73%]
+tests/test_naming.py::test_make_constexpr PASSED                         [ 73%]
+tests/test_naming.py::test_make_meta PASSED                              [ 74%]
+tests/test_naming.py::test_make_next_power_of_2 PASSED                   [ 74%]
+tests/test_naming.py::test_is_constexpr PASSED                           [ 75%]
+tests/test_naming.py::test_is_meta PASSED                                [ 75%]
+tests/test_naming.py::test_is_next_power_of_2 PASSED                     [ 75%]
+tests/test_naming.py::test_remove_prefixes PASSED                        [ 76%]
+tests/test_pad.py::test_pad[shape0-pad_0-0-constant-dtype0-1e-08-cuda] PASSED [ 76%]
+tests/test_pad.py::test_pad[shape0-pad_0-0-constant-dtype1-0.001-cuda] PASSED [ 77%]
+tests/test_pad.py::test_pad[shape0-pad_0-1-constant-dtype0-1e-08-cuda] PASSED [ 77%]
+tests/test_pad.py::test_pad[shape0-pad_0-1-constant-dtype1-0.001-cuda] PASSED [ 78%]
+tests/test_pad.py::test_pad[shape0-pad_0--1-constant-dtype0-1e-08-cuda] PASSED [ 78%]
+tests/test_pad.py::test_pad[shape0-pad_0--1-constant-dtype1-0.001-cuda] PASSED [ 79%]
+tests/test_pad.py::test_pad[shape0-pad_0--inf-constant-dtype0-1e-08-cuda] PASSED [ 79%]
+tests/test_pad.py::test_pad[shape0-pad_0--inf-constant-dtype1-0.001-cuda] PASSED [ 80%]
+tests/test_pad.py::test_pad[shape0-pad_0-3.141592653589793-constant-dtype0-1e-08-cuda] PASSED [ 80%]
+tests/test_pad.py::test_pad[shape0-pad_0-3.141592653589793-constant-dtype1-0.001-cuda] PASSED [ 81%]
+tests/test_pad.py::test_pad[shape0-pad_0-value5-constant-dtype0-1e-08-cuda] PASSED [ 81%]
+tests/test_pad.py::test_pad[shape0-pad_0-value5-constant-dtype1-0.001-cuda] PASSED [ 81%]
+tests/test_pad.py::test_pad[shape1-pad_1-0-constant-dtype0-1e-08-cuda] PASSED [ 82%]
+tests/test_pad.py::test_pad[shape1-pad_1-0-constant-dtype1-0.001-cuda] PASSED [ 82%]
+tests/test_pad.py::test_pad[shape1-pad_1-1-constant-dtype0-1e-08-cuda] PASSED [ 83%]
+tests/test_pad.py::test_pad[shape1-pad_1-1-constant-dtype1-0.001-cuda] PASSED [ 83%]
+tests/test_pad.py::test_pad[shape1-pad_1--1-constant-dtype0-1e-08-cuda] PASSED [ 84%]
+tests/test_pad.py::test_pad[shape1-pad_1--1-constant-dtype1-0.001-cuda] PASSED [ 84%]
+tests/test_pad.py::test_pad[shape1-pad_1--inf-constant-dtype0-1e-08-cuda] PASSED [ 85%]
+tests/test_pad.py::test_pad[shape1-pad_1--inf-constant-dtype1-0.001-cuda] PASSED [ 85%]
+tests/test_pad.py::test_pad[shape1-pad_1-3.141592653589793-constant-dtype0-1e-08-cuda] PASSED [ 86%]
+tests/test_pad.py::test_pad[shape1-pad_1-3.141592653589793-constant-dtype1-0.001-cuda] PASSED [ 86%]
+tests/test_pad.py::test_pad[shape1-pad_1-value5-constant-dtype0-1e-08-cuda] PASSED [ 87%]
+tests/test_pad.py::test_pad[shape1-pad_1-value5-constant-dtype1-0.001-cuda] PASSED [ 87%]
+tests/test_pad.py::test_pad[shape2-pad_2-0-constant-dtype0-1e-08-cuda] PASSED [ 87%]
+tests/test_pad.py::test_pad[shape2-pad_2-0-constant-dtype1-0.001-cuda] PASSED [ 88%]
+tests/test_pad.py::test_pad[shape2-pad_2-1-constant-dtype0-1e-08-cuda] PASSED [ 88%]
+tests/test_pad.py::test_pad[shape2-pad_2-1-constant-dtype1-0.001-cuda] PASSED [ 89%]
+tests/test_pad.py::test_pad[shape2-pad_2--1-constant-dtype0-1e-08-cuda] PASSED [ 89%]
+tests/test_pad.py::test_pad[shape2-pad_2--1-constant-dtype1-0.001-cuda] PASSED [ 90%]
+tests/test_pad.py::test_pad[shape2-pad_2--inf-constant-dtype0-1e-08-cuda] PASSED [ 90%]
+tests/test_pad.py::test_pad[shape2-pad_2--inf-constant-dtype1-0.001-cuda] PASSED [ 91%]
+tests/test_pad.py::test_pad[shape2-pad_2-3.141592653589793-constant-dtype0-1e-08-cuda] PASSED [ 91%]
+tests/test_pad.py::test_pad[shape2-pad_2-3.141592653589793-constant-dtype1-0.001-cuda] PASSED [ 92%]
+tests/test_pad.py::test_pad[shape2-pad_2-value5-constant-dtype0-1e-08-cuda] PASSED [ 92%]
+tests/test_pad.py::test_pad[shape2-pad_2-value5-constant-dtype1-0.001-cuda] PASSED [ 93%]
+tests/test_pad.py::test_pad[shape3-pad_3-0-constant-dtype0-1e-08-cuda] PASSED [ 93%]
+tests/test_pad.py::test_pad[shape3-pad_3-0-constant-dtype1-0.001-cuda] PASSED [ 93%]
+tests/test_pad.py::test_pad[shape3-pad_3-1-constant-dtype0-1e-08-cuda] PASSED [ 94%]
+tests/test_pad.py::test_pad[shape3-pad_3-1-constant-dtype1-0.001-cuda] PASSED [ 94%]
+tests/test_pad.py::test_pad[shape3-pad_3--1-constant-dtype0-1e-08-cuda] PASSED [ 95%]
+tests/test_pad.py::test_pad[shape3-pad_3--1-constant-dtype1-0.001-cuda] PASSED [ 95%]
+tests/test_pad.py::test_pad[shape3-pad_3--inf-constant-dtype0-1e-08-cuda] PASSED [ 96%]
+tests/test_pad.py::test_pad[shape3-pad_3--inf-constant-dtype1-0.001-cuda] PASSED [ 96%]
+tests/test_pad.py::test_pad[shape3-pad_3-3.141592653589793-constant-dtype0-1e-08-cuda] PASSED [ 97%]
+tests/test_pad.py::test_pad[shape3-pad_3-3.141592653589793-constant-dtype1-0.001-cuda] PASSED [ 97%]
+tests/test_pad.py::test_pad[shape3-pad_3-value5-constant-dtype0-1e-08-cuda] PASSED [ 98%]
+tests/test_pad.py::test_pad[shape3-pad_3-value5-constant-dtype1-0.001-cuda] PASSED [ 98%]
+tests/test_pow.py::test[44925-dtype0-cuda] PASSED                        [ 99%]
+tests/test_softmax.py::test[1823-781-dtype0-cuda] PASSED                 [ 99%]
+tests/test_unsqueeze.py::test_unsqueeze PASSED                           [100%]
+
+=================================== FAILURES ===================================
+________________ test_addmm[512-512-512-dtype0-fp16-0.075-cuda] ________________
+
+m = 512, n = 512, k = 512, dtype = torch.float16, device = 'cuda'
+ninetoothed_dtype = 'fp16', atol = 0.075
+
+    @pytest.mark.parametrize("device", get_available_devices())
+    @pytest.mark.parametrize(
+        "dtype, ninetoothed_dtype, atol", ((torch.float16, ninetoothed.float16, 0.075),)
+    )
+    @pytest.mark.parametrize("k", (512,))
+    @pytest.mark.parametrize("n", (512,))
+    @pytest.mark.parametrize("m", (512,))
+    def test_addmm(m, n, k, dtype, device, ninetoothed_dtype, atol):
+        arrangement = functools.partial(
+            addmm.arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=64
+        )
+        application = addmm.application
+        tensors = tuple(
+            Tensor(ndim, dtype=ninetoothed_dtype) for ndim in (2, 2, 2, 0, 0, 2)
+        )
+        caller = device
+        kernel_name = f"addmm{_generate_kernel_name_suffix()}"
+        output_dir = ninetoothed.generation.CACHE_DIR
+    
+        kernel = ninetoothed.make(
+            arrangement,
+            application,
+            tensors,
+            caller=caller,
+            kernel_name=kernel_name,
+            output_dir=output_dir,
+        )
+    
+        input = torch.randn((m, n), dtype=dtype, device=device)
+        mat1 = torch.randn((m, k), dtype=dtype, device=device)
+        mat2 = torch.randn((k, n), dtype=dtype, device=device)
+        beta = torch.randn((), dtype=dtype)
+        alpha = torch.randn((), dtype=dtype)
+        output = torch.empty(
+            (mat1.shape[0], mat2.shape[1]), dtype=mat1.dtype, device=mat1.device
+        )
+    
+        kernel(input, mat1, mat2, beta, alpha, output)
+    
+        expected = torch.addmm(input, mat1, mat2, beta=beta, alpha=alpha)
+    
+>       assert torch.allclose(output, expected, atol=atol)
+E       AssertionError: assert False
+E        +  where False = <built-in method allclose of type object at 0x7f43efaf6fa0>(tensor([[-17.6719,  -1.3906, -51.6250,  ..., -14.9531, -48.9375, -14.1094],\n        [-30.2344,  -8.8828,  -9.4531,  ...,   9.4141,  99.7500, -11.6641],\n        [  1.6807,  41.4062, -39.0312,  ...,  -1.9414,  18.6406, -11.5781],\n        ...,\n        [ -1.1621, -19.6562,   3.7441,  ...,  18.2031, -25.5625,  -0.1317],\n        [-46.6250,  26.8438, -24.2031,  ...,  11.6172,  14.8359, -19.0312],\n        [ 52.8750,  -7.0508,  42.4688,  ...,  16.9375, -33.1562, -18.4219]],\n       device='cuda:0', dtype=torch.float16), tensor([[-17.6719,  -1.3916, -51.6562,  ..., -14.9531, -48.9375, -14.1094],\n        [-30.2188,  -8.8828,  -9.4531,  ...,   9.4062,  99.6875, -11.6641],\n        [  1.6807,  41.4062, -39.0000,  ...,  -1.9424,  18.6406, -11.5781],\n        ...,\n        [ -1.1621, -19.6562,   3.7422,  ...,  18.2031, -25.5781,  -0.1317],\n        [-46.6250,  26.8438, -24.2188,  ...,  11.6172,  14.8359, -19.0312],\n        [ 52.8750,  -7.0508,  42.4688,  ...,  16.9375, -33.1562, -18.4219]],\n       device='cuda:0', dtype=torch.float16), atol=0.075)
+E        +    where <built-in method allclose of type object at 0x7f43efaf6fa0> = torch.allclose
+
+tests/test_aot.py:112: AssertionError
+__________ test[4-64-16-16-512-3-3-padding3-dtype0-0.001-0.001-cuda] ___________
+
+n = 4, c = 64, h = 16, w = 16, k = 512, r = 3, s = 3, padding = (2, 0)
+dtype = torch.float16, device = 'cuda', rtol = 0.001, atol = 0.001
+
+    @pytest.mark.parametrize("device", get_available_devices())
+    @pytest.mark.parametrize("dtype, rtol, atol", ((torch.float16, 0.001, 0.001),))
+    @pytest.mark.parametrize("padding", (0, (1, 1), (0, 1), (2, 0)))
+    @pytest.mark.parametrize("s", (3,))
+    @pytest.mark.parametrize("r", (3,))
+    @pytest.mark.parametrize("k", (512,))
+    @pytest.mark.parametrize("w", (16,))
+    @pytest.mark.parametrize("h", (16,))
+    @pytest.mark.parametrize("c", (64,))
+    @pytest.mark.parametrize("n", (4,))
+    def test(n, c, h, w, k, r, s, padding, dtype, device, rtol, atol):
+        input = torch.rand((n, c, h, w), dtype=dtype, device=device)
+        weight = torch.rand((k, c, r, s), dtype=dtype, device=device)
+    
+>       output = conv2d(input, weight, padding=padding)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_conv2d.py:130: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_conv2d.py:111: in conv2d
+    conv2d_kernel(input, filter, output, padding_h=padding_h, padding_w=padding_w)
+src/ninetoothed/jit.py:127: in __call__
+    return self._launch(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.ninetoothed/1196104814e5a5175edb6e9b1d060d9b0c42633623c20068b6b6f7a4c6cfc8de.py:31: in launch_application
+    ???
+.venv/lib/python3.12/site-packages/triton/runtime/jit.py:347: in <lambda>
+    return lambda *args, **kwargs: self.run(grid=grid, warmup=False, *args, **kwargs)
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/triton/runtime/autotuner.py:192: in run
+    timings = {config: self._bench(*args, config=config, **kwargs) for config in pruned_configs}
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/triton/runtime/autotuner.py:170: in _bench
+    return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/triton/testing.py:145: in do_bench
+    fn()
+.venv/lib/python3.12/site-packages/triton/runtime/autotuner.py:156: in kernel_call
+    self.fn.run(
+.venv/lib/python3.12/site-packages/triton/runtime/jit.py:569: in run
+    kernel = self.compile(src, target=target, options=options.__dict__)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/triton/compiler/compiler.py:278: in compile
+    module = src.make_ir(options, codegen_fns, module_map, context)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/triton/compiler/compiler.py:81: in make_ir
+    return ast_to_ttir(self.fn, self, context=context, options=options, codegen_fns=codegen_fns,
+.venv/lib/python3.12/site-packages/triton/runtime/jit.py:900: in get_jit_fn_file_line
+    lines, begin_line = inspect.getsourcelines(base_fn.fn)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.12/inspect.py:1260: in getsourcelines
+    lines, lnum = findsource(object)
+                  ^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+object = <function application at 0x7f41d6a09260>
+
+    def findsource(object):
+        """Return the entire source file and starting line number for an object.
+    
+        The argument may be a module, class, method, function, traceback, frame,
+        or code object.  The source code is returned as a list of all the lines
+        in the file and the line number indexes a line in that list.  An OSError
+        is raised if the source code cannot be retrieved."""
+    
+        file = getsourcefile(object)
+        if file:
+            # Invalidate cache if needed.
+            linecache.checkcache(file)
+        else:
+            file = getfile(object)
+            # Allow filenames in form of "<something>" to pass through.
+            # `doctest` monkeypatches `linecache` module to enable
+            # inspection, so let `linecache.getlines` to be called.
+            if not (file.startswith('<') and file.endswith('>')):
+                raise OSError('source code not available')
+    
+        module = getmodule(object, file)
+        if module:
+            lines = linecache.getlines(file, module.__dict__)
+        else:
+            lines = linecache.getlines(file)
+        if not lines:
+>           raise OSError('could not get source code')
+E           OSError: could not get source code
+
+/usr/lib/python3.12/inspect.py:1089: OSError
+=========================== short test summary info ============================
+FAILED tests/test_aot.py::test_addmm[512-512-512-dtype0-fp16-0.075-cuda] - As...
+FAILED tests/test_conv2d.py::test[4-64-16-16-512-3-3-padding3-dtype0-0.001-0.001-cuda]
+============ 2 failed, 213 passed, 1 skipped in 1388.91s (0:23:08) =============
