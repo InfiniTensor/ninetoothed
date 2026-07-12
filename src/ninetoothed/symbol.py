@@ -200,12 +200,21 @@ class Symbol:
     def __and__(self, other):
         other = type(self)(other)
 
+        if self.is_constant_true():
+            return other
+
+        if other.is_constant_true():
+            return self
+
         return type(self)(
             ast.BinOp(left=self._node, op=ast.BitAnd(), right=other._node)
         )
 
     def __rand__(self, other):
         return self.__and__(other)
+
+    def is_constant_true(self):
+        return isinstance(self._node, ast.Constant) and self._node.value is True
 
     def __getitem__(self, key):
         return type(self)(ast.Subscript(value=self._node, slice=type(self)(key)._node))

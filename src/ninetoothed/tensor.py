@@ -567,7 +567,18 @@ class Tensor:
 
         outputs = self._offsets(indices)
 
-        for index, size in zip(indices, self.shape):
+        hints = getattr(self.source, "_specialization_hints", None)
+        bare_source_name = naming.remove_prefixes(self.source.name)
+        dim_preserved = self.ndim == self.source.ndim
+
+        for dim, (index, size) in enumerate(zip(indices, self.shape)):
+            if (
+                dim_preserved
+                and hints is not None
+                and hints.is_divisible(bare_source_name, dim)
+            ):
+                continue
+
             index = Symbol(index)
 
             self.source._mask &= index < size
