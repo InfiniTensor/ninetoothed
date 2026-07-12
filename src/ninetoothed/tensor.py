@@ -314,6 +314,7 @@ class Tensor:
             _offsets=_offsets,
             _outputs=[self._inputs[0]],
         )
+        output._reshape_only = True
 
         self._levels.append([output])
 
@@ -417,6 +418,7 @@ class Tensor:
             _offsets=_offsets,
             _outputs=[self._inputs[0]],
         )
+        output._reshape_only = True
 
         self._levels.append([output])
 
@@ -589,6 +591,7 @@ class Tensor:
 
             if not dim_skip_upper:
                 self.source._mask &= index < size
+
             if not dim_skip_lower:
                 self.source._mask &= index >= 0
 
