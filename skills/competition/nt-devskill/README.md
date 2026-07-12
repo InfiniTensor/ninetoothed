@@ -147,9 +147,6 @@ Agent 会自动：
 nt-devskill/
 ├── SKILL.md                     # 工作流主文件（914 行）
 ├── README.md                    # 本文件
-├── REFERENCE.md                 # 公开引用 + AI 辅助披露
-├── HONOR_CODE.md                # 竞赛合规声明
-├── PR_DESCRIPTION_TEMPLATE.md   # 标准提交描述模板
 ├── examples/                    # 12 个示例算子（只读）
 ├── scripts/                     # pipeline / validate / benchmark / doctor / diag_*
 ├── references/
@@ -219,4 +216,4 @@ python scripts/inspect_generated.py --op add --verbose
 - ✅ 不修改测试、不放宽 tolerance
 - ✅ 所有 benchmark 与正确性结果均可从命令复现
 
-> 详细竞赛提交材料见同目录 `PR_DESCRIPTION_TEMPLATE.md` 与最终报告 `REPORT_nt-devskill.md`。
+> 详细竞赛提交材料见上级目录 `PR_DESCRIPTION_TEMPLATE.md` 与最终报告 `REPORT_nt-devskill.md`。
