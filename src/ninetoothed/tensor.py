@@ -1,3 +1,4 @@
+import ast
 import copy
 import functools
 import itertools
@@ -6,6 +7,48 @@ import re
 
 import ninetoothed.naming as naming
 from ninetoothed.symbol import Symbol
+
+
+def _is_call_named(node, name):
+    return isinstance(node, ast.Call) and (
+        (isinstance(node.func, ast.Name) and node.func.id == name)
+        or (isinstance(node.func, ast.Attribute) and node.func.attr == name)
+    )
+
+
+def _is_nonnegative(node):
+    """Return whether a generated index expression is statically nonnegative."""
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, (int, float)) and node.value >= 0
+
+    if isinstance(node, ast.Name):
+        # Generated program indices are obtained by unraveling program_id(0).
+        return re.fullmatch(r".*_index_\d+", node.id) is not None
+
+    if _is_call_named(node, "arange"):
+        return len(node.args) >= 1 and _is_nonnegative(node.args[0])
+
+    if isinstance(node, ast.Subscript):
+        return _is_nonnegative(node.value)
+
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mult)):
+        return _is_nonnegative(node.left) and _is_nonnegative(node.right)
+
+    return False
+
+
+def _is_arange_bounded_by(index, size):
+    node = index.node
+
+    while isinstance(node, ast.Subscript):
+        node = node.value
+
+    return (
+        _is_call_named(node, "arange")
+        and len(node.args) >= 2
+        and ast.dump(node.args[1], include_attributes=False)
+        == ast.dump(Symbol(size).node, include_attributes=False)
+    )
 
 
 class Tensor:
@@ -570,8 +613,11 @@ class Tensor:
         for index, size in zip(indices, self.shape):
             index = Symbol(index)
 
-            self.source._mask &= index < size
-            self.source._mask &= index >= 0
+            if not _is_arange_bounded_by(index, size):
+                self.source._mask &= index < size
+
+            if not _is_nonnegative(index.node):
+                self.source._mask &= index >= 0
 
         for output_, output in zip(self._outputs, outputs):
             output_.clear()

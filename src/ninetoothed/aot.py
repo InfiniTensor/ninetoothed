@@ -10,7 +10,7 @@ import uuid
 
 import ninetoothed.dtype
 import ninetoothed.naming as naming
-from ninetoothed.generation import CACHE_DIR, CodeGenerator
+from ninetoothed.generation import CACHE_DIR, CodeGenerator, cache_source
 from ninetoothed.tensor import Tensor
 from ninetoothed.utils import calculate_default_configs
 
@@ -81,6 +81,27 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     variant_specs = _enumerate_variant_specs(
         launch_arg_names, tensors, _find_tensor_by_source_name
     )
+    full_tile_spec = _full_tile_spec(kernel_func)
+
+    if not _is_safe_full_tile_spec(
+        full_tile_spec, launch_arg_names, tensors, _find_tensor_by_source_name
+    ):
+        full_tile_spec = ()
+
+    if full_tile_spec:
+        suffix, divisible, contiguous, size_type, stride_type, _ = variant_specs[0]
+        variant_specs.insert(
+            0,
+            (
+                f"{suffix}_full_tile",
+                divisible,
+                contiguous,
+                size_type,
+                stride_type,
+                full_tile_spec,
+            ),
+        )
+
     _, tensor_ndims, _ = _per_tensor_dim_options(
         launch_arg_names, tensors, _find_tensor_by_source_name
     )
@@ -93,6 +114,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
         contiguity_spec,
         size_type,
         stride_type,
+        full_tile_spec,
     ) in variant_specs:
         variant_outputs = _build_variant(
             source_file,
@@ -110,6 +132,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
             contiguity_spec=contiguity_spec,
             size_type=size_type,
             stride_type=stride_type,
+            full_tile_spec=full_tile_spec,
         )
         output_contents.update(variant_outputs)
 
@@ -157,6 +180,7 @@ def _generate_dispatcher(kernel_name, launch_arg_names, variant_specs, tensor_nd
         contiguity_spec,
         size_type,
         stride_type,
+        full_tile_spec,
     ) in variant_specs:
         variant_name = f"launch_{kernel_name}_{variant_suffix}"
         externs.append(
@@ -173,9 +197,7 @@ def _generate_dispatcher(kernel_name, launch_arg_names, variant_specs, tensor_nd
 
             continue
 
-        checks = tuple(
-            f"{name}.shape[{dim}] % 16 == 0" for name, dim in divisibility_spec
-        ) + tuple(f"{name}.strides[{dim}] == 1" for name, dim in contiguity_spec)
+        checks = _variant_checks(divisibility_spec, contiguity_spec, full_tile_spec)
 
         if checks:
             branches.append(f"{_INDENTATION}if ({' && '.join(checks)}) {call}")
@@ -205,6 +227,31 @@ def _generate_dispatcher(kernel_name, launch_arg_names, variant_specs, tensor_nd
     return source, header
 
 
+def _variant_checks(divisibility_spec, contiguity_spec, full_tile_spec):
+    full_tile_dims = {(name, dim): tile for name, dim, tile in full_tile_spec}
+    checks = tuple(
+        f"{name}.shape[{dim}] % 16 == 0"
+        for name, dim in divisibility_spec
+        if (name, dim) not in full_tile_dims or full_tile_dims[(name, dim)] % 16 != 0
+    ) + tuple(f"{name}.strides[{dim}] == 1" for name, dim in contiguity_spec)
+
+    for dim in sorted({dim for _, dim, _ in full_tile_spec}):
+        dim_specs = tuple(spec for spec in full_tile_spec if spec[1] == dim)
+        first_name, _, first_tile = dim_specs[0]
+        # Zero is mathematically divisible by every positive tile, but the
+        # generated CUDA launch expression uses C integer division.  For a
+        # zero-sized dimension that expression can still produce one program,
+        # so a mask-free variant must never accept an empty dimension.
+        checks += (f"{first_name}.shape[{dim}] > 0",)
+        checks += (f"{first_name}.shape[{dim}] % {first_tile} == 0",)
+        checks += tuple(
+            f"{name}.shape[{dim}] == {first_name}.shape[{dim}]"
+            for name, _, _ in dim_specs[1:]
+        )
+
+    return checks
+
+
 def _build_variant(
     source_file,
     kernel_func,
@@ -222,7 +269,11 @@ def _build_variant(
     contiguity_spec,
     size_type=ninetoothed.dtype.int32,
     stride_type=ninetoothed.dtype.int32,
+    full_tile_spec=(),
 ):
+    if full_tile_spec:
+        source_file = _make_full_tile_source(source_file, full_tile_spec)
+
     divisibility_set = {
         (naming.remove_prefixes(name), dim) for name, dim in divisibility_spec
     }
@@ -299,7 +350,11 @@ def _build_variant(
     pattern = rf"\({', '.join(rf'(.*) {param}' for param in param_strings)}\)"
     c_param_type_strings = re.search(pattern, c_header_file).groups()
 
+    # Variants can share a Triton signature while compiling different source
+    # (for example, masked and mask-free full-tile kernels).  Include the
+    # variant suffix to prevent C++ ODR collisions between their Kernel types.
     kernel_name_with_hash = f"{kernel_name}_{signature_hash}"
+    kernel_namespace = f"{kernel_name_with_hash}_{variant_suffix}"
 
     unparser = _Unparser(c_param_type_strings, constexpr_strides)
 
@@ -324,13 +379,13 @@ def _build_variant(
     kernel_end = len(c_source_file)
     cpp_source_file = (
         c_source_file[:kernel_start]
-        + f"namespace {kernel_name_with_hash} {{\n"
+        + f"namespace {kernel_namespace} {{\n"
         + "struct Kernel {\n"
         + textwrap.indent(c_source_file[kernel_start:kernel_end], _INDENTATION)
         + "};\n"
         + textwrap.indent(c_source_file[kernel_end:], _INDENTATION)
         + "}\n"
-        + f"\nstatic ninetoothed::ThreadSafeUnorderedMap<unsigned long long, {kernel_name_with_hash}::Kernel> kernels_{variant_suffix};\n"
+        + f"\nstatic ninetoothed::ThreadSafeUnorderedMap<unsigned long long, {kernel_namespace}::Kernel> kernels_{variant_suffix};\n"
         + f'\nextern "C" {launch_func_unparsed}\n'
     )
     cpp_source_file_name = f"{kernel_name}.{variant_suffix}.cpp"
@@ -386,6 +441,7 @@ def _enumerate_variant_specs(launch_arg_names, tensors, find_tensor):
                     contiguity_spec,
                     ninetoothed.dtype.int32,
                     ninetoothed.dtype.int32,
+                    (),
                 )
             )
 
@@ -393,7 +449,7 @@ def _enumerate_variant_specs(launch_arg_names, tensors, find_tensor):
         return sum(1 for name, dim in spec if innermost_dims.get(name) == dim)
 
     def _specificity(entry):
-        _, divisibility_spec, contiguity_spec, _, _ = entry
+        _, divisibility_spec, contiguity_spec, _, _, _ = entry
 
         return (
             -len(divisibility_spec),
@@ -419,10 +475,273 @@ def _enumerate_variant_specs(launch_arg_names, tensors, find_tensor):
             (),
             ninetoothed.dtype.int64,
             ninetoothed.dtype.int64,
+            (),
         )
     )
 
     return specs
+
+
+def _full_tile_spec(kernel_func):
+    """Find canonical tiled accesses whose tail checks can be specialized."""
+    specs = set()
+
+    for node in ast.walk(kernel_func):
+        if not (
+            isinstance(node, ast.Compare)
+            and len(node.ops) == 1
+            and isinstance(node.ops[0], ast.Lt)
+            and len(node.comparators) == 1
+            and isinstance(node.comparators[0], ast.Name)
+        ):
+            continue
+
+        match = Tensor.size_pattern().fullmatch(node.comparators[0].id)
+
+        if match is None:
+            continue
+
+        source_name = naming.remove_prefixes(match.group(1))
+        dim = int(match.group(3))
+        tile = _canonical_tile_size(node.left)
+
+        if tile is not None and tile > 1:
+            specs.add((source_name, dim, tile))
+
+    return tuple(sorted(specs))
+
+
+def _is_safe_full_tile_spec(full_tile_spec, launch_arg_names, tensors, find_tensor):
+    """Accept same-shaped tensors that are directly tiled in every dimension."""
+    tensor_ndims = {}
+
+    for name in launch_arg_names:
+        tensor = find_tensor(tensors, name)
+
+        if tensor is None or tensor.source.ndim == 0:
+            continue
+        # A direct ``tile`` creates exactly the source level and one tiled
+        # level.  Additional levels indicate expand/pad/slice-style layout
+        # transforms whose program bounds are not implied by source shapes.
+
+        if len(tensor._levels) != 2:
+            return False
+
+        tensor_ndims[naming.remove_prefixes(name)] = tensor.source.ndim
+
+    if not tensor_ndims or len(set(tensor_ndims.values())) != 1:
+        return False
+
+    ndim = next(iter(tensor_ndims.values()))
+
+    if len(full_tile_spec) != len(tensor_ndims) * ndim or {
+        name for name, _, _ in full_tile_spec
+    } != set(tensor_ndims):
+        return False
+
+    specs_by_name = {
+        name: {
+            dim: tile for spec_name, dim, tile in full_tile_spec if spec_name == name
+        }
+        for name in tensor_ndims
+    }
+
+    if any(set(specs) != set(range(ndim)) for specs in specs_by_name.values()):
+        return False
+
+    return (
+        len(
+            {
+                tuple(specs[dim] for dim in range(ndim))
+                for specs in specs_by_name.values()
+            }
+        )
+        == 1
+    )
+
+
+def _canonical_tile_size(node):
+    """Recognize ``program_index * TILE + arange(0, TILE)``."""
+    if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)):
+        return None
+
+    terms = (node.left, node.right)
+    multiply = None
+    lane = None
+    tile = None
+
+    for index, term in enumerate(terms):
+        if not (isinstance(term, ast.BinOp) and isinstance(term.op, ast.Mult)):
+            continue
+
+        for program_index, constant in (
+            (term.left, term.right),
+            (term.right, term.left),
+        ):
+            if not (
+                isinstance(program_index, ast.Name)
+                and re.fullmatch(r".*_index_\d+", program_index.id) is not None
+                and isinstance(constant, ast.Constant)
+                and isinstance(constant.value, int)
+                and not isinstance(constant.value, bool)
+            ):
+                continue
+
+            multiply = term
+            lane = terms[1 - index]
+            tile = constant.value
+            break
+
+        if multiply is not None:
+            break
+
+    if multiply is None:
+        return None
+
+    while isinstance(lane, ast.Subscript):
+        lane = lane.value
+
+    if not (
+        tile is not None
+        and isinstance(lane, ast.Call)
+        and isinstance(lane.func, ast.Attribute)
+        and lane.func.attr == "arange"
+        and len(lane.args) >= 2
+        and isinstance(lane.args[0], ast.Constant)
+        and lane.args[0].value == 0
+        and isinstance(lane.args[1], ast.Constant)
+        and lane.args[1].value == tile
+    ):
+        return None
+
+    return tile
+
+
+def _make_full_tile_source(source_file, full_tile_spec):
+    guarded = set(full_tile_spec)
+    guarded_dims = {(name, dim) for name, dim, _ in guarded}
+
+    canonical_sizes = {}
+
+    for name, dim, _ in full_tile_spec:
+        canonical_sizes.setdefault(dim, name)
+
+    tree = ast.parse(pathlib.Path(source_file).read_text())
+    canonical_size_names = {}
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Name):
+            continue
+
+        match = Tensor.size_pattern().fullmatch(node.id)
+
+        if match is None:
+            continue
+
+        dim = int(match.group(3))
+
+        if naming.remove_prefixes(match.group(1)) == canonical_sizes.get(dim):
+            canonical_size_names.setdefault(dim, node.id)
+
+    class _EqualShapePropagator(ast.NodeTransformer):
+        def visit_Name(self, node):
+            match = Tensor.size_pattern().fullmatch(node.id)
+
+            if match is None:
+                return node
+
+            name = naming.remove_prefixes(match.group(1))
+            dim = int(match.group(3))
+            canonical_name = canonical_sizes.get(dim)
+
+            if canonical_name is None or name == canonical_name:
+                return node
+
+            size_name = self._canonical_size_name(dim)
+
+            if size_name is not None:
+                return ast.copy_location(ast.Name(id=size_name, ctx=node.ctx), node)
+
+            return node
+
+        @staticmethod
+        def _canonical_size_name(dim):
+            return canonical_size_names.get(dim)
+
+    class _Simplifier(ast.NodeTransformer):
+        @staticmethod
+        def _proven_true_mask(node):
+            if isinstance(node, ast.Constant):
+                return node.value is True
+
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitAnd):
+                return _Simplifier._proven_true_mask(
+                    node.left
+                ) and _Simplifier._proven_true_mask(node.right)
+            return False
+
+        def visit_Compare(self, node):
+            self.generic_visit(node)
+
+            if not (
+                len(node.ops) == 1
+                and isinstance(node.ops[0], ast.Lt)
+                and len(node.comparators) == 1
+            ):
+                return node
+
+            # Program indices are compiler-generated by unraveling
+            # ``program_id(0)``.  Under the same positive, divisible and
+            # equal-shape guards as the lane bounds, their outer-tile bounds
+            # are also true.  Replace only indices belonging to a guarded
+            # tensor/dimension; do not let the call-level mask cleanup accept
+            # arbitrary leftover comparisons.
+            if isinstance(node.left, ast.Name):
+                index_match = re.fullmatch(r"(.+)_index_(\d+)", node.left.id)
+
+                if index_match is not None:
+                    index_spec = (
+                        naming.remove_prefixes(index_match.group(1)),
+                        int(index_match.group(2)),
+                    )
+
+                    if index_spec in guarded_dims:
+                        return ast.copy_location(ast.Constant(True), node)
+
+            if not isinstance(node.comparators[0], ast.Name):
+                return node
+
+            match = Tensor.size_pattern().fullmatch(node.comparators[0].id)
+
+            if match is None:
+                return node
+
+            spec = (
+                naming.remove_prefixes(match.group(1)),
+                int(match.group(3)),
+                _canonical_tile_size(node.left),
+            )
+
+            if spec in guarded:
+                return ast.copy_location(ast.Constant(True), node)
+
+            return node
+
+        def visit_Call(self, node):
+            self.generic_visit(node)
+            node.keywords = [
+                keyword
+                for keyword in node.keywords
+                if not (keyword.arg == "mask" and self._proven_true_mask(keyword.value))
+            ]
+
+            return node
+
+    _EqualShapePropagator().visit(tree)
+    _Simplifier().visit(tree)
+    ast.fix_missing_locations(tree)
+
+    return str(cache_source(ast.unparse(tree) + "\n"))
 
 
 def _per_tensor_dim_options(launch_arg_names, tensors, find_tensor):
@@ -865,6 +1184,7 @@ def _load_launch_func(kernel_name, output_dir):
 def _compile_library(kernel_name, output_dir):
     command = [
         "nvcc",
+        "-O3",
         "-shared",
         "-arch",
         "native",
