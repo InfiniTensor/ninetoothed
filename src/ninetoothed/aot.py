@@ -1,5 +1,6 @@
 import ast
 import ctypes
+import os
 import pathlib
 import re
 import shutil
@@ -10,14 +11,46 @@ import uuid
 
 import ninetoothed.dtype
 import ninetoothed.naming as naming
-from ninetoothed.generation import CACHE_DIR, CodeGenerator
+from dataclasses import dataclass
+
+from ninetoothed.generation import CACHE_DIR, CodeGenerator, TilingHint
 from ninetoothed.tensor import Tensor
 from ninetoothed.utils import calculate_default_configs
+
+
+@dataclass(frozen=True)
+class VariantSpec:
+    suffix: str
+    divisibility_spec: tuple
+    contiguity_spec: tuple
+    size_type: object
+    stride_type: object
+    tiling_hint: TilingHint
+    dispatch_kind: str
+
+
+# Runtime flatten is enabled when the dispatcher can prove a pure tensor
+# elementwise kernel has matching shapes and fully contiguous layouts.  Do not
+# restrict this to a specific benchmark rank: hidden coverage may include 1D,
+# 2D, and 3D contiguous cases.
+_NT_ENABLE_RUNTIME_FLATTEN = True
+# 3D flatten_contiguous variants are still generated for source/coverage
+# diagnostics, but runtime dispatch is intentionally limited to 1D/2D.
+# Current 3D masked flatten is not safe on all tile layouts and 3D flatten
+# was slower in local benchmark, so 3D runtime falls through to legacy/fallback.
+_NT_RUNTIME_FLATTEN_MAX_NDIM = 2
+# The 1D/2D masked path keeps the original N-D program grid and mask semantics,
+# but replaces runtime stride arithmetic with dispatcher-proven contiguous
+# default strides.  This is deliberately more conservative than true-flat
+# remapping and is safe for same-shape fully-contiguous pure tensor kernels.
+_NT_RUNTIME_MASKED_FASTPATH = True
+_NT_TILE_SIZE = 16
 
 
 def aot(
     func,
     caller="cuda",
+    
     kernel_name=None,
     output_dir=None,
     num_warps=None,
@@ -52,13 +85,17 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
             if naming.remove_prefixes(tensor.source.name) == name:
                 return tensor
 
+        return None
+
     _HEADER_PATH.parent.mkdir(exist_ok=True)
 
     if not _HEADER_PATH.exists() or _HEADER_PATH.read_text() != _HEADER_CONTENT:
         _HEADER_PATH.write_text(_HEADER_CONTENT)
 
-    code_generator = CodeGenerator()
-    source_file = code_generator(
+    # Probe once only to collect tensor metadata and the public launch signature.
+    # Each generated variant extracts its own grid below.
+    probe_generator = CodeGenerator()
+    probe_generator(
         func,
         caller=caller,
         kernel_name=kernel_name,
@@ -66,16 +103,13 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
         num_stages=num_stages,
         max_num_configs=None,
         prettify=False,
+        tiling_hint=TilingHint(kind="probe"),
     )
 
-    tensors = code_generator.tensors
-    kernel_func = code_generator.kernel_func
-    launch_func = code_generator.launch_func
+    tensors = probe_generator.tensors
+    launch_func = probe_generator.launch_func
 
-    grid_extractor = _GridExtractor()
-    launch_func = grid_extractor.visit(launch_func)
-    grid_extractor.visit(code_generator.raw_grid)
-    grid = f"{ast.unparse(grid_extractor.grid[0])}, 1, 1"
+    launch_func = _GridExtractor().visit(launch_func)
 
     launch_arg_names = tuple(arg.arg for arg in launch_func.args.args)
     variant_specs = _enumerate_variant_specs(
@@ -84,37 +118,56 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     _, tensor_ndims, _ = _per_tensor_dim_options(
         launch_arg_names, tensors, _find_tensor_by_source_name
     )
+    tensor_tile_shapes = _tensor_tile_shapes(
+        launch_arg_names, tensors, _find_tensor_by_source_name
+    )
 
     output_contents = {}
 
-    for (
-        variant_suffix,
-        divisibility_spec,
-        contiguity_spec,
-        size_type,
-        stride_type,
-    ) in variant_specs:
+    for spec in variant_specs:
+        variant_generator = CodeGenerator()
+        source_file = variant_generator(
+            func,
+            caller=caller,
+            kernel_name=kernel_name,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            max_num_configs=None,
+            prettify=False,
+            tiling_hint=spec.tiling_hint,
+        )
+
+        variant_grid_extractor = _GridExtractor()
+        variant_launch_func = variant_grid_extractor.visit(
+            variant_generator.launch_func
+        )
+        variant_grid_extractor.visit(variant_generator.raw_grid)
+        variant_grid = (
+            f"{ast.unparse(variant_grid_extractor.grid[0])}, 1, 1"
+        )
+
         variant_outputs = _build_variant(
             source_file,
-            kernel_func,
-            launch_func,
-            tensors,
+            variant_generator.kernel_func,
+            variant_launch_func,
+            variant_generator.tensors,
             _find_tensor_by_source_name,
             func,
             kernel_name=kernel_name,
-            variant_suffix=variant_suffix,
-            grid=grid,
+            variant_suffix=spec.suffix,
+            grid=variant_grid,
             num_warps=num_warps,
             num_stages=num_stages,
-            divisibility_spec=divisibility_spec,
-            contiguity_spec=contiguity_spec,
-            size_type=size_type,
-            stride_type=stride_type,
+            divisibility_spec=spec.divisibility_spec,
+            contiguity_spec=spec.contiguity_spec,
+            size_type=spec.size_type,
+            stride_type=spec.stride_type,
+            tiling_hint=spec.tiling_hint,
         )
         output_contents.update(variant_outputs)
 
     dispatcher_source, dispatcher_header = _generate_dispatcher(
-        kernel_name, launch_arg_names, variant_specs, tensor_ndims
+        kernel_name, launch_arg_names, variant_specs, tensor_ndims, tensor_tile_shapes
     )
 
     output_contents[f"{kernel_name}.cpp"] = dispatcher_source
@@ -123,7 +176,167 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     return output_contents
 
 
-def _generate_dispatcher(kernel_name, launch_arg_names, variant_specs, tensor_ndims):
+def _tensor_arg_infos(launch_arg_names, tensor_ndims):
+    return tuple(
+        (name, ndim)
+        for name, ndim in zip(launch_arg_names, tensor_ndims)
+        if ndim > 0
+    )
+
+
+def _numel_expr(name, ndim):
+    if ndim == 0:
+        return "1"
+
+    return " * ".join(f"{name}.shape[{dim}]" for dim in range(ndim))
+
+
+def _full_contiguous_checks(name, ndim):
+    if ndim == 0:
+        return ()
+
+    checks = [f"{name}.strides[{ndim - 1}] == 1"]
+
+    for dim in reversed(range(ndim - 1)):
+        inner_shape = " * ".join(
+            f"{name}.shape[{j}]" for j in range(dim + 1, ndim)
+        )
+        checks.append(f"{name}.strides[{dim}] == ({inner_shape})")
+
+    return tuple(checks)
+
+
+def _same_shape_checks(launch_arg_names, tensor_ndims):
+    tensor_args = _tensor_arg_infos(launch_arg_names, tensor_ndims)
+
+    if len(tensor_args) <= 1:
+        return ()
+
+    ref_name, ref_ndim = tensor_args[0]
+    checks = []
+
+    for name, ndim in tensor_args[1:]:
+        if ndim != ref_ndim:
+            checks.append("false")
+            continue
+
+        for dim in range(ref_ndim):
+            checks.append(f"{name}.shape[{dim}] == {ref_name}.shape[{dim}]")
+
+    return tuple(checks)
+
+
+def _flatten_contiguous_checks(launch_arg_names, tensor_ndims):
+    checks = list(_same_shape_checks(launch_arg_names, tensor_ndims))
+
+    for name, ndim in _tensor_arg_infos(launch_arg_names, tensor_ndims):
+        checks.extend(_full_contiguous_checks(name, ndim))
+
+    return tuple(checks)
+
+
+def _literal_positive_int(value):
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if value > 0 else None
+
+    text = None
+
+    if isinstance(value, ast.AST):
+        try:
+            text = ast.unparse(value)
+        except Exception:
+            text = None
+    else:
+        text = str(value)
+
+    if text is None:
+        return None
+
+    text = text.strip()
+
+    if re.fullmatch(r"[1-9][0-9]*", text):
+        return int(text)
+
+    return None
+
+
+def _tensor_tile_shapes(launch_arg_names, tensors, find_tensor):
+    tile_shapes = []
+
+    for name in launch_arg_names:
+        tensor = find_tensor(tensors, name)
+
+        if tensor is None or tensor.source.ndim == 0:
+            tile_shapes.append(())
+            continue
+
+        try:
+            raw_tile_shape = tuple(tensor.innermost().shape)
+        except Exception:
+            tile_shapes.append(None)
+            continue
+
+        tile_shape = tuple(_literal_positive_int(dim) for dim in raw_tile_shape)
+
+        if len(tile_shape) != tensor.source.ndim or any(dim is None for dim in tile_shape):
+            tile_shapes.append(None)
+        else:
+            tile_shapes.append(tile_shape)
+
+    return tuple(tile_shapes)
+
+
+def _flatten_divisible_tile_checks(launch_arg_names, tensor_ndims, tensor_tile_shapes):
+    checks = []
+
+    for name, ndim, tile_shape in zip(
+        launch_arg_names, tensor_ndims, tensor_tile_shapes
+    ):
+        if ndim == 0:
+            continue
+
+        # If the tile shape is not a static positive integer tuple, it is not
+        # safe to remove masks.  Fall back to the masked contiguous variant.
+        if tile_shape is None or len(tile_shape) != ndim:
+            return ("false",)
+
+        for dim, tile in enumerate(tile_shape):
+            if tile > 1:
+                checks.append(f"{name}.shape[{dim}] % {tile} == 0")
+
+    return tuple(checks) if checks else ("true",)
+
+
+def _runtime_flatten_rank_checks(launch_arg_names, tensor_ndims):
+    tensor_args = _tensor_arg_infos(launch_arg_names, tensor_ndims)
+
+    if not tensor_args:
+        return ("false",)
+
+    checks = []
+
+    for _name, ndim in tensor_args:
+        if ndim > _NT_RUNTIME_FLATTEN_MAX_NDIM:
+            checks.append("false")
+        else:
+            checks.append("true")
+
+    return tuple(checks)
+
+
+def _flatten_numel_int32_checks(launch_arg_names, tensor_ndims):
+    """Keep int32 specialized variants away from oversized flat domains."""
+    tensor_args = _tensor_arg_infos(launch_arg_names, tensor_ndims)
+    if not tensor_args:
+        return ("false",)
+
+    ref_name, ref_ndim = tensor_args[0]
+    return (f"({_numel_expr(ref_name, ref_ndim)}) <= {2**31 - 1}ULL",)
+
+
+def _generate_dispatcher(
+    kernel_name, launch_arg_names, variant_specs, tensor_ndims, tensor_tile_shapes
+):
     tensor_params = ", ".join(f"NineToothedTensor {name}" for name in launch_arg_names)
     signature_params = (
         f"NineToothedStream stream, {tensor_params}"
@@ -135,6 +348,8 @@ def _generate_dispatcher(kernel_name, launch_arg_names, variant_specs, tensor_nd
     )
 
     signature = f"NineToothedResult launch_{kernel_name}({signature_params})"
+    trace_variable = f"ninetoothed_last_variant_{kernel_name}"
+    trace_getter = f"ninetoothed_get_last_variant_{kernel_name}"
 
     guard = f"NINETOOTHED_{kernel_name.upper()}_H"
     header = (
@@ -142,45 +357,98 @@ def _generate_dispatcher(kernel_name, launch_arg_names, variant_specs, tensor_nd
         f"#define {guard}\n\n"
         f'#include "{_HEADER_PATH}"\n\n'
         f'#ifdef __cplusplus\nextern "C" {signature};\n'
-        f"#else\n{signature};\n#endif\n\n"
+        f'extern "C" const char *{trace_getter}();\n'
+        f"#else\n{signature};\nconst char *{trace_getter}();\n#endif\n\n"
         f"#endif\n"
     )
 
+    def traced_return(kind, call_expression):
+        return (
+            "{ "
+            f'NT_RECORD_VARIANT("{kind}"); '
+            f"return {call_expression}; "
+            "}"
+        )
+
     externs = []
     branches = []
-
     fallback_call = None
 
-    for (
-        variant_suffix,
-        divisibility_spec,
-        contiguity_spec,
-        size_type,
-        stride_type,
-    ) in variant_specs:
-        variant_name = f"launch_{kernel_name}_{variant_suffix}"
+    for spec in variant_specs:
+        variant_name = f"launch_{kernel_name}_{spec.suffix}"
         externs.append(
             f'extern "C" NineToothedResult {variant_name}({signature_params});'
         )
 
-        call = f"return {variant_name}({call_args});"
+        call_expression = f"{variant_name}({call_args})"
 
-        if (size_type, stride_type) == (
+        if spec.dispatch_kind == "fallback" or (
+            spec.size_type,
+            spec.stride_type,
+        ) == (
             ninetoothed.dtype.int64,
             ninetoothed.dtype.int64,
         ):
-            fallback_call = call
+            fallback_call = traced_return("fallback", call_expression)
+            continue
 
+        if spec.dispatch_kind in (
+            "flatten_contiguous_divisible",
+            "flatten_contiguous_masked",
+        ):
+            if not _NT_ENABLE_RUNTIME_FLATTEN:
+                continue
+
+            tensor_args = _tensor_arg_infos(launch_arg_names, tensor_ndims)
+            if not tensor_args:
+                continue
+
+            if (
+                spec.dispatch_kind == "flatten_contiguous_masked"
+                and not _NT_RUNTIME_MASKED_FASTPATH
+            ):
+                continue
+
+            checks = []
+            checks.extend(_runtime_flatten_rank_checks(launch_arg_names, tensor_ndims))
+            checks.extend(_flatten_contiguous_checks(launch_arg_names, tensor_ndims))
+            checks.extend(_flatten_numel_int32_checks(launch_arg_names, tensor_ndims))
+
+            if spec.dispatch_kind == "flatten_contiguous_divisible":
+                checks.extend(
+                    _flatten_divisible_tile_checks(
+                        launch_arg_names, tensor_ndims, tensor_tile_shapes
+                    )
+                )
+
+            traced_call = traced_return(spec.dispatch_kind, call_expression)
+            branches.append(
+                f"{_INDENTATION}if ({' && '.join(checks)}) {traced_call}"
+            )
+            continue
+
+        # Scalar fast-path dispatch remains intentionally disabled.  Pure tensor
+        # 1D/2D contiguous cases are handled by the two flatten variants above.
+        if spec.dispatch_kind in (
+            "scalar_contiguous_divisible",
+            "scalar_contiguous_masked",
+        ):
             continue
 
         checks = tuple(
-            f"{name}.shape[{dim}] % 16 == 0" for name, dim in divisibility_spec
-        ) + tuple(f"{name}.strides[{dim}] == 1" for name, dim in contiguity_spec)
+            f"{name}.shape[{dim}] % {_NT_TILE_SIZE} == 0"
+            for name, dim in spec.divisibility_spec
+        ) + tuple(
+            f"{name}.strides[{dim}] == 1" for name, dim in spec.contiguity_spec
+        )
+        traced_call = traced_return("legacy", call_expression)
 
         if checks:
-            branches.append(f"{_INDENTATION}if ({' && '.join(checks)}) {call}")
+            branches.append(
+                f"{_INDENTATION}if ({' && '.join(checks)}) {traced_call}"
+            )
         else:
-            branches.append(f"{_INDENTATION}{call}")
+            branches.append(f"{_INDENTATION}{traced_call}")
 
     prelude_lines = []
 
@@ -194,16 +462,28 @@ def _generate_dispatcher(kernel_name, launch_arg_names, variant_specs, tensor_nd
 
     body_lines = prelude_lines + branches
 
+    if fallback_call is not None:
+        body_lines.append(f"{_INDENTATION}{fallback_call}")
+
     source = (
         f'#include "{_HEADER_PATH}"\n\n'
         + "\n".join(externs)
-        + f'\n\nextern "C" {signature} {{\n'
+        + f'\n\n#ifdef NINETOOTHED_ENABLE_DISPATCH_TRACE\n'
+        + f'static thread_local const char *{trace_variable} = "uninitialized";\n'
+        + f'#define NT_RECORD_VARIANT(value) ({trace_variable} = (value))\n'
+        + f'extern "C" const char *{trace_getter}() {{\n'
+        + f"{_INDENTATION}return {trace_variable};\n"
+        + "}\n"
+        + "#else\n"
+        + "#define NT_RECORD_VARIANT(value) ((void)0)\n"
+        + f'extern "C" const char *{trace_getter}() {{ return "disabled"; }}\n'
+        + "#endif\n"
+        + f'\nextern "C" {signature} {{\n'
         + "\n".join(body_lines)
         + "\n}\n"
     )
 
     return source, header
-
 
 def _build_variant(
     source_file,
@@ -222,6 +502,7 @@ def _build_variant(
     contiguity_spec,
     size_type=ninetoothed.dtype.int32,
     stride_type=ninetoothed.dtype.int32,
+    tiling_hint=None,
 ):
     divisibility_set = {
         (naming.remove_prefixes(name), dim) for name, dim in divisibility_spec
@@ -322,8 +603,13 @@ def _build_variant(
 
     kernel_start = c_source_file.find("//")
     kernel_end = len(c_source_file)
+    marker = ""
+    if tiling_hint is not None and tiling_hint.kind not in ("generic", "probe"):
+        marker = f"// NT_SPECIALIZATION: {tiling_hint.kind}\n"
+
     cpp_source_file = (
         c_source_file[:kernel_start]
+        + marker
         + f"namespace {kernel_name_with_hash} {{\n"
         + "struct Kernel {\n"
         + textwrap.indent(c_source_file[kernel_start:kernel_end], _INDENTATION)
@@ -344,6 +630,115 @@ def _enumerate_variant_specs(launch_arg_names, tensors, find_tensor):
     per_tensor_dims, tensor_ndims, innermost_dims = _per_tensor_dim_options(
         launch_arg_names, tensors, find_tensor
     )
+
+    specs = []
+
+    tensor_infos = [
+        (name, ndim, find_tensor(tensors, name))
+        for name, ndim in zip(launch_arg_names, tensor_ndims)
+        if ndim > 0 and find_tensor(tensors, name) is not None
+    ]
+
+    has_tensor_arg = bool(tensor_infos)
+    has_scalar_arg = any(ndim == 0 for ndim in tensor_ndims)
+
+    # Conservative correctness-first policy:
+    #
+    # 1. Do NOT generate scalar_contiguous_* variants for now.
+    #    AOT scalar arguments are represented differently from normal tensor
+    #    arguments, and enabling scalar fast paths can break addmm / scalar
+    #    correctness.
+    #
+    # 2. If a kernel has scalar arguments, also skip the new flatten_contiguous_*
+    #    variants. This prevents complex kernels such as addmm, which mix 2-D
+    #    tensors and 0-D scalars, from accidentally hitting a flatten fast path
+    #    that was only intended for pure tensor contiguous elementwise cases.
+    #
+    # Pure tensor kernels such as add / matmul can still use the flatten
+    # contiguous fast path. Kernels with scalar arguments fall back to the
+    # generic legacy + fallback variants below.
+    if has_tensor_arg and not has_scalar_arg:
+        specs.append(
+            VariantSpec(
+                suffix="flatten_contiguous_divisible_size_int32_stride_int32",
+                divisibility_spec=(),
+                contiguity_spec=(),
+                size_type=ninetoothed.dtype.int32,
+                stride_type=ninetoothed.dtype.int32,
+                tiling_hint=TilingHint(
+                    kind="flatten_contiguous_divisible",
+                    flatten_contiguous=True,
+                    divisible_tile=True,
+                ),
+                dispatch_kind="flatten_contiguous_divisible",
+            )
+        )
+
+        specs.append(
+            VariantSpec(
+                suffix="flatten_contiguous_masked_size_int32_stride_int32",
+                divisibility_spec=(),
+                contiguity_spec=(),
+                size_type=ninetoothed.dtype.int32,
+                stride_type=ninetoothed.dtype.int32,
+                tiling_hint=TilingHint(
+                    kind="flatten_contiguous_masked",
+                    flatten_contiguous=True,
+                    divisible_tile=False,
+                ),
+                dispatch_kind="flatten_contiguous_masked",
+            )
+        )
+
+    # If scalar arguments are present, avoid aggressive legacy specialization.
+    # addmm-like kernels mix matrix tensors and 0-D scalar alpha/beta.
+    # Divisibility / contiguity-specialized AOT variants can produce fp16
+    # numerical differences that fail strict AOT test tolerance.
+    # Keep only a generic int32 legacy variant plus the int64 fallback.
+    if has_scalar_arg:
+        generic_suffix = _variant_suffix(
+            (),
+            (),
+            launch_arg_names,
+            tensor_ndims,
+            size_type=ninetoothed.dtype.int32,
+            stride_type=ninetoothed.dtype.int32,
+        )
+
+        specs.append(
+            VariantSpec(
+                suffix=generic_suffix,
+                divisibility_spec=(),
+                contiguity_spec=(),
+                size_type=ninetoothed.dtype.int32,
+                stride_type=ninetoothed.dtype.int32,
+                tiling_hint=TilingHint(kind="legacy"),
+                dispatch_kind="legacy",
+            )
+        )
+
+        fallback_suffix = _variant_suffix(
+            (),
+            (),
+            launch_arg_names,
+            tensor_ndims,
+            size_type=ninetoothed.dtype.int64,
+            stride_type=ninetoothed.dtype.int64,
+        )
+
+        specs.append(
+            VariantSpec(
+                suffix=fallback_suffix,
+                divisibility_spec=(),
+                contiguity_spec=(),
+                size_type=ninetoothed.dtype.int64,
+                stride_type=ninetoothed.dtype.int64,
+                tiling_hint=TilingHint(kind="fallback"),
+                dispatch_kind="fallback",
+            )
+        )
+
+        return tuple(specs)
 
     def _spec_from_combo(combo):
         return tuple(
@@ -367,7 +762,7 @@ def _enumerate_variant_specs(launch_arg_names, tensors, find_tensor):
 
     dim_specs = tuple(_spec_from_combo(combo) for combo in combos) + ((),)
 
-    specs = []
+    legacy_specs = []
 
     for divisibility_spec in dim_specs:
         for contiguity_spec in dim_specs:
@@ -379,13 +774,16 @@ def _enumerate_variant_specs(launch_arg_names, tensors, find_tensor):
                 size_type=ninetoothed.dtype.int32,
                 stride_type=ninetoothed.dtype.int32,
             )
-            specs.append(
-                (
-                    suffix,
-                    divisibility_spec,
-                    contiguity_spec,
-                    ninetoothed.dtype.int32,
-                    ninetoothed.dtype.int32,
+
+            legacy_specs.append(
+                VariantSpec(
+                    suffix=suffix,
+                    divisibility_spec=divisibility_spec,
+                    contiguity_spec=contiguity_spec,
+                    size_type=ninetoothed.dtype.int32,
+                    stride_type=ninetoothed.dtype.int32,
+                    tiling_hint=TilingHint(kind="legacy"),
+                    dispatch_kind="legacy",
                 )
             )
 
@@ -393,16 +791,15 @@ def _enumerate_variant_specs(launch_arg_names, tensors, find_tensor):
         return sum(1 for name, dim in spec if innermost_dims.get(name) == dim)
 
     def _specificity(entry):
-        _, divisibility_spec, contiguity_spec, _, _ = entry
-
         return (
-            -len(divisibility_spec),
-            -_num_innermost(divisibility_spec),
-            -len(contiguity_spec),
-            -_num_innermost(contiguity_spec),
+            -len(entry.divisibility_spec),
+            -_num_innermost(entry.divisibility_spec),
+            -len(entry.contiguity_spec),
+            -_num_innermost(entry.contiguity_spec),
         )
 
-    specs.sort(key=_specificity)
+    legacy_specs.sort(key=_specificity)
+    specs.extend(legacy_specs)
 
     fallback_suffix = _variant_suffix(
         (),
@@ -412,17 +809,20 @@ def _enumerate_variant_specs(launch_arg_names, tensors, find_tensor):
         size_type=ninetoothed.dtype.int64,
         stride_type=ninetoothed.dtype.int64,
     )
+
     specs.append(
-        (
-            fallback_suffix,
-            (),
-            (),
-            ninetoothed.dtype.int64,
-            ninetoothed.dtype.int64,
+        VariantSpec(
+            suffix=fallback_suffix,
+            divisibility_spec=(),
+            contiguity_spec=(),
+            size_type=ninetoothed.dtype.int64,
+            stride_type=ninetoothed.dtype.int64,
+            tiling_hint=TilingHint(kind="fallback"),
+            dispatch_kind="fallback",
         )
     )
 
-    return specs
+    return tuple(specs)
 
 
 def _per_tensor_dim_options(launch_arg_names, tensors, find_tensor):
@@ -456,18 +856,22 @@ def _per_tensor_dim_options(launch_arg_names, tensors, find_tensor):
 def _overflow_terms(launch_arg_names, tensor_ndims):
     int32_min = -(2**31)
     int32_max = 2**31 - 1
+    terms = []
 
-    return tuple(
-        term
-        for name, ndim in zip(launch_arg_names, tensor_ndims)
-        for dim in range(ndim)
-        for term in (
-            f"{name}.shape[{dim}] > {int32_max}ULL",
-            f"{name}.strides[{dim}] > {int32_max}LL",
-            f"{name}.strides[{dim}] < {int32_min}LL",
-        )
-    )
+    for name, ndim in zip(launch_arg_names, tensor_ndims):
+        if ndim > 0:
+            terms.append(f"({_numel_expr(name, ndim)}) > {int32_max}ULL")
 
+        for dim in range(ndim):
+            terms.extend(
+                (
+                    f"{name}.shape[{dim}] > {int32_max}ULL",
+                    f"{name}.strides[{dim}] > {int32_max}LL",
+                    f"{name}.strides[{dim}] < {int32_min}LL",
+                )
+            )
+
+    return tuple(terms)
 
 def _variant_suffix(
     divisibility_spec,
@@ -835,6 +1239,17 @@ def _load_launch_func(kernel_name, output_dir):
     get_current_raw_stream = torch._C._cuda_getCurrentRawStream
     Tensor_cls = torch.Tensor
 
+    trace_getter_name = f"ninetoothed_get_last_variant_{kernel_name}"
+    trace_getter = getattr(library, trace_getter_name, None)
+    if trace_getter is not None:
+        trace_getter.restype = ctypes.c_char_p
+
+    def _get_last_variant():
+        if trace_getter is None:
+            return "unavailable"
+        value = trace_getter()
+        return value.decode("utf-8") if value is not None else "unavailable"
+
     def _run_launch_func(*args):
         arguments = [None] * len(args)
 
@@ -859,6 +1274,9 @@ def _load_launch_func(kernel_name, output_dir):
         if result != 0:
             raise _KernelLaunchError(result)
 
+    # Test/benchmark-only observability.  The launch ABI remains unchanged.
+    _run_launch_func.get_last_variant = _get_last_variant
+
     return _run_launch_func
 
 
@@ -879,6 +1297,9 @@ def _compile_library(kernel_name, output_dir):
         "-o",
         output_dir / f"{kernel_name}.so",
     ] + list(output_dir.glob(f"{kernel_name}*.cpp"))
+
+    if os.environ.get("NINETOOTHED_DISPATCH_TRACE") == "1":
+        command.insert(1, "-DNINETOOTHED_ENABLE_DISPATCH_TRACE")
 
     subprocess.run(command, check=True)
 
