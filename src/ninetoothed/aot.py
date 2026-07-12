@@ -58,7 +58,7 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
         _HEADER_PATH.write_text(_HEADER_CONTENT)
 
     code_generator = CodeGenerator()
-    source_file = code_generator(
+    code_generator(
         func,
         caller=caller,
         kernel_name=kernel_name,
@@ -94,8 +94,31 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
         size_type,
         stride_type,
     ) in variant_specs:
+        div_hints = {
+            (naming.remove_prefixes(name), dim): 16
+            for name, dim in divisibility_spec
+        }
+        cont_hints = {
+            (naming.remove_prefixes(name), dim): True
+            for name, dim in contiguity_spec
+        }
+
+        variant_codegen = CodeGenerator(
+            divisibility_hints=div_hints,
+            contiguity_hints=cont_hints,
+        )
+        variant_source_file = variant_codegen(
+            func,
+            caller=caller,
+            kernel_name=kernel_name,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            max_num_configs=None,
+            prettify=False,
+        )
+
         variant_outputs = _build_variant(
-            source_file,
+            variant_source_file,
             kernel_func,
             launch_func,
             tensors,

@@ -385,6 +385,7 @@ class Tensor:
             _offsets=_offsets,
             _outputs=[self._inputs[0]],
         )
+        output._reshape_only = True
 
         self._levels.append([output])
 
@@ -410,8 +411,8 @@ class Tensor:
 
         output = type(self)(
             shape=new_shape,
-            dtype=self.dtype,
             source=self.source,
+            dtype=self.dtype,
             target_dims=self.target_dims,
             _offsets=_offsets,
             _outputs=[self._inputs[0]],
@@ -474,6 +475,7 @@ class Tensor:
             _offsets=_offsets,
             _outputs=[self._inputs[0]],
         )
+        output._reshape_only = True
 
         self._levels.append([output])
 
@@ -530,6 +532,7 @@ class Tensor:
             _offsets=_offsets,
             _outputs=outputs,
         )
+        output._reshape_only = True
 
         self._levels.append([output])
 
@@ -562,16 +565,32 @@ class Tensor:
 
         return output
 
-    def offsets(self):
+    def offsets(self, skip_lower_bound=False, skip_upper_bound=False):
         indices = tuple(sum(indices) for indices in zip(*self._inputs))
 
         outputs = self._offsets(indices)
 
-        for index, size in zip(indices, self.shape):
+        for dim, (index, size) in enumerate(zip(indices, self.shape)):
             index = Symbol(index)
 
-            self.source._mask &= index < size
-            self.source._mask &= index >= 0
+            dim_skip_upper = (
+                skip_upper_bound
+                if isinstance(skip_upper_bound, bool)
+                else dim in skip_upper_bound
+            )
+            dim_skip_lower = (
+                skip_lower_bound
+                if isinstance(skip_lower_bound, bool)
+                else dim in skip_lower_bound
+            )
+
+            if Symbol(size) == 1:
+                continue
+
+            if not dim_skip_upper:
+                self.source._mask &= index < size
+            if not dim_skip_lower:
+                self.source._mask &= index >= 0
 
         for output_, output in zip(self._outputs, outputs):
             output_.clear()

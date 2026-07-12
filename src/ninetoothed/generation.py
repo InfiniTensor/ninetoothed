@@ -26,7 +26,7 @@ CACHE_DIR.mkdir(exist_ok=True)
 
 
 class CodeGenerator(ast.NodeTransformer):
-    def __init__(self):
+    def __init__(self, divisibility_hints=None, contiguity_hints=None):
         super().__init__()
 
         device = triton.runtime.driver.active.get_current_device()
@@ -42,6 +42,9 @@ class CodeGenerator(ast.NodeTransformer):
             max_innermost_size = 2**18
 
         self._max_num_elements = max_innermost_size // 8
+
+        self._divisibility_hints = divisibility_hints or {}
+        self._contiguity_hints = contiguity_hints or {}
 
     def __call__(
         self,
@@ -403,9 +406,17 @@ class CodeGenerator(ast.NodeTransformer):
             if symbol_str in meta:
                 continue
 
-            symbol = self._symbols[symbol_str]
+            symbol = self._symbols.get(symbol_str)
 
-            max_values_of_non_meta_params[symbol_str] = symbol.upper_bound
+            if symbol is None:
+                continue
+
+            upper_bound = getattr(symbol, "upper_bound", None)
+
+            if upper_bound is None:
+                continue
+
+            max_values_of_non_meta_params[symbol_str] = upper_bound
 
         block_size_configs = []
 
@@ -659,10 +670,34 @@ class CodeGenerator(ast.NodeTransformer):
         self._invariants[name_for_pointers] = Symbol(tensor.source.pointer_string())
 
         overall_offsets, mask = type(self)._generate_overall_offsets_and_mask(
-            tensor, indices
+            tensor, indices,
+            divisibility_hints=self._divisibility_hints,
+            contiguity_hints=self._contiguity_hints,
         )
 
         pointers = name_for_pointers + overall_offsets
+
+        innermost = tensor.innermost()
+        if len(innermost.shape) == 1:
+            tile_size_val = CodeGenerator._try_get_constant_int(
+                innermost.shape[0]
+            )
+            has_arange = (
+                hasattr(overall_offsets, "_node")
+                and "arange" in ast.unparse(overall_offsets._node)
+            )
+            if has_arange and tile_size_val is not None and tile_size_val > 1:
+                pointers = call(
+                    "max_contiguous",
+                    pointers,
+                    Symbol(f"[{tile_size_val}]"),
+                )
+            elif has_arange and tile_size_val is None:
+                pointers = call(
+                    "max_contiguous",
+                    pointers,
+                    Symbol(f"[{innermost.shape[0]}]"),
+                )
 
         return pointers, mask
 
@@ -722,17 +757,46 @@ class CodeGenerator(ast.NodeTransformer):
         )
 
     @staticmethod
-    def _generate_overall_offsets_and_mask(tensor, indices):
+    def _generate_overall_offsets_and_mask(tensor, indices,
+                                            divisibility_hints=None,
+                                            contiguity_hints=None):
         indices = list(indices)
 
-        offsets, mask = CodeGenerator._generate_offsets_and_mask(tensor, indices)
+        offsets, mask = CodeGenerator._generate_offsets_and_mask(
+            tensor, indices, divisibility_hints=divisibility_hints
+        )
 
         tensor._last_generated_offsets = offsets
 
-        overall_offsets = sum(
-            offsets[source_dim] * Symbol(tensor.source.stride_string(source_dim))
-            for source_dim in range(tensor.source.ndim)
+        all_contiguous = (
+            contiguity_hints is not None
+            and all(
+                (tensor.source.name, d) in contiguity_hints
+                for d in range(tensor.source.ndim)
+            )
         )
+
+        if all_contiguous and tensor.source.ndim > 0:
+            linear_offset = Symbol(0)
+            running_stride = Symbol(1)
+            for dim in reversed(range(tensor.source.ndim)):
+                linear_offset = linear_offset + offsets[dim] * running_stride
+                running_stride = running_stride * Symbol(
+                    tensor.source.shape[dim]
+                )
+            overall_offsets = linear_offset
+        else:
+            overall_offsets = Symbol(0)
+            for source_dim in range(tensor.source.ndim):
+                if CodeGenerator._is_effectively_zero_stride(
+                    tensor, source_dim, offsets
+                ):
+                    continue
+                overall_offsets = (
+                    overall_offsets
+                    + offsets[source_dim]
+                    * Symbol(tensor.source.stride_string(source_dim))
+                )
 
         if tensor.source.jagged_dim is not None:
             overall_offsets += CodeGenerator._name_for_seq_start(tensor) * Symbol(
@@ -744,7 +808,33 @@ class CodeGenerator(ast.NodeTransformer):
         return overall_offsets, mask
 
     @staticmethod
-    def _generate_offsets_and_mask(tensor, indices):
+    def _is_effectively_zero_stride(tensor, dim, offsets):
+        if Symbol(tensor.source.shape[dim]) == 1:
+            return True
+
+        offset_node = offsets[dim].node
+        if (
+            isinstance(offset_node, ast.BinOp)
+            and isinstance(offset_node.op, ast.Mult)
+            and isinstance(offset_node.left, ast.Constant)
+            and offset_node.left.value == 0
+        ):
+            return True
+
+        return False
+
+    @staticmethod
+    def _try_get_constant_int(value):
+        if isinstance(value, Symbol) and isinstance(value.node, ast.Constant):
+            v = value.node.value
+            if isinstance(v, int) and not isinstance(v, bool):
+                return v
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        return None
+
+    @staticmethod
+    def _generate_offsets_and_mask(tensor, indices, divisibility_hints=None):
         offsets = [Symbol(0) for _ in range(tensor.source.ndim)]
 
         tensor.source._mask = Symbol(True)
@@ -761,9 +851,76 @@ class CodeGenerator(ast.NodeTransformer):
             start = stop
             curr = curr.dtype
 
+        innermost = tensor.innermost()
+
+        has_unary_level = any(
+            len(level) == 1 and not getattr(level[0], "_reshape_only", False)
+            for level in tensor._levels[1:]
+        )
+
+        source_skip_upper = set()
+        if not has_unary_level:
+            for source_dim in range(tensor.source.ndim):
+                source_size_val = CodeGenerator._try_get_constant_int(
+                    tensor.source.shape[source_dim]
+                )
+                # AOT divisibility hint: strongest guarantee, skip upper bound
+                # regardless of compile-time constant analysis
+                hint_key = (tensor.source.name, source_dim)
+                if (
+                    divisibility_hints is not None
+                    and hint_key in divisibility_hints
+                ):
+                    for target_dim, tile_size in zip(
+                        innermost.target_dims, innermost.shape
+                    ):
+                        if target_dim == source_dim:
+                            tile_size_val = CodeGenerator._try_get_constant_int(
+                                tile_size
+                            )
+                            if (
+                                tile_size_val is not None
+                                and tile_size_val
+                                % divisibility_hints[hint_key]
+                                == 0
+                            ):
+                                source_skip_upper.add(source_dim)
+                            break
+                    continue
+
+                # Compile-time divisible check (v0.0.2)
+                if source_size_val is None:
+                    continue
+                for target_dim, tile_size in zip(
+                    innermost.target_dims, innermost.shape
+                ):
+                    if target_dim == source_dim:
+                        tile_size_val = CodeGenerator._try_get_constant_int(tile_size)
+                        if (
+                            tile_size_val is not None
+                            and source_size_val % tile_size_val == 0
+                        ):
+                            source_skip_upper.add(source_dim)
+                        break
+
         for level in reversed(tensor._levels):
-            for tensor_ in level:
-                tensor_.offsets()
+            for j, tensor_ in enumerate(level):
+                if len(level) == 2:
+                    if j == 1 and tensor_ is innermost:
+                        tensor_.offsets(
+                            skip_lower_bound=True, skip_upper_bound=True
+                        )
+                    else:
+                        tensor_.offsets(skip_lower_bound=True)
+                elif j == 0 and tensor_ is tensor.source and not has_unary_level:
+                    tensor_.offsets(
+                        skip_lower_bound=True,
+                        skip_upper_bound=source_skip_upper or False,
+                    )
+                elif getattr(tensor_, "_reshape_only", False):
+                    tensor_.offsets(skip_lower_bound=True)
+                else:
+                    tensor_.offsets()
 
         for dim, offset in enumerate(tensor.source._outputs[0]):
             offsets[dim] += offset
@@ -1127,6 +1284,42 @@ class _BinOpSimplifier(ast.NodeTransformer):
 
             if right == 1:
                 return node.left
+
+        if isinstance(node.op, ast.Add):
+            left = Symbol(node.left)
+            right = Symbol(node.right)
+
+            if left == 0:
+                return node.right
+
+            if right == 0:
+                return node.left
+
+        return node
+
+    def visit_Compare(self, node):
+        self.generic_visit(node)
+
+        if (
+            isinstance(node.left, ast.Constant)
+            and node.left.value == 0
+            and len(node.ops) == 1
+            and len(node.comparators) == 1
+        ):
+            if isinstance(node.ops[0], ast.Lt):
+                return ast.Constant(value=True)
+
+        if (
+            len(node.ops) == 1
+            and len(node.comparators) == 1
+            and isinstance(node.comparators[0], ast.Constant)
+            and node.comparators[0].value == 0
+        ):
+            if isinstance(node.ops[0], ast.GtE):
+                left = Symbol(node.left)
+
+                if left == 0:
+                    return ast.Constant(value=True)
 
         return node
 
