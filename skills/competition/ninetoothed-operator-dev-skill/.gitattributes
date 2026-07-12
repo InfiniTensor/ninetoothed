@@ -1,2 +1,4 @@
+* text eol=lf
 *.pdf binary
 *.patch binary
+*.log binary
