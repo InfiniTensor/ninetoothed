@@ -20,9 +20,55 @@ from ninetoothed.language import attribute, call
 from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
+from dataclasses import dataclass
 
 CACHE_DIR = pathlib.Path.home() / ".ninetoothed"
 CACHE_DIR.mkdir(exist_ok=True)
+
+
+@dataclass(frozen=True)
+class TilingHint:
+    kind: str = "generic"
+
+    # Category 1 + stronger N-D flatten
+    flatten_contiguous: bool = False
+
+    # Experimental full-score path:
+    # True N-D contiguous flatten uses ptr + flat_offset instead of
+    # N-D default-stride address generation.  It is intended only for
+    # dispatcher-proven same-shape fully-contiguous pure tensor kernels.
+    true_flatten_contiguous: bool = False
+
+    # Category 2
+    divisible_tile: bool = False
+
+    # Category 3: scalar fast path
+    scalar_fastpath: bool = False
+
+
+class _LoadedNameCollector(ast.NodeVisitor):
+    """Collect names read by a generated kernel body.
+
+    NineToothed initially materializes shape/stride metadata for every source
+    tensor.  Specialization can make some of those parameters dead (for
+    example, contiguous addressing no longer reads runtime strides).  Keeping
+    dead parameters bloats the Triton signature and the generated C wrapper.
+    """
+
+    def __init__(self):
+        self.names = set()
+
+    def visit_Name(self, node):
+        if isinstance(node.ctx, ast.Load):
+            self.names.add(node.id)
+        self.generic_visit(node)
+
+    @classmethod
+    def from_statements(cls, statements):
+        collector = cls()
+        for statement in statements:
+            collector.visit(statement)
+        return collector.names
 
 
 class CodeGenerator(ast.NodeTransformer):
@@ -52,6 +98,7 @@ class CodeGenerator(ast.NodeTransformer):
         num_stages,
         max_num_configs,
         prettify,
+        tiling_hint=None,
     ):
         def _get_tree(func):
             func_def = ast.parse(textwrap.dedent(inspect.getsource(func)))
@@ -85,6 +132,8 @@ class CodeGenerator(ast.NodeTransformer):
             )
 
         self.launch_func_name = f"launch_{kernel_name}"
+
+        self.tiling_hint = tiling_hint or TilingHint()
 
         self._caller = caller
 
@@ -176,6 +225,20 @@ class CodeGenerator(ast.NodeTransformer):
         }
 
         self._symbols = symbols
+
+        # Remove metadata parameters that became dead after specialization and
+        # invariant insertion.  The public launch interface remains tensor-only;
+        # this only prunes the internal Triton kernel signature and launch call.
+        #
+        # IMPORTANT: a size parameter can be dead in the Triton kernel body but
+        # still be required by the generated launch grid.  Triton's AOT wrapper
+        # emits the grid expression into C/C++; pruning such a parameter from the
+        # signature would leave an undeclared identifier in the generated wrapper.
+        # Account for both kernel-body reads and grid-expression reads.
+        loaded_names = _LoadedNameCollector.from_statements(node.body)
+        grid_for_liveness = self._generate_grid()
+        loaded_names |= _LoadedNameCollector.from_statements([grid_for_liveness])
+        non_meta_names = {name for name in non_meta_names if name in loaded_names}
 
         non_meta_names = sorted(non_meta_names)
         meta_names = sorted(meta_names)
@@ -627,9 +690,23 @@ class CodeGenerator(ast.NodeTransformer):
         return launch
 
     def _generate_grid(self):
-        num_elements = functools.reduce(lambda x, y: x * y, self._args[0].shape)
+        if getattr(self.tiling_hint, "true_flatten_contiguous", False):
+            # True flatten runtime grid: one program owns a contiguous flat block.
+            # Use full source numel rather than tiled outer-grid numel.
+            total_num_elements = functools.reduce(
+                lambda x, y: x * y, self._args[0].source.shape
+            )
+            block_num_elements = functools.reduce(
+                lambda x, y: x * y, self._args[0].innermost().shape
+            )
 
-        grid = ast.parse(f"lambda meta: ({num_elements},)", mode="eval").body
+            grid = ast.parse(
+                f"lambda meta: (triton.cdiv({total_num_elements}, {block_num_elements}),)",
+                mode="eval",
+            ).body
+        else:
+            num_elements = functools.reduce(lambda x, y: x * y, self._args[0].shape)
+            grid = ast.parse(f"lambda meta: ({num_elements},)", mode="eval").body
 
         self.raw_grid = copy.deepcopy(grid)
 
@@ -642,35 +719,187 @@ class CodeGenerator(ast.NodeTransformer):
         pointers, mask = self._generate_pointers_and_mask(tensor, indices)
         other = type(self)._generate_other(tensor)
 
+        # Divisible-tile specialization can omit masks only when the actual
+        # arange width equals the real block size.  For non-power-of-two tiles
+        # such as tile((3,)), true flatten uses arange(0, 4) plus a lane mask;
+        # dropping that mask would read one padded lane out of the logical tile.
+        if type(self)._divisible_tile_can_omit_mask(tensor, self.tiling_hint):
+            return call("load", pointers).node
+
+        # Triton defaults other=None.  Omitting the explicit keyword avoids
+        # extra generated-source noise for masked lanes that are not stored.
+        if other is None:
+            return call("load", pointers, mask=mask).node
+
         return call("load", pointers, mask=mask, other=other).node
 
     def _generate_store(self, tensor, value, indices=()):
         pointers, mask = self._generate_pointers_and_mask(tensor, indices)
-
+        if type(self)._divisible_tile_can_omit_mask(tensor, self.tiling_hint):
+            return call("store", pointers, value).node
         return call("store", pointers, value, mask=mask).node
 
     def _generate_pointers_and_mask(self, tensor, indices):
+        name_for_pointers = type(self)._name_for_pointers(tensor)
+        self._invariants[name_for_pointers] = Symbol(tensor.source.pointer_string())
+
+        if type(self)._use_true_flatten_contiguous(tensor, self.tiling_hint):
+            # Full-score experimental path:
+            # all same-shape contiguous tensors share one flat lane mapping.
+            # Dispatcher guards in aot.py are responsible for excluding
+            # broadcast, scalar, jagged, non-contiguous, and shape-mismatch cases.
+            overall_offsets, mask = self._generate_flat_contiguous_offsets_and_mask(tensor)
+            pointers = name_for_pointers + overall_offsets
+            return pointers, mask
+
         if tensor is not tensor.source:
             indices = self._complete_indices(tensor, indices)
 
         indices = tuple(Symbol(index) for index in indices)
 
-        name_for_pointers = type(self)._name_for_pointers(tensor)
-        self._invariants[name_for_pointers] = Symbol(tensor.source.pointer_string())
-
+        # Keep this tensor-local for the conservative path.
         overall_offsets, mask = type(self)._generate_overall_offsets_and_mask(
-            tensor, indices
+            tensor, indices, self.tiling_hint
         )
 
         pointers = name_for_pointers + overall_offsets
 
         return pointers, mask
 
+    @staticmethod
+    def _use_true_flatten_contiguous(tensor, tiling_hint=None):
+        return (
+            tiling_hint is not None
+            and getattr(tiling_hint, "true_flatten_contiguous", False)
+            and getattr(tiling_hint, "flatten_contiguous", False)
+            and tensor.source.ndim > 0
+            and tensor.source.jagged_dim is None
+        )
+
+    @staticmethod
+    def _static_positive_int(value):
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+
+        try:
+            simplified = sympy.simplify(str(value))
+        except Exception:
+            return None
+
+        if getattr(simplified, "is_integer", False) and simplified.is_number:
+            int_value = int(simplified)
+            if int_value > 0:
+                return int_value
+
+        return None
+
+    @staticmethod
+    def _next_power_of_2_static(value):
+        int_value = CodeGenerator._static_positive_int(value)
+
+        if int_value is None:
+            return value, False
+
+        next_value = 1 << (int_value - 1).bit_length()
+        return next_value, next_value != int_value
+
+    @staticmethod
+    def _innermost_needs_power_of_2_padding(tensor):
+        # Triton requires every tl.arange(0, N) width to be a power of two.
+        # The ordinary N-D path creates one arange per innermost dimension, so
+        # tile((3,)) must still use arange(0, 4) plus a mask even when the
+        # divisible-tile specialization proves the logical tile is in-bounds.
+        for size in tensor.innermost().shape:
+            _, needs_padding_mask = CodeGenerator._next_power_of_2_static(size)
+            if needs_padding_mask:
+                return True
+
+        return False
+
+    @staticmethod
+    def _true_flatten_needs_padding_mask(tensor, tiling_hint=None):
+        if not CodeGenerator._use_true_flatten_contiguous(tensor, tiling_hint):
+            return False
+
+        block_num_elements = functools.reduce(
+            lambda x, y: x * y, tensor.innermost().shape
+        )
+        _, needs_padding_mask = CodeGenerator._next_power_of_2_static(block_num_elements)
+
+        return needs_padding_mask
+
+    @staticmethod
+    def _divisible_tile_can_omit_mask(tensor, tiling_hint=None):
+        if tiling_hint is None or not getattr(tiling_hint, "divisible_tile", False):
+            return False
+
+        if CodeGenerator._use_true_flatten_contiguous(tensor, tiling_hint):
+            return not CodeGenerator._true_flatten_needs_padding_mask(tensor, tiling_hint)
+
+        return not CodeGenerator._innermost_needs_power_of_2_padding(tensor)
+
+    def _generate_flat_contiguous_offsets_and_mask(self, tensor):
+        block_num_elements = functools.reduce(
+            lambda x, y: x * y, tensor.innermost().shape
+        )
+        total_num_elements = functools.reduce(
+            lambda x, y: x * y, tensor.source.shape
+        )
+        arange_num_elements, needs_padding_mask = type(self)._next_power_of_2_static(
+            block_num_elements
+        )
+
+        self._invariants[type(self)._NAME_FOR_PID] = call("program_id", 0)
+
+        flat_offsets_name = Symbol("ninetoothed_flat_offsets")
+        flat_lane_offsets_name = Symbol("ninetoothed_flat_lane_offsets")
+        flat_lane_mask_name = Symbol("ninetoothed_flat_lane_mask")
+        flat_mask_name = Symbol("ninetoothed_flat_mask")
+
+        if flat_lane_offsets_name not in self._invariants:
+            flat_lane_offsets = call("arange", 0, arange_num_elements)
+            self._invariants[flat_lane_offsets_name] = flat_lane_offsets
+
+        if flat_offsets_name not in self._invariants:
+            self._invariants[flat_offsets_name] = (
+                type(self)._NAME_FOR_PID * Symbol(block_num_elements)
+                + flat_lane_offsets_name
+            )
+
+        if needs_padding_mask and flat_lane_mask_name not in self._invariants:
+            self._invariants[flat_lane_mask_name] = (
+                flat_lane_offsets_name < Symbol(block_num_elements)
+            )
+
+        if flat_mask_name not in self._invariants:
+            bounds_mask = flat_offsets_name < Symbol(total_num_elements)
+            if needs_padding_mask:
+                self._invariants[flat_mask_name] = flat_lane_mask_name & bounds_mask
+            else:
+                self._invariants[flat_mask_name] = bounds_mask
+
+        tensor._last_generated_offsets = (flat_offsets_name,)
+        tensor._last_generated_overall_offsets = flat_offsets_name
+
+        return flat_offsets_name, flat_mask_name
+
     def _complete_indices(self, tensor, indices):
+        # Divisible tiles can skip masks only when the generated arange widths
+        # are already legal powers of two.  For non-power-of-two tiles, e.g.
+        # tile((3,)), we must still round the arange width up and keep the
+        # padding mask, otherwise Triton compilation fails with arange(0, 3).
+        use_power_of_2_sizes = (
+            not getattr(self.tiling_hint, "divisible_tile", False)
+            or type(self)._innermost_needs_power_of_2_padding(tensor)
+        )
         return (
             tuple(self._generate_pid_indices(tensor))
             + tuple(indices)
-            + tuple(type(self)._generate_innermost_indices(tensor))
+            + tuple(
+                type(self)._generate_innermost_indices(
+                    tensor, use_power_of_2_sizes=use_power_of_2_sizes
+                )
+            )
         )
 
     def _generate_pid_indices(self, tensor):
@@ -722,17 +951,40 @@ class CodeGenerator(ast.NodeTransformer):
         )
 
     @staticmethod
-    def _generate_overall_offsets_and_mask(tensor, indices):
+    def _generate_overall_offsets_and_mask(tensor, indices, tiling_hint=None):
         indices = list(indices)
 
         offsets, mask = CodeGenerator._generate_offsets_and_mask(tensor, indices)
 
         tensor._last_generated_offsets = offsets
 
-        overall_offsets = sum(
-            offsets[source_dim] * Symbol(tensor.source.stride_string(source_dim))
-            for source_dim in range(tensor.source.ndim)
+        use_flatten_contiguous = (
+            tiling_hint is not None
+            and getattr(tiling_hint, "flatten_contiguous", False)
+            and tensor.source.ndim > 0
+            and tensor.source.jagged_dim is None
         )
+
+        if use_flatten_contiguous:
+            # Safe tensor-local flatten specialization:
+            # for a contiguous tensor, pointer offset can be computed from
+            # default contiguous strides instead of runtime tensor.stride(i).
+            # For 1D this becomes the lane index itself.
+            if len(indices) == 1:
+                overall_offsets = Symbol(indices[0])
+            else:
+                default_strides = tuple(
+                    Tensor._calculate_default_strides(tensor.source.shape)
+                )
+                overall_offsets = sum(
+                    offsets[source_dim] * Symbol(default_strides[source_dim])
+                    for source_dim in range(tensor.source.ndim)
+                )
+        else:
+            overall_offsets = sum(
+                offsets[source_dim] * Symbol(tensor.source.stride_string(source_dim))
+                for source_dim in range(tensor.source.ndim)
+            )
 
         if tensor.source.jagged_dim is not None:
             overall_offsets += CodeGenerator._name_for_seq_start(tensor) * Symbol(
