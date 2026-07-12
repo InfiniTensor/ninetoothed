@@ -17,8 +17,6 @@ from ninetoothed.backends.core import (
 from ninetoothed.backends.emitters.triton import emit
 from ninetoothed.compiler.passes import (
     Context,
-    LowerIntrinsics,
-    LowerMemoryScopes,
     OptimizeSchedule,
     ScheduleCandidate,
 )
@@ -144,35 +142,6 @@ class TritonOptimizeSchedule(OptimizeSchedule):
         }
 
 
-class TritonLowerMemoryScopesPass(LowerMemoryScopes):
-    name = "ssa.triton.lower_memory_scopes"
-    supported_backends = (Target.TRITON,)
-
-    def memory_scopes(self, context: Context) -> Mapping[str, str]:
-        del context
-
-        return {
-            "register": "tl.scalar/tl.tensor",
-            "shared": "tl.dot-managed-smem",
-            "global": "pointer",
-        }
-
-
-class TritonLowerIntrinsicsPass(LowerIntrinsics):
-    name = "ssa.triton.lower_intrinsics"
-    supported_backends = (Target.TRITON,)
-
-    def intrinsics(self, context: Context) -> Mapping[str, str]:
-        del context
-
-        return {
-            "dot": "tl.dot",
-            "exp": "tl.exp/tl.exp2",
-            "program_id": "tl.program_id",
-            "load_store": "tl.load/tl.store",
-        }
-
-
 def register_ssa_passes(registry: "Registry") -> None:
     from ninetoothed.backends.registry import register_pass_bundle
 
@@ -180,6 +149,4 @@ def register_ssa_passes(registry: "Registry") -> None:
         registry,
         backend=Target.TRITON,
         optimize_schedule=TritonOptimizeSchedule,
-        lower_memory_scopes=TritonLowerMemoryScopesPass,
-        lower_intrinsics=TritonLowerIntrinsicsPass,
     )

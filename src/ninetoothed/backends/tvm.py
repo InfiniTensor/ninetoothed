@@ -17,8 +17,6 @@ from ninetoothed.backends.core import (
 from ninetoothed.backends.emitters.tvm import emit
 from ninetoothed.compiler.passes import (
     Context,
-    LowerIntrinsics,
-    LowerMemoryScopes,
     OptimizeSchedule,
     ScheduleCandidate,
 )
@@ -112,35 +110,6 @@ class TvmOptimizeSchedule(OptimizeSchedule):
         return _generic_linear_or_reduction_policy(schedule)
 
 
-class TvmLowerMemoryScopesPass(LowerMemoryScopes):
-    name = "ssa.tvm.lower_memory_scopes"
-    supported_backends = (Target.TVM,)
-
-    def memory_scopes(self, context: Context) -> Mapping[str, str]:
-        del context
-
-        return {
-            "register": "local",
-            "shared": "shared",
-            "global": "global",
-        }
-
-
-class TvmLowerIntrinsicsPass(LowerIntrinsics):
-    name = "ssa.tvm.lower_intrinsics"
-    supported_backends = (Target.TVM,)
-
-    def intrinsics(self, context: Context) -> Mapping[str, str]:
-        del context
-
-        return {
-            "dot": "TIR loop or tensorize candidate",
-            "exp": "T.exp",
-            "program_id": "T.thread_binding",
-            "load_store": "T.match_buffer/T.BufferStore",
-        }
-
-
 def register_ssa_passes(registry: "Registry") -> None:
     from ninetoothed.backends.registry import register_pass_bundle
 
@@ -148,6 +117,4 @@ def register_ssa_passes(registry: "Registry") -> None:
         registry,
         backend=Target.TVM,
         optimize_schedule=TvmOptimizeSchedule,
-        lower_memory_scopes=TvmLowerMemoryScopesPass,
-        lower_intrinsics=TvmLowerIntrinsicsPass,
     )

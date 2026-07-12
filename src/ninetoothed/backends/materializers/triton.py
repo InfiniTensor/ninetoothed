@@ -1,6 +1,7 @@
 """Triton artifact materialization."""
 
 import ctypes
+import functools
 import os
 import subprocess
 import sys
@@ -29,6 +30,11 @@ class TritonMaterializer(Materializer):
         return _materialize(compilation)
 
     def aot_build(self, compilation, *, output_dir: str | Path):
+        if len(compilation.launch_plan.tuning_candidates) > 1:
+            raise ValueError(
+                "Triton AOT accepts one launch configuration; use build() to "
+                "benchmark and package multiple explicit configurations."
+            )
         return _aot_materialize(compilation, output_dir=output_dir)
 
     def load_built_artifact(self, built: BuiltArtifact):
@@ -67,14 +73,57 @@ def _materialize(compilation):
     os.environ.setdefault("TRITON_CACHE_DIR", str(TRITON_CACHE_DIR))
     module = import_python_module(source)
     launch = getattr(module, artifact.entrypoint)
-    wrapped = _runtime_wrapper(
-        launch,
-        compilation.launch_abi,
-        specs=compilation.kernel.tensors,
+    candidates = tuple(compilation.launch_plan.tuning_candidates)
+    candidate_launches = tuple(
+        _runtime_wrapper(
+            functools.partial(
+                launch,
+                _ninetoothed_num_warps=int(candidate["num_warps"]),
+                _ninetoothed_num_stages=int(candidate["num_stages"]),
+            ),
+            compilation.launch_abi,
+            specs=compilation.kernel.tensors,
+        )
+        for candidate in candidates
     )
-    kernel = getattr(module, f"{artifact.kernel_name}_kernel", None)
+    tuner = None
 
-    return Handle(compilation, kernel, wrapped, source)
+    if len(candidate_launches) > 1:
+        from ninetoothed.auto_tuner import AutoTuner
+
+        tuner = AutoTuner(
+            candidate_launches,
+            tuple((cache_key, candidate["id"]) for candidate in candidates),
+            cache_namespace=f"jit_{cache_key}",
+        )
+        wrapped = tuner
+    elif candidate_launches:
+        wrapped = candidate_launches[0]
+    else:
+        wrapped = _runtime_wrapper(
+            launch,
+            compilation.launch_abi,
+            specs=compilation.kernel.tensors,
+        )
+
+    kernel = getattr(module, f"{artifact.kernel_name}_kernel", None)
+    handle = Handle(compilation, kernel, wrapped, source)
+    handle._tuner = tuner
+    handle._selected_tuning_candidate = candidates[0] if len(candidates) == 1 else None
+
+    if tuner is not None:
+        by_launch = dict(zip(candidate_launches, candidates))
+
+        def tuned_launch(*args, **kwargs):
+            result = tuner(*args, **kwargs)
+            arg_key = tuner._make_arg_key(args, kwargs)
+            handle._selected_tuning_candidate = by_launch[tuner._best_func[arg_key]]
+
+            return result
+
+        handle._launch = tuned_launch
+
+    return handle
 
 
 def _aot_materialize(compilation, *, output_dir):

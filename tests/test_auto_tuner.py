@@ -1,4 +1,5 @@
 import time
+import uuid
 
 import pytest
 
@@ -17,11 +18,12 @@ def test_auto_tuner(args, kwargs, _):
 
         return _deterministic_benchmark(function, candidate_args, candidate_kwargs)
 
+    namespace = f"test_{uuid.uuid4().hex}"
     auto_tuner = AutoTuner(
         (_foo, _bar),
         (_foo.__name__, _bar.__name__),
         benchmark=benchmark,
-        cache_namespace="test",
+        cache_namespace=namespace,
     )
 
     assert not auto_tuner._get_func_cache_path(_foo).exists()
@@ -32,6 +34,16 @@ def test_auto_tuner(args, kwargs, _):
 
     auto_tuner(*args, **kwargs)
     assert benchmark_calls == [_foo, _bar]
+
+    cache_hit_benchmarks = []
+    cached_tuner = AutoTuner(
+        (_foo, _bar),
+        (_foo.__name__, _bar.__name__),
+        benchmark=lambda *call: cache_hit_benchmarks.append(call) or 0.0,
+        cache_namespace=namespace,
+    )
+    cached_tuner(*args, **kwargs)
+    assert not cache_hit_benchmarks
 
     assert auto_tuner._get_func_cache_path(_foo).exists()
 
@@ -54,6 +66,23 @@ def test_auto_tuner(args, kwargs, _):
         assert best_func is _foo
     else:
         assert best_func is _bar
+
+
+@pytest.mark.parametrize("_", get_available_devices())
+def test_auto_tuner_reports_every_failed_candidate(_):
+    def fail(function, args, kwargs):
+        del args, kwargs
+        raise RuntimeError(f"Candidate {function.__name__} failed.")
+
+    tuner = AutoTuner(
+        (_foo, _bar),
+        ("first", "second"),
+        benchmark=fail,
+        cache_namespace=f"failure_{uuid.uuid4().hex}",
+    )
+
+    with pytest.raises(RuntimeError, match="first.*_foo failed.*second.*_bar failed"):
+        tuner(1)
 
 
 def _foo_delay(*args, **kwargs):

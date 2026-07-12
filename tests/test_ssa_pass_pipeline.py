@@ -27,14 +27,6 @@ def _opcodes(operations):
             yield from _opcodes(region.operations)
 
 
-def _operations(operations):
-    for operation in operations:
-        yield operation
-
-        for region in operation.regions:
-            yield from _operations(region.operations)
-
-
 class TestPipeline:
     def test_pipeline_attaches_target_schedule_without_coarse_nodes(self):
         program = _program(
@@ -97,41 +89,6 @@ class TestPipeline:
         assert "arith.mul" in opcodes
         assert "arith.add" in opcodes
 
-    def test_backend_specific_intrinsics_are_annotations_not_semantic_ops(self):
-        program = _program(
-            "\ndef copy(x, out):\n    out = x\n",
-            (
-                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
-                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
-            ),
-            "copy",
-        )
-
-        for backend, expected_program_id in (
-            (Target.TRITON, "tl.program_id"),
-            (Target.TILELANG, "T.Kernel + T.get_thread_binding"),
-            (Target.TVM, "T.thread_binding"),
-        ):
-            lowered = lower_for_target(
-                program,
-                backend=backend,
-                pass_pipeline=PipelineSpec(
-                    passes=(f"ssa.{backend.value}.lower_intrinsics",),
-                    mode="explicit-target-lowering",
-                ),
-            )
-            assert (
-                lowered.metadata["backend_intrinsics"]["program_id"]
-                == expected_program_id
-            )
-
-            for operation in _operations(lowered.blocks[0].operations):
-                assert "backend_intrinsic" in operation.attrs
-                target_opcode = operation.attrs["target_opcode"]
-                assert target_opcode is None or target_opcode.startswith(
-                    f"{backend.value}."
-                )
-
     def test_pass_registry_classifies_hardware_independent_and_target_passes(self):
         independent = {
             descriptor.name for descriptor in registered(category=HARDWARE_INDEPENDENT)
@@ -150,11 +107,7 @@ class TestPipeline:
         assert "ssa.analyze_effects" in independent
         assert "ssa.select_schedule" in independent
         assert not dependent
-        assert "ssa.triton.optimize_schedule" in triton_specific
-        assert "ssa.triton.lower_memory_scopes" in triton_specific
-        assert "ssa.triton.lower_intrinsics" in triton_specific
-        assert "ssa.cuda.optimize_schedule" not in triton_specific
-        assert "ssa.cuda.lower_intrinsics" not in triton_specific
+        assert triton_specific == {"ssa.triton.optimize_schedule"}
 
     def test_each_backend_registers_required_contract_passes(self):
         for backend in Target:
@@ -162,22 +115,9 @@ class TestPipeline:
                 descriptor.name
                 for descriptor in registered(category=BACKEND_SPECIFIC, backend=backend)
             }
-            required = {
-                f"ssa.{backend.value}.optimize_schedule",
-                f"ssa.{backend.value}.lower_memory_scopes",
-                f"ssa.{backend.value}.lower_intrinsics",
-            }
-            assert required <= backend_passes
+            assert backend_passes == {f"ssa.{backend.value}.optimize_schedule"}
             assert (
                 f"ssa.{backend.value}.optimize_schedule" in default_spec(backend).passes
-            )
-            assert (
-                f"ssa.{backend.value}.lower_memory_scopes"
-                not in default_spec(backend).passes
-            )
-            assert (
-                f"ssa.{backend.value}.lower_intrinsics"
-                not in default_spec(backend).passes
             )
 
     def test_custom_pipeline_can_disable_backend_optimization_pass(self):
@@ -198,8 +138,6 @@ class TestPipeline:
                     "ssa.decompose_linalg",
                     "ssa.analyze_effects",
                     "ssa.select_schedule",
-                    "ssa.triton.lower_memory_scopes",
-                    "ssa.triton.lower_intrinsics",
                 ),
                 mode="custom",
                 reason="test pipeline without backend optimization",
@@ -217,7 +155,7 @@ class TestPipeline:
             "ssa.select_schedule",
         )
 
-    def test_autotune_pipeline_records_candidates_and_selected_passes(self):
+    def test_default_pipeline_records_selected_passes(self):
         program = _program(
             "\ndef copy(x, out):\n    out = x\n",
             (
@@ -226,12 +164,11 @@ class TestPipeline:
             ),
             "copy",
         )
-        lowered = lower_for_target(program, backend=Target.TRITON, autotune=True)
+        lowered = lower_for_target(program, backend=Target.TRITON)
         selection = lowered.metadata["pipeline_selection"]
-        assert selection["mode"] == "autotune"
+        assert selection["mode"] == "default"
         assert "ssa.triton.optimize_schedule" in selection["selected_passes"]
-        assert selection["candidate_pipelines"]
-        assert "policy-autotune" in selection["reason"]
+        assert selection["reason"] == "default backend pipeline"
 
     def test_blocked_linalg_exposes_backend_schedule_candidates(self):
         program = _program(

@@ -3,7 +3,7 @@
 import re
 from collections.abc import Mapping
 
-_TVM_INDEX_LITERAL_RE = re.compile(
+_TYPED_INDEX_LITERAL_RE = re.compile(
     r"(?<!T\.int64\()(?<![A-Za-z0-9_.'\"])([0-9]+)(?![A-Za-z0-9_.'\"])"
 )
 
@@ -36,8 +36,8 @@ def replace_symbols(expr: str, replacements: Mapping[str, str]) -> str:
     return expr
 
 
-def tvm_index_literals(expr: str) -> str:
-    return _TVM_INDEX_LITERAL_RE.sub(r"T.int64(\1)", expr)
+def typed_index_literals(expr: str) -> str:
+    return _TYPED_INDEX_LITERAL_RE.sub(r"T.int64(\1)", expr)
 
 
 def shape_dim(axes: tuple[str, ...], dim) -> str:
@@ -81,7 +81,7 @@ def factor(term: str) -> str:
     return term if valid_symbol(term) or term.isdecimal() else f"({term})"
 
 
-def rewrite_index_math(expr: str, *, cuda: bool) -> str:
+def rewrite_index_math(expr: str, *, c_style: bool) -> str:
     previous = None
     current = expr
 
@@ -96,20 +96,20 @@ def rewrite_index_math(expr: str, *, cuda: bool) -> str:
             current,
             "floor",
             lambda args: (
-                _rewrite_floor_arg(args[0], cuda=cuda) if len(args) == 1 else None
+                _rewrite_floor_arg(args[0], c_style=c_style) if len(args) == 1 else None
             ),
         )
     return current
 
 
-def _rewrite_floor_arg(arg: str, *, cuda: bool) -> str:
+def _rewrite_floor_arg(arg: str, *, c_style: bool) -> str:
     split = split_top_level_binary(arg, "/")
 
     if split is None:
         return f"floor({arg})"
 
     lhs, rhs = split
-    operator = "/" if cuda else "//"
+    operator = "/" if c_style else "//"
 
     return f"(({lhs}) {operator} ({rhs}))"
 
@@ -252,6 +252,6 @@ __all__ = [
     "split_top_level_binary",
     "stride_dim",
     "symbols_in_text",
-    "tvm_index_literals",
+    "typed_index_literals",
     "valid_symbol",
 ]

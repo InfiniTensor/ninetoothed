@@ -36,7 +36,6 @@ class CompileRequest:
     max_num_configs: int | None = None
     pipeline: Any | None = None
     pass_options: Mapping[str, Mapping[str, Any]] | None = None
-    tuning: bool | str | Mapping[str, Any] = False
     backend_options: Mapping[str, Any] | None = None
     tensor_dtypes: Mapping[str, str] | None = None
     specialization_values: Mapping[str, Any] | None = None
@@ -96,7 +95,6 @@ def aot(
     num_stages=None,
     pipeline=None,
     pass_options=None,
-    tuning=False,
     **backend_options,
 ):
     """Compile an annotated application and materialize its backend artifact."""
@@ -110,7 +108,6 @@ def aot(
             num_stages=num_stages,
             pipeline=pipeline,
             pass_options=pass_options,
-            tuning=tuning,
             backend_options=backend_options,
         ),
         output_dir=output_dir,
@@ -132,7 +129,6 @@ def make(
     max_num_configs=None,
     pipeline=None,
     pass_options=None,
-    tuning=False,
     **backend_options,
 ):
     """Arrange, compile, and materialize a NineToothed application."""
@@ -149,7 +145,6 @@ def make(
             max_num_configs=max_num_configs,
             pipeline=pipeline,
             pass_options=pass_options,
-            tuning=tuning,
             backend_options=backend_options,
         ),
         output_dir=output_dir,
@@ -170,7 +165,6 @@ def lower(
     max_num_configs: int | None = None,
     pipeline: Any | None = None,
     pass_options: Mapping[str, Mapping[str, Any]] | None = None,
-    tuning: bool | str | Mapping[str, Any] = False,
     write: bool = False,
     **backend_options: Any,
 ) -> Artifact:
@@ -188,7 +182,6 @@ def lower(
             max_num_configs=max_num_configs,
             pipeline=pipeline,
             pass_options=pass_options,
-            tuning=tuning,
             backend_options=backend_options,
         )
     )
@@ -239,11 +232,6 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
     specs = tensor_specs(params, arranged)
     kernel_name = request.kernel_name or application.__name__
     meta_defaults = _meta_defaults(arranged)
-    autotune = (
-        bool(meta_defaults)
-        or isinstance(request.num_warps, tuple)
-        or isinstance(request.num_stages, tuple)
-    ) and request.max_num_configs != 1
 
     try:
         program = from_application(application, specs, kind=kernel_name, strict=True)
@@ -263,6 +251,7 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
         program = specialize_program(program, request.specialization_values)
 
     target = resolve_target(request.backend)
+    _validate_tuning_options(target, request)
     kernel = Kernel(
         kernel_name=kernel_name,
         source=_source(application),
@@ -275,7 +264,6 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
             "max_num_configs": request.max_num_configs,
             "ssa_pass_pipeline": request.pipeline,
             "ssa_pass_options": dict(request.pass_options or {}),
-            "ssa_tuning": request.tuning,
             "backend_options": dict(request.backend_options or {}),
         },
         metadata={
@@ -284,16 +272,11 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
             "ssa_tensor_ir_source": "arrangement_views",
             "runtime_shape_params": _runtime_shape_params(specs),
             "generation_py_fallback": False,
-            "autotune": autotune,
             "meta_defaults": meta_defaults,
         },
         ssa=program,
     )
-    options = normalize_options(
-        target,
-        caller=request.caller,
-        **dict(request.backend_options or {}),
-    )
+    options = normalize_options(target, **dict(request.backend_options or {}))
     artifact = emit(kernel, options=options)
     scheduled_meta_defaults = _scheduled_meta_defaults(
         meta_defaults, artifact.metadata.get("ssa_schedule", {})
@@ -434,7 +417,11 @@ def _launch_plan(
             )
         )
     )
-    candidates = tuple(metadata.get("ssa_metadata", {}).get("schedule_candidates", ()))
+    candidates = (
+        _triton_tuning_candidates(metadata, request)
+        if artifact.backend == Target.TRITON
+        else ()
+    )
 
     return LaunchPlan(
         abi=abi,
@@ -444,6 +431,85 @@ def _launch_plan(
         specialization_key=specialization,
         tuning_candidates=candidates,
     )
+
+
+def _validate_tuning_options(target: Target, request: CompileRequest) -> None:
+    if request.max_num_configs is not None and request.max_num_configs < 1:
+        raise ValueError("The `max_num_configs` value must be at least one.")
+
+    for name, value in (
+        ("num_warps", request.num_warps),
+        ("num_stages", request.num_stages),
+    ):
+        if value is None:
+            continue
+
+        values = value if isinstance(value, tuple) else (value,)
+
+        if not values or any(int(item) < 1 for item in values):
+            raise ValueError(f"The `{name}` value must contain positive integers.")
+
+    if target == Target.TRITON:
+        return
+
+    if (
+        isinstance(request.num_warps, tuple)
+        or isinstance(request.num_stages, tuple)
+        or request.max_num_configs not in {None, 1}
+    ):
+        raise NotImplementedError(
+            f"Backend autotuning is not supported for `{target.value}` yet; "
+            "use scalar num_warps/num_stages and max_num_configs=1."
+        )
+
+
+def _triton_tuning_candidates(
+    metadata: Mapping[str, Any],
+    request: CompileRequest,
+) -> tuple[Mapping[str, Any], ...]:
+    schedule = dict(metadata.get("ssa_schedule", {}))
+    warps = _configuration_values(
+        request.num_warps,
+        schedule.get("num_warps"),
+        default=4,
+    )
+    stages = _configuration_values(
+        request.num_stages,
+        schedule.get("num_stages"),
+        default=3,
+    )
+    candidates = []
+
+    for num_warps in warps:
+        for num_stages in stages:
+            candidate = {
+                "id": f"warps-{num_warps}_stages-{num_stages}",
+                "num_warps": num_warps,
+                "num_stages": num_stages,
+            }
+
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+    limit = request.max_num_configs
+
+    if limit is not None:
+        candidates = candidates[:limit]
+    return tuple(candidates)
+
+
+def _configuration_values(value, scheduled, *, default: int) -> tuple[int, ...]:
+    selected = value if value is not None else scheduled
+
+    if selected is None:
+        selected = default
+
+    values = selected if isinstance(selected, tuple) else (selected,)
+    normalized = tuple(dict.fromkeys(int(item) for item in values))
+
+    if not normalized or any(item < 1 for item in normalized):
+        raise ValueError("Triton launch configurations must contain positive integers.")
+    return normalized
 
 
 def _derived_binding(name: str, specs):

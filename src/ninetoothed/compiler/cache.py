@@ -49,7 +49,6 @@ def compilation_cache_key(compilation) -> str:
             "backend_options": request.backend_options,
             "pipeline": request.pipeline,
             "pass_options": request.pass_options,
-            "tuning": request.tuning,
             "architecture": _architecture(),
             "versions": _compiler_versions(),
         }

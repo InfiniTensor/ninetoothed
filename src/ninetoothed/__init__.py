@@ -1,5 +1,5 @@
 from ninetoothed.build import build
-from ninetoothed.compiler import aot, jit, load_built_artifact, lower, make
+from ninetoothed.compiler import aot, jit, lower, make
 from ninetoothed.dtype import (
     bfloat16,
     float16,
@@ -36,7 +36,6 @@ __all__ = [
     "eval",
     "subs",
     "jit",
-    "load_built_artifact",
     "lower",
     "make",
     "uint8",

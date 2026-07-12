@@ -43,11 +43,13 @@ class EmitterTarget(ABC):
     index_name: str = "index"
     block_size: int = 256
     entrypoint_prefix: str = "launch_"
-    is_cuda: bool = False
-    is_triton: bool = False
-    is_tilelang: bool = False
-    is_tvm: bool = False
-    is_tir: bool = False
+    c_style_syntax: bool = False
+    vector_value_semantics: bool = False
+    tir_value_semantics: bool = False
+    native_block_matmul: bool = False
+    typed_index_literals: bool = False
+    external_atomic_add: bool = False
+    mutable_scalar_kind: str = "value"
 
     def symbol(self, name: str) -> str:
         return f"v{name[1:]}" if name.startswith("%") else name

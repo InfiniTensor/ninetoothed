@@ -117,7 +117,6 @@ def build(
     lazy=False,
     pipeline=None,
     pass_options=None,
-    tuning=False,
     **backend_options,
 ):
     """Compile configured variants and return a common callable dispatcher."""
@@ -136,7 +135,6 @@ def build(
                 output_dir=output_dir,
                 pipeline=pipeline,
                 pass_options=pass_options,
-                tuning=tuning,
                 **backend_options,
             )
         )
@@ -167,7 +165,6 @@ def build(
                 max_num_configs=1,
                 pipeline=compiler_options.get("pipeline", pipeline),
                 pass_options=compiler_options.get("pass_options", pass_options),
-                tuning=compiler_options.get("tuning", tuning),
                 backend_options=backend_options
                 | dict(compiler_options.get("backend_options", {})),
             )

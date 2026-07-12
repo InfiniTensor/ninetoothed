@@ -12,7 +12,7 @@ Pass execution is intentionally organized like a compiler pipeline:
   target policies such as tiling, memory scopes, and intrinsic choices.
 
 The pass registry is the public control point for default pipelines, custom
-pipelines, and policy-based autotune pipeline selection.
+pipelines, and deterministic target schedule selection.
 """
 
 from collections.abc import Callable, Sequence
@@ -34,7 +34,6 @@ class PipelineSpec:
     passes: tuple[str, ...]
     mode: str = "default"
     pass_options: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
-    candidate_pipelines: tuple[tuple[str, ...], ...] = ()
     reason: str | None = None
 
 
@@ -51,7 +50,7 @@ class Context:
 
 @dataclass(frozen=True, kw_only=True)
 class ScheduleCandidate:
-    """One backend schedule choice exposed to future tuning policies."""
+    """One legal backend schedule choice for deterministic selection."""
 
     name: str
     schedule: Mapping[str, Any]
@@ -249,7 +248,6 @@ class Pipeline:
         return {
             "mode": self.spec.mode,
             "selected_passes": self.spec.passes,
-            "candidate_pipelines": self.spec.candidate_pipelines,
             "reason": self.spec.reason,
             "categories": categories,
         }
@@ -457,7 +455,7 @@ class OptimizeSchedule(Pass):
         candidates: tuple[ScheduleCandidate, ...],
         context: Context,
     ) -> ScheduleCandidate | None:
-        """Select a fallback candidate; an autotuner may replace this policy later."""
+        """Select one legal candidate using explicit or default policy."""
         if not candidates:
             return None
 
@@ -483,82 +481,6 @@ class OptimizeSchedule(Pass):
         analysis: Mapping[str, Any],
         schedule: Mapping[str, Any],
     ) -> Mapping[str, Any]:
-        raise NotImplementedError
-
-
-class LowerMemoryScopes(Pass):
-    """Contract for backend-specific memory scope materialization passes."""
-
-    name = "ssa.lower_memory_scopes"
-    category = BACKEND_SPECIFIC
-    phase = "target_lowering"
-    default_enabled = False
-
-    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
-        scopes = dict(self.memory_scopes(context))
-        blocks = tuple(
-            _map_block(
-                block,
-                lambda op: (
-                    _annotate_operation(
-                        op,
-                        memory_scope=scopes.get("global"),
-                    )
-                    if op.opcode.startswith("mem.")
-                    else op
-                ),
-            )
-            for block in program.blocks
-        )
-
-        return _replace_program(
-            program,
-            blocks=blocks,
-            metadata=dict(program.metadata) | {"memory_scope": scopes},
-        )
-
-    def memory_scopes(self, context: Context) -> Mapping[str, str]:
-        raise NotImplementedError
-
-
-class LowerIntrinsics(Pass):
-    """Contract for backend-specific intrinsic materialization passes."""
-
-    name = "ssa.lower_intrinsics"
-    category = BACKEND_SPECIFIC
-    phase = "target_lowering"
-    default_enabled = False
-
-    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
-        intrinsic = dict(self.intrinsics(context))
-        blocks = tuple(
-            _map_block(
-                block,
-                lambda op: _annotate_operation(
-                    op,
-                    backend_intrinsic=_intrinsic_for_operation(op, intrinsic),
-                    target_opcode=(
-                        f"{context.backend.value}.{op.opcode}"
-                        if _intrinsic_for_operation(op, intrinsic) != "generic"
-                        else None
-                    ),
-                ),
-            )
-            for block in program.blocks
-        )
-
-        return _replace_program(
-            program,
-            blocks=blocks,
-            metadata=dict(program.metadata)
-            | {
-                "target_backend": context.backend.value,
-                "backend_intrinsics": intrinsic,
-                "lowering_stage": "target-annotated-ssa",
-            },
-        )
-
-    def intrinsics(self, context: Context) -> Mapping[str, str]:
         raise NotImplementedError
 
 
@@ -606,11 +528,19 @@ def default_spec(
     )
 
 
-def default_pipeline(backend: Target | str | None) -> Pipeline:
+def default_pipeline(
+    backend: Target | str | None,
+    *,
+    registry: Registry | None = None,
+) -> Pipeline:
     """Return the default target-aware SSA lowering pipeline."""
     backend_name = normalize_target(backend)
 
-    return build(default_spec(backend_name), backend=backend_name)
+    return build(
+        default_spec(backend_name, registry=registry),
+        backend=backend_name,
+        registry=registry,
+    )
 
 
 def build(
@@ -629,67 +559,6 @@ def build(
     return Pipeline(passes, descriptors=descriptors, spec=normalized)
 
 
-def autotune_spec(
-    program: ssa.Program,
-    context: Context,
-    *,
-    registry: Registry | None = None,
-    autotune: bool | str | Mapping[str, Any] = True,
-) -> PipelineSpec:
-    """Select a pipeline using a policy-based autotune planner.
-
-    This does not run kernels. It records candidate pipelines and chooses the
-    best static pipeline for the observed SSA shape. Runtime measurement can be
-    layered on top by passing explicit ``passes`` and ``pass_options`` later.
-    """
-    registry = _default_registry(registry)
-    default_passes = _default_pass_names(context.backend)
-    optimize_pass = _backend_optimize_pass_name(context.backend)
-    no_backend_opt = tuple(name for name in default_passes if name != optimize_pass)
-    candidates = (default_passes, no_backend_opt)
-    opcodes = tuple(_iter_opcodes(program))
-    granularity = _schedule_granularity(
-        {
-            "has_dot": "linalg.dot" in opcodes or "linalg.matmul" in opcodes,
-            "has_exp_reduction_dot_pattern": _has_exp_reduction_dot_pattern(opcodes),
-            "reduction_count": sum(
-                1 for opcode in opcodes if opcode.startswith("reduce.")
-            ),
-        }
-    )
-    reason = (
-        f"policy-autotune selected `{optimize_pass}` for backend={context.backend.value}, "
-        f"ssa_granularity={granularity}"
-    )
-
-    pass_options: Mapping[str, Mapping[str, Any]] = {}
-
-    if isinstance(autotune, Mapping):
-        if "passes" in autotune:
-            selected = tuple(str(name) for name in autotune["passes"])
-            _validate_passes(selected, context.backend, registry)
-
-            return PipelineSpec(
-                passes=selected,
-                mode="autotune",
-                pass_options=autotune.get("pass_options", {}),
-                candidate_pipelines=candidates + (selected,),
-                reason=str(autotune.get("reason", "explicit autotune pass override")),
-            )
-
-        pass_options = autotune.get("pass_options", {})
-
-    _validate_passes(default_passes, context.backend, registry)
-
-    return PipelineSpec(
-        passes=default_passes,
-        mode="autotune",
-        pass_options=pass_options,
-        candidate_pipelines=candidates,
-        reason=reason,
-    )
-
-
 def lower_for_target(
     program: ssa.Program,
     *,
@@ -702,7 +571,6 @@ def lower_for_target(
     | Mapping[str, Any]
     | None = None,
     pass_options: Mapping[str, Mapping[str, Any]] | None = None,
-    autotune: bool | str | Mapping[str, Any] = False,
     pass_registry: Registry | None = None,
 ) -> ssa.Program:
     """Run an SSA pass pipeline for a backend."""
@@ -714,12 +582,6 @@ def lower_for_target(
         compiler_options.get("ssa_pass_options", {}),
         kernel_metadata.get("ssa_pass_options", {}),
         pass_options or {},
-    )
-    base_context = Context(
-        backend=backend_name,
-        compiler_options=compiler_options,
-        kernel_metadata=kernel_metadata,
-        pass_options=explicit_pass_options,
     )
 
     if isinstance(pass_pipeline, Pipeline):
@@ -738,29 +600,32 @@ def lower_for_target(
             lowering_stage="scheduled-ssa",
         )
 
-    if pass_pipeline is None and _autotune_enabled(autotune):
-        spec = autotune_spec(
-            program,
-            base_context,
-            registry=registry,
-            autotune=autotune,
-        )
+    configured_pipeline = (
+        pass_pipeline
+        or compiler_options.get("ssa_pass_pipeline")
+        or kernel_metadata.get("ssa_pass_pipeline")
+    )
+
+    if configured_pipeline is None:
+        pipeline = default_pipeline(backend_name, registry=registry)
+        spec = pipeline.spec
     else:
+        pipeline = None
         spec = _normalize_pipeline_spec(
-            pass_pipeline
-            or compiler_options.get("ssa_pass_pipeline")
-            or kernel_metadata.get("ssa_pass_pipeline")
-            or default_spec(backend_name, registry=registry),
+            configured_pipeline,
             backend_name,
             registry,
         )
 
+    if spec is None:
+        raise ValueError("A pass pipeline must carry a PipelineSpec.")
+
+    default_pass_options = dict(spec.pass_options)
     merged_pass_options = _merge_pass_options(spec.pass_options, explicit_pass_options)
     spec = PipelineSpec(
         passes=spec.passes,
         mode=spec.mode,
         pass_options=merged_pass_options,
-        candidate_pipelines=spec.candidate_pipelines,
         reason=spec.reason,
     )
     context = Context(
@@ -771,7 +636,10 @@ def lower_for_target(
         pipeline_spec=spec,
     )
 
-    lowered = build(spec, backend=backend_name, registry=registry).run(program, context)
+    if pipeline is None or merged_pass_options != default_pass_options:
+        pipeline = build(spec, backend=backend_name, registry=registry)
+
+    lowered = pipeline.run(program, context)
 
     return _with_metadata(
         lowered,
@@ -814,9 +682,6 @@ def _normalize_pipeline_spec(
             passes=tuple(str(name) for name in passes),
             mode=str(spec.get("mode", "custom")),
             pass_options=spec.get("pass_options", {}),
-            candidate_pipelines=tuple(
-                tuple(candidate) for candidate in spec.get("candidate_pipelines", ())
-            ),
             reason=spec.get("reason"),
         )
         _validate_passes(normalized.passes, backend, registry)
@@ -859,23 +724,6 @@ def _default_pass_names(backend: Target) -> tuple[str, ...]:
 
 def _backend_optimize_pass_name(backend: Target) -> str:
     return f"ssa.{backend.value}.optimize_schedule"
-
-
-def _backend_memory_pass_name(backend: Target) -> str:
-    return f"ssa.{backend.value}.lower_memory_scopes"
-
-
-def _backend_intrinsics_pass_name(backend: Target) -> str:
-    return f"ssa.{backend.value}.lower_intrinsics"
-
-
-def _autotune_enabled(value: bool | str | Mapping[str, Any]) -> bool:
-    if isinstance(value, Mapping):
-        return bool(value.get("enabled", True))
-
-    if isinstance(value, str):
-        return value.lower() not in {"", "0", "false", "none", "off"}
-    return bool(value)
 
 
 def _deduplicate_candidates(
@@ -943,23 +791,6 @@ def _candidate_rejection_reason(
     if max_shared is not None and shared is not None and int(shared) > int(max_shared):
         return f"uses {shared} shared-memory bytes, target limit is {max_shared}"
     return None
-
-
-def _intrinsic_for_operation(
-    operation: ssa.Operation, intrinsics: Mapping[str, str]
-) -> str:
-    if operation.opcode in {"linalg.dot", "linalg.matmul"}:
-        return str(intrinsics.get("dot", "generic"))
-
-    if operation.opcode in {"math.exp", "math.exp2", "math.expm1"}:
-        return str(intrinsics.get("exp", "generic"))
-
-    if operation.opcode.startswith("mem."):
-        return str(intrinsics.get("load_store", "generic"))
-
-    if operation.opcode in {"index.offset", "shape.dim"}:
-        return str(intrinsics.get("program_id", "generic"))
-    return "generic"
 
 
 def _merge_pass_options(
@@ -1060,25 +891,6 @@ def _schedule_granularity(analysis: Mapping[str, Any]) -> str:
     if analysis.get("reduction_count"):
         return "parallel-reduction"
     return "elementwise-grid"
-
-
-def annotate_operations(
-    program: ssa.Program,
-    *,
-    attrs: Mapping[str, Any],
-    metadata: Mapping[str, Any] | None = None,
-) -> ssa.Program:
-    """Return ``program`` with every operation annotated by ``attrs``."""
-    blocks = tuple(
-        _map_block(block, lambda op: _annotate_operation(op, **dict(attrs)))
-        for block in program.blocks
-    )
-
-    return _replace_program(
-        program,
-        blocks=blocks,
-        metadata=dict(program.metadata) | dict(metadata or {}),
-    )
 
 
 def _map_block(block: ssa.Block, fn) -> ssa.Block:

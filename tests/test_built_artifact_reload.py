@@ -7,7 +7,11 @@ import torch
 
 import ninetoothed
 from ninetoothed import Tensor
-from ninetoothed.compiler import DEFAULT_COMPILER, CompileRequest
+from ninetoothed.compiler import (
+    DEFAULT_COMPILER,
+    CompileRequest,
+    load_built_artifact,
+)
 from tests.utils import get_available_devices
 
 
@@ -43,7 +47,7 @@ def test_aot_built_artifact_can_be_reloaded(backend, device, tmp_path):
     output = torch.empty_like(input)
     handle(input, other, output)
 
-    reloaded = ninetoothed.load_built_artifact(handle._built_artifact)
+    reloaded = load_built_artifact(handle._built_artifact)
     reloaded_output = torch.empty_like(input)
     reloaded(input, other, reloaded_output)
 
@@ -70,10 +74,10 @@ import sys
 
 import torch
 
-import ninetoothed
+from ninetoothed.compiler import load_built_artifact
 
 built = pickle.loads(open(sys.argv[1], "rb").read())
-launch = ninetoothed.load_built_artifact(built)
+launch = load_built_artifact(built)
 input = torch.randn(257, device=sys.argv[2])
 other = torch.randn_like(input)
 output = torch.empty_like(input)

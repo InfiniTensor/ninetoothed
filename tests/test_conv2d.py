@@ -1,4 +1,5 @@
 import functools
+import os
 
 import pytest
 import torch
@@ -105,7 +106,9 @@ def conv2d(input, filter, padding=0):
         functools.partial(arrangement, enable_padding=True),
         matmul.application,
         (Tensor(4), Tensor(4, shape_options={"constexpr": True}), Tensor(4)),
-        max_num_configs=50,
+        max_num_configs=(
+            50 if os.environ.get("NINETOOTHED_BACKEND", "triton") == "triton" else 1
+        ),
     )
 
     conv2d_kernel(input, filter, output, padding_h=padding_h, padding_w=padding_w)

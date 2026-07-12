@@ -1,32 +1,40 @@
-import hashlib
-import os
+import math
 
-from ninetoothed.compiler.cache import CACHE_DIR, read_manifest, write_manifest
-from ninetoothed.compiler.runtime import KernelLaunchError
+from ninetoothed.compiler.cache import (
+    CACHE_DIR,
+    read_manifest,
+    stable_digest,
+    write_manifest,
+)
 
 
 class AutoTuner:
     """Select a runtime candidate using an injectable benchmark strategy."""
 
     def __init__(self, funcs, keys, *, benchmark=None, cache_namespace=None):
-        self._funcs = funcs
-        self._keys = keys
+        self._funcs = tuple(funcs)
+        self._keys = tuple(keys)
+
+        if not self._funcs or len(self._funcs) != len(self._keys):
+            raise ValueError("AutoTuner requires one key for every candidate.")
+
         self._benchmark = benchmark or _default_benchmark
         self._key_ids = tuple(_candidate_id(key) for key in self._keys)
         self._func_to_key = {func: key for func, key in zip(self._funcs, self._key_ids)}
         namespace = cache_namespace or _default_cache_namespace()
-        self._cache_dir = _AUTO_TUNING_CACHE_DIR / f"{_project_key()}_{namespace}"
+        self._cache_dir = _AUTO_TUNING_CACHE_DIR / stable_digest(
+            {
+                "schema": 2,
+                "namespace": namespace,
+                "candidate_ids": self._key_ids,
+            }
+        )
         self._cache_dir.mkdir(parents=True, exist_ok=True)
-
-        auto_tuner_key = self._key_ids
-        cache_key = hashlib.sha256(str(auto_tuner_key).encode("utf-8")).hexdigest()
-        self._cache_path = self._cache_dir / f"{cache_key}.json"
+        self._cache_path = self._cache_dir / "selection.json"
 
         manifest = read_manifest(self._cache_path) or {}
-        self._timings = dict(manifest.get("timings", {}))
-
-        for key in self._key_ids:
-            self._timings.setdefault(key, {})
+        self._selection_timings = dict(manifest.get("timings", {}))
+        self._candidate_timings = {key: {} for key in self._key_ids}
 
         self._best_func = {}
 
@@ -35,6 +43,9 @@ class AutoTuner:
             return self._best_func[arg_key](*args, **kwargs)
 
         timings = self._get_timings(args, kwargs)
+
+        if all(math.isinf(timing) for timing in timings):
+            raise RuntimeError(self._all_candidates_failed_message(arg_key))
 
         best_timing = min(timings)
         best_timing_index = timings.index(best_timing)
@@ -45,21 +56,26 @@ class AutoTuner:
         return best_func(*args, **kwargs)
 
     def _get_timings(self, args, kwargs):
-        if (arg_key := type(self)._make_arg_key(args, kwargs)) in self._timings:
-            return self._timings[arg_key]
+        arg_key = type(self)._make_arg_key(args, kwargs)
+
+        if arg_key in self._selection_timings:
+            return self._selection_timings[arg_key]
 
         timings = [self._get_timing(func, args, kwargs) for func in self._funcs]
 
-        self._timings[arg_key] = timings
+        self._selection_timings[arg_key] = timings
 
-        self._write_cache(self._cache_path, self._timings)
+        write_manifest(
+            self._cache_path,
+            {"schema": 2, "timings": self._selection_timings},
+        )
 
         return timings
 
     def _get_timing(self, func, args, kwargs):
         func_key = self._func_to_key[func]
 
-        data = self._timings[func_key]
+        data = self._candidate_timings[func_key]
 
         if (arg_key := type(self)._make_arg_key(args, kwargs)) in data:
             return data[arg_key]
@@ -73,27 +89,45 @@ class AutoTuner:
         if arg_key in data:
             return data[arg_key]
 
+        failure = None
+
         try:
             timing = self._benchmark(func, args, kwargs)
-        except KernelLaunchError:
+        except Exception as exc:  # noqa: BLE001
             timing = float("inf")
+            failure = f"{type(exc).__name__}: {exc}"
 
         data[arg_key] = timing
+        failures = dict((read_manifest(cache_path) or {}).get("failures", {}))
 
-        self._write_cache(cache_path, data)
+        if failure is not None:
+            failures[arg_key] = failure
+
+        write_manifest(
+            cache_path,
+            {"schema": 2, "timings": data, "failures": failures},
+        )
 
         return timing
 
     def _get_func_cache_path(self, func):
         func_key = self._func_to_key[func]
-        cache_key = hashlib.sha256(str(func_key).encode("utf-8")).hexdigest()
+        cache_key = stable_digest({"schema": 2, "candidate_id": func_key})
         cache_path = self._cache_dir / f"{cache_key}.json"
 
         return cache_path
 
-    @staticmethod
-    def _write_cache(path, timings):
-        write_manifest(path, {"schema": 1, "timings": timings})
+    def _all_candidates_failed_message(self, arg_key):
+        failures = []
+
+        for func, candidate_id in zip(self._funcs, self._key_ids):
+            manifest = read_manifest(self._get_func_cache_path(func)) or {}
+            reason = dict(manifest.get("failures", {})).get(
+                arg_key, "benchmark returned an infinite timing"
+            )
+            failures.append(f"{candidate_id}: {reason}")
+
+        return "All autotuning candidates failed: " + "; ".join(failures)
 
     @staticmethod
     def _make_arg_key(args, kwargs):
@@ -117,14 +151,18 @@ class AutoTuner:
 
     @staticmethod
     def _make_tensor_key(tensor):
-        return f"tensor(shape={tuple(tensor.shape)}, dtype={str(tensor.dtype).split('.')[-1]})"
+        stride = tuple(tensor.stride()) if hasattr(tensor, "stride") else None
+        device = str(getattr(tensor, "device", None))
+
+        return (
+            f"tensor(shape={tuple(tensor.shape)}, "
+            f"stride={stride}, "
+            f"dtype={str(tensor.dtype).split('.')[-1]}, "
+            f"device={device})"
+        )
 
 
 _AUTO_TUNING_CACHE_DIR = CACHE_DIR / "auto_tuning"
-
-_FILE_PATH = os.path.abspath(__file__)
-
-_PARENT_DIR = os.path.dirname(_FILE_PATH)
 
 
 def _default_benchmark(function, args, kwargs):
@@ -150,33 +188,6 @@ def _default_cache_namespace():
     import torch
 
     return f"cuda_event_torch_{torch.__version__.replace('.', '_')}"
-
-
-def _project_key():
-    consolidated_hash = hashlib.sha256()
-
-    for dirpath, dirnames, filenames in os.walk(_PARENT_DIR):
-        dirnames.sort()
-        filenames.sort()
-
-        for filename in filenames:
-            file_path = os.path.join(dirpath, filename)
-
-            if (
-                not os.path.isfile(file_path)
-                or os.path.splitext(file_path)[1] == ".pyc"
-            ):
-                continue
-
-            file_hash = _calculate_file_hash(file_path)
-            consolidated_hash.update(file_hash.encode("utf-8"))
-
-    return consolidated_hash.hexdigest()
-
-
-def _calculate_file_hash(file_path):
-    with open(file_path, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()
 
 
 def _candidate_id(key):

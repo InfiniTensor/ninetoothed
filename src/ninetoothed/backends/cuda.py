@@ -17,8 +17,6 @@ from ninetoothed.backends.core import (
 from ninetoothed.backends.emitters.cuda import emit
 from ninetoothed.compiler.passes import (
     Context,
-    LowerIntrinsics,
-    LowerMemoryScopes,
     OptimizeSchedule,
     ScheduleCandidate,
 )
@@ -133,35 +131,6 @@ class CudaOptimizeSchedule(OptimizeSchedule):
         return _generic_linear_or_reduction_policy(schedule)
 
 
-class CudaLowerMemoryScopesPass(LowerMemoryScopes):
-    name = "ssa.cuda.lower_memory_scopes"
-    supported_backends = (Target.CUDA,)
-
-    def memory_scopes(self, context: Context) -> Mapping[str, str]:
-        del context
-
-        return {
-            "register": "thread-local",
-            "shared": "__shared__",
-            "global": "__global__ pointer",
-        }
-
-
-class CudaLowerIntrinsicsPass(LowerIntrinsics):
-    name = "ssa.cuda.lower_intrinsics"
-    supported_backends = (Target.CUDA,)
-
-    def intrinsics(self, context: Context) -> Mapping[str, str]:
-        del context
-
-        return {
-            "dot": "thread loop or mma.sync candidate",
-            "exp": "__expf/expf",
-            "program_id": "blockIdx/threadIdx",
-            "load_store": "pointer load/store",
-        }
-
-
 def register_ssa_passes(registry: "Registry") -> None:
     from ninetoothed.backends.registry import register_pass_bundle
 
@@ -169,6 +138,4 @@ def register_ssa_passes(registry: "Registry") -> None:
         registry,
         backend=Target.CUDA,
         optimize_schedule=CudaOptimizeSchedule,
-        lower_memory_scopes=CudaLowerMemoryScopesPass,
-        lower_intrinsics=CudaLowerIntrinsicsPass,
     )

@@ -70,7 +70,6 @@ def _prepare_kernel_for_backend(kernel: Kernel, options: Options) -> Kernel:
             kernel_metadata=kernel.metadata,
             pass_pipeline=kernel.compiler_options.get("ssa_pass_pipeline"),
             pass_options=kernel.compiler_options.get("ssa_pass_options"),
-            autotune=kernel.compiler_options.get("ssa_tuning", False),
         )
 
     return type(kernel)(

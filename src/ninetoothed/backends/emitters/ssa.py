@@ -8,7 +8,7 @@ expressions, loops, buffers, and launch wrappers.
 
 import json
 import re
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Any, Mapping
 
 from ninetoothed.backends.core import Artifact
@@ -25,6 +25,11 @@ from ninetoothed.backends.emitters.analysis import (
     walk_ops as _walk_ops,
 )
 from ninetoothed.backends.emitters.base import EmitterTarget, ModuleRenderContext
+from ninetoothed.backends.emitters.context import (
+    CooperativeDotPlan as _CooperativeDotPlan,
+)
+from ninetoothed.backends.emitters.context import EmitContext as _EmitContext
+from ninetoothed.backends.emitters.context import TensorInfo as _TensorInfo
 from ninetoothed.backends.emitters.expressions import (
     default_strides as _default_strides,
 )
@@ -65,7 +70,7 @@ from ninetoothed.backends.emitters.expressions import (
     symbols_in_text as _symbols_in_text,
 )
 from ninetoothed.backends.emitters.expressions import (
-    tvm_index_literals as _tvm_index_literals,
+    typed_index_literals as _typed_index_literals,
 )
 from ninetoothed.backends.emitters.expressions import (
     valid_symbol as _valid_symbol,
@@ -104,103 +109,7 @@ _UNARY = {
 }
 
 
-@dataclass(frozen=True, kw_only=True)
-class _TensorInfo:
-    ndim: int = 1
-    shape: tuple[str, ...] = ()
-    dtype: str = "float32"
-    name: str
-    source_name: str | None = None
-    source_shape: tuple[str, ...] = ()
-    source_strides: tuple[str, ...] = ()
-    view_linear_offset: str | None = None
-    view_mask: str | None = None
-    attrs: Mapping[str, Any] | None = None
-
-
 _Target = EmitterTarget
-
-
-@dataclass(frozen=True, kw_only=True)
-class _CooperativeDotPlan:
-    loop: ssa.Operation
-    dot: ssa.Operation
-    store: ssa.Operation
-
-
-@dataclass(kw_only=True)
-class _EmitContext:
-    target: _Target
-    kernel: Kernel
-    program: ssa.Program
-    operations: Mapping[str, ssa.Operation]
-    value_types: Mapping[str, ssa.Type]
-    lines: list[str]
-    memo: dict[str, str]
-    tensor_infos: Mapping[str, _TensorInfo]
-    output: str
-    output_axes: tuple[str, ...]
-    index_expr: str
-    outer_index_expr: str
-    inner_index_expr: str
-    mask_expr: str | None
-    row_expr: str | None = None
-    col_expr: str | None = None
-    coordinate_exprs: tuple[str, ...] = ()
-    reduce_axis: int | None = None
-    reduce_index: str | None = None
-    reduce_flattened: bool = False
-    bindings: Mapping[str, str] | None = None
-    temp_counter: list[int] | None = None
-    materialized: dict[tuple[str, str], str] | None = None
-    indent: str = ""
-    local_suffix: str = ""
-    block_program: bool = False
-    cuda_block_program: bool = False
-    layout_contiguous: bool = False
-    vector_program: bool = False
-
-    def child(
-        self,
-        *,
-        lines: list[str] | None = None,
-        memo: dict[str, str] | None = None,
-        **kwargs: Any,
-    ) -> "_EmitContext":
-        data = {
-            "target": self.target,
-            "kernel": self.kernel,
-            "program": self.program,
-            "operations": self.operations,
-            "value_types": self.value_types,
-            "lines": self.lines if lines is None else lines,
-            "memo": self.memo if memo is None else memo,
-            "tensor_infos": self.tensor_infos,
-            "output": self.output,
-            "output_axes": self.output_axes,
-            "index_expr": self.index_expr,
-            "outer_index_expr": self.outer_index_expr,
-            "inner_index_expr": self.inner_index_expr,
-            "mask_expr": self.mask_expr,
-            "row_expr": self.row_expr,
-            "col_expr": self.col_expr,
-            "coordinate_exprs": self.coordinate_exprs,
-            "reduce_axis": self.reduce_axis,
-            "reduce_index": self.reduce_index,
-            "reduce_flattened": self.reduce_flattened,
-            "bindings": self.bindings,
-            "temp_counter": self.temp_counter,
-            "materialized": self.materialized if lines is None else {},
-            "indent": self.indent,
-            "local_suffix": self.local_suffix,
-            "block_program": self.block_program,
-            "cuda_block_program": self.cuda_block_program,
-            "layout_contiguous": self.layout_contiguous,
-            "vector_program": self.vector_program,
-        }
-        data.update(kwargs)
-
-        return _EmitContext(**data)
 
 
 def emit(kernel: Kernel, target: EmitterTarget, options=None) -> Artifact:
@@ -279,7 +188,6 @@ def emit(kernel: Kernel, target: EmitterTarget, options=None) -> Artifact:
             ),
         },
         entrypoint=target.entrypoint(kernel.kernel_name),
-        stage="source",
         materializable=True,
         metadata=metadata,
     )
@@ -379,46 +287,49 @@ def _render_source(
     )
 
     has_dot = any(op.opcode in {"linalg.dot", "linalg.matmul"} for op in walked_ops)
-    triton_block_program = bool(
-        target.is_triton and split_outer_inner and len(value_axes) == 2 and has_dot
-    )
-    triton_scalar_program = bool(
-        target.is_triton and primary_atomic is not None and not value_axes
-    )
-    triton_vector_program = bool(
-        target.is_triton
+    vector_block_program = bool(
+        target.vector_value_semantics
         and split_outer_inner
-        and not triton_block_program
+        and len(value_axes) == 2
+        and has_dot
+    )
+    vector_scalar_program = bool(
+        target.vector_value_semantics and primary_atomic is not None and not value_axes
+    )
+    vector_reduction_program = bool(
+        target.vector_value_semantics
+        and split_outer_inner
+        and not vector_block_program
         and sum(str(axis).strip("() ") != "1" for axis in value_axes) <= 1
         and any(op.opcode.startswith("reduce.") for op in walked_ops)
     )
-    cuda_block_program = bool(
-        target.is_cuda
+    native_block_program = bool(
+        target.native_block_matmul
         and split_outer_inner
         and len(value_axes) == 2
         and has_dot
         and program.metadata.get("optimization", {}).get("preserve_linalg")
     )
 
-    if triton_scalar_program:
+    if vector_scalar_program:
         axes = outer_axes
         total = _target_index_expr(target, _product(outer_axes))
         grid_total = total
         outer_index_expr = "tl.program_id(0)"
         inner_index_expr = "tl.program_id(0)"
-    elif triton_block_program:
+    elif vector_block_program:
         axes = value_axes
         total = _target_index_expr(target, _product(value_axes))
         grid_total = _target_index_expr(target, _product(outer_axes))
         outer_index_expr = "tl.program_id(0)"
         inner_index_expr = "0"
-    elif triton_vector_program:
+    elif vector_reduction_program:
         axes = value_axes
         total = _target_index_expr(target, _product(value_axes))
         grid_total = _target_index_expr(target, _product(outer_axes))
         outer_index_expr = "tl.program_id(0)"
         inner_index_expr = "offsets"
-    elif cuda_block_program:
+    elif native_block_program:
         axes = value_axes
         total = _target_index_expr(target, _product(value_axes))
         tile_rows = f"(({value_axes[0]}) + 15) / 16"
@@ -427,7 +338,7 @@ def _render_source(
             target, f"({_product(outer_axes)}) * ({tile_rows}) * ({tile_cols})"
         )
         outer_index_expr = "nt_outer_index"
-        inner_index_expr = f"(nt_cuda_row) * ({value_axes[1]}) + nt_cuda_col"
+        inner_index_expr = f"(nt_matrix_row) * ({value_axes[1]}) + nt_matrix_col"
     elif split_outer_inner:
         axes = value_axes
         inner_total = _product(value_axes)
@@ -460,9 +371,9 @@ def _render_source(
         total,
         outer_index_expr,
         inner_index_expr,
-        block_program=triton_block_program,
-        cuda_block_program=cuda_block_program,
-        vector_program=triton_vector_program,
+        block_program=vector_block_program,
+        native_block_program=native_block_program,
+        vector_program=vector_reduction_program,
     )
     body = _with_contiguous_1d_fast_path(
         kernel,
@@ -476,9 +387,9 @@ def _render_source(
         total,
         outer_index_expr,
         inner_index_expr,
-        block_program=triton_block_program,
-        cuda_block_program=cuda_block_program,
-        vector_program=triton_vector_program,
+        block_program=vector_block_program,
+        native_block_program=native_block_program,
+        vector_program=vector_reduction_program,
     )
 
     context = ModuleRenderContext(
@@ -495,11 +406,13 @@ def _render_source(
         outer_axes=outer_axes,
         grid_total=grid_total,
         axes=axes,
-        vector_program=triton_vector_program,
+        vector_program=vector_reduction_program,
         block_program=(
-            triton_block_program if target.is_triton else cuda_block_program
+            vector_block_program
+            if target.vector_value_semantics
+            else native_block_program
         ),
-        scalar_program=triton_scalar_program,
+        scalar_program=vector_scalar_program,
         backend_options=backend_options,
     )
 
@@ -533,7 +446,7 @@ def _with_contiguous_1d_fast_path(
     inner_index_expr: str,
     *,
     block_program: bool,
-    cuda_block_program: bool,
+    native_block_program: bool,
     vector_program: bool,
 ) -> str:
     logical_infos = tuple(tensor_infos[tensor.name] for tensor in kernel.tensors)
@@ -603,17 +516,17 @@ def _with_contiguous_1d_fast_path(
         outer_index_expr,
         inner_index_expr,
         block_program=block_program,
-        cuda_block_program=cuda_block_program,
+        native_block_program=native_block_program,
         layout_contiguous=True,
         vector_program=vector_program,
     )
     predicate = (
         " && ".join(f"({stride} == 1)" for stride in stride_params)
-        if target.is_cuda
+        if target.c_style_syntax
         else " and ".join(f"({stride} == 1)" for stride in stride_params)
     )
 
-    if target.is_cuda:
+    if target.c_style_syntax:
         return (
             f"if ({predicate}) {{\n"
             f"{_indent_block(contiguous_body, '    ')}\n"
@@ -651,14 +564,16 @@ def _render_body(
     inner_index_expr: str,
     *,
     block_program: bool = False,
-    cuda_block_program: bool = False,
+    native_block_program: bool = False,
     layout_contiguous: bool = False,
     vector_program: bool = False,
 ) -> str:
     output = outputs[0] if outputs else "out"
     lines: list[str] = []
     coordinate_exprs: tuple[str, ...] = ()
-    enable_index_cse = not target.is_triton and outer_index_expr != inner_index_expr
+    enable_index_cse = (
+        not target.vector_value_semantics and outer_index_expr != inner_index_expr
+    )
 
     if block_program:
         coordinate_exprs = target.block_coords(axes)
@@ -708,10 +623,10 @@ def _render_body(
         outer_index_expr=outer_index_expr,
         inner_index_expr=inner_index_expr,
         mask_expr=(
-            "nt_cuda_active"
-            if cuda_block_program
+            "nt_matrix_active"
+            if native_block_program
             else "mask"
-            if target.is_triton and not block_program
+            if target.vector_value_semantics and not block_program
             else None
         ),
         row_expr=coordinate_exprs[0]
@@ -730,7 +645,7 @@ def _render_body(
         materialized={},
         indent="",
         block_program=block_program,
-        cuda_block_program=cuda_block_program,
+        native_block_program=native_block_program,
         layout_contiguous=layout_contiguous,
         vector_program=vector_program,
     )
@@ -740,7 +655,7 @@ def _render_body(
             _emit_operation(op, ctx)
 
     if not ctx.lines:
-        ctx.lines.append("pass" if not target.is_cuda else "/* no-op */")
+        ctx.lines.append("pass" if not target.c_style_syntax else "/* no-op */")
     return "\n".join(ctx.lines)
 
 
@@ -860,7 +775,7 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
 
     if op.opcode == "mem.atomic_add":
         expression = _operation_expr(op, ctx)
-        ctx.lines.append(expression + (";" if ctx.target.is_cuda else ""))
+        ctx.lines.append(expression + (";" if ctx.target.c_style_syntax else ""))
 
         return
 
@@ -887,7 +802,7 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
 
     if not name.startswith("%"):
         if name not in ctx.tensor_infos:
-            if _is_bool_scalar_value(name, ctx) and ctx.target.is_tir:
+            if _is_bool_scalar_value(name, ctx) and ctx.target.tir_value_semantics:
                 return f"({name} != 0)"
             return name
         return _tensor_value(name, ctx)
@@ -931,7 +846,7 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
 
         expr = _scf_if_expr(op, ctx)
     elif (
-        not ctx.target.is_triton
+        not ctx.target.vector_value_semantics
         and op.results
         and op.results[0].type.kind == "tensor"
         and op.opcode.startswith("arith.")
@@ -1032,7 +947,7 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     if opcode == "mem.atomic_add":
         operands = tuple(_emit_value(operand, ctx) for operand in op.operands)
 
-        if target.is_tvm:
+        if target.external_atomic_add:
             value_type = ctx.value_types.get(op.operands[-1])
             dtype = _normalize_dtype(None if value_type is None else value_type.dtype)
 
@@ -1088,7 +1003,7 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
         if operator == "floordiv":
             return (
                 f"(({args[0]}) // ({args[1]}))"
-                if not target.is_cuda
+                if not target.c_style_syntax
                 else f"(({args[0]}) / ({args[1]}))"
             )
 
@@ -1106,7 +1021,7 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
         name = opcode[len("math.") :]
         callee = str(op.attrs.get("callee", ""))
 
-        if target.is_triton and "libdevice." in callee:
+        if target.vector_value_semantics and "libdevice." in callee:
             name = f"libdevice.{name}"
         return target.call(
             name,
@@ -1138,7 +1053,7 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
 
 def _binary_expr(operator: str, op: ssa.Operation, ctx: _EmitContext) -> str:
     if (
-        ctx.target.is_cuda
+        ctx.target.c_style_syntax
         and operator in {"mul", "multiply"}
         and op.results
         and op.results[0].type.kind == "tensor"
@@ -1171,7 +1086,7 @@ def _emit_linalg_dot(
     rhs_axes = _value_axes(rhs, ctx)
     result_axes = tuple(str(dim) for dim in op.results[0].type.shape)
 
-    if ctx.cuda_block_program and len(lhs_axes) == 2 and len(rhs_axes) == 2:
+    if ctx.native_block_program and len(lhs_axes) == 2 and len(rhs_axes) == 2:
         result = ctx.target.emit_block_dot(op, ctx, coords=coords)
 
         if result is not None:
@@ -1193,7 +1108,7 @@ def _emit_linalg_dot(
     acc_type = ssa.Type(kind="scalar", dtype=accumulator_dtype)
     init = "0.0"
 
-    if ctx.target.is_triton and ctx.mask_expr is not None:
+    if ctx.target.vector_value_semantics and ctx.mask_expr is not None:
         dtype = _normalize_dtype(acc_type.dtype or "float32")
         init = f"tl.full((BLOCK,), {init}, tl.{dtype})"
 
@@ -1242,7 +1157,7 @@ def _emit_linalg_dot(
     )
     ctx.lines.extend(_indent_lines(body_lines, ctx.target))
 
-    if ctx.target.is_cuda:
+    if ctx.target.c_style_syntax:
         ctx.lines.append("}")
     return acc_expr
 
@@ -1393,7 +1308,7 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
         name = op.opcode[len("math.") :]
         callee = str(op.attrs.get("callee", ""))
 
-        if ctx.target.is_triton and "libdevice." in callee:
+        if ctx.target.vector_value_semantics and "libdevice." in callee:
             name = f"libdevice.{name}"
         return ctx.target.call(
             name,
@@ -1450,7 +1365,7 @@ def _element_binary(
 ) -> str:
     masks: tuple[str, ...] = ()
 
-    if ctx.target.is_cuda and operator in {"mul", "multiply"}:
+    if ctx.target.c_style_syntax and operator in {"mul", "multiply"}:
         result_axes = (
             tuple(str(dim) for dim in op.results[0].type.shape)
             if op.results
@@ -1474,7 +1389,7 @@ def _element_binary(
     if operator == "floordiv":
         return (
             f"(({args[0]}) // ({args[1]}))"
-            if not ctx.target.is_cuda
+            if not ctx.target.c_style_syntax
             else f"(({args[0]}) / ({args[1]}))"
         )
 
@@ -1611,7 +1526,7 @@ def _emit_reduce_element(
     )
     init = _reduction_identity(operator, result_type, ctx.target)
 
-    if ctx.target.is_triton and ctx.mask_expr is not None:
+    if ctx.target.vector_value_semantics and ctx.mask_expr is not None:
         dtype = _normalize_dtype(result_type.dtype or "float32")
         init = f"tl.full((BLOCK,), {init}, tl.{dtype})"
 
@@ -1654,7 +1569,7 @@ def _emit_reduce_element(
     )
     ctx.lines.extend(_indent_lines(body_lines, ctx.target))
 
-    if ctx.target.is_cuda:
+    if ctx.target.c_style_syntax:
         ctx.lines.append("}")
     return acc_expr
 
@@ -1728,7 +1643,7 @@ def _load_tensor_at(
     source_index = _materialize_index_expr(source_index, ctx)
     mask = _combined_mask(
         ctx.target,
-        ctx.mask_expr if ctx.target.is_triton else None,
+        ctx.mask_expr if ctx.target.vector_value_semantics else None,
         info,
         view_index,
         ctx=ctx,
@@ -1750,7 +1665,7 @@ def _masked_load(
     other = _load_other(info)
     load = ctx.target.load(name, source_index, mask=mask, other=other)
 
-    if ctx.target.is_cuda and mask is not None:
+    if ctx.target.c_style_syntax and mask is not None:
         predicate = _materialize_bool_expr(mask, ctx) or mask
         other_value = ctx.target.literal(other)
 
@@ -1758,7 +1673,7 @@ def _masked_load(
             other_value = ctx.target.cast(info.dtype, other_value)
         return f"(({predicate}) ? ({load}) : ({other_value}))"
 
-    if ctx.target.is_tir and mask is not None:
+    if ctx.target.tir_value_semantics and mask is not None:
         predicate = _materialize_bool_expr(mask, ctx) or mask
         other_value = ctx.target.literal(other)
 
@@ -2044,7 +1959,7 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
     operand_axes = _value_axes(op.operands[0], ctx) if op.operands else ctx.output_axes
     normalized_axis = None
 
-    if ctx.target.is_triton and (ctx.vector_program or ctx.block_program):
+    if ctx.target.vector_value_semantics and (ctx.vector_program or ctx.block_program):
         operand = _emit_value(op.operands[0], ctx)
         expr = f"tl.{operator}({operand}, axis=0)"
         ctx.lines.append(ctx.target.local_decl(op.results[0].type, local, expr))
@@ -2067,7 +1982,7 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
     result_type = op.results[0].type
     init = _reduction_identity(operator, result_type, ctx.target)
 
-    if ctx.target.is_triton and axis is not None:
+    if ctx.target.vector_value_semantics and axis is not None:
         dtype = _normalize_dtype(result_type.dtype or "float32")
         init = f"tl.full((BLOCK,), {init}, tl.{dtype})"
 
@@ -2101,13 +2016,13 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
     )
     ctx.lines.extend(_indent_lines(inner_lines, ctx.target))
 
-    if ctx.target.is_cuda:
+    if ctx.target.c_style_syntax:
         ctx.lines.append("}")
     return acc_expr
 
 
 def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | None:
-    if ctx.cuda_block_program:
+    if ctx.native_block_program:
         fused = ctx.target.emit_reduction_loop(local, op, ctx)
 
         if fused is not None:
@@ -2126,14 +2041,14 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
         init = _emit_value(initial_name, ctx)
 
         if (
-            ctx.target.is_triton
+            ctx.target.vector_value_semantics
             and ctx.mask_expr is not None
             and ctx.target.needs_block_init(initial_name, value, ctx)
         ):
             dtype = _normalize_dtype(value.type.dtype or "float32")
             init = f"tl.full((BLOCK,), {init}, tl.{dtype})"
         elif (
-            ctx.target.is_triton
+            ctx.target.vector_value_semantics
             and ctx.block_program
             and ctx.target.needs_block_init(initial_name, value, ctx)
         ):
@@ -2202,7 +2117,7 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
 
     ctx.lines.extend(_indent_lines(body_lines, ctx.target))
 
-    if ctx.target.is_cuda:
+    if ctx.target.c_style_syntax:
         ctx.lines.append("}")
     return ctx.memo.get(result_names[0]) if result_names else None
 
@@ -2235,7 +2150,7 @@ def _emit_scf_if_statement(op: ssa.Operation, ctx: _EmitContext) -> None:
     )
 
     if len(op.regions) > 1:
-        ctx.lines.append("} else {" if ctx.target.is_cuda else "else:")
+        ctx.lines.append("} else {" if ctx.target.c_style_syntax else "else:")
         else_lines: list[str] = []
         else_ctx = ctx.child(
             lines=else_lines,
@@ -2251,7 +2166,7 @@ def _emit_scf_if_statement(op: ssa.Operation, ctx: _EmitContext) -> None:
             _indent_lines(else_lines or _empty_block_lines(ctx.target), ctx.target)
         )
 
-    if ctx.target.is_cuda:
+    if ctx.target.c_style_syntax:
         ctx.lines.append("}")
 
 
@@ -2277,7 +2192,7 @@ def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
 
     for region_index, region in enumerate(op.regions[:2]):
         if region_index == 1:
-            ctx.lines.append("} else {" if ctx.target.is_cuda else "else:")
+            ctx.lines.append("} else {" if ctx.target.c_style_syntax else "else:")
 
         lines: list[str] = []
         child = ctx.child(
@@ -2309,7 +2224,7 @@ def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
             _indent_lines(lines or _empty_block_lines(ctx.target), ctx.target)
         )
 
-    if ctx.target.is_cuda:
+    if ctx.target.c_style_syntax:
         ctx.lines.append("}")
 
 
@@ -2331,7 +2246,7 @@ def _scf_if_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
 def _scf_if_element(
     op: ssa.Operation, coords: tuple[str, ...], ctx: _EmitContext
 ) -> str:
-    if not ctx.target.is_triton:
+    if not ctx.target.vector_value_semantics:
         return _scf_if_element_control_flow(op, coords, ctx)
 
     condition = _emit_value(op.operands[0], ctx)
@@ -2375,7 +2290,7 @@ def _scf_if_element_control_flow(
 
     for region_index, region in enumerate(op.regions[:2]):
         if region_index == 1:
-            ctx.lines.append("} else {" if ctx.target.is_cuda else "else:")
+            ctx.lines.append("} else {" if ctx.target.c_style_syntax else "else:")
 
         lines: list[str] = []
         child = ctx.child(
@@ -2406,10 +2321,10 @@ def _scf_if_element_control_flow(
         )
 
     if len(op.regions) == 1:
-        ctx.lines.append("} else {" if ctx.target.is_cuda else "else:")
+        ctx.lines.append("} else {" if ctx.target.c_style_syntax else "else:")
         ctx.lines.extend(_indent_lines(_empty_block_lines(ctx.target), ctx.target))
 
-    if ctx.target.is_cuda:
+    if ctx.target.c_style_syntax:
         ctx.lines.append("}")
     return result_expr
 
@@ -2480,7 +2395,7 @@ def _tensor_value(name: str, ctx: _EmitContext) -> str:
     info = ctx.tensor_infos.get(name, _TensorInfo(name=name))
 
     if info.ndim == 0:
-        if _is_bool_scalar_value(name, ctx) and ctx.target.is_tir:
+        if _is_bool_scalar_value(name, ctx) and ctx.target.tir_value_semantics:
             return f"({name} != 0)"
         return name
 
@@ -2509,10 +2424,10 @@ def _load_tensor(name: str, view_index: str, ctx: _EmitContext) -> str:
         _source_index_for_value(info, view_index, ctx, level=_dtype_level(name, ctx)),
     )
     source_index = _materialize_index_expr(source_index, ctx)
-    base_mask = ctx.mask_expr if ctx.target.is_triton else None
+    base_mask = ctx.mask_expr if ctx.target.vector_value_semantics else None
 
     if (
-        ctx.target.is_triton
+        ctx.target.vector_value_semantics
         and base_mask is not None
         and ctx.target.index_name not in source_index
         and "offsets" not in source_index
@@ -2649,13 +2564,13 @@ def _jagged_runtime_replacements(
     seq_start = ctx.target.load(
         offsets_param,
         batch_offset,
-        mask=ctx.mask_expr if ctx.target.is_triton else None,
+        mask=ctx.mask_expr if ctx.target.vector_value_semantics else None,
         other=0,
     )
     seq_end = ctx.target.load(
         offsets_param,
         f"({batch_offset}) + 1",
-        mask=ctx.mask_expr if ctx.target.is_triton else None,
+        mask=ctx.mask_expr if ctx.target.vector_value_semantics else None,
         other=0,
     )
 
@@ -2705,7 +2620,7 @@ def _source_index_from_offsets(
     replacements: Mapping[str, str],
     ctx: _EmitContext,
 ) -> str | None:
-    if ctx.target.is_triton:
+    if ctx.target.vector_value_semantics:
         return None
 
     offsets = tuple(str(offset) for offset in template.get("offsets", ()))
@@ -2754,7 +2669,7 @@ def _store_mask(
     level: int | None = None,
     extract_indices: tuple[str, ...] = (),
 ) -> str | None:
-    if target.is_tir:
+    if target.tir_value_semantics:
         template_mask = _mask_from_template_offsets(info, view_index, ctx)
         masks = []
 
@@ -2969,17 +2884,17 @@ def _coords_from_linear(
 
 
 def _target_index_expr(target: _Target, expr: str) -> str:
-    rewritten = _rewrite_index_math(expr, cuda=target.is_cuda)
+    rewritten = _rewrite_index_math(expr, c_style=target.c_style_syntax)
 
-    if target.is_tvm:
-        return _tvm_index_literals(rewritten)
+    if target.typed_index_literals:
+        return _typed_index_literals(rewritten)
     return rewritten
 
 
 def _materialize_index_expr(
     expr: str, ctx: _EmitContext, *, threshold: int = 96
 ) -> str:
-    if ctx.target.is_triton:
+    if ctx.target.vector_value_semantics:
         return expr
 
     if len(expr) < threshold or _valid_symbol(expr):
@@ -3006,7 +2921,7 @@ def _materialize_bool_expr(
     if expr is None:
         return None
 
-    if ctx.target.is_triton:
+    if ctx.target.vector_value_semantics:
         return expr
 
     if len(expr) < threshold or _valid_symbol(expr):
@@ -3078,7 +2993,7 @@ def _emit_store_index_value(
         name, _broadcast_coords(coords, result_axes, operand_axes), ctx
     )
 
-    if ctx.target.is_cuda and not _integer_expr(value):
+    if ctx.target.c_style_syntax and not _integer_expr(value):
         return f"static_cast<int64_t>({value})"
     return value
 
@@ -3086,21 +3001,9 @@ def _emit_store_index_value(
 def _emit_index_value(name: str, ctx: _EmitContext) -> str:
     value = _emit_value(name, ctx)
 
-    if ctx.target.is_cuda and not _integer_expr(value):
+    if ctx.target.c_style_syntax and not _integer_expr(value):
         return f"static_cast<int64_t>({value})"
     return value
-
-
-def _python_tuning_header(kernel: Kernel) -> str:
-    options = kernel.compiler_options
-    lines = [
-        f"# num_warps={options.get('num_warps')}",
-        f"# num_stages={options.get('num_stages')}",
-    ]
-
-    if kernel.metadata.get("autotune"):
-        lines.append(f"# {kernel.kernel_name}_with_auto_tuning: Launch IR tuning plan")
-    return "\n".join(lines)
 
 
 def _logical_ssa_audit(kernel: Kernel, target: _Target) -> str:
@@ -3529,7 +3432,7 @@ def _axis_offset_expr(
         return _target_index_expr(target, f"({index_expr} % {axes[dim]})")
 
     stride = _product(axes[dim + 1 :])
-    div = "/" if target.is_cuda else "//"
+    div = "/" if target.c_style_syntax else "//"
     base = f"({index_expr} {div} ({stride}))"
     expr = base if dim == 0 else f"({base} % {axes[dim]})"
 
@@ -3547,17 +3450,17 @@ def _indent_block(text: str, prefix: str) -> str:
 
 
 def _indent_unit(target: _Target) -> str:
-    return "    " if not target.is_cuda else "    "
+    return "    " if not target.c_style_syntax else "    "
 
 
 def _if_header(condition: str, target: _Target) -> str:
-    if target.is_cuda:
+    if target.c_style_syntax:
         return f"if ({condition}) {{"
     return f"if {condition}:"
 
 
 def _empty_block_lines(target: _Target) -> list[str]:
-    return ["/* no-op */"] if target.is_cuda else ["pass"]
+    return ["/* no-op */"] if target.c_style_syntax else ["pass"]
 
 
 def _zero_value(type_: ssa.Type, target: _Target) -> str:
@@ -3569,12 +3472,12 @@ def _zero_value(type_: ssa.Type, target: _Target) -> str:
         return "0"
 
     if _normalize_dtype(type_.dtype) == "bool":
-        return "false" if target.is_cuda else "False"
+        return "false" if target.c_style_syntax else "False"
     return "0.0"
 
 
 def _uses_mutable_scalar_slots(target: _Target) -> bool:
-    return target.is_tir
+    return target.tir_value_semantics
 
 
 def _mutable_scalar_decl_lines(
@@ -3585,10 +3488,10 @@ def _mutable_scalar_decl_lines(
 ) -> list[str]:
     dtype = _normalize_dtype(type_.dtype)
 
-    if target.is_tilelang:
+    if target.mutable_scalar_kind == "variable":
         return [f'{name} = T.alloc_var("{dtype}", {init})']
 
-    if target.is_tvm:
+    if target.mutable_scalar_kind == "buffer":
         return [
             f'{name} = T.alloc_buffer((1,), "{dtype}", scope="local")',
             f"{name}[0] = {init}",
@@ -3597,7 +3500,7 @@ def _mutable_scalar_decl_lines(
 
 
 def _mutable_scalar_read(target: _Target, name: str) -> str:
-    if target.is_tvm:
+    if target.mutable_scalar_kind == "buffer":
         return f"{name}[0]"
     return name
 
@@ -3605,9 +3508,9 @@ def _mutable_scalar_read(target: _Target, name: str) -> str:
 def _assign_scalar(
     target: _Target, name: str, value: str, *, mutable: bool = False
 ) -> str:
-    lhs = f"{name}[0]" if mutable and target.is_tvm else name
+    lhs = f"{name}[0]" if mutable and target.mutable_scalar_kind == "buffer" else name
 
-    return f"{lhs} = {value}" + (";" if target.is_cuda else "")
+    return f"{lhs} = {value}" + (";" if target.c_style_syntax else "")
 
 
 def _resolved_cast_dtype(op: ssa.Operation, ctx: _EmitContext) -> str:
@@ -3657,7 +3560,7 @@ def _resolved_cast_dtype(op: ssa.Operation, ctx: _EmitContext) -> str:
 def _cast_value(op: ssa.Operation, value: str, ctx: _EmitContext) -> str:
     attr = op.attrs.get("dtype")
 
-    if ctx.target.is_triton and isinstance(attr, str):
+    if ctx.target.vector_value_semantics and isinstance(attr, str):
         text = attr.strip().strip("'\"")
 
         if text.endswith(".dtype"):
@@ -3666,3 +3569,70 @@ def _cast_value(op: ssa.Operation, value: str, ctx: _EmitContext) -> str:
             if match and match.group(1) in ctx.tensor_infos:
                 return f"{value}.to({match.group(1)}.dtype.element_ty)"
     return ctx.target.cast(_resolved_cast_dtype(op, ctx), value)
+
+
+# Public analysis and traversal hooks used by backend strategies.  Keeping this
+# boundary explicit lets the shared walker move between modules without making
+# backend implementations depend on private implementation names.
+access_axes = _access_axes
+buffer_storage_extent = _buffer_storage_extent
+combined_mask = _combined_mask
+cooperative_dot_plan = _cooperative_dot_plan
+current_coords = _current_coords
+default_strides = _default_strides
+dot_accumulator_dtype = _dot_accumulator_dtype
+dtype_level = _dtype_level
+emit_element = _emit_element
+emit_loop_bound = _emit_loop_bound
+emit_operation = _emit_operation
+emit_value = _emit_value
+indent_block = _indent_block
+indent_lines = _indent_lines
+linearized_index = _linearized_index
+load_other = _load_other
+local_symbol = _local_symbol
+logical_ssa_audit = _logical_ssa_audit
+materialize_bool_expr = _materialize_bool_expr
+materialize_index_expr = _materialize_index_expr
+normalize_dtype = _normalize_dtype
+product = _product
+resolved_dot_operand_dtype = _resolved_dot_operand_dtype
+rewrite_index_math = _rewrite_index_math
+source_index_for_value = _source_index_for_value
+target_index_expr = _target_index_expr
+value_axes = _value_axes
+value_axes_from_types = _value_axes_from_types
+view_base_coords = _view_base_coords
+
+__all__ = [
+    "access_axes",
+    "buffer_storage_extent",
+    "combined_mask",
+    "cooperative_dot_plan",
+    "current_coords",
+    "default_strides",
+    "dot_accumulator_dtype",
+    "dtype_level",
+    "emit",
+    "emit_element",
+    "emit_loop_bound",
+    "emit_operation",
+    "emit_value",
+    "indent_block",
+    "indent_lines",
+    "linearized_index",
+    "load_other",
+    "local_symbol",
+    "logical_ssa_audit",
+    "materialize_bool_expr",
+    "materialize_index_expr",
+    "normalize_dtype",
+    "product",
+    "resolved_dot_operand_dtype",
+    "rewrite_index_math",
+    "source_index_for_value",
+    "target_index_expr",
+    "value_axes",
+    "value_axes_from_types",
+    "view_base_coords",
+]

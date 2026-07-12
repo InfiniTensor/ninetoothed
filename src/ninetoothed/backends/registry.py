@@ -5,12 +5,7 @@ from typing import TYPE_CHECKING
 from ninetoothed.backends.core import Target
 
 if TYPE_CHECKING:
-    from ninetoothed.compiler.passes import (
-        LowerIntrinsics,
-        LowerMemoryScopes,
-        OptimizeSchedule,
-        Registry,
-    )
+    from ninetoothed.compiler.passes import OptimizeSchedule, Registry
 
 
 def register_pass_bundle(
@@ -18,21 +13,11 @@ def register_pass_bundle(
     *,
     backend: Target,
     optimize_schedule: type["OptimizeSchedule"],
-    lower_memory_scopes: type["LowerMemoryScopes"],
-    lower_intrinsics: type["LowerIntrinsics"],
 ) -> None:
-    """Register the pass contract implemented by one backend."""
+    """Register the schedule pass implemented by one backend."""
     registry.register(
         optimize_schedule,
         tags=("optimization", backend.value),
-    )
-    registry.register(
-        lower_memory_scopes,
-        tags=("target-lowering", "memory", backend.value),
-    )
-    registry.register(
-        lower_intrinsics,
-        tags=("target-lowering", "intrinsics", backend.value),
     )
 
 
@@ -69,8 +54,4 @@ def _validate_backend_pass_contracts(registry: "Registry") -> None:
 
 
 def _required_backend_pass_names(backend: Target) -> tuple[str, ...]:
-    return (
-        f"ssa.{backend.value}.optimize_schedule",
-        f"ssa.{backend.value}.lower_memory_scopes",
-        f"ssa.{backend.value}.lower_intrinsics",
-    )
+    return (f"ssa.{backend.value}.optimize_schedule",)

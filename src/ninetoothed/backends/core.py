@@ -29,7 +29,6 @@ class Options:
     """Options passed from public APIs to a backend lowerer."""
 
     target: Target = Target.TRITON
-    caller: str | None = None
     extra: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -53,7 +52,6 @@ class Artifact:
     language: str
     sources: Mapping[str, str]
     entrypoint: str | None = None
-    stage: str = "source"
     materializable: bool = True
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
@@ -161,17 +159,18 @@ def normalize_target(name: Target | str | None) -> Target:
 
 def normalize_options(
     backend: Target | str | None = None,
-    *,
-    caller: str | None = None,
     **extra: Any,
 ) -> Options:
+    if "caller" in extra:
+        raise TypeError("The `caller` value is a runtime option, not a backend option.")
+
     if "emit_only" in extra:
         raise TypeError(
-            "The `emit_only` option was removed; use Artifact and BuiltArtifact stages."
+            "The `emit_only` option was removed; use Artifact for source lowering "
+            "and BuiltArtifact for materialized binaries."
         )
 
     return Options(
         target=normalize_target(backend),
-        caller=caller,
         extra=extra,
     )

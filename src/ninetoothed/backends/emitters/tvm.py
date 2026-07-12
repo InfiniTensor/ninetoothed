@@ -7,19 +7,18 @@ from typing import Any, Mapping
 from ninetoothed.backends.core import Target
 from ninetoothed.backends.emitters import ssa as common
 from ninetoothed.backends.emitters.base import EmitterTarget, ModuleRenderContext
+from ninetoothed.backends.emitters.context import TensorInfo as _TensorInfo
 from ninetoothed.ir import Kernel, ssa
 
 _Target = EmitterTarget
-_TensorInfo = common._TensorInfo
-_buffer_storage_extent = common._buffer_storage_extent
-_cooperative_dot_plan = common._cooperative_dot_plan
-_default_strides = common._default_strides
-_indent_block = common._indent_block
-_logical_ssa_audit = common._logical_ssa_audit
-_normalize_dtype = common._normalize_dtype
-_python_tuning_header = common._python_tuning_header
-_rewrite_index_math = common._rewrite_index_math
-_target_index_expr = common._target_index_expr
+_buffer_storage_extent = common.buffer_storage_extent
+_cooperative_dot_plan = common.cooperative_dot_plan
+_default_strides = common.default_strides
+_indent_block = common.indent_block
+_logical_ssa_audit = common.logical_ssa_audit
+_normalize_dtype = common.normalize_dtype
+_rewrite_index_math = common.rewrite_index_math
+_target_index_expr = common.target_index_expr
 
 
 _TIR_FUNCTIONS = {
@@ -63,8 +62,10 @@ class TvmTarget(EmitterTarget):
     source_route: str = "ssa-unified-tvm-emitter"
     buffer_suffix: str = "_buf"
     entrypoint_prefix: str = "build_"
-    is_tvm: bool = True
-    is_tir: bool = True
+    tir_value_semantics: bool = True
+    typed_index_literals: bool = True
+    external_atomic_add: bool = True
+    mutable_scalar_kind: str = "buffer"
 
     def literal(self, value: Any) -> str:
         if isinstance(value, float) and math.isinf(value):
@@ -88,7 +89,7 @@ class TvmTarget(EmitterTarget):
         return assignment if mask is None else f"if {mask}:\n    {assignment}"
 
     def cast(self, dtype, value):
-        return f'T.Cast("{common._normalize_dtype(dtype)}", {value})'
+        return f'T.Cast("{common.normalize_dtype(dtype)}", {value})'
 
     def where(self, cond, yes, no):
         return f"T.if_then_else({cond}, {yes}, {no})"
@@ -275,7 +276,6 @@ Kernel: {kernel.kernel_name}
 Schedule: affine linalg.dot -> DLight GPU Matmul
 """
 
-{_python_tuning_header(kernel)}
 {_logical_ssa_audit(kernel, target)}
 
 try:
@@ -411,8 +411,8 @@ def _render_tvm_module(
     tensors: Mapping[str, _TensorInfo],
     value_types: Mapping[str, ssa.Type],
 ) -> str:
-    total = _rewrite_index_math(total, cuda=False)
-    body = _rewrite_index_math(body, cuda=False)
+    total = _rewrite_index_math(total, c_style=False)
+    body = _rewrite_index_math(body, c_style=False)
     guard_total = _target_index_expr(target, total)
     block_extent = f"(({guard_total} + T.int64(255)) // T.int64(256))"
     linear_index = (
@@ -438,7 +438,7 @@ def _render_tvm_module(
     )
     buffer_extents = {
         name: _rewrite_index_math(
-            _buffer_storage_extent(tensors[name], fallback=total), cuda=False
+            _buffer_storage_extent(tensors[name], fallback=total), c_style=False
         )
         for name in buffer_names
     }
@@ -452,7 +452,6 @@ def _render_tvm_module(
 Kernel: {kernel.kernel_name}
 """
 
-{_python_tuning_header(kernel)}
 {_logical_ssa_audit(kernel, target)}
 
 from math import floor
@@ -503,7 +502,7 @@ __all__ = ["TARGET", "TvmTarget", "emit"]
 
 
 def _tile_dtype(dtype: str | None) -> str:
-    dtype = common._normalize_dtype(dtype)
+    dtype = common.normalize_dtype(dtype)
     types = {
         "float32": "T.float32",
         "float16": "T.float16",
@@ -531,14 +530,14 @@ def _tile_param_dtype(name: str, value_types: Mapping[str, ssa.Type]) -> str:
     type_ = value_types.get(name)
 
     if type_ is not None and type_.kind == "scalar" and type_.dtype:
-        if common._normalize_dtype(type_.dtype) == "bool":
+        if common.normalize_dtype(type_.dtype) == "bool":
             return "T.int64"
         return _tile_scalar_abi_dtype(type_.dtype)
     return "T.int64"
 
 
 def _tile_scalar_abi_dtype(dtype: str | None) -> str:
-    dtype = common._normalize_dtype(dtype)
+    dtype = common.normalize_dtype(dtype)
 
     if dtype in {"float16", "bfloat16", "float8_e4m3fn", "float8_e5m2"}:
         return "T.float32"

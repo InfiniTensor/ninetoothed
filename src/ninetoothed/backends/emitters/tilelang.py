@@ -7,25 +7,24 @@ from typing import Any, Mapping
 from ninetoothed.backends.core import Target
 from ninetoothed.backends.emitters import ssa as common
 from ninetoothed.backends.emitters.base import EmitterTarget, ModuleRenderContext
+from ninetoothed.backends.emitters.context import EmitContext as _EmitContext
+from ninetoothed.backends.emitters.context import TensorInfo as _TensorInfo
 from ninetoothed.ir import Kernel, ssa
 
-_EmitContext = common._EmitContext
 _Target = EmitterTarget
-_TensorInfo = common._TensorInfo
-_buffer_storage_extent = common._buffer_storage_extent
-_cooperative_dot_plan = common._cooperative_dot_plan
-_dot_accumulator_dtype = common._dot_accumulator_dtype
-_emit_element = common._emit_element
-_emit_loop_bound = common._emit_loop_bound
-_emit_operation = common._emit_operation
-_indent_block = common._indent_block
-_linearized_index = common._linearized_index
-_logical_ssa_audit = common._logical_ssa_audit
-_product = common._product
-_python_tuning_header = common._python_tuning_header
-_resolved_dot_operand_dtype = common._resolved_dot_operand_dtype
-_rewrite_index_math = common._rewrite_index_math
-_value_axes_from_types = common._value_axes_from_types
+_buffer_storage_extent = common.buffer_storage_extent
+_cooperative_dot_plan = common.cooperative_dot_plan
+_dot_accumulator_dtype = common.dot_accumulator_dtype
+_emit_element = common.emit_element
+_emit_loop_bound = common.emit_loop_bound
+_emit_operation = common.emit_operation
+_indent_block = common.indent_block
+_linearized_index = common.linearized_index
+_logical_ssa_audit = common.logical_ssa_audit
+_product = common.product
+_resolved_dot_operand_dtype = common.resolved_dot_operand_dtype
+_rewrite_index_math = common.rewrite_index_math
+_value_axes_from_types = common.value_axes_from_types
 
 
 _TIR_FUNCTIONS = {
@@ -69,8 +68,8 @@ class TileLangTarget(EmitterTarget):
     source_route: str = "ssa-unified-tilelang-emitter"
     buffer_suffix: str = "_buf"
     entrypoint_prefix: str = "build_"
-    is_tilelang: bool = True
-    is_tir: bool = True
+    tir_value_semantics: bool = True
+    mutable_scalar_kind: str = "variable"
 
     def literal(self, value: Any) -> str:
         if isinstance(value, float) and math.isinf(value):
@@ -94,7 +93,7 @@ class TileLangTarget(EmitterTarget):
         return assignment if mask is None else f"if {mask}:\n    {assignment}"
 
     def cast(self, dtype, value):
-        return f'T.Cast("{common._normalize_dtype(dtype)}", {value})'
+        return f'T.Cast("{common.normalize_dtype(dtype)}", {value})'
 
     def where(self, cond, yes, no):
         return f"T.if_then_else({cond}, {yes}, {no})"
@@ -219,7 +218,7 @@ def _render_tilelang_cooperative_dot_module(
     buffer_extents = {
         name: _rewrite_index_math(
             _buffer_storage_extent(tensors[name], fallback=_product(outer_axes)),
-            cuda=False,
+            c_style=False,
         )
         for name in buffer_names
     }
@@ -317,7 +316,7 @@ def _render_tilelang_cooperative_dot_module(
     lhs_dtype = _tile_dtype(lhs_storage_dtype)
     rhs_dtype = _tile_dtype(rhs_storage_dtype)
     accumulator_dtype = _tile_dtype(_dot_accumulator_dtype(dot, output_ctx))
-    grid_total = _rewrite_index_math(_product(outer_axes), cuda=False)
+    grid_total = _rewrite_index_math(_product(outer_axes), c_style=False)
     bound_source = (
         "\n" + _indent_block("\n".join(bound_lines), "            ")
         if bound_lines
@@ -333,7 +332,6 @@ Kernel: {kernel.kernel_name}
 Schedule: cooperative linalg.dot -> T.gemm
 """
 
-{_python_tuning_header(kernel)}
 {_logical_ssa_audit(kernel, target)}
 
 from math import floor
@@ -382,8 +380,8 @@ def _render_tilelang_module(
     tensors: Mapping[str, _TensorInfo],
     value_types: Mapping[str, ssa.Type],
 ) -> str:
-    total = _rewrite_index_math(total, cuda=False)
-    body = _rewrite_index_math(body, cuda=False)
+    total = _rewrite_index_math(total, c_style=False)
+    body = _rewrite_index_math(body, c_style=False)
     parameter_names = (*variables, *outputs)
     buffer_names = tuple(name for name in parameter_names if tensors[name].ndim != 0)
     handle_args = ", ".join(
@@ -397,7 +395,7 @@ def _render_tilelang_module(
     )
     buffer_extents = {
         name: _rewrite_index_math(
-            _buffer_storage_extent(tensors[name], fallback=total), cuda=False
+            _buffer_storage_extent(tensors[name], fallback=total), c_style=False
         )
         for name in buffer_names
     }
@@ -411,7 +409,6 @@ def _render_tilelang_module(
 Kernel: {kernel.kernel_name}
 """
 
-{_python_tuning_header(kernel)}
 {_logical_ssa_audit(kernel, target)}
 
 from math import floor
@@ -452,7 +449,7 @@ __all__ = ["TARGET", "TileLangTarget", "emit"]
 
 
 def _tile_dtype(dtype: str | None) -> str:
-    dtype = common._normalize_dtype(dtype)
+    dtype = common.normalize_dtype(dtype)
     types = {
         "float32": "T.float32",
         "float16": "T.float16",
@@ -480,14 +477,14 @@ def _tile_param_dtype(name: str, value_types: Mapping[str, ssa.Type]) -> str:
     type_ = value_types.get(name)
 
     if type_ is not None and type_.kind == "scalar" and type_.dtype:
-        if common._normalize_dtype(type_.dtype) == "bool":
+        if common.normalize_dtype(type_.dtype) == "bool":
             return "T.int64"
         return _tile_scalar_abi_dtype(type_.dtype)
     return "T.int64"
 
 
 def _tile_scalar_abi_dtype(dtype: str | None) -> str:
-    dtype = common._normalize_dtype(dtype)
+    dtype = common.normalize_dtype(dtype)
 
     if dtype in {"float16", "bfloat16", "float8_e4m3fn", "float8_e5m2"}:
         return "T.float32"

@@ -16,8 +16,6 @@ from ninetoothed.backends.core import (
 from ninetoothed.backends.emitters.tilelang import emit
 from ninetoothed.compiler.passes import (
     Context,
-    LowerIntrinsics,
-    LowerMemoryScopes,
     OptimizeSchedule,
     ScheduleCandidate,
 )
@@ -123,35 +121,6 @@ class TileLangOptimizeSchedule(OptimizeSchedule):
         return _generic_linear_or_reduction_policy(schedule)
 
 
-class TileLangLowerMemoryScopesPass(LowerMemoryScopes):
-    name = "ssa.tilelang.lower_memory_scopes"
-    supported_backends = (Target.TILELANG,)
-
-    def memory_scopes(self, context: Context) -> Mapping[str, str]:
-        del context
-
-        return {
-            "register": "local.fragment",
-            "shared": "shared",
-            "global": "global",
-        }
-
-
-class TileLangLowerIntrinsicsPass(LowerIntrinsics):
-    name = "ssa.tilelang.lower_intrinsics"
-    supported_backends = (Target.TILELANG,)
-
-    def intrinsics(self, context: Context) -> Mapping[str, str]:
-        del context
-
-        return {
-            "dot": "T.gemm/T.dot candidate",
-            "exp": "T.exp",
-            "program_id": "T.Kernel + T.get_thread_binding",
-            "load_store": "T.match_buffer",
-        }
-
-
 def register_ssa_passes(registry: "Registry") -> None:
     from ninetoothed.backends.registry import register_pass_bundle
 
@@ -159,6 +128,4 @@ def register_ssa_passes(registry: "Registry") -> None:
         registry,
         backend=Target.TILELANG,
         optimize_schedule=TileLangOptimizeSchedule,
-        lower_memory_scopes=TileLangLowerMemoryScopesPass,
-        lower_intrinsics=TileLangLowerIntrinsicsPass,
     )

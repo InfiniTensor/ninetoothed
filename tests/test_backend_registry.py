@@ -82,11 +82,13 @@ class TestRegistry:
             with pytest.raises(ValueError, match="Unsupported backend"):
                 normalize_target(alias)
 
-    def test_backend_options_keep_caller_and_extra_values(self):
-        options = normalize_options("cuda", caller="cuda", arch="sm_90")
+    def test_backend_options_only_keep_backend_values(self):
+        options = normalize_options("cuda", arch="sm_90")
         assert options.target == Target.CUDA
-        assert options.caller == "cuda"
         assert options.extra["arch"] == "sm_90"
+
+        with pytest.raises(TypeError, match="runtime option"):
+            normalize_options("cuda", caller="cuda")
 
     def test_default_registry_reports_four_backends(self):
         names = {capability.name for capability in backend_capabilities()}

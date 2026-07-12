@@ -16,7 +16,7 @@ class TritonTarget(EmitterTarget):
     language: str = "python/triton"
     suffix: str = "triton.py"
     source_route: str = "ssa-unified-triton-emitter"
-    is_triton: bool = True
+    vector_value_semantics: bool = True
 
     def literal(self, value: Any) -> str:
         if isinstance(value, float) and math.isinf(value):
@@ -42,7 +42,7 @@ class TritonTarget(EmitterTarget):
         return f"tl.store({self.tensor_ref(tensor)} + {index}, {value}{mask_text})"
 
     def cast(self, dtype, value):
-        return f"{value}.to(tl.{common._normalize_dtype(dtype)})"
+        return f"{value}.to(tl.{common.normalize_dtype(dtype)})"
 
     def where(self, cond, yes, no):
         return f"tl.where({cond}, {yes}, {no})"
@@ -148,7 +148,7 @@ class TritonTarget(EmitterTarget):
         return f"({values})"
 
     def render_view(self, operation, context) -> str:
-        value = common._emit_value(operation.operands[0], context)
+        value = common.emit_value(operation.operands[0], context)
         subscript = str(operation.attrs.get("subscript", "")).strip()
 
         if "None" not in subscript:
@@ -182,7 +182,7 @@ class TritonTarget(EmitterTarget):
 
     def render_module(self, context: ModuleRenderContext) -> str:
         kernel = context.kernel
-        body = common._rewrite_index_math(context.body, cuda=False)
+        body = common.rewrite_index_math(context.body, c_style=False)
         runtime_params = set(kernel.metadata.get("runtime_shape_params", ()))
         params = ",\n    ".join(
             (
@@ -195,8 +195,10 @@ class TritonTarget(EmitterTarget):
                 "BLOCK: tl.constexpr",
             )
         )
-        launch_params = ", ".join(
-            (*context.variables, *context.outputs, *context.shape_params)
+        public_launch_params = (
+            *context.variables,
+            *context.outputs,
+            *context.shape_params,
         )
         kernel_args = ",\n        ".join(
             (*context.variables, *context.outputs, *context.shape_params)
@@ -234,10 +236,12 @@ class TritonTarget(EmitterTarget):
             if isinstance(num_stages_value, tuple)
             else num_stages_value or 3
         )
-        autotune_alias = (
-            f"\n{kernel.kernel_name}_with_auto_tuning = {kernel.kernel_name}_kernel\n"
-            if kernel.metadata.get("autotune")
-            else ""
+        launch_params = ", ".join(
+            (
+                *public_launch_params,
+                f"_ninetoothed_num_warps={num_warps}",
+                f"_ninetoothed_num_stages={num_stages}",
+            )
         )
         active_grid = bool(
             context.vector_program or context.block_program or context.scalar_program
@@ -268,9 +272,7 @@ def {kernel.kernel_name}_kernel(
     offsets = {offsets}
     {self.index_name} = offsets
     mask = {mask}
-{common._indent_block(body, "    ")}
-
-{autotune_alias}
+{common.indent_block(body, "    ")}
 
 def launch_{kernel.kernel_name}({launch_params}):
     block = {block}
@@ -278,8 +280,8 @@ def launch_{kernel.kernel_name}({launch_params}):
     {kernel.kernel_name}_kernel[grid](
         {kernel_args},
         BLOCK=block,
-        num_warps={num_warps},
-        num_stages={num_stages},
+        num_warps=_ninetoothed_num_warps,
+        num_stages=_ninetoothed_num_stages,
     )
     return {result}
 '''

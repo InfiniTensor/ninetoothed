@@ -1,5 +1,6 @@
 import functools
 import math
+import os
 
 import pytest
 import torch
@@ -19,14 +20,6 @@ from tests.utils import get_available_devices
 def test_auto_tuning_generation(
     block_size_m, block_size_n, block_size_k, num_warps, num_stages, _device
 ):
-    auto_tuning_should_be_disabled = (
-        isinstance(block_size_m, int)
-        and isinstance(block_size_n, int)
-        and isinstance(block_size_k, int)
-        and not isinstance(num_warps, tuple)
-        and not isinstance(num_stages, tuple)
-    )
-
     arrangement = functools.partial(
         matmul.arrangement,
         BLOCK_SIZE_M=block_size_m,
@@ -38,20 +31,33 @@ def test_auto_tuning_generation(
 
     tensors = (Tensor(2), Tensor(2), Tensor(2))
 
-    kernel = ninetoothed.make(
+    backend = os.environ.get("NINETOOTHED_BACKEND", "triton")
+
+    if backend != "triton" and (
+        isinstance(num_warps, tuple) or isinstance(num_stages, tuple)
+    ):
+        with pytest.raises(NotImplementedError, match="autotuning is not supported"):
+            ninetoothed.make(
+                arrangement,
+                application,
+                tensors,
+                num_warps=num_warps,
+                num_stages=num_stages,
+            )
+        return
+
+    handle = ninetoothed.make(
         arrangement, application, tensors, num_warps=num_warps, num_stages=num_stages
     )
+    candidates = handle._launch_plan.tuning_candidates
 
-    source_file = kernel._source
-
-    with open(source_file) as f:
-        contents = f.read()
-
-        if auto_tuning_should_be_disabled:
-            assert "application_with_auto_tuning" not in contents
-            assert "num_warps=" in contents and "num_stages=" in contents
-        else:
-            assert "application_with_auto_tuning" in contents
+    if backend == "triton":
+        warps = num_warps if isinstance(num_warps, tuple) else (num_warps or 4,)
+        stages = num_stages if isinstance(num_stages, tuple) else (num_stages or 3,)
+        assert len(candidates) == len(set(warps)) * len(set(stages))
+        assert (handle._tuner is not None) == (len(candidates) > 1)
+    else:
+        assert not candidates
 
 
 @pytest.mark.parametrize("_device", get_available_devices())

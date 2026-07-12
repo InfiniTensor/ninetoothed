@@ -14,7 +14,6 @@ def jit(
     max_num_configs=None,
     pipeline=None,
     pass_options=None,
-    tuning=False,
     _prettify=False,
     **backend_options,
 ):
@@ -31,7 +30,6 @@ def jit(
             max_num_configs=max_num_configs,
             pipeline=pipeline,
             pass_options=pass_options,
-            tuning=tuning,
             _prettify=_prettify,
             backend_options=backend_options,
         )()
@@ -54,7 +52,6 @@ class JIT:
         max_num_configs,
         pipeline,
         pass_options,
-        tuning,
         _prettify=False,
         backend_options=None,
     ):
@@ -67,7 +64,6 @@ class JIT:
         self._max_num_configs = max_num_configs
         self._pipeline = pipeline
         self._pass_options = pass_options
-        self._tuning = tuning
         self._prettify = _prettify
         self._backend_options = dict(backend_options or {})
 
@@ -83,7 +79,6 @@ class JIT:
                 max_num_configs=self._max_num_configs,
                 pipeline=self._pipeline,
                 pass_options=self._pass_options,
-                tuning=self._tuning,
                 backend_options=self._backend_options | {"prettify": self._prettify},
             )
         )
