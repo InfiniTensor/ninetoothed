@@ -1,0 +1,44 @@
+name: bmm
+family: matmul
+pattern: 3d_tile_batched_matmul
+composition: reuse_matmul_application
+
+description: 批处理矩阵乘法，复用 matmul 的 application
+
+formula: "同 matmul，增加 batch 维度"
+
+inputs:
+  - name: input
+    ndim: 3
+    dtype: float16
+  - name: other
+    ndim: 3
+    dtype: float16
+
+outputs:
+  - name: output
+    ndim: 3
+    dtype: float16
+
+template: examples/bmm/kernel.py
+torch_wrapper: examples/bmm/torch_impl.py
+
+tile_strategy:
+  type: 3d_batched
+  block_m: block_size()
+  block_n: block_size()
+  block_k: block_size()
+  accumulator: float32
+  reuse: "examples.matmul.kernel.application"
+
+reference: "torch.bmm(a, b)"
+
+acceptance:
+  correctness:
+    shapes: [[4, 512, 1024]]
+    atol: 0.01
+    rtol: 0
+  benchmark:
+    shapes: [[4, 1024, 1024]]
+    warmup: 10
+    trials: 50

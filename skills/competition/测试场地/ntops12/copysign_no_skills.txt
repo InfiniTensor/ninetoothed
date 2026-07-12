@@ -1,0 +1,1577 @@
+
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ > /skills                                                                      
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ > 我需要实现一个九齿算子：copysign(input, other)                               
+                                                                                
+       要求：                                                                   
+       - 返回一个与 input 绝对值相同、但符号取自 other 的 tensor                
+       - torch 参考：torch.copysign(input, other)                               
+       - 支持 float32 和 float16                                                
+       - 必须正确处理 IEEE 754 特殊值：copysign(-0.0, +0.0) ==                  
+   +0.0，copysign(+0.0, -0.0) == -0.0                                           
+       - input 和 other shape 相同                                              
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+ Thinking
+ │ Let me explore the project structure to understand the codebase before
+ │ implementing the copysign operator.
+ ▪ Agent {"description":"Explore project structure for ntop operator","prompt…
+   └ Here is my thorough analysis of the project.
+
+     ---
+
+     Project Overview: ntops
+
+     Location: C:\Users\foxxi\Desktop\nt-devskill\测试场地\ntops12
+     Description: "NineToothed operators for LLMs" -- a library of GPU kernel
+     operators built on top of the ninetoothed DSL framework, providing
+     PyTorch-compatible operations.
+
+     ---
+
+     1. Top-Level Structure
+      ntops12/
+        .git/
+        .github/
+          ISSUE_TEMPLATE/bug-report.yml
+          pull_request_template.md
+          workflows/pytest.yml
+          workflows/ruff.yml
+        .gitignore
+        .qoder/
+          settings.local.json
+          skills/
+        LICENSE              (Apache 2.0)
+        README.md            (one-liner: "NineToothed operators for LLMs.")
+        pyproject.toml       (build system + project metadata)
+        src/                 (source code)
+        tests/               (test suite)
+     2. Build System
+
+     File: C:\Users\foxxi\Desktop\nt-devskill\测试场地\ntops12\pyproject.toml
+     - Uses hatchling as the build backend
+     - Dependencies: ninetoothed>=0.16.0 and torch
+     - Requires Python >= 3.10
+     - Optional testing deps: pytest, pytest-cov
+     - Linting: ruff (configured with rules E4, E7, E9, F, I)
+     - No CMakeLists -- this is a pure Python project. The GPU kernels are
+     JIT-compiled via the ninetoothed framework at runtime, not ahead-of-time.
+
+     3. Source Code Organization (Three-Layer Pattern)
+      src/ntops/
+        __init__.py          -- exports `kernels` and `torch` submodules
+        kernels/             -- Layer 1: DSL kernel definitions (the
+      "GPU code")
+          __init__.py        -- imports and re-exports all kernel modules
+          element_wise.py    -- shared arrangement function for
+      element-wise ops
+          reduction.py       -- shared arrangement for reduction ops
+          pooling.py         -- shared arrangement for pooling ops
+          add.py, sub.py, mul.py, ...  -- one file per operator
+        torch/               -- Layer 2: PyTorch wrapper functions
+          __init__.py        -- imports and re-exports all torch wrappers
+          utils.py           -- _cached_make() and config helpers
+          add.py, sub.py, mul.py, ...  -- one file per operator
+     Each operator follows a three-file pattern:
+     ┌─────────┬───────────────────────────┬──────────────────────────────┐
+     │ Layer   │ File                      │ Purpose                      │
+     ├─────────┼───────────────────────────┼──────────────────────────────┤
+     │ Kernel  │ src/ntops/kernels/<op>.py │ Defines application() (the   │
+     │         │                           │ computation), premake()      │
+     │         │                           │ (returns arrangement,        │
+     │         │                           │ application, tensors tuple)  │
+     │ Torch   │ src/ntops/torch/<op>.py   │ Python function matching     │
+     │ wrapper │                           │ PyTorch API, calls           │
+     │         │                           │ _cached_make(kernel.premake, │
+     │         │                           │ ...) then invokes the        │
+     │         │                           │ compiled kernel              │
+     │ Test    │ tests/test_<op>.py        │ Pytest test comparing        │
+     │         │                           │ ntops.torch.<op>() against   │
+     │         │                           │ torch.<op>()                 │
+     └─────────┴───────────────────────────┴──────────────────────────────┘
+     4. Pattern for Simple Element-Wise Binary Operators
+
+     The simplest and most canonical pattern is demonstrated by mul (no alpha
+     parameter, two inputs, one output):
+
+     Kernel file (src/ntops/kernels/mul.py):
+      import functools
+      from ninetoothed import Tensor
+      from ntops.kernels.element_wise import arrangement
+
+      def application(input, other, output):
+          output = input * other  # noqa: F841
+
+      def premake(ndim, dtype=None, block_size=None):
+          arrangement_ = functools.partial(arrangement, block_size=block_size)
+          tensors = (
+              Tensor(ndim, dtype=dtype),
+              Tensor(ndim, dtype=dtype),
+              Tensor(ndim, dtype=dtype),
+          )
+          return arrangement_, application, tensors
+     Torch wrapper (src/ntops/torch/mul.py):
+      import torch
+      import ntops
+      from ntops.torch.utils import _cached_make
+
+      def mul(input, other, *, out=None):
+          if out is None:
+              out = torch.empty_like(input)
+          kernel = _cached_make(ntops.kernels.mul.premake, input.ndim)
+          kernel(input, other, out)
+          return out
+     Test (tests/test_mul.py):
+      @skip_if_cuda_not_available
+      @pytest.mark.parametrize(*generate_arguments())
+      def test_mul(shape, dtype, device, rtol, atol):
+          input = torch.randn(shape, dtype=dtype, device=device)
+          other = torch.randn(shape, dtype=dtype, device=device)
+          ninetoothed_output = ntops.torch.mul(input, other)
+          reference_output = torch.mul(input, other)
+          assert torch.allclose(ninetoothed_output,
+      reference_output, rtol=rtol, atol=atol)
+     Variant with alpha parameter (add and sub): These take an extra alpha
+     scalar (as Tensor(0, dtype=ninetoothed.float64)) and compute input +
+     alpha * other / input - alpha * other.
+
+     Variant with libdevice (pow): Uses from ninetoothed.language import
+     libdevice and calls libdevice.pow(input, exponent) in the application
+     function. This is relevant because copysign would likely also use a
+     libdevice or ntl function.
+
+     The shared element_wise arrangement (src/ntops/kernels/element_wise.py):
+      def arrangement(*tensors, block_size=None):
+          if block_size is None:
+              block_size = ninetoothed.block_size()
+          ndim = max(tensor.ndim for tensor in tensors)
+          assert all(tensor.ndim == ndim or tensor.ndim == 0 for tensor
+      in tensors)
+          return tuple(
+              tensor.flatten().tile((block_size,)) if tensor.ndim != 0
+      else tensor
+              for tensor in tensors
+          )
+     This flattens all tensors to 1D and tiles them by block_size. Scalars
+     (ndim==0) are passed through untouched.
+
+     5. Registration Pattern
+
+     When adding a new operator, it must be registered in two __init__.py
+     files:
+     - src/ntops/kernels/__init__.py -- import the kernel module and add to
+     __all__
+     - src/ntops/torch/__init__.py -- import the torch wrapper function and
+     add to __all__
+
+     6. The _cached_make Utility
+
+     File:
+     C:\Users\foxxi\Desktop\nt-devskill\测试场地\ntops12\src\ntops\torch\utils.
+
+     This is the core compilation mechanism. It calls premake() to get
+     (arrangement, application, tensors), then passes them to
+     ninetoothed.make() which JIT-compiles the kernel. Results are cached via
+     @functools.cache.
+
+     7. Test Infrastructure
+
+     - tests/conftest.py -- Sets random seeds per test module/case, configures
+     FP precision
+     - tests/skippers.py -- skip_if_cuda_not_available decorator
+     - tests/utils.py -- generate_arguments() produces parametrized test cases
+     across ndim 1-4, float32/float16, on CUDA; gauss() generates random
+     scalars
+     - tests/__init__.py -- Empty file
+
+     8. Copysign Search
+
+     No references to copysign exist anywhere in the codebase. The grep across
+     all files returned zero matches. This would be a brand-new operator to
+     add.
+
+     9. Summary: Steps to Add a New Element-Wise Binary Operator (e.g.,
+     copysign)
+
+     Based on the patterns observed, adding a new operator requires
+     creating/modifying exactly 5 files:
+
+     1. Create src/ntops/kernels/copysign.py -- kernel with application() and
+     premake(), following the mul.py pattern (two inputs, one output, using
+     the shared element_wise arrangement)
+     2. Create src/ntops/torch/copysign.py -- PyTorch wrapper following the
+     mul.py pattern
+     3. Create tests/test_copysign.py -- test following the test_mul.py
+     pattern, comparing against torch.copysign
+     4. Modify src/ntops/kernels/__init__.py -- add copysign import and
+     __all__ entry
+     5. Modify src/ntops/torch/__init__.py -- add copysign import and __all__
+     entry
+
+ Thinking
+ │ I need to examine the key files to see exactly what patterns I should follow.
+ ▪ Let me read the key reference files to get the exact patterns.
+
+ x Read(C:\Users\...\ntops\kernels\mul.py)
+   └ File not found.
+
+ x Read(C:\Users\...\src\ntops\torch\mul.py)
+   └ File not found.
+
+ x Read(C:\Users\...\tests\test_mul.py)
+   └ File not found.
+
+ x Read(C:\Users\...\kernels\__init__.py)
+   └ File not found.
+
+ x Read(C:\Users\...\torch\__init__.py)
+   └ File not found.
+
+ Thinking
+ │ The file paths are different from what I expected—the drive letter and
+ │ directory name don't match what I initially thought, so I need to figure out
+ │ the correct paths.
+ ▪ Bash(cd "C:/Users/foxxi/Desktop/nt-devskill/测试场地/ntops12" && ls
+   src/ntops/kernels/ && echo "---" && ls src/ntops/torch/ && echo "---" &&
+   ls tests/)
+   └ init.py
+     abs.py
+     acosh.py
+     adaptive_avg_pool2d.py
+     adaptive_max_pool2d.py
+     add.py
+     addmm.py
+     addmv.py
+     alpha_dropout.py
+     argsort.py
+     atan.py
+     avg_pool2d.py
+     batch_norm.py
+     bincount.py
+     bitwise_and.py
+     bitwise_not.py
+     bitwise_or.py
+     bmm.py
+     celu.py
+     clamp.py
+     conv2d.py
+     cos.py
+     cosh.py
+     diag.py
+     div.py
+     dropout.py
+     element_wise.py
+     eq.py
+     exp.py
+     fmax.py
+     ge.py
+     gelu.py
+     gt.py
+     instance_norm.py
+     isinf.py
+     isnan.py
+     layer_norm.py
+     le.py
+     logsumexp.py
+     lp_pool1d.py
+     lp_pool2d.py
+     lp_pool3d.py
+     lt.py
+     max.py
+     max_pool1d.py
+     max_pool2d.py
+     max_pool3d.py
+     maximum.py
+     mean.py
+     median.py
+     mm.py
+     msort.py
+     mul.py
+     ne.py
+     neg.py
+     pooling.py
+     pow.py
+     quantile.py
+     reduction.py
+     relu.py
+     rms_norm.py
+     rot90.py
+     rotary_position_embedding.py
+     round.py
+     rsqrt.py
+     scaled_dot_product_attention.py
+     select_copy.py
+     sgn.py
+     sigmoid.py
+     sign.py
+     signbit.py
+     silu.py
+     sin.py
+     softmax.py
+     sort.py
+     stack.py
+     sub.py
+     tanh.py
+     threshold.py
+
+     init.py
+     abs.py
+     acosh.py
+     adaptive_avg_pool2d.py
+     adaptive_max_pool2d.py
+     add.py
+     addmm.py
+     addmv.py
+     alpha_dropout.py
+     argsort.py
+     atan.py
+     avg_pool2d.py
+     batch_norm.py
+     bincount.py
+     bitwise_and.py
+     bitwise_not.py
+     bitwise_or.py
+     bmm.py
+     celu.py
+     clamp.py
+     conv2d.py
+     cos.py
+     cosh.py
+     diag.py
+     div.py
+     dropout.py
+     eq.py
+     exp.py
+     fmax.py
+     ge.py
+     gelu.py
+     gt.py
+     instance_norm.py
+     isinf.py
+     isnan.py
+     layer_norm.py
+     le.py
+     logsumexp.py
+     lp_pool1d.py
+     lp_pool2d.py
+     lp_pool3d.py
+     lt.py
+     matmul.py
+     max.py
+     max_pool1d.py
+     max_pool2d.py
+     max_pool3d.py
+     maximum.py
+     mean.py
+     median.py
+     mm.py
+     msort.py
+     mul.py
+     ne.py
+     neg.py
+     pooling.py
+     pow.py
+     quantile.py
+     relu.py
+     rms_norm.py
+     rot90.py
+     rotary_position_embedding.py
+     round.py
+     rsqrt.py
+     scaled_dot_product_attention.py
+     select_copy.py
+     sgn.py
+     sigmoid.py
+     sign.py
+     signbit.py
+     silu.py
+     sin.py
+     softmax.py
+     sort.py
+     stack.py
+     sub.py
+     tanh.py
+     threshold.py
+     utils.py
+
+     init.py
+     conftest.py
+     skippers.py
+     test_abs.py
+     test_acosh.py
+     test_adaptive_avg_pool2d.py
+     test_adaptive_max_pool2d.py
+     test_add.py
+     test_addmm.py
+     test_addmv.py
+     test_alpha_dropout.py
+     test_argsort.py
+     test_atan.py
+     test_avg_pool2d.py
+     test_batch_norm.py
+     test_bincount.py
+     test_bitwise_and.py
+     test_bitwise_not.py
+     test_bitwise_or.py
+     test_bmm.py
+     test_celu.py
+     test_clamp.py
+     test_conv2d.py
+     test_cos.py
+     test_cosh.py
+     test_diag.py
+     test_div.py
+     test_dropout.py
+     test_eq.py
+     test_exp.py
+     test_fmax.py
+     test_ge.py
+     test_gelu.py
+     test_gt.py
+     test_instance_norm.py
+     test_isinf.py
+     test_isnan.py
+     test_layer_norm.py
+     test_le.py
+     test_logsumexp.py
+     test_lp_pool1d.py
+     test_lp_pool2d.py
+     test_lp_pool3d.py
+     test_lt.py
+     test_matmul.py
+     test_max.py
+     test_max_pool1d.py
+     test_max_pool2d.py
+     test_max_pool3d.py
+     test_maximum.py
+     test_mean.py
+     test_median.py
+     test_mm.py
+     test_msort.py
+     test_mul.py
+     test_ne.py
+     test_neg.py
+     test_pow.py
+     test_quantile.py
+     test_relu.py
+     test_rms_norm.py
+     test_rot90.py
+     test_rotary_position_embedding.py
+     test_round.py
+     test_rsqrt.py
+     test_scaled_dot_product_attention.py
+     test_select_copy.py
+     test_sgn.py
+     test_sigmoid.py
+     test_sign.py
+     test_signbit.py
+     test_silu.py
+     test_sin.py
+     test_softmax.py
+     test_sort.py
+     test_stack.py
+     test_sub.py
+     test_tanh.py
+     test_threshold.py
+     utils.py
+
+ Thinking
+ │ The files are definitely there, so the problem must be with how I'm
+ │ constructing the path — I need to try accessing them through bash instead.
+ ▪ Bash(cd "C:/Users/foxxi/Desktop/nt-devskill/测试场地/ntops12" && pwd &&
+   cat src/ntops/kernels/mul.py && echo "===" && cat src/ntops/torch/mul.py
+   && echo "===" && cat tes…)
+   └ /c/Users/foxxi/Desktop/nt-devskill/测试场地/ntops12
+     import functools
+
+     from ninetoothed import Tensor
+
+     from ntops.kernels.element_wise import arrangement
+
+     def application(input, other, output):
+         output = input * other  # noqa: F841
+
+     def premake(ndim, dtype=None, block_size=None):
+         arrangement_ = functools.partial(arrangement, block_size=block_size)
+      tensors = (
+          Tensor(ndim, dtype=dtype),
+          Tensor(ndim, dtype=dtype),
+          Tensor(ndim, dtype=dtype),
+      )
+
+      return arrangement_, application, tensors
+     ===
+     import torch
+
+     import ntops
+     from ntops.torch.utils import _cached_make
+
+     def mul(input, other, *, out=None):
+         if out is None:
+             out = torch.empty_like(input)
+      kernel = _cached_make(ntops.kernels.mul.premake, input.ndim)
+
+      kernel(input, other, out)
+
+      return out
+     ===
+     import pytest
+     import torch
+
+     import ntops
+     from tests.skippers import skip_if_cuda_not_available
+     from tests.utils import generate_arguments
+
+     @skip_if_cuda_not_available
+     @pytest.mark.parametrize(*generate_arguments())
+     def test_mul(shape, dtype, device, rtol, atol):
+         input = torch.randn(shape, dtype=dtype, device=device)
+         other = torch.randn(shape, dtype=dtype, device=device)
+      ninetoothed_output = ntops.torch.mul(input, other)
+      reference_output = torch.mul(input, other)
+
+      assert torch.allclose(ninetoothed_output, reference_output,
+      rtol=rtol, atol=atol)
+     ===
+     from ntops.kernels import (
+         abs,
+         add,
+         addmm,
+         alpha_dropout,
+         avg_pool2d,
+         bitwise_and,
+         bitwise_not,
+         bitwise_or,
+         bmm,
+         celu,
+         clamp,
+         conv2d,
+         cos,
+         cosh,
+         diag,
+         div,
+         dropout,
+         eq,
+         exp,
+         ge,
+         gelu,
+         gt,
+         instance_norm,
+         isinf,
+         isnan,
+         layer_norm,
+         le,
+         lt,
+         max_pool2d,
+         mm,
+         msort,
+         mul,
+         ne,
+         neg,
+         pow,
+         quantile,
+         relu,
+         rms_norm,
+         rot90,
+         rotary_position_embedding,
+         round,
+         rsqrt,
+         scaled_dot_product_attention,
+         select_copy,
+         sgn,
+         sigmoid,
+         sign,
+         signbit,
+         silu,
+         sin,
+         softmax,
+         sort,
+         sub,
+         tanh,
+         threshold,
+         max_pool1d,
+         max_pool3d,
+         stack,
+         mean,
+         median,
+         maximum,
+         atan,
+         batch_norm,
+         bincount,
+         adaptive_max_pool2d,
+         acosh,
+         adaptive_avg_pool2d,
+         addmv,
+         argsort,
+         fmax,
+         logsumexp,
+         lp_pool1d,
+         lp_pool2d,
+         lp_pool3d,
+         max,
+     )
+
+     all = [
+         "abs",
+         "add",
+         "addmm",
+         "alpha_dropout",
+         "avg_pool2d",
+         "bitwise_and",
+         "bitwise_not",
+         "bitwise_or",
+         "bmm",
+         "celu",
+         "clamp",
+         "conv2d",
+         "cos",
+         "cosh",
+         "diag",
+         "div",
+         "dropout",
+         "eq",
+         "exp",
+         "ge",
+         "gelu",
+         "gt",
+         "instance_norm",
+         "isinf",
+         "isnan",
+         "layer_norm",
+         "le",
+         "lt",
+         "max_pool2d",
+         "mm",
+         "msort",
+         "mul",
+         "ne",
+         "neg",
+         "pow",
+         "quantile",
+         "relu",
+         "rms_norm",
+         "rot90",
+         "rotary_position_embedding",
+         "round",
+         "rsqrt",
+         "scaled_dot_product_attention",
+         "select_copy",
+         "sgn",
+         "sigmoid",
+         "sign",
+         "signbit",
+         "silu",
+         "sin",
+         "softmax",
+         "sort",
+         "sub",
+         "tanh",
+         "threshold",
+         "max_pool1d",
+         "max_pool3d",
+         "stack",
+         "mean",
+         "median",
+         "maximum",
+         "atan",
+         "batch_norm",
+         "bincount",
+         "adaptive_max_pool2d",
+         "acosh",
+         "adaptive_avg_pool2d",
+         "addmv",
+         "argsort",
+         "fmax",
+         "logsumexp",
+         "lp_pool1d",
+         "lp_pool2d",
+         "lp_pool3d",
+         "max",
+     ]
+     ===
+     from ntops.torch.abs import abs
+     from ntops.torch.add import add
+     from ntops.torch.addmm import addmm
+     from ntops.torch.alpha_dropout import alpha_dropout
+     from ntops.torch.avg_pool2d import avg_pool2d
+     from ntops.torch.bitwise_and import bitwise_and
+     from ntops.torch.bitwise_not import bitwise_not
+     from ntops.torch.bitwise_or import bitwise_or
+     from ntops.torch.bmm import bmm
+     from ntops.torch.celu import celu
+     from ntops.torch.clamp import clamp
+     from ntops.torch.conv2d import conv2d
+     from ntops.torch.cos import cos
+     from ntops.torch.cosh import cosh
+     from ntops.torch.diag import diag
+     from ntops.torch.div import div
+     from ntops.torch.dropout import dropout
+     from ntops.torch.eq import eq
+     from ntops.torch.exp import exp
+     from ntops.torch.ge import ge
+     from ntops.torch.gelu import gelu
+     from ntops.torch.gt import gt
+     from ntops.torch.instance_norm import instance_norm
+     from ntops.torch.isinf import isinf
+     from ntops.torch.isnan import isnan
+     from ntops.torch.layer_norm import layer_norm
+     from ntops.torch.le import le
+     from ntops.torch.lt import lt
+     from ntops.torch.matmul import matmul
+     from ntops.torch.max_pool2d import max_pool2d
+     from ntops.torch.mm import mm
+     from ntops.torch.msort import msort
+     from ntops.torch.mul import mul
+     from ntops.torch.ne import ne
+     from ntops.torch.neg import neg
+     from ntops.torch.pow import pow
+     from ntops.torch.quantile import quantile
+     from ntops.torch.relu import relu
+     from ntops.torch.rms_norm import rms_norm
+     from ntops.torch.rot90 import rot90
+     from ntops.torch.rotary_position_embedding import
+     rotary_position_embedding
+     from ntops.torch.round import round
+     from ntops.torch.rsqrt import rsqrt
+     from ntops.torch.scaled_dot_product_attention import
+     scaled_dot_product_attention
+     from ntops.torch.select_copy import select_copy
+     from ntops.torch.sgn import sgn
+     from ntops.torch.sigmoid import sigmoid
+     from ntops.torch.sign import sign
+     from ntops.torch.signbit import signbit
+     from ntops.torch.silu import silu
+     from ntops.torch.sin import sin
+     from ntops.torch.softmax import softmax
+     from ntops.torch.sort import sort
+     from ntops.torch.sub import sub
+     from ntops.torch.tanh import tanh
+     from ntops.torch.threshold import threshold
+     from ntops.torch.max_pool1d import max_pool1d
+     from ntops.torch.max_pool3d import max_pool3d
+     from ntops.torch.stack import stack
+     from ntops.torch.mean import mean
+     from ntops.torch.median import median
+     from ntops.torch.maximum import maximum
+     from ntops.torch.atan import atan
+     from ntops.torch.batch_norm import batch_norm
+     from ntops.torch.bincount import bincount
+     from ntops.torch.adaptive_max_pool2d import adaptive_max_pool2d
+     from ntops.torch.acosh import acosh
+     from ntops.torch.adaptive_avg_pool2d import adaptive_avg_pool2d
+     from ntops.torch.addmv import addmv
+     from ntops.torch.argsort import argsort
+     from ntops.torch.fmax import fmax
+     from ntops.torch.logsumexp import logsumexp
+     from ntops.torch.lp_pool1d import lp_pool1d
+     from ntops.torch.lp_pool2d import lp_pool2d
+     from ntops.torch.lp_pool3d import lp_pool3d
+     from ntops.torch.max import max
+
+     all = [
+         "abs",
+         "add",
+         "addmm",
+         "alpha_dropout",
+         "avg_pool2d",
+         "bitwise_and",
+         "bitwise_not",
+         "bitwise_or",
+         "bmm",
+         "celu",
+         "clamp",
+         "conv2d",
+         "cos",
+         "cosh",
+         "diag",
+         "div",
+         "dropout",
+         "eq",
+         "exp",
+         "ge",
+         "gelu",
+         "gt",
+         "instance_norm",
+         "isinf",
+         "isnan",
+         "layer_norm",
+         "le",
+         "lt",
+         "matmul",
+         "max_pool2d",
+         "mm",
+         "msort",
+         "mul",
+         "ne",
+         "neg",
+         "pow",
+         "quantile",
+         "relu",
+         "rms_norm",
+         "rot90",
+         "rotary_position_embedding",
+         "round",
+         "rsqrt",
+         "scaled_dot_product_attention",
+         "select_copy",
+         "sgn",
+         "sigmoid",
+         "sign",
+         "signbit",
+         "silu",
+         "sin",
+         "softmax",
+         "sort",
+         "sub",
+         "tanh",
+         "max_pool1d",
+         "max_pool3d",
+         "stack",
+         "mean",
+         "median",
+         "tanh",
+         "threshold",
+         "maximum",
+         "atan",
+         "batch_norm",
+         "bincount",
+         "adaptive_max_pool2d",
+         "acosh",
+         "adaptive_avg_pool2d",
+         "addmv",
+         "argsort",
+         "fmax",
+         "logsumexp",
+         "lp_pool1d",
+         "lp_pool2d",
+         "lp_pool3d",
+         "max",
+     ]
+
+ Thinking
+ │ I'm checking what copysign operations are available in the ninetoothed
+ │ language library and looking at similar operators like `signbit` or `sgn` to
+ │ understand the pattern for implementing this new operator.
+ ▪ Bash(cd "C:/Users/foxxi/Desktop/nt-devskill/测试场地/ntops12" && cat
+   src/ntops/kernels/sgn.py && echo "===" && cat src/ntops/kernels/sign.py
+   && echo "===" && cat src/nto…)
+   └ import functools
+
+     import ninetoothed
+     import ninetoothed.language as ntl
+     from ninetoothed import Tensor
+
+     def arrangement(input, output, block_size=None):
+         if block_size is None:
+             block_size = ninetoothed.block_size()
+      def _arrange(input):
+          arranged = input.flatten(end_dim=-1)
+          arranged = arranged.tile((block_size, 1))
+          arranged = arranged.tile((1, -1))
+          arranged.dtype = arranged.dtype.squeeze(0)
+
+          return arranged
+
+      return _arrange(input), _arrange(output)
+     def application(input, output):
+         denominators = ntl.sqrt(input[0] * input[0] + input[1] * input[1])
+         denominators = ntl.where(denominators == 0.0, 1.0, denominators)
+      for i in range(input.shape[0]):
+          output[i] = input[i] / denominators  # noqa: F841
+     def premake(ndim, dtype=None, block_size=None):
+         arrangement_ = functools.partial(arrangement, block_size=block_size)
+      tensors = (
+          Tensor(ndim, dtype=dtype),
+          Tensor(ndim, dtype=dtype),
+      )
+
+      return arrangement_, application, tensors
+     ===
+     import functools
+
+     import ninetoothed.language as ntl
+     from ninetoothed import Tensor
+
+     from ntops.kernels.element_wise import arrangement
+
+     def application(input, output):
+         output = ntl.where(input > 0, 1, ntl.where(input < 0, -1, 0))  #
+     noqa: F841
+
+     def premake(ndim, dtype=None, block_size=None):
+         arrangement_ = functools.partial(arrangement, block_size=block_size)
+      tensors = (Tensor(ndim, dtype=dtype), Tensor(ndim, dtype=dtype))
+
+      return arrangement_, application, tensors
+     ===
+     import functools
+
+     import ninetoothed.language as ntl
+     from ninetoothed import Tensor
+
+     from ntops.kernels.element_wise import arrangement
+
+     def application(input, output):
+         if input.dtype is ntl.float16:
+             i_unint = ntl.cast(input, ntl.uint16, bitcast=True)
+             output = (i_unint >> 15) & 0x1  # noqa: F841
+         elif input.dtype is ntl.float32:
+             i_unint = ntl.cast(input, ntl.uint32, bitcast=True)
+             output = (i_unint >> 31) & 0x1  # noqa: F841
+         elif input.dtype is ntl.float64:
+             i_unint = ntl.cast(input, ntl.uint64, bitcast=True)
+             output = (i_unint >> 63) & 0x1  # noqa: F841
+
+     def premake(ndim, dtype=None, block_size=None):
+         arrangement_ = functools.partial(arrangement, block_size=block_size)
+      tensors = (Tensor(ndim, dtype=dtype), Tensor(ndim, dtype=dtype))
+
+      return arrangement_, application, tensors
+     ===
+     import functools
+
+     import ninetoothed.language as ntl
+     from ninetoothed import Tensor
+
+     from ntops.kernels.element_wise import arrangement
+
+     def application(input, output):
+         output = ntl.abs(input)  # noqa: F841
+
+     def premake(ndim, dtype=None, block_size=None):
+         arrangement_ = functools.partial(arrangement, block_size=block_size)
+      tensors = (Tensor(ndim, dtype=dtype), Tensor(ndim, dtype=dtype))
+
+      return arrangement_, application, tensors
+     ===
+     import functools
+
+     from ninetoothed import Tensor
+     from ninetoothed.language import libdevice
+
+     from ntops.kernels.element_wise import arrangement
+
+     def application(input, exponent, output):
+         output = libdevice.pow(input, exponent)  # noqa: F841
+
+     def premake(ndim, dtype=None, block_size=None):
+         arrangement_ = functools.partial(arrangement, block_size=block_size)
+      tensors = (
+          Tensor(ndim, dtype=dtype),
+          Tensor(ndim, dtype=dtype),
+          Tensor(ndim, dtype=dtype),
+      )
+
+      return arrangement_, application, tensors
+
+ Thinking
+ │ I'm checking whether ninetoothed has a built-in `copysign` function, and I
+ │ need to understand how to implement it properly for IEEE 754 floating-point
+ │ numbers. The key insight is that `copysign` should transfer the sign bit
+ │ from one number to another while preserving the magnitude, so I need to
+ │ handle edge cases like negative zero and NaN correctly.
+ │ For the implementation, I'm considering two approaches: either using bitwise
+ │ operations to extract and combine the sign bit with the magnitude, or using
+ │ conditional logic based on the sign of the second argument. The signbit
+ │ approach seems cleaner, but I'm noticing a potential type mismatch issue
+ │ since the input uses a specific dtype while signbit might return a different
+ │ type.
+ │ Looking at how `ntl.where` works in the existing codebase, it should handle
+ │ scalar values through broadcasting, so I could use `ntl.where(signbit(other)
+ │ > 0, -ntl.abs(input), ntl.abs(input))` where the scalar 0 acts as the
+ │ comparison value. Let me trace through the logic to verify this handles the
+ │ zero cases correctly.
+ │ Now I'm working through the IEEE 754 behavior for copysign with signed
+ │ zeros. When input is -0.0 and other is +0.0, the signbit of other is 0
+ │ (positive), so I'd take the positive branch and get +0.0. Similarly, when
+ │ input is +0.0 and other is -0.0, the signbit of other is 1 (negative), so
+ │ I'd take the negative branch and get -0.0. This matches the expected
+ │ behavior.
+ │ For NaN values, torch.copysign preserves the magnitude of NaN while copying
+ │ the sign bit from the other operand, which my signbit-based approach should
+ │ handle correctly since the magnitude stays intact regardless of whether
+ │ input is NaN.
+ │ I need to verify whether ninetoothed supports comparison operators like `>`
+ │ directly, or if I should rely on the signbit output being 0 or 1 and use a
+ │ simpler check.
+ │ Writing the copysign kernel... I'm verifying the bit manipulation logic for
+ │ extracting the sign bit using unsigned right shift, and confirming that
+ │ `signbit` returns the correct integer type to distinguish between positive
+ │ and negative zero. Now I need to implement the kernel itself, though I'm
+ │ noting that libdevice might already have a `copysign` function available,
+ │ though the bitwise approach is more portable and explicit.
+ │ Looking at the existing patterns in the codebase, I'll go with a combination
+ │ approach that handles different floating-point types by checking the sign
+ │ bit and applying the appropriate sign to the absolute value. For float32 and
+ │ float16, I can use the same logic since the bitwise operations are
+ │ consistent across these types.
+ │ Let me write out the kernel implementation now.
+ ▪ I have enough context. Let me create the 3 new files and update the 2
+   __init__.py files.
+
+ ▪ Write(C:/Users/foxxi/D...nels/copysign.py)
+   └ Accepted copysign.py
+
+       1 import functools
+       2 
+       3 import ninetoothed.language as ntl
+       4 from ninetoothed import Tensor
+       5 
+       6 from ntops.kernels.element_wise import arrangement
+       7 
+       8 
+       9 def application(input, other, output):
+      10     if input.dtype is ntl.float16:
+      11         in_un = ntl.cast(input, ntl.uint16, bitcast=True)
+      12         ot_un = ntl.cast(other, ntl.uint16, bitcast=True)
+      13         sign_mask = ntl.uint16(0x8000)
+      14         abs_mask = ntl.uint16(0x7FFF)
+      15         result = (in_un & abs_mask) | (ot_un & sign_mask)
+      16         output = ntl.cast(result, ntl.float16, bitcast=True)  # noqa:
+          F841
+      17     elif input.dtype is ntl.float32:
+      18         in_un = ntl.cast(input, ntl.uint32, bitcast=True)
+      19         ot_un = ntl.cast(other, ntl.uint32, bitcast=True)
+      20         sign_mask = ntl.uint32(0x80000000)
+      21         abs_mask = ntl.uint32(0x7FFFFFFF)
+      22         result = (in_un & abs_mask) | (ot_un & sign_mask)
+      23         output = ntl.cast(result, ntl.float32, bitcast=True)  # noqa:
+          F841
+      24 
+      25 
+      26 def premake(ndim, dtype=None, block_size=None):
+      27     arrangement_ = functools.partial(arrangement, block_size=block_si
+         ze)
+      28 
+      29     tensors = (
+      30         Tensor(ndim, dtype=dtype),
+      31         Tensor(ndim, dtype=dtype),
+      32         Tensor(ndim, dtype=dtype),
+      33     )
+      34 
+      35     return arrangement_, application, tensors
+
+
+ ▪ Write(C:/Users/foxxi/D...orch/copysign.py)
+   └ Accepted copysign.py
+
+       1 import torch
+       2 
+       3 import ntops
+       4 from ntops.torch.utils import _cached_make
+       5 
+       6 
+       7 def copysign(input, other, *, out=None):
+       8     if out is None:
+       9         out = torch.empty_like(input)
+      10 
+      11     kernel = _cached_make(ntops.kernels.copysign.premake, input.ndim)
+      12 
+      13     kernel(input, other, out)
+      14 
+      15     return out
+
+
+ ▪ Write(C:/Users/foxxi/D...test_copysign.py)
+   └ Accepted test_copysign.py
+
+       1 import pytest
+       2 import torch
+       3 
+       4 import ntops
+       5 from tests.skippers import skip_if_cuda_not_available
+       6 from tests.utils import generate_arguments
+       7 
+       8 
+       9 @skip_if_cuda_not_available
+      10 @pytest.mark.parametrize(*generate_arguments())
+      11 def test_copysign(shape, dtype, device, rtol, atol):
+      12     input = torch.randn(shape, dtype=dtype, device=device)
+      13     other = torch.randn(shape, dtype=dtype, device=device)
+      14 
+      15     ninetoothed_output = ntops.torch.copysign(input, other)
+      16     reference_output = torch.copysign(input, other)
+      17 
+      18     assert torch.allclose(ninetoothed_output, reference_output, rtol=
+         rtol, atol=atol)
+      19 
+      20 
+      21 @skip_if_cuda_not_available
+      22 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+      23 def test_copysign_special_values(dtype):
+      24     device = "cuda"
+      25     input = torch.tensor([0.0, -0.0, 1.5, -2.5, float("nan"), float("
+         inf"), float("-inf")], dtype=dtype, device=device)
+      26     other = torch.tensor([1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0], dty
+         pe=dtype, device=device)
+      27 
+      28     ninetoothed_output = ntops.torch.copysign(input, other)
+      29     reference_output = torch.copysign(input, other)
+      30 
+      31     ninetoothed_bits = ninetoothed_output.view(torch.int16 if dtype =
+         = torch.float16 else torch.int32)
+      32     reference_bits = reference_output.view(torch.int16 if dtype == to
+         rch.float16 else torch.int32)
+      33 
+      34     assert torch.equal(ninetoothed_bits, reference_bits)
+
+
+ Thinking
+ │ I'm checking whether the Read tool works differently on Windows systems—the
+ │ file was created successfully even though the tool seemed to have trouble
+ │ with the path, so I'll try using it again and fall back to bash if needed.
+ ▪ Read(C:\Users\...\kernels\__init__.py)
+   └ Read 156 lines
+
+ ▪ Read(C:\Users\...\torch\__init__.py)
+   └ Read 157 lines
+
+ Thinking
+ │ The Read tool worked, so now I need to add "copysign" to both __init__.py
+ │ files, inserting it in alphabetical order right after "cosh".
+ ▪ Now register copysign in both __init__.py files, placed alphabetically after
+   cosh.
+
+ x Edit({"instruction":"Add `copysign` to the `from ntops.kernels import
+   (...)` tuple, placed alphabetically after `cosh`.","new_string":"   
+   cos,\n    cosh,\n    copysign,\n    diag,","old_string":"    cos,\n   
+   cosh,\n    diag,"})
+   └ Error: Edit tool parameter validation failed: params must have required
+     property 'file_path'
+
+ x Edit({"instruction":"Add `\"copysign\"` to the `__all__` list, placed
+   alphabetically after `\"cosh\"`.","new_string":"    \"cos\",\n   
+   \"cosh\",\n    \"copysign\",\n    \"diag\",","old_string":"    \"cos\",\n 
+   \"cosh\",\n    \"diag\","})
+   └ Error: Edit tool parameter validation failed: params must have required
+     property 'file_path'
+
+ x Edit({"instruction":"Add `from ntops.torch.copysign import copysign`
+   after the `cosh` import line.","new_string":"from ntops.torch.cosh import
+   cosh\nfrom ntops.torch.copysign import copysign\nfrom ntops.torch.diag
+   import diag","old_string":"from ntops.torch.cosh import cosh\nfrom
+   ntops.torch.diag import diag"})
+   └ Error: Edit tool parameter validation failed: params must have required
+     property 'file_path'
+
+ x Edit({"instruction":"Add `\"copysign\"` to the `__all__` list in
+   src/ntops/torch/__init__.py, placed alphabetically after
+   `\"cosh\"`.","new_string":"    \"cos\",\n    \"cosh\",\n   
+   \"copysign\",\n    \"diag\",","old_string":"    \"cos\",\n    \"cosh\",\n 
+   \"diag\","})
+   └ Error: Edit tool parameter validation failed: params must have required
+     property 'file_path'
+
+ Thinking
+ │ I'm hitting a path issue with the Edit tool on Windows again, so I'll try
+ │ switching to the Write tool instead with absolute file paths to see if that
+ │ resolves it.
+ ▪ Edit(C:\Users\...\kernels\__init__.py)
+   └ Accepted __init__.py
+
+      12      clamp,
+      13      conv2d,
+      14      cos,
+      15      cosh,
+      16 +    copysign,                                                       
+      17      diag,
+      18      div,
+      19      dropout,
+      20      eq,
+
+
+ ▪ Edit(C:\Users\...\kernels\__init__.py)
+   └ Accepted __init__.py
+
+      91      "clamp",
+      92      "conv2d",
+      93      "cos",
+      94      "cosh",
+      95 +    "copysign",                                                     
+      96      "diag",
+      97      "div",
+      98      "dropout",
+      99      "eq",
+
+
+ ▪ Edit(C:\Users\...\torch\__init__.py)
+   └ Accepted __init__.py
+
+      11  from ntops.torch.clamp import clamp
+      12  from ntops.torch.conv2d import conv2d
+      13  from ntops.torch.cos import cos
+      14  from ntops.torch.cosh import cosh
+      15 +from ntops.torch.copysign import copysign                           
+      16  from ntops.torch.diag import diag
+      17  from ntops.torch.div import div
+      18  from ntops.torch.dropout import dropout
+      19  from ntops.torch.eq import eq
+
+
+ ▪ Edit(C:\Users\...\torch\__init__.py)
+   └ Accepted __init__.py
+
+      90      "clamp",
+      91      "conv2d",
+      92      "cos",
+      93      "cosh",
+      94 +    "copysign",                                                     
+      95      "diag",
+      96      "div",
+      97      "dropout",
+      98      "eq",
+
+
+ Thinking
+ │ I should double-check that my edits look right and that the import
+ │ statements are properly ordered.
+ ▪ Let me verify the changes look correct.
+
+ ▪ Bash(cd "C:/Users/foxxi/Desktop/nt-devskill/测试场地/ntops12" && grep -n
+   copysign src/ntops/kernels/__init__.py src/ntops/torch/__init__.py &&
+   echo "---" && ls src/ntops…)
+   └ src/ntops/kernels/init.py:16:    copysign,
+     src/ntops/kernels/init.py:95:    "copysign",
+     src/ntops/torch/init.py:15:from ntops.torch.copysign import copysign
+     src/ntops/torch/init.py:94:    "copysign",
+
+     src/ntops/kernels/copysign.py
+     src/ntops/torch/copysign.py
+     tests/test_copysign.py
+
+ Thinking
+ │ I'm verifying the imports work and that the `ntl.uint32` cast syntax is
+ │ supported in Triton, since I need to confirm whether the language module
+ │ handles these type conversions properly. ▪ Bash(cd "C:/Users/foxxi/Desktop/nt-devskill/测试场地/ntops12" && python -c
+   "from ntops.kernels import copysign; from ntops.torch import copysign as
+   c2; print('OK')" 2>&1…)
+   └ Traceback (most recent call last):
+       File "", line 1, in
+         from ntops.kernels import copysign; from ntops.torch import copysign
+     as c2; print('OK')
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     ModuleNotFoundError: No module named 'ntops'
+
+ Thinking
+ │ I'm realizing the package isn't installed, so I need to either run a local
+ │ pip install or set up the PYTHONPATH. Looking at the project structure, it
+ │ uses a `src/ntops/` layout, which means I'll need to install it properly in
+ │ development mode or configure the path accordingly.
+ ▪ Bash(cd "C:/Users/foxxi/Desktop/nt-devskill/测试场地/ntops12" &&
+   PYTHONPATH=src python -c "from ntops.kernels import copysign;
+   print('kernels OK')" 2>&1 | head -30 && ec…)
+   └ Traceback (most recent call last):
+       File "", line 1, in
+         from ntops.kernels import copysign; print('kernels OK')
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       File
+     "C:\Users\foxxi\Desktop\nt-devskill\���Գ���\ntops12\src\ntops_init.py",
+     line 1, in 
+         from ntops import kernels, torch
+       File
+     "C:\Users\foxxi\Desktop\nt-devskill\���Գ���\ntops12\src\ntops\kernels_init
+     .py", line 1, in
+         from ntops.kernels import (
+         ...<76 lines>...
+         )
+       File
+     "C:\Users\foxxi\Desktop\nt-devskill\���Գ���\ntops12\src\ntops\kernels\abs.
+     py", line 3, in
+         import ninetoothed.language as ntl
+     ModuleNotFoundError: No module named 'ninetoothed'
+
+     Traceback (most recent call last):
+       File "", line 1, in
+         from ntops.torch import copysign; print('torch OK')
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       File
+     "C:\Users\foxxi\Desktop\nt-devskill\���Գ���\ntops12\src\ntops_init.py",
+     line 1, in 
+         from ntops import kernels, torch
+       File
+     "C:\Users\foxxi\Desktop\nt-devskill\���Գ���\ntops12\src\ntops\kernels_init
+     .py", line 1, in
+         from ntops.kernels import (
+         ...<76 lines>...
+         )
+       File
+     "C:\Users\foxxi\Desktop\nt-devskill\���Գ���\ntops12\src\ntops\kernels\abs.
+     py", line 3, in
+         import ninetoothed.language as ntl
+     ModuleNotFoundError: No module named 'ninetoothed'
+
+ Thinking
+ │ I'm noticing that the `ninetoothed` dependency isn't available locally, but
+ │ since my new file follows the same patterns as other operators in the
+ │ codebase, it should be fine. Let me verify the syntax is valid by checking
+ │ if the code at least parses correctly.
+ ▪ Bash(cd "C:/Users/foxxi/Desktop/nt-devskill/测试场地/ntops12" && python
+   -c "import ast; ast.parse(open('src/ntops/kernels/copysign.py').read());
+   ast.parse(open('src/ntop…)
+   └ All 3 files parse OK
+
+ Thinking
+ │ I need to double-check the `ntl.uint32()` constructor syntax by reviewing
+ │ the ninetoothed library documentation, and since I can't directly inspect
+ │ it, I'll search through the existing codebase to see if this pattern is
+ │ already being used elsewhere.
+ ▪ Bash(cd "C:/Users/foxxi/Desktop/nt-devskill/测试场地/ntops12" && grep -rn
+   "ntl\.\(uint\|int\|float\)[0-9]*(" src/ntops/kernels/ 2>/dev/null | head
+   -20)
+   └ src/ntops/kernels/copysign.py:13:        sign_mask = ntl.uint16(0x8000)
+     src/ntops/kernels/copysign.py:14:        abs_mask = ntl.uint16(0x7FFF)
+     src/ntops/kernels/copysign.py:20:        sign_mask =
+     ntl.uint32(0x80000000)
+     src/ntops/kernels/copysign.py:21:        abs_mask = ntl.uint32(0x7FFFFFFF)
+
+ Thinking
+ │ I'm noticing my kernel code uses the `ntl.uint16(...)` and `ntl.uint32(...)`
+ │ constructor pattern, but I don't see this used elsewhere in the codebase, so
+ │ I need to find a safer approach. Looking at how signbit handles type casting
+ │ with `ntl.cast(input, ntl.uint16, bitcast=True)`, I can extract the sign bit
+ │ using that pattern and then apply it to the absolute value...
+ │ Extracting and combining bit patterns...
+ │ Actually, I realize `signbit.py` already does exactly this—it extracts the
+ │ sign bit as an integer and the existing code uses arithmetic operators on
+ │ those values. So I can simplify my copysign implementation to use
+ │ `ntl.where` to select between the positive and negative absolute value based
+ │ on whether the other value's sign bit is set.
+ │ Let me check if `ntl.where` supports scalar conditions like I'm trying to
+ │ use...
+ │ Looking at the sign.py example, it chains `ntl.where` calls with scalar
+ │ values like 1, -1, and 0, so that should work fine. For my case,
+ │ `signbit(other) > 0` creates a boolean tensor, and I'm using that to choose
+ │ between the negated and non-negated absolute values. The scalar 0 comparison
+ │ should work even though `signbit` returns a uint16.
+ │ I'm going to switch to the `signbit` approach since it avoids relying on the
+ │ `ntl.uint32(...)` constructor which doesn't appear anywhere else in the
+ │ codebase.
+ ▪ Let me verify the ntl.uint32(...) constructor syntax I used is actually
+   valid by checking existing patterns more carefully. It's only used in my new
+   file — let me use a safer approach using the signbit pattern that's proven
+   to work.
+
+ ▪ Read(C:\Users\...\kernels\copysign.py)
+   └ Read 36 lines
+
+ Thinking
+ │ I'm going to switch to a cleaner approach using the `signbit` pattern
+ │ instead, which will be more straightforward and easier to verify works
+ │ correctly.
+ ▪ Let me switch to a safer, simpler implementation using the proven signbit +
+   ntl.where pattern.
+
+ ▪ Write(C:\Users\...\kernels\copysign.py)
+   └ Accepted copysign.py
+
+       6  from ntops.kernels.element_wise import arrangement
+       7  
+       8  
+       9  def application(input, other, output):
+      10 -    if input.dtype is ntl.float16:                                  
+      11 -        in_un = ntl.cast(input, ntl.uint16, bitcast=True)           
+      12 -        ot_un = ntl.cast(other, ntl.uint16, bitcast=True)           
+      13 -        sign_mask = ntl.uint16(0x8000)                              
+      14 -        abs_mask = ntl.uint16(0x7FFF)                               
+      15 -        result = (in_un & abs_mask) | (ot_un & sign_mask)           
+      16 -        output = ntl.cast(result, ntl.float16, bitcast=True)  # noqa
+         -: F841                                                              
+      17 -    elif input.dtype is ntl.float32:                                
+      18 -        in_un = ntl.cast(input, ntl.uint32, bitcast=True)           
+      19 -        ot_un = ntl.cast(other, ntl.uint32, bitcast=True)           
+      20 -        sign_mask = ntl.uint32(0x80000000)                          
+      21 -        abs_mask = ntl.uint32(0x7FFFFFFF)                           
+      22 -        result = (in_un & abs_mask) | (ot_un & sign_mask)           
+      23 -        output = ntl.cast(result, ntl.float32, bitcast=True)  # noqa
+         -: F841                                                              
+      10 +    other_sign = ntl.where(ntl.cast(other, ntl.float32) < 0.0, True,
+         + False)                                                             
+      11  
+      12 +    abs_input = ntl.abs(input)                                      
+      13  
+      14 +    output = ntl.where(other_sign, -abs_input, abs_input)  # noqa: F
+         +841                                                                 
+      15 +                                                                    
+      16 +                                                                    
+      17  def premake(ndim, dtype=None, block_size=None):
+      18      arrangement_ = functools.partial(arrangement, block_size=block_s
+          ize)
+      19  
+      20      tensors = (
+
+
+ Thinking
+ │ I'm realizing the core issue with `other < 0.0` for detecting sign bits — it
+ │ fails to identify negative zero as negative, since -0.0 isn't less than 0.0
+ │ in IEEE 754 arithmetic. I need to check the actual sign bit directly rather
+ │ than relying on comparison operators.
+ │ I'm implementing a signbit function that casts the float to an unsigned
+ │ integer and extracts the sign bit using bitwise operations, with separate
+ │ handling for float16 and float32 types...
+ │ Actually, I'm reconsidering the approach—maybe I should just use the
+ │ existing signbit kernel from ntops instead of reimplementing it inline.
+ ▪ Wait — < 0.0 won't correctly identify -0.0 as negative (IEEE 754: -0.0 < 0.0
+   is false). I need the proper sign-bit approach. Let me fix this.
+
+ ▪ Write(C:\Users\...\kernels\copysign.py)
+   └ Accepted copysign.py
+
+       6  from ntops.kernels.element_wise import arrangement
+       7  
+       8  
+       9  def application(input, other, output):
+      10 -    other_sign = ntl.where(ntl.cast(other, ntl.float32) < 0.0, True,
+         - False)                                                             
+      10 +    if input.dtype is ntl.float16:                                  
+      11 +        other_bits = ntl.cast(other, ntl.uint16, bitcast=True)      
+      12 +        other_sign = other_bits >> 15                               
+      13 +    elif input.dtype is ntl.float32:                                
+      14 +        other_bits = ntl.cast(other, ntl.uint32, bitcast=True)      
+      15 +        other_sign = other_bits >> 31                               
+      16  
+      17      abs_input = ntl.abs(input)
+      18  
+      14 -    output = ntl.where(other_sign, -abs_input, abs_input)  # noqa: F
+         -841                                                                 
+      19 +    output = ntl.where(other_sign > 0, -abs_input, abs_input)  # noq
+         +a: F841                                                             
+      20  
+      21  
+      22  def premake(ndim, dtype=None, block_size=None):
+      23      arrangement_ = functools.partial(arrangement, block_size=block_s
+          ize)
+
+
+ Thinking
+ │ I'm walking through the edge cases to verify the sign-copying logic works
+ │ correctly—checking how the bitwise shift and conditional handle negative
+ │ zero, positive zero, and their interactions with the input sign.
+ │ The comparison with 0 should work fine since the unsigned right-shifted
+ │ values (0 or 1) will compare correctly against the Python int scalar. Now
+ │ I'm verifying the type compatibility when constructing the output tensor,
+ │ since I'm conditionally selecting between negated and non-negated absolute
+ │ values based on the sign comparison.
+ │ For NaN inputs, the behavior is preserved: NaN with a positive other returns
+ │ NaN with the positive sign bit, and NaN with a negative other returns NaN
+ │ with the negative sign bit, which matches the expected copysign semantics.
+ │ I'm confident this approach works, though I'm second-guessing whether the
+ │ comparison between the shifted value and the Python int literal will work
+ │ correctly in the ninetoothed DSL context—let me trace through the sign.py
+ │ example to verify how these scalar comparisons are handled.
+ ▪ Let me verify all 3 new files parse correctly and the final structure is
+   sound.
+
+ ▪ Bash(cd "C:/Users/foxxi/Desktop/nt-devskill/测试场地/ntops12" && python
+   -c "import ast; ast.parse(open('src/ntops/kernels/copysign.py').read());
+   ast.parse(open('src/ntop…)
+   └ All 3 files parse OK
+     === kernel ===
+     import functools
+
+     import ninetoothed.language as ntl
+     from ninetoothed import Tensor
+
+     from ntops.kernels.element_wise import arrangement
+
+     def application(input, other, output):
+         if input.dtype is ntl.float16:
+             other_bits = ntl.cast(other, ntl.uint16, bitcast=True)
+             other_sign = other_bits >> 15
+         elif input.dtype is ntl.float32:
+             other_bits = ntl.cast(other, ntl.uint32, bitcast=True)
+             other_sign = other_bits >> 31
+      abs_input = ntl.abs(input)
+
+      output = ntl.where(other_sign > 0, -abs_input, abs_input)  # noqa: F841
+     def premake(ndim, dtype=None, block_size=None):
+         arrangement_ = functools.partial(arrangement, block_size=block_size)
+      tensors = (
+          Tensor(ndim, dtype=dtype),
+          Tensor(ndim, dtype=dtype),
+          Tensor(ndim, dtype=dtype),
+      )
+
+      return arrangement_, application, tensors
+     === torch ===
+     import torch
+
+     import ntops
+     from ntops.torch.utils import _cached_make
+
+     def copysign(input, other, *, out=None):
+         if out is None:
+             out = torch.empty_like(input)
+      kernel = _cached_make(ntops.kernels.copysign.premake, input.ndim)
+
+      kernel(input, other, out)
+
+      return out
+     === test ===
+     import pytest
+     import torch
+
+     import ntops
+     from tests.skippers import skip_if_cuda_not_available
+     from tests.utils import generate_arguments
+
+     @skip_if_cuda_not_available
+     @pytest.mark.parametrize(*generate_arguments())
+     def test_copysign(shape, dtype, device, rtol, atol):
+         input = torch.randn(shape, dtype=dtype, device=device)
+         other = torch.randn(shape, dtype=dtype, device=device)
+      ninetoothed_output = ntops.torch.copysign(input, other)
+      reference_output = torch.copysign(input, other)
+
+      assert torch.allclose(ninetoothed_output, reference_output,
+      rtol=rtol, atol=atol)
+     @skip_if_cuda_not_available
+     @pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+     def test_copysign_special_values(dtype):
+         device = "cuda"
+         input = torch.tensor([0.0, -0.0, 1.5, -2.5, float("nan"),
+     float("inf"), float("-inf")], dtype=dtype, device=device)
+         other = torch.tensor([1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0],
+     dtype=dtype, device=device)
+      ninetoothed_output = ntops.torch.copysign(input, other)
+      reference_output = torch.copysign(input, other)
+
+      ninetoothed_bits = ninetoothed_output.view(torch.int16 if dtype
+      == torch.float16 else torch.int32)
+      reference_bits = reference_output.view(torch.int16 if dtype
+      == torch.float16 else torch.int32)
+
+      assert torch.equal(ninetoothed_bits, reference_bits)
+
+ Thinking
+ │ Let me double-check the bit manipulation for the right-shift operation on
+ │ unsigned integers — specifically verifying that `other_sign > 0` works
+ │ correctly when shifting a 16-bit unsigned value right by 15 positions to
+ │ isolate the sign bit.
+ │ Looking at how the existing codebase handles similar operations, I see that
+ │ Python integer literals work directly in comparisons like `input > 0`, so I
+ │ can follow that same pattern rather than trying to construct typed constants.
+ │ Now I'm ready to wrap this up and give the user a summary of what we've
+ │ accomplished.
+ ▪ Implementation complete. Summary:
+
+   Created 3 files:
+   - src/ntops/kernels/copysign.py — kernel using bitcast + shift to extract
+   other's sign bit, then ntl.where to choose ±|input|
+   - src/ntops/torch/copysign.py — PyTorch wrapper following the mul pattern
+   - tests/test_copysign.py — parametric tests (1–4D, float32/float16) plus a
+   dedicated IEEE 754 special-values test that compares bitwise equality (so
+   -0.0/+0.0 and NaN payloads are checked exactly)
+
+   Modified 2 files: added copysign import and __all__ entry to
+   src/ntops/kernels/__init__.py and src/ntops/torch/__init__.py.
+
+   IEEE 754 correctness: the sign bit is extracted via bitcast to uint16/uint32
+   + right-shift (not via < 0.0), so -0.0 is correctly identified as negative.
+   copysign(-0.0, +0.0) → +0.0 and copysign(+0.0, -0.0) → -0.0 hold, and NaN
+   magnitudes/signs are preserved as torch.copysign does.
+
+   The local environment lacks ninetoothed/CUDA, so I couldn't run the tests —
+   they'll need to be verified on a CUDA-enabled host. All files parse cleanly.

@@ -1,0 +1,49 @@
+name: fused_rms_norm
+family: reduction
+pattern: 2d_tile_fused_norm
+
+description: 融合 RMS 归一化：计算方差 → rsqrt → 归一化 → 缩放
+
+formula: |
+  variance = mean(x^2)
+  x_norm = x * rsqrt(variance + eps)
+  output = x_norm * w
+
+inputs:
+  - name: x
+    ndim: 2
+    dtype: float16
+  - name: w
+    ndim: 2
+    dtype: float16
+  - name: eps
+    ndim: 0
+    type: scalar
+
+outputs:
+  - name: output
+    ndim: 2
+    dtype: float16
+
+template: examples/fused_rms_norm/kernel.py
+torch_wrapper: examples/fused_rms_norm/torch_impl.py
+
+tile_strategy:
+  type: 2d_row
+  block_size: "input.shape[-1]"
+  symbol: "Symbol('BLOCK_SIZE', constexpr=True)"
+  precision_ops:
+    - "ntl.cast(x, ntl.float32)"
+    - "ntl.rsqrt(variance + eps)"
+
+reference: "torch.nn.functional.rms_norm(x, x.shape[-1:], w, eps)"
+
+acceptance:
+  correctness:
+    shapes: [[1151, 8192]]
+    atol: 0.001
+    rtol: 0.005
+  benchmark:
+    shapes: [[4096, 4096]]
+    warmup: 10
+    trials: 50

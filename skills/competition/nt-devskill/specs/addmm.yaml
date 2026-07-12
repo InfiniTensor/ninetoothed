@@ -1,0 +1,54 @@
+name: addmm
+family: matmul
+pattern: fused_bias_matmul
+composition: reuse_matmul_arrangement_and_application
+
+description: 融合偏置 + 矩阵乘法 output = beta*input + alpha*(mat1 @ mat2)
+
+formula: |
+  acc = matmul(mat1, mat2)
+  output = beta * input + alpha * acc
+
+inputs:
+  - name: input
+    ndim: 2
+    dtype: float16
+  - name: mat1
+    ndim: 2
+    dtype: float16
+  - name: mat2
+    ndim: 2
+    dtype: float16
+  - name: beta
+    ndim: 0
+    type: scalar
+    default: 1
+  - name: alpha
+    ndim: 0
+    type: scalar
+    default: 1
+
+outputs:
+  - name: output
+    ndim: 2
+    dtype: float16
+
+template: examples/addmm/kernel.py
+torch_wrapper: examples/addmm/torch_impl.py
+
+tile_strategy:
+  type: 3level
+  reuse: "examples.matmul.kernel (arrangement + application)"
+  fusion: "bias addition in same kernel"
+
+reference: "torch.addmm(c, a, b)"
+
+acceptance:
+  correctness:
+    shapes: [[512, 512]]
+    atol: 0.01
+    rtol: 0.01
+  benchmark:
+    shapes: [[1024, 1024]]
+    warmup: 10
+    trials: 50
