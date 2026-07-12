@@ -1,0 +1,44 @@
+[
+  {
+    "mask_expr_count": 4,
+    "source_line_count": 5,
+    "stride_expr_count": 3,
+    "has_lower_bound_in_mask": true,
+    "runtime_ms": 0.023,
+    "name": "vec_add_hit",
+    "type": "hit",
+    "description": "1D vector add, tile(1024), no pad/expand \u2014 specialization applies"
+  },
+  {
+    "mask_expr_count": 4,
+    "source_line_count": 7,
+    "stride_expr_count": 6,
+    "has_lower_bound_in_mask": true,
+    "runtime_ms": 0.025,
+    "name": "vec_add_store_hit",
+    "type": "hit",
+    "description": "1D vector add with store, tile(1024) \u2014 specialization applies"
+  },
+  {
+    "name": "unsqueeze_fallback",
+    "type": "fallback",
+    "description": "1D unsqueeze(0) \u2014 unary level present, fallback preserves >=0",
+    "error": "'Symbol' object has no attribute 'upper_bound'"
+  },
+  {
+    "name": "slice_fallback",
+    "type": "fallback",
+    "description": "Slice with negative start \u2014 pad-like, fallback preserves bounds",
+    "error": "'Symbol' object has no attribute 'upper_bound'"
+  },
+  {
+    "mask_expr_count": 4,
+    "source_line_count": 5,
+    "stride_expr_count": 3,
+    "has_lower_bound_in_mask": true,
+    "runtime_ms": 0.019,
+    "name": "expand_hit",
+    "type": "hit",
+    "description": "Expand + tile \u2014 broadcast 0>=0 and 0<size simplified"
+  }
+]

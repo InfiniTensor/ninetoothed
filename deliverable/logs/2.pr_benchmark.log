@@ -1,0 +1,41 @@
+[bench] vec_add_hit (hit) ... OK  rt=0.054ms  mask=3  spec_hit=True  speedup=0.4259
+[bench] vec_add_store_hit (hit) ... OK  rt=0.024ms  mask=3  spec_hit=True  speedup=1.0246
+[bench] vec_add_divisible_hit (hit) ... OK  rt=0.019ms  mask=3  spec_hit=True  speedup=1.2169
+[bench] unsqueeze_fallback (fallback) ... OK  rt=2.413ms  mask=5  spec_hit=True  speedup=None
+[bench] slice_fallback (fallback) ... OK  rt=0.024ms  mask=5  spec_hit=True  speedup=None
+[bench] expand_hit (hit) ... OK  rt=0.072ms  mask=3  spec_hit=True  speedup=0.2643
+[bench] matmul_small_hit (hit) ... OK  rt=0.209ms  mask=11  spec_hit=True  speedup=1.134
+[bench] matmul_medium_hit (hit) ... OK  rt=0.059ms  mask=11  spec_hit=True  speedup=None
+[bench] matmul_large_hit (hit) ... OK  rt=0.242ms  mask=11  spec_hit=True  speedup=0.3806
+[bench] ntops_add_hit (hit) ... OK  rt=0.046ms  mask=4  spec_hit=True  speedup=None
+[bench] ntops_relu_hit (hit) ... OK  rt=0.038ms  mask=4  spec_hit=True  speedup=None
+[bench] ntops_gelu_hit (hit) ... OK  rt=0.038ms  mask=4  spec_hit=True  speedup=None
+[bench] ntops_softmax_hit (hit) ... OK  rt=0.045ms  mask=15  spec_hit=True  speedup=None
+[bench] ntops_layer_norm_hit (hit) ... OK  rt=0.068ms  mask=15  spec_hit=True  speedup=None
+[bench] ntops_rms_norm_hit (hit) ... OK  rt=0.060ms  mask=15  spec_hit=True  speedup=None
+[bench] ntops_mm_divisible_hit (hit) ... OK  rt=0.220ms  mask=11  spec_hit=True  speedup=None
+[bench] ntops_unsqueeze_fallback (fallback) ... OK  rt=2.413ms  mask=5  spec_hit=True  speedup=None
+
+[bench] Results written to deliverable/benchmarks/results_submitted.json
+
+-----------------------------------------------------------------------------------------
+Scenario                   Type       Base_ms   Sub_ms   Speedup  MaskRdx  SpecHit   Regr
+-----------------------------------------------------------------------------------------
+vec_add_hit                hit          0.023 0.054    0.426x    25.0%     True    YES
+vec_add_store_hit          hit          0.025 0.024    1.025x    25.0%     True     NO
+vec_add_divisible_hit      hit          0.023 0.019    1.217x    25.0%     True     NO
+unsqueeze_fallback         fallback         — 2.413         —        —     True     NO
+slice_fallback             fallback         — 0.024         —        —     True     NO
+expand_hit                 hit          0.019 0.072    0.264x    25.0%     True    YES
+matmul_small_hit           hit          0.237 0.209    1.134x    59.3%     True     NO
+matmul_medium_hit          hit              — 0.059         —        —     True     NO
+matmul_large_hit           hit          0.092 0.242    0.381x    59.3%     True    YES
+ntops_add_hit              hit              — 0.046         —        —     True     NO
+ntops_relu_hit             hit              — 0.038         —        —     True     NO
+ntops_gelu_hit             hit              — 0.038         —        —     True     NO
+ntops_softmax_hit          hit              — 0.045         —        —     True     NO
+ntops_layer_norm_hit       hit              — 0.068         —        —     True     NO
+ntops_rms_norm_hit         hit              — 0.060         —        —     True     NO
+ntops_mm_divisible_hit     hit              — 0.220         —        —     True     NO
+ntops_unsqueeze_fallback   fallback         — 2.413         —        —     True     NO
+-----------------------------------------------------------------------------------------
