@@ -1,4 +1,4 @@
-﻿# NineToothed Operator Development Skill
+# NineToothed Operator Development Skill
 
 ## Skill purpose
 
@@ -169,6 +169,43 @@ pytest
 4. If full pytest cannot run locally, record the reason and any focused tests that did run.
 5. The PR description must include a `pytest` output code block.
 6. PR title and commit message should start with an uppercase letter, use imperative mood, and not end with punctuation.
+
+## Before coding
+
+- [ ] Read `README.md`, `CONTRIBUTING.md`, and the relevant tests.
+- [ ] List inputs, outputs, shape, and dtype.
+- [ ] Define broadcast, mask, boundary, and tolerance behavior.
+- [ ] Check contiguous, non-contiguous, stride, offset, transpose, and slice cases.
+- [ ] Find at least one similar implementation in the real repository.
+- [ ] Decide how to use `arrangement`, `application`, `Tensor` specs, and `ninetoothed.make`.
+- [ ] Define the PyTorch reference.
+
+Do not start coding until every applicable item is checked. Record any non-applicable item with a concrete reason.
+
+## Before final answer
+
+- [ ] Record every added or modified file.
+- [ ] Provide the real pytest command.
+- [ ] Record the real pytest result, or accurately record the environment limitation.
+- [ ] Cover boundary input and non-contiguous input.
+- [ ] For performance tasks, record baseline, shape, dtype, layout, command, result, and conclusion.
+- [ ] For failures, record symptom, error message, root cause, minimal fix, re-run command, and re-run result.
+- [ ] Confirm that no pytest or benchmark result is fabricated.
+
+Do not describe a pending command as passed. Keep unexecuted result fields as `待真实运行后填写`.
+
+## Before PR
+
+- [ ] Confirm the change scope is only the current skill directory.
+- [ ] Run `ruff format --check`.
+- [ ] Run `ruff check`.
+- [ ] Run `python scripts/check_contributing_style.py`.
+- [ ] Put pytest output or the environment limitation in the PR description.
+- [ ] Update `HONOR_CODE.md` and `REFERENCE.md`.
+- [ ] Confirm there are no API keys, credentials, hidden answers, or test bypasses.
+- [ ] Confirm every TODO is explicitly marked `待真实运行后填写`.
+
+If a required check cannot run, record the attempted command, symptom, error, environment limitation, and re-run TODO in the PR description.
 
 ## Forbidden actions
 

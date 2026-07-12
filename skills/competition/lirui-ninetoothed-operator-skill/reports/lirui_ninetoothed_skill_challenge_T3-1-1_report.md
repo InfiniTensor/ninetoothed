@@ -65,6 +65,7 @@ skills/competition/lirui-ninetoothed-operator-skill/
 ├── examples/task4_benchmark_debug.md
 ├── tests/validation_plan.md
 ├── reports/lirui_ninetoothed_skill_challenge_T3-1-1_report.md
+├── reports/logs/20260708-103141_pytest_t1_missing_triton_pytest_t1_missing_triton.log
 ├── HONOR_CODE.md
 └── REFERENCE.md
 ```
@@ -150,6 +151,7 @@ skills/competition/lirui-ninetoothed-operator-skill/reports/logs/20260708-103141
 ```
 
 TODO: 在 Linux/WSL/CUDA/Triton 环境安装仓库依赖后重新运行同一 focused pytest 命令。
+
 ## 8. 自测任务 2：reduction / block
 
 文档位置：`examples/task2_reduction_block.md`
@@ -225,6 +227,8 @@ TODO: 在 Linux/WSL/CUDA/Triton 环境安装仓库依赖后重新运行同一 fo
 
 本作品至少设计两个 benchmark，但不填写伪造数字。
 
+当前只有 benchmark design，没有真实 benchmark result，因此不作性能提升结论。所有计时、方差和性能结论都必须在支持 CUDA/Triton 的真实环境运行后填写。
+
 ### Benchmark A: Elementwise broadcast runtime
 
 - Baseline: PyTorch `torch.add`。
@@ -284,7 +288,9 @@ Current real case:
 
 ## 13. skill vs no-skill 对比
 
-计划对比同一任务在未使用 skill 和使用 skill 两种情况下的表现：
+`tests/validation_plan.md` 已提供可执行 paired comparison protocol：no-skill baseline 只接收原始算子任务且不允许读取 `SKILL.md`；with-skill run 在相同仓库版本、环境、模型配置、时间预算和工具权限下，必须先读取 `SKILL.md` 再执行相同任务。
+
+两次运行比较：
 
 - 是否先抽取 requirements。
 - 是否搜索相似仓库实现。
@@ -293,6 +299,8 @@ Current real case:
 - 是否记录 pytest 命令和真实结果。
 - 是否设计 benchmark 并记录 baseline、input size、dtype、layout、command 和 numeric result。
 - 是否遵守只改 `skills/competition/lirui-ninetoothed-operator-skill/` 的范围要求。
+
+当前提交已经提供 paired comparison protocol，但尚未执行真实 paired run。原因是本地 Windows 环境缺少 Triton。该对比将在支持 Linux/WSL/CUDA/Triton 的环境中执行，不得编造结果。
 
 Result:
 
@@ -310,13 +318,25 @@ Result:
 
 本轮记录真实本地检查结果，不伪造 pytest 通过，也不填写未运行的 benchmark 数字。
 
-| Check | Real local result | Interpretation |
-| --- | --- | --- |
-| `python skills/competition/lirui-ninetoothed-operator-skill/scripts/collect_logs.py --help` | Passed; help output includes `Copy a test or benchmark log into the skill reports/logs directory.` | `collect_logs.py` 可用。 |
-| `ruff check` | `All checks passed!` | 静态检查通过。 |
-| `python scripts/check_contributing_style.py` | No output | 按仓库脚本习惯记录为无错误输出。 |
-| `ruff format --check` | Initially reported `collect_logs.py` would be reformatted | Format issue found and fixed by `ruff format skills/competition/lirui-ninetoothed-operator-skill`. |
-| T1 focused pytest | Collection failed with `ModuleNotFoundError: No module named 'triton'` | 本地 Windows Python 环境缺少 Triton；这是环境限制，不是 correctness failure。 |
+状态术语严格区分如下：
+
+- Correctness failure：测试已成功收集并执行，但算子输出、形状、dtype 或容差断言失败。
+- Collection failure：pytest 在执行测试函数前的收集或导入阶段失败，因此没有产生算子正确性结论。
+- Environment limitation：缺少 Triton、CUDA、NVCC、GPU 或其他必需依赖，使测试或构建无法进入可验证阶段。
+
+本地 T1 属于 collection failure，直接原因是 environment limitation；它不是 correctness failure。
+
+| Item | Command | Status | Evidence |
+| --- | --- | --- | --- |
+| `collect_logs.py --help` | `python skills/competition/lirui-ninetoothed-operator-skill/scripts/collect_logs.py --help` | Passed | Help output includes `Copy a test or benchmark log into the skill reports/logs directory.` |
+| Ruff check | `ruff check` | Passed | Output: `All checks passed!` |
+| Contributing style checker | `python scripts/check_contributing_style.py` | No error output | 命令无输出；按仓库 checker 行为记录为无错误输出。 |
+| Ruff format | `ruff format --check`, then `ruff format skills/competition/lirui-ninetoothed-operator-skill` | Initial issue found and fixed | 初次检查报告 `scripts\collect_logs.py` 需要格式化，随后已运行 `ruff format` 修复。 |
+| T1 pytest | `pytest tests/test_add.py tests/test_addmm.py tests/test_pow.py -q` | Collection failed because Triton was unavailable | `ModuleNotFoundError: No module named 'triton'`；真实日志见 `reports/logs/20260708-103141_pytest_t1_missing_triton_pytest_t1_missing_triton.log`。 |
+| T2/T3/T4 pytest | 对应 example 中记录的命令 | Pending | 待真实运行后填写 |
+| Benchmark | T2 与 T4 benchmark 记录表中的命令 | Pending | 待真实运行后填写 |
+| AOT artifacts | T4 AOT build 与 generated source inspection | Pending | 待真实运行后填写 |
+| Skill vs no-skill paired run | `tests/validation_plan.md` 中的 paired comparison protocol | Pending | 待真实运行后填写 |
 
 T1 failure diagnosis:
 
@@ -327,7 +347,7 @@ T1 failure diagnosis:
 - Re-run command: `pytest tests/test_add.py tests/test_addmm.py tests/test_pow.py -q`.
 - Re-run result: 待真实运行后填写.
 
-Benchmark status:
+Benchmark status：当前只有 benchmark design，没有真实 benchmark result，因此不作性能提升结论。
 
 ```text
 待真实运行后填写
@@ -340,7 +360,7 @@ Benchmark status:
 - 已记录 T1 focused pytest 的真实 collection failure；T2/T3/T4 和完整 pytest 仍需在合适环境中补充。
 - benchmark 数字需要在真实 CUDA/Triton/NineToothed 环境中运行后补充。
 - AOT build 检查依赖 CUDA、Triton、NVCC 和本地 GPU 环境。
-- `skill vs no-skill` 对比需要设计同一任务的双运行实验。
+- `skill vs no-skill` 已提供同一任务的 paired comparison protocol，但真实 paired run 尚未执行。
 
 后续维护计划：
 

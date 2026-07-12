@@ -58,22 +58,54 @@ The agent must not delete tests, bypass assertions, or fabricate a pass.
 
 ## Skill vs no-skill comparison
 
-Compare two runs on the same operator task:
+Use the same task statement, repository revision, environment, model configuration, time budget, and tool permissions for both runs. Save each run's prompt, final answer, changed-file list, commands, and logs as evidence. Do not expose one run's output to the other run.
 
-- No-skill baseline: agent receives only the operator request.
-- Skill-guided run: agent follows `skills/competition/lirui-ninetoothed-operator-skill/SKILL.md` and fills the task template.
+### A. No-skill baseline
 
-Compare:
-
-- Whether requirements were extracted before implementation.
-- Whether non-contiguous layout was tested.
-- Whether PyTorch reference was used.
-- Whether failures were diagnosed with minimal fixes.
-- Whether benchmark claims included command and result.
-- Whether PR integration rules were respected.
+1. Provide only the original operator task.
+2. Do not mention or permit reading `skills/competition/lirui-ninetoothed-operator-skill/SKILL.md`.
+3. Permit normal repository inspection and task execution.
+4. Record the files inspected, files changed, commands run, test results, diagnosis, and benchmark plan produced by the agent.
 
 Result:
 
 ```text
 待真实运行后填写
 ```
+
+### B. With-skill run
+
+1. Start from the same repository revision and task statement used for the no-skill baseline.
+2. Require the agent to read `skills/competition/lirui-ninetoothed-operator-skill/SKILL.md` before acting.
+3. Permit the same tools, environment, and time budget as the baseline.
+4. Record the files inspected, files changed, commands run, test results, diagnosis, and benchmark plan produced by the agent.
+
+Result:
+
+```text
+待真实运行后填写
+```
+
+### Comparison criteria
+
+Score each criterion as `Yes`, `Partial`, or `No`, and link or quote the corresponding run artifact in the Evidence column. Keep every cell as `待真实运行后填写` until both runs have actually completed.
+
+| Criterion | No skill | With skill | Evidence |
+| --- | --- | --- | --- |
+| Extracted input/output/shape/dtype | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 |
+| Checked broadcast behavior | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 |
+| Checked non-contiguous layout | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 |
+| Searched for a similar repository implementation | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 |
+| Wrote or reused a PyTorch reference | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 |
+| Provided an exact pytest command | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 |
+| Recorded failure diagnosis | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 |
+| Provided a benchmark plan | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 |
+| Avoided unrelated modifications | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 |
+
+### Paired-run conclusion
+
+```text
+待真实运行后填写
+```
+
+The current Windows environment lacks Triton, so the real paired run remains pending until it can be executed in a supported Linux/WSL/CUDA/Triton environment. Do not infer or fabricate a comparative result.

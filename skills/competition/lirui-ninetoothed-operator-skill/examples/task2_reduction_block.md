@@ -1,4 +1,4 @@
-﻿# Task 2: Reduction / Block Self-Test Plan
+# Task 2: Reduction / Block Self-Test Plan
 
 ## Task goal
 
@@ -27,7 +27,7 @@ Validate that the skill can guide an AI agent through a reduction-style NineToot
 3. Use `Tensor(..., other=...)` to define out-of-bounds values when partial blocks need neutral elements.
 4. In `application`, use `ntl.sum`, `ntl.max`, or a stable softmax expression.
 5. Use an accumulator dtype that matches the numerical requirement.
-6. Compare with PyTorch reference such as `torch.sum(input, dim=-1)`, `torch.max(input, dim=-1).values`, or `torch.softmax(input, dim=-1)`.
+6. Compare with a PyTorch reference such as `torch.sum(input, dim=-1)`, `torch.max(input, dim=-1).values`, or `torch.softmax(input, dim=-1)`.
 
 ## PyTorch reference plan
 
@@ -49,9 +49,9 @@ expected_softmax = torch.softmax(input, dim=-1)
 
 ## Pytest command
 
-`ash
+```bash
 pytest tests/test_softmax.py tests/test_attention.py -q
-` 
+```
 
 After a real reduction self-test implementation is added, record its exact real path and command here. Do not keep a fake path.
 
@@ -63,25 +63,21 @@ After a real reduction self-test implementation is added, record its exact real 
 
 ## Benchmark plan
 
-Baseline:
+Use one selected reduction operator consistently for baseline and candidate measurements. Warm up both implementations, use the same device and synchronization method, and record repeat count and timing units with the raw log.
 
-- `torch.sum(input, dim=-1)` for reduce sum.
-- `torch.max(input, dim=-1).values` for block max.
-- `torch.softmax(input, dim=-1)` for softmax-like reduction.
-
-Benchmark cases:
+Planned cases:
 
 - `(1024, 1024)`, `float32`, contiguous.
 - `(781, 1823)`, `float32`, contiguous, non-power-of-two reduction dimension.
 - Optional `(4096, 257)`, `float32`, sliced or transposed if supported.
 
-Record exact command, result, and conclusion. Do not infer speedup without numeric evidence.
+Do not infer speedup without numeric evidence.
 
-## Benchmark command
-
-```text
-待真实运行后填写
-```
+| Case | Baseline | Shape | Dtype | Layout | Command | Mean time | Variance | Conclusion |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| T2-B1 contiguous reduction | 待真实运行后填写 | `(1024, 1024)` | `float32` | contiguous | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 |
+| T2-B2 partial reduction block | 待真实运行后填写 | `(781, 1823)` | `float32` | contiguous | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 |
+| T2-B3 layout variant | 待真实运行后填写 | `(4096, 257)` | `float32` | sliced or transposed | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 |
 
 ## Benchmark result
 
@@ -100,9 +96,10 @@ Likely root causes to check:
 - Tolerance too strict for dtype.
 - Layout assumption broken by non-contiguous input.
 
+For every observed failure, record symptom, error message, suspected root cause, minimal fix, re-run command, and re-run result.
+
 Current diagnosis:
 
 ```text
 待真实运行后填写
 ```
-

@@ -1,4 +1,4 @@
-﻿# Task 3: Layout-Sensitive Self-Test Plan
+# Task 3: Layout-Sensitive Self-Test Plan
 
 ## Task goal
 
@@ -82,9 +82,9 @@ For each case record:
 
 ## Pytest command
 
-`ash
+```bash
 pytest tests/test_clone.py tests/test_getitem.py tests/test_matmul.py tests/test_conv2d.py -q
-` 
+```
 
 After a real layout-sensitive self-test implementation is added, record its exact real path and command here. Do not keep a fake path.
 
@@ -129,4 +129,3 @@ Current diagnosis:
 ```text
 待真实运行后填写
 ```
-

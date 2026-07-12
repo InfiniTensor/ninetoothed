@@ -46,7 +46,8 @@ skills/competition/lirui-ninetoothed-operator-skill/
 ├── tests/
 │   └── validation_plan.md
 ├── reports/
-│   └── lirui_ninetoothed_skill_challenge_T3-1-1_report.md
+│   ├── lirui_ninetoothed_skill_challenge_T3-1-1_report.md
+│   └── logs/
 ├── HONOR_CODE.md
 └── REFERENCE.md
 ```
@@ -71,17 +72,21 @@ skills/competition/lirui-ninetoothed-operator-skill/
 
 All result fields remain `待真实运行后填写` until real commands have been executed.
 
-## Local testing status
+## Current validation status
 
-The following local checks have been run and recorded without fabricating pass results:
+The following table separates checks that actually ran from work that remains pending. A pending item is not treated as passed.
 
-| Check | Real local result | Notes |
-| --- | --- | --- |
-| `python skills/competition/lirui-ninetoothed-operator-skill/scripts/collect_logs.py --help` | Passed | Help output includes: `Copy a test or benchmark log into the skill reports/logs directory.` |
-| `ruff check` | Passed | Output: `All checks passed!` |
-| `python scripts/check_contributing_style.py` | Passed with no output | Recorded as no error output, consistent with the repository checker style. |
-| `ruff format --check` | Initial format issue found | Output indicated `scripts\collect_logs.py` would be reformatted; fixed by running `ruff format skills/competition/lirui-ninetoothed-operator-skill`. |
-| T1 focused pytest | Collection failed due to local environment | `ModuleNotFoundError: No module named 'triton'`; this is a Triton dependency/environment limitation, not a correctness failure. |
+| Item | Command | Status | Evidence |
+| --- | --- | --- | --- |
+| `collect_logs.py --help` | `python skills/competition/lirui-ninetoothed-operator-skill/scripts/collect_logs.py --help` | Passed | Help output includes `Copy a test or benchmark log into the skill reports/logs directory.` |
+| Ruff check | `ruff check` | Passed | Output: `All checks passed!` |
+| Contributing style checker | `python scripts/check_contributing_style.py` | No error output | The command returned without output; recorded as no error output according to repository checker behavior. |
+| Ruff format | `ruff format --check`, then `ruff format skills/competition/lirui-ninetoothed-operator-skill` | Initial issue found and fixed | Initial output reported that `scripts\collect_logs.py` would be reformatted; the format issue was fixed with `ruff format`. |
+| T1 pytest | `pytest tests/test_add.py tests/test_addmm.py tests/test_pow.py -q` | Collection failed because Triton was unavailable | `ModuleNotFoundError: No module named 'triton'`; this is an environment limitation, not a correctness failure. See the retained log below. |
+| T2/T3/T4 pytest | Commands in the corresponding example plans | Pending | 待真实运行后填写 |
+| Benchmark | Commands and cases in T2 and T4 | Pending | 待真实运行后填写 |
+| AOT artifacts | AOT build and artifact inspection in T4 | Pending | 待真实运行后填写 |
+| Skill vs no-skill paired run | Protocol in `tests/validation_plan.md` | Pending | 待真实运行后填写 |
 
 T1 pytest command attempted locally:
 
@@ -97,6 +102,7 @@ skills/competition/lirui-ninetoothed-operator-skill/reports/logs/20260708-103141
 ```
 
 TODO: rerun focused pytest in a supported Linux/WSL/CUDA/Triton environment with repository dependencies installed. Benchmark results remain `待真实运行后填写` until real benchmark commands are executed.
+
 ## How to run checks and benchmarks
 
 From the NineToothed repository root:

@@ -86,6 +86,14 @@ At least two benchmark designs must be recorded:
    - Candidate: multiple `block_size` values with `meta_parameters=("block_size",)`.
    - Record generated CSV auto-tuning selection when available.
 
+Use the following table for every real run. Record timing units and the exact repetition method in the command or evidence log.
+
+| Case | Baseline | Shape | Dtype | Layout | Command | Mean time | Variance | Conclusion |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| T4-B1 PyTorch vs AOT vector add | 待真实运行后填写 | `(1127,)` | `float32` | contiguous | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 |
+| T4-B2 large vector runtime | 待真实运行后填写 | `(20260128,)` | `float32` | contiguous | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 |
+| T4-B3 fixed block vs auto-tuned | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 | contiguous | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 | 待真实运行后填写 |
+
 ## Benchmark command
 
 ```text
