@@ -17,6 +17,7 @@ from triton.language.extra import libdevice
 import ninetoothed.naming as naming
 from ninetoothed.cudaifier import Cudaifier
 from ninetoothed.language import attribute, call
+from ninetoothed.specialization import SpecializationHints
 from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
 from ninetoothed.torchifier import Torchifier
@@ -52,7 +53,13 @@ class CodeGenerator(ast.NodeTransformer):
         num_stages,
         max_num_configs,
         prettify,
+        specialization_hints=None,
     ):
+        self._specialization_hints = (
+            specialization_hints
+            if specialization_hints is not None
+            else SpecializationHints.empty()
+        )
         def _get_tree(func):
             func_def = ast.parse(textwrap.dedent(inspect.getsource(func)))
 
@@ -640,12 +647,19 @@ class CodeGenerator(ast.NodeTransformer):
             return Symbol(tensor.source.name).node
 
         pointers, mask = self._generate_pointers_and_mask(tensor, indices)
+
+        if isinstance(mask, Symbol) and mask.is_constant_true():
+            return call("load", pointers).node
+
         other = type(self)._generate_other(tensor)
 
         return call("load", pointers, mask=mask, other=other).node
 
     def _generate_store(self, tensor, value, indices=()):
         pointers, mask = self._generate_pointers_and_mask(tensor, indices)
+
+        if isinstance(mask, Symbol) and mask.is_constant_true():
+            return call("store", pointers, value).node
 
         return call("store", pointers, value, mask=mask).node
 
@@ -659,7 +673,7 @@ class CodeGenerator(ast.NodeTransformer):
         self._invariants[name_for_pointers] = Symbol(tensor.source.pointer_string())
 
         overall_offsets, mask = type(self)._generate_overall_offsets_and_mask(
-            tensor, indices
+            tensor, indices, self._specialization_hints
         )
 
         pointers = name_for_pointers + overall_offsets
@@ -722,15 +736,30 @@ class CodeGenerator(ast.NodeTransformer):
         )
 
     @staticmethod
-    def _generate_overall_offsets_and_mask(tensor, indices):
+    def _generate_overall_offsets_and_mask(tensor, indices, hints=None):
+        if hints is None:
+            hints = SpecializationHints.empty()
+
         indices = list(indices)
 
-        offsets, mask = CodeGenerator._generate_offsets_and_mask(tensor, indices)
+        offsets, mask = CodeGenerator._generate_offsets_and_mask(
+            tensor, indices, hints
+        )
 
         tensor._last_generated_offsets = offsets
 
+        bare_source_name = naming.remove_prefixes(tensor.source.name)
+
+        def _offset_term(source_dim):
+            offset = offsets[source_dim]
+
+            if hints.is_contiguous(bare_source_name, source_dim):
+                return offset
+
+            return offset * Symbol(tensor.source.stride_string(source_dim))
+
         overall_offsets = sum(
-            offsets[source_dim] * Symbol(tensor.source.stride_string(source_dim))
+            _offset_term(source_dim)
             for source_dim in range(tensor.source.ndim)
         )
 
@@ -744,38 +773,45 @@ class CodeGenerator(ast.NodeTransformer):
         return overall_offsets, mask
 
     @staticmethod
-    def _generate_offsets_and_mask(tensor, indices):
+    def _generate_offsets_and_mask(tensor, indices, hints=None):
+        if hints is None:
+            hints = SpecializationHints.empty()
+
         offsets = [Symbol(0) for _ in range(tensor.source.ndim)]
 
         tensor.source._mask = Symbol(True)
+        tensor.source._specialization_hints = hints
 
-        curr = tensor
-        start = 0
+        try:
+            curr = tensor
+            start = 0
 
-        while isinstance(curr, type(tensor)):
-            stop = start + curr.ndim
-            curr_indices = indices[start:stop]
+            while isinstance(curr, type(tensor)):
+                stop = start + curr.ndim
+                curr_indices = indices[start:stop]
 
-            curr._inputs = [curr_indices]
+                curr._inputs = [curr_indices]
 
-            start = stop
-            curr = curr.dtype
+                start = stop
+                curr = curr.dtype
 
-        for level in reversed(tensor._levels):
-            for tensor_ in level:
-                tensor_.offsets()
+            for level in reversed(tensor._levels):
+                for tensor_ in level:
+                    tensor_.offsets()
 
-        for dim, offset in enumerate(tensor.source._outputs[0]):
-            offsets[dim] += offset
+            for dim, offset in enumerate(tensor.source._outputs[0]):
+                offsets[dim] += offset
 
-        curr = tensor
+            curr = tensor
 
-        while isinstance(curr, type(tensor)):
-            curr._inputs.clear()
+            while isinstance(curr, type(tensor)):
+                curr._inputs.clear()
 
-            curr = curr.dtype
+                curr = curr.dtype
 
-        return offsets, tensor.source._mask
+            return offsets, tensor.source._mask
+        finally:
+            tensor.source._specialization_hints = None
 
     @staticmethod
     def _generate_innermost_indices(tensor, use_power_of_2_sizes=True):

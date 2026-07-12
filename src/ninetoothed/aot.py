@@ -1,4 +1,5 @@
 import ast
+import copy
 import ctypes
 import pathlib
 import re
@@ -11,6 +12,8 @@ import uuid
 import ninetoothed.dtype
 import ninetoothed.naming as naming
 from ninetoothed.generation import CACHE_DIR, CodeGenerator
+from ninetoothed.specialization import SpecializationHints
+from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
 from ninetoothed.utils import calculate_default_configs
 
@@ -57,24 +60,36 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
     if not _HEADER_PATH.exists() or _HEADER_PATH.read_text() != _HEADER_CONTENT:
         _HEADER_PATH.write_text(_HEADER_CONTENT)
 
-    code_generator = CodeGenerator()
-    source_file = code_generator(
-        func,
-        caller=caller,
-        kernel_name=kernel_name,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        max_num_configs=None,
-        prettify=False,
+    original_annotations = copy.deepcopy(func.__annotations__)
+
+    def _generate_for_variant(hints):
+        func.__annotations__ = copy.deepcopy(original_annotations)
+
+        code_generator = CodeGenerator()
+        source_file = code_generator(
+            func,
+            caller=caller,
+            kernel_name=kernel_name,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            max_num_configs=None,
+            prettify=False,
+            specialization_hints=hints,
+        )
+
+        return code_generator, source_file
+
+    initial_code_generator, initial_source_file = _generate_for_variant(
+        SpecializationHints.empty()
     )
 
-    tensors = code_generator.tensors
-    kernel_func = code_generator.kernel_func
-    launch_func = code_generator.launch_func
+    tensors = initial_code_generator.tensors
+    kernel_func = initial_code_generator.kernel_func
+    launch_func = initial_code_generator.launch_func
 
     grid_extractor = _GridExtractor()
     launch_func = grid_extractor.visit(launch_func)
-    grid_extractor.visit(code_generator.raw_grid)
+    grid_extractor.visit(initial_code_generator.raw_grid)
     grid = f"{ast.unparse(grid_extractor.grid[0])}, 1, 1"
 
     launch_arg_names = tuple(arg.arg for arg in launch_func.args.args)
@@ -82,6 +97,10 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
         launch_arg_names, tensors, _find_tensor_by_source_name
     )
     _, tensor_ndims, _ = _per_tensor_dim_options(
+        launch_arg_names, tensors, _find_tensor_by_source_name
+    )
+
+    block_sizes = _innermost_block_sizes(
         launch_arg_names, tensors, _find_tensor_by_source_name
     )
 
@@ -94,11 +113,28 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
         size_type,
         stride_type,
     ) in variant_specs:
+        hints = _hints_from_spec(
+            divisibility_spec, contiguity_spec, block_sizes
+        )
+
+        if hints.any():
+            variant_code_generator, variant_source_file = _generate_for_variant(hints)
+            variant_kernel_func = variant_code_generator.kernel_func
+            variant_launch_func = grid_extractor.visit(
+                variant_code_generator.launch_func
+            )
+            variant_tensors = variant_code_generator.tensors
+        else:
+            variant_source_file = initial_source_file
+            variant_kernel_func = kernel_func
+            variant_launch_func = launch_func
+            variant_tensors = tensors
+
         variant_outputs = _build_variant(
-            source_file,
-            kernel_func,
-            launch_func,
-            tensors,
+            variant_source_file,
+            variant_kernel_func,
+            variant_launch_func,
+            variant_tensors,
             _find_tensor_by_source_name,
             func,
             kernel_name=kernel_name,
@@ -113,17 +149,114 @@ def _aot(func, caller, kernel_name, num_warps, num_stages):
         )
         output_contents.update(variant_outputs)
 
+        output_contents[f"{kernel_name}.{variant_suffix}.py"] = pathlib.Path(
+            variant_source_file
+        ).read_text()
+
     dispatcher_source, dispatcher_header = _generate_dispatcher(
-        kernel_name, launch_arg_names, variant_specs, tensor_ndims
+        kernel_name, launch_arg_names, variant_specs, tensor_ndims, block_sizes
     )
 
     output_contents[f"{kernel_name}.cpp"] = dispatcher_source
     output_contents[f"{kernel_name}.h"] = dispatcher_header
 
+    func.__annotations__ = original_annotations
+
     return output_contents
 
 
-def _generate_dispatcher(kernel_name, launch_arg_names, variant_specs, tensor_ndims):
+def _hints_from_spec(divisibility_spec, contiguity_spec, block_sizes):
+    divisible_dims = frozenset(
+        (naming.remove_prefixes(name), dim)
+        for name, dim in divisibility_spec
+        if block_sizes.get((name, dim)) is not None
+    )
+    contiguous_dims = frozenset(
+        (naming.remove_prefixes(name), dim) for name, dim in contiguity_spec
+    )
+
+    return SpecializationHints(
+        divisible_dims=divisible_dims,
+        contiguous_dims=contiguous_dims,
+    )
+
+
+def _innermost_block_sizes(launch_arg_names, tensors, find_tensor):
+    sizes = {}
+
+    for name in launch_arg_names:
+        tensor = find_tensor(tensors, name)
+
+        if tensor is None or tensor.source.ndim == 0:
+            continue
+
+        try:
+            innermost = tensor.innermost()
+        except Exception:
+            continue
+
+        if innermost.ndim != tensor.source.ndim:
+            continue
+
+        if not _is_divisibility_safe(tensor):
+            continue
+
+        for dim in range(tensor.source.ndim):
+            value = _static_int(innermost.shape[dim])
+
+            if value is not None:
+                sizes[(name, dim)] = value
+
+    return sizes
+
+
+def _is_divisibility_safe(tensor):
+    history = getattr(tensor, "_history", None)
+
+    if not history:
+        return False
+
+    unsafe = {"pad", "_slice_dim"}
+    has_tile = False
+
+    for func, _, _ in history:
+        name = getattr(func, "__name__", None)
+
+        if name in unsafe:
+            return False
+
+        if name == "tile":
+            has_tile = True
+
+    return has_tile
+
+
+def _static_int(value):
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, int):
+        return value
+
+    if isinstance(value, Symbol):
+        node = value._node
+
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, int)
+            and not isinstance(node.value, bool)
+        ):
+            return node.value
+
+    return None
+
+
+def _generate_dispatcher(
+    kernel_name, launch_arg_names, variant_specs, tensor_ndims, block_sizes=None
+):
+    if block_sizes is None:
+        block_sizes = {}
+
     tensor_params = ", ".join(f"NineToothedTensor {name}" for name in launch_arg_names)
     signature_params = (
         f"NineToothedStream stream, {tensor_params}"
@@ -174,7 +307,8 @@ def _generate_dispatcher(kernel_name, launch_arg_names, variant_specs, tensor_nd
             continue
 
         checks = tuple(
-            f"{name}.shape[{dim}] % 16 == 0" for name, dim in divisibility_spec
+            f"{name}.shape[{dim}] % {_divisibility_threshold(name, dim, block_sizes)} == 0"
+            for name, dim in divisibility_spec
         ) + tuple(f"{name}.strides[{dim}] == 1" for name, dim in contiguity_spec)
 
         if checks:
@@ -423,6 +557,15 @@ def _enumerate_variant_specs(launch_arg_names, tensors, find_tensor):
     )
 
     return specs
+
+
+def _divisibility_threshold(name, dim, block_sizes):
+    block_size = block_sizes.get((name, dim))
+
+    if block_size is None or block_size <= 16:
+        return 16
+
+    return block_size
 
 
 def _per_tensor_dim_options(launch_arg_names, tensors, find_tensor):
