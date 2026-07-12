@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ZhaoJunkai — proposal</title>
+<style>
+  @media print { body { font-size: 10pt; } }
+  body { font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, sans-serif; font-size: 12pt; line-height: 1.7; color: #333; max-width: 900px; margin: 0 auto; padding: 20px; }
+  h1 { font-size: 20pt; border-bottom: 2px solid #333; padding-bottom: 8px; }
+  h2 { font-size: 15pt; border-bottom: 1px solid #999; padding-bottom: 5px; margin-top: 28px; }
+  h3 { font-size: 12pt; margin-top: 18px; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 9pt; }
+  th, td { border: 1px solid #999; padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background-color: #f0f0f0; font-weight: bold; }
+  code { font-family: "SF Mono", monospace; font-size: 9pt; background: #f5f5f5; padding: 1px 4px; }
+  pre { background: #f5f5f5; padding: 12px; border: 1px solid #ddd; font-size: 8.5pt; white-space: pre-wrap; }
+  blockquote { border-left: 3px solid #ddd; margin: 14px 0; padding: 6px 18px; color: #555; background: #fafafa; }
+  strong { color: #222; }
+</style>
+</head>
+<body>
+<h1>NineToothed .skill 创新挑战赛 — 项目提案</h1>
+<p><strong>赛题</strong>: 2026 春季 AI 竞赛 — NineToothed .skill 创新挑战赛<br />
+<strong>赛道编号</strong>: T3-1-1<br />
+<strong>参赛者</strong>: Zhao Junkai<br />
+<strong>GitHub ID</strong>: junkai-kay<br />
+<strong>Skill 名称</strong>: ninetoothed-operator-skill<br />
+<strong>提交日期</strong>: 2026-07-05</p>
+<hr />
+<h2>1. 项目背景与目标</h2>
+<h3>1.1 赛题理解</h3>
+<p>本赛道要求沉淀一个可指导 AI 智能体稳定完成 NineToothed 算子开发、测试、调试和 PR 集成的 <code>.skill</code> 工程包。评审不是看文档写得多长，而是看安装该 skill 后，AI 智能体在标准隐藏评测任务中的实际完成效果。</p>
+<h3>1.2 项目目标</h3>
+<p>构建一个覆盖以下四类算子开发场景的可复用 skill：
+- 逐元素 / 广播算子
+- 归约 / 分块算子
+- 布局敏感（非连续输入）算子
+- 性能 / 诊断 / 集成任务</p>
+<p>预期成果：AI 智能体在面对陌生 NineToothed 算子任务时，能按 skill 中定义的标准操作流程，自主完成语义提取、模式匹配、实现选型、测试覆盖、性能分析和故障闭环。</p>
+<hr />
+<h2>2. 技术方案</h2>
+<h3>2.1 设计原则</h3>
+<ul>
+<li><strong>工作流优先</strong>：SKILL.md 是 9 阶段可执行 SOP，不是说明文</li>
+<li><strong>条件判断而非绝对规则</strong>：每种模式注明适用条件、参考文件路径、不适用情况</li>
+<li><strong>泛化而非特化</strong>：覆盖 5 种 arrangement/application 模式，不针对特定算子</li>
+<li><strong>验证闭环</strong>：每个任务必须有 PyTorch reference → pytest → benchmark → 诊断</li>
+<li><strong>离线可用</strong>：无外部联网依赖、无 API key</li>
+</ul>
+<h3>2.2 技术路线</h3>
+<ol>
+<li>通读 NineToothed 官方仓库 (README、CONTRIBUTING.md、docs、tests、examples)</li>
+<li>基于官方 test_softmax.py 和 test_add.py 提取正确的 API 使用模式</li>
+<li>设计 4 个自测任务，覆盖四类算子场景</li>
+<li>每个任务包含：算子实现、正确性测试、benchmark、失败诊断</li>
+<li>将开发经验沉淀为 SKILL.md + references/index.md</li>
+<li>编写 scripts/ 和 tests/ 使 skill 可自动验证</li>
+</ol>
+<h3>2.3 核心技术选择</h3>
+<ul>
+<li>算子定义：<code>@ninetoothed.jit</code> + <code>Symbol(constexpr=True)</code></li>
+<li>测试框架：pytest + PyTorch reference</li>
+<li>性能对比：NineToothed vs PyTorch baseline</li>
+<li>失败诊断：6 步闭环协议</li>
+</ul>
+<hr />
+<h2>3. 预期交付物</h2>
+<table>
+<thead>
+<tr>
+<th>交付物</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SKILL.md</td>
+<td>AI 智能体核心工作流（含 YAML 头、9 阶段 SOP、故障诊断协议）</td>
+</tr>
+<tr>
+<td>README.md</td>
+<td>人类阅读的安装/使用/自测说明</td>
+</tr>
+<tr>
+<td>references/index.md</td>
+<td>仓库地图、5 种开发模式速查、常见陷阱</td>
+</tr>
+<tr>
+<td>scripts/</td>
+<td>env_check.py、run_selftests.py</td>
+</tr>
+<tr>
+<td>tests/</td>
+<td>test_skill_structure.py（结构验证、占位符检查、红线检查）</td>
+</tr>
+<tr>
+<td>examples/</td>
+<td>4 个自测任务（含算子实现、测试、benchmark、诊断记录）</td>
+</tr>
+<tr>
+<td>reports/</td>
+<td>最终赛题报告</td>
+</tr>
+<tr>
+<td>HONOR_CODE.md</td>
+<td>诚信声明</td>
+</tr>
+<tr>
+<td>REFERENCE.md</td>
+<td>引用与 AI 辅助披露</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>4. 计划时间线</h2>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>内容</th>
+<th>状态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>阶段一</td>
+<td>建立全局认知，阅读官方仓库，输出仓库地图</td>
+<td>2026-07-03</td>
+</tr>
+<tr>
+<td>阶段二</td>
+<td>创建 skill 骨架，编写 SKILL.md 和 README.md</td>
+<td>2026-07-05</td>
+</tr>
+<tr>
+<td>阶段三</td>
+<td>设计 4 个自测任务，编写算子实现和测试代码</td>
+<td>2026-07-08</td>
+</tr>
+<tr>
+<td>阶段四</td>
+<td>GPU 实测、调试、benchmark、撰写最终报告</td>
+<td>2026-07-11</td>
+</tr>
+<tr>
+<td>阶段五</td>
+<td>合规审查、Git 提交、PR 创建</td>
+<td>2026-07-12</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>5. 风险与对策</h2>
+<table>
+<thead>
+<tr>
+<th>风险</th>
+<th>对策</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NineToothed API 与文档不一致</td>
+<td>以官方仓库 tests/ 目录中的实际代码为准</td>
+</tr>
+<tr>
+<td>GPU 资源不足</td>
+<td>使用 Google Colab 免费 T4 GPU</td>
+</tr>
+<tr>
+<td>隐藏任务超出预期覆盖范围</td>
+<td>skill 设计为模式化指导，不针对特定算子</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>6. 个人声明</h2>
+<p>准大二本科生，对 AI 基础设施和高性能计算方向有浓厚兴趣。参加本次比赛是为了在实践中学习 GPU 算子开发和 AI 工程化技能，通过亲手构建 .skill 工程包来理解如何让 AI 智能体更可靠地完成底层开发任务。希望借助赛题提供的 NineToothed 平台和评审反馈，在真实项目中锻炼自己的系统设计和技术写作能力。</p>
+</body>
+</html>
