@@ -12,7 +12,7 @@ I confirm that this submission is intended to comply with the NineToothed .skill
 Participant signature:
 
 ```text
-Name: tusu-code (GitHub: tusu-code)
-Team: tusu-code (个人参赛 / solo)
+Name: 韩博 (GitHub: tusu-code)
+Team: 韩博 / tusu-code (个人参赛 / solo)
 Date: 2026-07-11
 ```
