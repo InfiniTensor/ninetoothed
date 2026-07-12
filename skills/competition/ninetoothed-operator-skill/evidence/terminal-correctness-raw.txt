@@ -1,0 +1,44 @@
+Command:
+python scripts/run_correctness.py
+
+Raw terminal output from Google Colab T4:
+Run timestamp: 2026-07-12, Google Colab session (exact wall-clock time not recorded).
+
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-8.4.2, pluggy-1.6.0 -- /usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /content/ninetoothed-operator-skill
+configfile: pyproject.toml
+plugins: langsmith-0.9.1, typeguard-4.5.2, anyio-4.14.0
+collected 44 items / 16 deselected / 28 selected
+
+tests/test_relu.py::test_relu_correctness[fp32-63] PASSED                [  3%]
+tests/test_relu.py::test_relu_correctness[fp32-1024] PASSED              [  7%]
+tests/test_relu.py::test_relu_correctness[fp32-3333] PASSED              [ 10%]
+tests/test_relu.py::test_relu_correctness[fp32-65536] PASSED             [ 14%]
+tests/test_relu.py::test_relu_correctness[fp16-63] PASSED                [ 17%]
+tests/test_relu.py::test_relu_correctness[fp16-1024] PASSED              [ 21%]
+tests/test_relu.py::test_relu_correctness[fp16-3333] PASSED              [ 25%]
+tests/test_relu.py::test_relu_correctness[fp16-65536] PASSED             [ 28%]
+tests/test_relu.py::test_relu_all_negative PASSED                        [ 32%]
+tests/test_relu.py::test_relu_all_positive PASSED                        [ 35%]
+tests/test_relu.py::test_relu_noncontiguous_stride2_fallback PASSED      [ 39%]
+tests/test_relu.py::test_relu_noncontiguous_transposed_fallback PASSED   [ 42%]
+tests/test_rms_norm_noncontiguous.py::test_rms_norm_contiguous[shape0] PASSED [ 46%]
+tests/test_rms_norm_noncontiguous.py::test_rms_norm_contiguous[shape1] PASSED [ 50%]
+tests/test_rms_norm_noncontiguous.py::test_rms_norm_contiguous[shape2] PASSED [ 53%]
+tests/test_rms_norm_noncontiguous.py::test_rms_norm_transposed PASSED    [ 57%]
+tests/test_rms_norm_noncontiguous.py::test_rms_norm_row_slice PASSED     [ 60%]
+tests/test_rms_norm_noncontiguous.py::test_rms_norm_col_slice PASSED     [ 64%]
+tests/test_rms_norm_noncontiguous.py::test_rms_norm_rejects_dynamic_eps PASSED [ 67%]
+tests/test_softmax.py::test_softmax_correctness[shape0] PASSED           [ 71%]
+tests/test_softmax.py::test_softmax_correctness[shape1] PASSED           [ 75%]
+tests/test_softmax.py::test_softmax_correctness[shape2] PASSED           [ 78%]
+tests/test_softmax.py::test_softmax_correctness[shape3] PASSED           [ 82%]
+tests/test_softmax.py::test_softmax_correctness[shape4] PASSED           [ 85%]
+tests/test_softmax.py::test_softmax_row_sums_to_one PASSED               [ 89%]
+tests/test_softmax.py::test_softmax_numerical_stability_large_logits PASSED [ 92%]
+tests/test_softmax.py::test_softmax_numerical_stability_negative_logits PASSED [ 96%]
+tests/test_softmax.py::test_softmax_noncontiguous_rows_fallback PASSED   [100%]
+
+====================== 28 passed, 16 deselected in 25.76s ======================
