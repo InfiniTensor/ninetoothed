@@ -1,13 +1,15 @@
+import hashlib
 import itertools
 import math
 import textwrap
+from pathlib import Path
 
 import torch
 
+from ninetoothed.compiler.cache import CACHE_DIR, atomic_write_text
+from ninetoothed.compiler.driver import make
+from ninetoothed.compiler.runtime import import_python_module
 from ninetoothed.eval import _generate_target_tensor_shape
-from ninetoothed.generation import cache_source
-from ninetoothed.jit import import_from_path
-from ninetoothed.make import make
 from ninetoothed.tensor import Tensor
 
 
@@ -58,9 +60,8 @@ def simulate_arrangement(arrangement, tensors, device=None):
 
     application_source = _generate_debug_application_source(tensors, debug_tensors)
 
-    source_file = str(cache_source(application_source))
-
-    module = import_from_path(source_file, source_file)
+    source_file = _cache_debug_application_source(application_source)
+    module = import_python_module(source_file)
     module_vars = vars(module)
 
     application = module_vars[_APPLICATION_NAME]
@@ -75,6 +76,14 @@ def simulate_arrangement(arrangement, tensors, device=None):
 _INDENT = "    "
 
 _APPLICATION_NAME = "application"
+
+
+def _cache_debug_application_source(source: str) -> Path:
+    """Cache a Python module created only by arrangement debugging."""
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    path = CACHE_DIR / "debug" / f"{digest}.py"
+    atomic_write_text(path, source)
+    return path
 
 
 def _generate_debug_application_source(tensors, debug_tensors):

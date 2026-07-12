@@ -5,8 +5,6 @@ is deliberately small so that future optimizations enter through SSA passes,
 not through kernel-specialized lowerer branches.
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING, Any, Mapping
 
 from ninetoothed.backends.core import (
@@ -16,7 +14,14 @@ from ninetoothed.backends.core import (
     Options,
     Target,
 )
-from ninetoothed.backends.emitters.ssa import emit
+from ninetoothed.backends.emitters.tvm import emit
+from ninetoothed.compiler.passes import (
+    Context,
+    LowerIntrinsics,
+    LowerMemoryScopes,
+    OptimizeSchedule,
+    ScheduleCandidate,
+)
 from ninetoothed.ir import Kernel
 
 if TYPE_CHECKING:
@@ -37,7 +42,7 @@ class TvmBackend(Backend):
     )
 
     def emit(self, kernel: Kernel, options: Options | None = None) -> Artifact:
-        return emit(kernel, self.name)
+        return emit(kernel, options)
 
 
 def _scheduled_tir_loop_policy(schedule: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -62,59 +67,81 @@ def _generic_linear_or_reduction_policy(
     }
 
 
+class TvmOptimizeSchedule(OptimizeSchedule):
+    name = "ssa.tvm.optimize_schedule"
+    supported_backends = (Target.TVM,)
+
+    def schedule_candidates(
+        self,
+        analysis: Mapping[str, Any],
+        schedule: Mapping[str, Any],
+        context: Context,
+    ) -> tuple[ScheduleCandidate, ...]:
+        del analysis, context
+        if schedule.get("granularity") != "blocked-linalg":
+            return ()
+        return (
+            ScheduleCandidate(
+                name="dlight-default",
+                schedule={"tile": {"block_m": 64, "block_n": 64, "block_k": 32}},
+                tags=("default", "dlight"),
+            ),
+            ScheduleCandidate(
+                name="dlight-small",
+                schedule={"tile": {"block_m": 32, "block_n": 32, "block_k": 32}},
+                tags=("small-problem", "dlight"),
+            ),
+            ScheduleCandidate(
+                name="dlight-wide",
+                schedule={"tile": {"block_m": 128, "block_n": 64, "block_k": 32}},
+                tags=("throughput", "dlight"),
+            ),
+        )
+
+    def optimization_policy(
+        self,
+        backend: Target,
+        analysis: Mapping[str, Any],
+        schedule: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        del backend, analysis
+
+        if schedule.get("granularity") == "blocked-linalg":
+            return _scheduled_tir_loop_policy(schedule)
+        return _generic_linear_or_reduction_policy(schedule)
+
+
+class TvmLowerMemoryScopesPass(LowerMemoryScopes):
+    name = "ssa.tvm.lower_memory_scopes"
+    supported_backends = (Target.TVM,)
+
+    def memory_scopes(self, context: Context) -> Mapping[str, str]:
+        del context
+
+        return {
+            "register": "local",
+            "shared": "shared",
+            "global": "global",
+        }
+
+
+class TvmLowerIntrinsicsPass(LowerIntrinsics):
+    name = "ssa.tvm.lower_intrinsics"
+    supported_backends = (Target.TVM,)
+
+    def intrinsics(self, context: Context) -> Mapping[str, str]:
+        del context
+
+        return {
+            "dot": "TIR loop or tensorize candidate",
+            "exp": "T.exp",
+            "program_id": "T.thread_binding",
+            "load_store": "T.match_buffer/T.BufferStore",
+        }
+
+
 def register_ssa_passes(registry: "Registry") -> None:
-    from ninetoothed.compiler.passes import (
-        Context,
-        LowerIntrinsics,
-        LowerMemoryScopes,
-        OptimizeSchedule,
-    )
-
-    class TvmOptimizeSchedule(OptimizeSchedule):
-        name = "ssa.tvm.optimize_schedule"
-        supported_backends = (Target.TVM,)
-
-        def optimization_policy(
-            self,
-            backend: Target,
-            analysis: Mapping[str, Any],
-            schedule: Mapping[str, Any],
-        ) -> Mapping[str, Any]:
-            del backend, analysis
-
-            if schedule.get("granularity") == "blocked-linalg":
-                return _scheduled_tir_loop_policy(schedule)
-            return _generic_linear_or_reduction_policy(schedule)
-
     registry.register(TvmOptimizeSchedule, tags=("optimization", "tvm"))
-
-    class TvmLowerMemoryScopesPass(LowerMemoryScopes):
-        name = "ssa.tvm.lower_memory_scopes"
-        supported_backends = (Target.TVM,)
-
-        def memory_scopes(self, context: Context) -> Mapping[str, str]:
-            del context
-
-            return {
-                "register": "local",
-                "shared": "shared",
-                "global": "global",
-            }
-
-    class TvmLowerIntrinsicsPass(LowerIntrinsics):
-        name = "ssa.tvm.lower_intrinsics"
-        supported_backends = (Target.TVM,)
-
-        def intrinsics(self, context: Context) -> Mapping[str, str]:
-            del context
-
-            return {
-                "dot": "TIR loop or tensorize candidate",
-                "exp": "T.exp",
-                "program_id": "T.thread_binding",
-                "load_store": "T.match_buffer/T.BufferStore",
-            }
-
     registry.register(
         TvmLowerMemoryScopesPass, tags=("target-lowering", "memory", "tvm")
     )

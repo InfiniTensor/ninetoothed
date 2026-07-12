@@ -633,8 +633,14 @@ class Tensor:
     def values_string(self):
         return naming.auto_generate(f"{self.name}_values")
 
+    def values_numel_string(self):
+        return naming.auto_generate(f"{self.name}_values_numel")
+
     def offsets_string(self):
         return naming.auto_generate(f"{self.name}_offsets")
+
+    def offsets_numel_string(self):
+        return naming.auto_generate(f"{self.name}_offsets_numel")
 
     def max_seq_len_string(self):
         return naming.auto_generate(f"{self.name}_max_seq_len")

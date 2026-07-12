@@ -5,13 +5,13 @@ import torch
 import torch.nn.functional as F
 
 import ninetoothed
-import ninetoothed.aot
-import ninetoothed.generation
 import tests.test_addmm as addmm
 import tests.test_attention as attention
 import tests.test_conv2d as conv2d
 import tests.test_matmul as matmul
 from ninetoothed import Tensor
+from ninetoothed.compiler.cache import CACHE_DIR
+from ninetoothed.compiler.runtime import overflow_terms
 from tests.utils import get_available_devices
 
 
@@ -34,7 +34,7 @@ def test_add(test_multi_device, size, dtype, device, ninetoothed_dtype):
     tensors = tuple(Tensor(1, dtype=ninetoothed_dtype) for _ in range(3))
     caller = device
     kernel_name = f"add{_generate_kernel_name_suffix()}"
-    output_dir = ninetoothed.generation.CACHE_DIR
+    output_dir = CACHE_DIR
 
     kernel = ninetoothed.make(
         _arrangement,
@@ -85,7 +85,7 @@ def test_addmm(m, n, k, dtype, device, ninetoothed_dtype, atol):
     )
     caller = device
     kernel_name = f"addmm{_generate_kernel_name_suffix()}"
-    output_dir = ninetoothed.generation.CACHE_DIR
+    output_dir = CACHE_DIR
 
     kernel = ninetoothed.make(
         arrangement,
@@ -147,7 +147,7 @@ def test_attention(
     tensors = (query_, key_, value_, is_causal_, output_)
     caller = device
     kernel_name = f"attention{_generate_kernel_name_suffix()}"
-    output_dir = ninetoothed.generation.CACHE_DIR
+    output_dir = CACHE_DIR
 
     kernel = ninetoothed.make(
         arrangement,
@@ -190,7 +190,7 @@ def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
     tensors = tuple(Tensor(2, dtype=ninetoothed_dtype) for _ in range(3))
     caller = device
     kernel_name = f"matmul{_generate_kernel_name_suffix()}"
-    output_dir = ninetoothed.generation.CACHE_DIR
+    output_dir = CACHE_DIR
 
     kernel = ninetoothed.make(
         arrangement,
@@ -259,7 +259,7 @@ def test_conv2d(
 
     caller = device
     kernel_name = f"conv2d{_generate_kernel_name_suffix()}"
-    output_dir = ninetoothed.generation.CACHE_DIR
+    output_dir = CACHE_DIR
 
     if test_build:
         configs = (
@@ -321,7 +321,7 @@ def test_fp32_scalar(device):
 
     caller = device
     kernel_name = f"fp32_scalar{_generate_kernel_name_suffix()}"
-    output_dir = ninetoothed.generation.CACHE_DIR
+    output_dir = CACHE_DIR
 
     kernel = ninetoothed.make(
         _arrangement,
@@ -361,7 +361,7 @@ def test_aot_with_static_non_power_of_two_innermost_sizes(device):
     kernel_name = (
         f"static_non_power_of_two_innermost_sizes{_generate_kernel_name_suffix()}"
     )
-    output_dir = ninetoothed.generation.CACHE_DIR
+    output_dir = CACHE_DIR
 
     kernel = ninetoothed.make(
         _arrangement,
@@ -381,7 +381,7 @@ def test_aot_with_static_non_power_of_two_innermost_sizes(device):
 
 
 def test_overflow_terms():
-    terms = ninetoothed.aot._overflow_terms(("input", "scale"), (2, 0))
+    terms = overflow_terms(("input", "scale"), (2, 0))
 
     assert terms == (
         "input.shape[0] > 2147483647ULL",

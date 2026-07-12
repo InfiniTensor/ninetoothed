@@ -5,8 +5,8 @@ import pytest
 import torch
 
 import ninetoothed
-import ninetoothed.generation
 from ninetoothed import Tensor
+from ninetoothed.compiler.cache import CACHE_DIR
 from tests.utils import get_available_devices
 
 
@@ -51,7 +51,7 @@ def premake(size=None, dtype=None, block_size=None):
 def test_auto_tuning(size, dtype, device, ninetoothed_dtype, rtol, atol):
     caller = device
     kernel_name = "add"
-    output_dir = ninetoothed.generation.CACHE_DIR / "test_auto_tuning"
+    output_dir = CACHE_DIR / "test_auto_tuning"
 
     shutil.rmtree(output_dir, ignore_errors=True)
     output_dir.mkdir()

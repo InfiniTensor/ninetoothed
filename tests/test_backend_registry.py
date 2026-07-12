@@ -8,7 +8,7 @@ from ninetoothed.backends import (
     normalize_target,
 )
 from ninetoothed.frontend.python import from_source
-from ninetoothed.ir import Kernel, Launch, TensorSpec
+from ninetoothed.ir import Kernel, TensorSpec
 
 
 def _source_only_kernel():
@@ -16,9 +16,6 @@ def _source_only_kernel():
         kernel_name="add",
         source="@triton.jit\ndef add(x, y, out):\n    return\n",
         entrypoint="add",
-        launch=Launch(
-            name="launch_add", args=("x", "y", "out"), grid="lambda meta: (1,)"
-        ),
         tensors=(
             TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
             TensorSpec(ndim=1, shape=("n",), dtype="float32", name="y"),
@@ -84,12 +81,9 @@ class TestRegistry:
                 normalize_target(alias)
 
     def test_backend_options_keep_caller_and_extra_values(self):
-        options = normalize_options(
-            "cuda", caller="cuda", emit_only=False, arch="sm_90"
-        )
-        assert options.name == Target.CUDA
+        options = normalize_options("cuda", caller="cuda", arch="sm_90")
+        assert options.target == Target.CUDA
         assert options.caller == "cuda"
-        assert not options.emit_only
         assert options.extra["arch"] == "sm_90"
 
     def test_default_registry_reports_four_backends(self):

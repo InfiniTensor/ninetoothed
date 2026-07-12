@@ -1,14 +1,32 @@
 """Intermediate representation objects for compiler lowering."""
 
-from __future__ import annotations
-
 from . import ssa
-from .kernel import Kernel, Launch, TensorSpec, ir_to_dict
+from .frozen import FrozenMap, freeze
+from .kernel import (
+    AccessMap,
+    IndexExpr,
+    Kernel,
+    LaunchABI,
+    LaunchBinding,
+    LaunchPlan,
+    LayoutLevel,
+    TensorLayout,
+    TensorSpec,
+    ir_to_dict,
+)
 
 __all__ = [
+    "AccessMap",
+    "FrozenMap",
+    "IndexExpr",
     "Kernel",
-    "Launch",
+    "LayoutLevel",
+    "LaunchABI",
+    "LaunchBinding",
+    "LaunchPlan",
+    "TensorLayout",
     "TensorSpec",
     "ir_to_dict",
+    "freeze",
     "ssa",
 ]

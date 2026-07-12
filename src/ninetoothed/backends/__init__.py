@@ -1,10 +1,10 @@
 """Public backend utilities."""
 
-from __future__ import annotations
-
 from ninetoothed.backends.core import (
     Artifact,
     Backend,
+    BackendOptions,
+    BuiltArtifact,
     Capability,
     Options,
     Registry,
@@ -12,14 +12,15 @@ from ninetoothed.backends.core import (
     normalize_options,
     normalize_target,
 )
-from ninetoothed.backends.cuda import CudaBackend
-from ninetoothed.backends.tilelang import TileLangBackend
-from ninetoothed.backends.triton import TritonBackend
-from ninetoothed.backends.tvm import TvmBackend
 from ninetoothed.ir import Kernel
 
 
 def create_default_registry() -> Registry:
+    from ninetoothed.backends.cuda import CudaBackend
+    from ninetoothed.backends.tilelang import TileLangBackend
+    from ninetoothed.backends.triton import TritonBackend
+    from ninetoothed.backends.tvm import TvmBackend
+
     registry = Registry()
     registry.register(TritonBackend())
     registry.register(TileLangBackend())
@@ -29,7 +30,14 @@ def create_default_registry() -> Registry:
     return registry
 
 
-DEFAULT_BACKENDS = create_default_registry()
+_DEFAULT_BACKENDS: Registry | None = None
+
+
+def default_registry() -> Registry:
+    global _DEFAULT_BACKENDS
+    if _DEFAULT_BACKENDS is None:
+        _DEFAULT_BACKENDS = create_default_registry()
+    return _DEFAULT_BACKENDS
 
 
 def emit(
@@ -41,7 +49,7 @@ def emit(
         options = normalize_options(backend)
 
     kernel = _prepare_kernel_for_backend(kernel, options)
-    backend_impl = DEFAULT_BACKENDS.get(options.name)
+    backend_impl = default_registry().get(options.target)
     artifact = backend_impl.emit(kernel, options)
 
     return _attach_pipeline_metadata(artifact, kernel)
@@ -55,12 +63,15 @@ def _prepare_kernel_for_backend(kernel: Kernel, options: Options) -> Kernel:
     if ssa is None:
         return kernel
 
-    if ssa.metadata.get("target_backend") != options.name.value:
+    if ssa.metadata.get("target_backend") != options.target.value:
         ssa = lower_for_target(
             ssa,
-            backend=options.name,
+            backend=options.target,
             compiler_options=kernel.compiler_options,
             kernel_metadata=kernel.metadata,
+            pass_pipeline=kernel.compiler_options.get("ssa_pass_pipeline"),
+            pass_options=kernel.compiler_options.get("ssa_pass_options"),
+            autotune=kernel.compiler_options.get("ssa_tuning", False),
         )
 
     return type(kernel)(
@@ -69,7 +80,8 @@ def _prepare_kernel_for_backend(kernel: Kernel, options: Options) -> Kernel:
         source_path=kernel.source_path,
         source_language=kernel.source_language,
         entrypoint=kernel.entrypoint,
-        launch=kernel.launch,
+        launch_abi=kernel.launch_abi,
+        launch_plan=kernel.launch_plan,
         tensors=kernel.tensors,
         compiler_options=kernel.compiler_options,
         metadata=dict(kernel.metadata)
@@ -90,7 +102,8 @@ def _attach_pipeline_metadata(artifact: Artifact, kernel: Kernel) -> Artifact:
         language=artifact.language,
         sources=artifact.sources,
         entrypoint=artifact.entrypoint,
-        executable=artifact.executable,
+        stage=artifact.stage,
+        materializable=artifact.materializable,
         metadata=dict(artifact.metadata)
         | {
             "kernel_metadata": dict(kernel.metadata),
@@ -106,24 +119,22 @@ def _attach_pipeline_metadata(artifact: Artifact, kernel: Kernel) -> Artifact:
 
 
 def backend_capabilities() -> tuple[Capability, ...]:
-    return DEFAULT_BACKENDS.capabilities()
+    return default_registry().capabilities()
 
 
 __all__ = [
     "Backend",
+    "BackendOptions",
+    "BuiltArtifact",
     "Artifact",
     "Capability",
     "Target",
     "Options",
     "Registry",
-    "CudaBackend",
-    "DEFAULT_BACKENDS",
     "Kernel",
-    "TileLangBackend",
-    "TritonBackend",
-    "TvmBackend",
     "backend_capabilities",
     "create_default_registry",
+    "default_registry",
     "emit",
     "normalize_target",
     "normalize_options",

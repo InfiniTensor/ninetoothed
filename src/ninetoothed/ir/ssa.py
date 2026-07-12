@@ -1,10 +1,15 @@
-"""SSA IR nodes and text rendering."""
+"""SSA IR nodes, verification, and text rendering."""
 
-from __future__ import annotations
-
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+from ninetoothed.ir.frozen import freeze
+
+
+class VerificationError(ValueError):
+    """Raised when a program violates the structured SSA contract."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -15,6 +20,10 @@ class Type:
     shape: tuple[str, ...] = ()
     dtype: str | None = None
     attrs: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        object.__setattr__(self, "shape", tuple(self.shape))
+        object.__setattr__(self, "attrs", freeze(self.attrs))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -35,6 +44,12 @@ class Operation:
     attrs: Mapping[str, Any] = field(default_factory=dict)
     regions: tuple["Block", ...] = ()
 
+    def __post_init__(self):
+        object.__setattr__(self, "operands", tuple(self.operands))
+        object.__setattr__(self, "results", tuple(self.results))
+        object.__setattr__(self, "attrs", freeze(self.attrs))
+        object.__setattr__(self, "regions", tuple(self.regions))
+
 
 @dataclass(frozen=True, kw_only=True)
 class Block:
@@ -43,6 +58,10 @@ class Block:
     name: str = "entry"
     args: tuple[Value, ...] = ()
     operations: tuple[Operation, ...] = ()
+
+    def __post_init__(self):
+        object.__setattr__(self, "args", tuple(self.args))
+        object.__setattr__(self, "operations", tuple(self.operations))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -54,6 +73,131 @@ class Program:
     outputs: tuple[Value, ...] = ()
     blocks: tuple[Block, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        object.__setattr__(self, "inputs", tuple(self.inputs))
+        object.__setattr__(self, "outputs", tuple(self.outputs))
+        object.__setattr__(self, "blocks", tuple(self.blocks))
+        object.__setattr__(self, "metadata", freeze(self.metadata))
+
+
+def verify_program(program: Program) -> Program:
+    """Verify the structured SSA invariants consumed by all backend passes."""
+    if len(program.blocks) != 1:
+        raise VerificationError(
+            f"SSA program `{program.kind}` must contain exactly one entry block; "
+            f"got {len(program.blocks)}."
+        )
+
+    definitions: set[str] = set()
+    for value in program.inputs:
+        if value.name in definitions:
+            raise VerificationError(f"Duplicate SSA input `{value.name}`.")
+        definitions.add(value.name)
+
+    symbols = set(str(name) for name in program.metadata.get("symbols", ()))
+    for value in (*program.inputs, *program.outputs):
+        for dimension in value.type.shape:
+            symbols.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", str(dimension)))
+    _verify_block(
+        program.blocks[0], definitions | symbols, set(definitions), path="entry"
+    )
+    top_level_definitions = definitions | {
+        result.name
+        for operation in program.blocks[0].operations
+        for result in operation.results
+    }
+
+    missing_outputs = tuple(
+        value.name
+        for value in program.outputs
+        if value.name not in top_level_definitions
+    )
+    if missing_outputs:
+        raise VerificationError(f"Undefined SSA outputs: {', '.join(missing_outputs)}.")
+    return program
+
+
+def _verify_block(
+    block: Block,
+    visible: set[str],
+    all_definitions: set[str],
+    *,
+    path: str,
+) -> None:
+    local_visible = set(visible)
+    block_arguments: list[str] = []
+    for argument in block.args:
+        if argument.name in all_definitions:
+            raise VerificationError(
+                f"Duplicate SSA definition `{argument.name}` in block `{path}`."
+            )
+        local_visible.add(argument.name)
+        all_definitions.add(argument.name)
+        block_arguments.append(argument.name)
+
+    for index, operation in enumerate(block.operations):
+        location = f"{path}:{index}:{operation.opcode}"
+        missing = tuple(
+            operand for operand in operation.operands if operand not in local_visible
+        )
+        if missing:
+            raise VerificationError(
+                f"Operation `{location}` uses undefined values: {', '.join(missing)}."
+            )
+
+        for result in operation.results:
+            if result.name in all_definitions:
+                raise VerificationError(
+                    f"Duplicate SSA definition `{result.name}` at `{location}`."
+                )
+            local_visible.add(result.name)
+            all_definitions.add(result.name)
+
+        for region_index, region in enumerate(operation.regions):
+            _verify_block(
+                region,
+                local_visible,
+                all_definitions,
+                path=f"{location}/region{region_index}",
+            )
+
+        _verify_region_contract(operation, location)
+
+    all_definitions.difference_update(block_arguments)
+
+
+def _verify_region_contract(operation: Operation, location: str) -> None:
+    if operation.opcode == "scf.for":
+        if len(operation.regions) != 1:
+            raise VerificationError(f"`{location}` requires exactly one region.")
+        expected = len(operation.results)
+        _verify_yield(operation.regions[0], expected, location)
+        if len(operation.regions[0].args) != expected + 1:
+            raise VerificationError(
+                f"`{location}` requires one induction argument and {expected} "
+                "loop-carried arguments."
+            )
+    elif operation.opcode == "scf.if":
+        if operation.results and len(operation.regions) != 2:
+            raise VerificationError(
+                f"Result-producing `{location}` requires then and else regions."
+            )
+        for region in operation.regions:
+            if operation.results:
+                _verify_yield(region, len(operation.results), location)
+    elif operation.opcode == "scf.yield" and operation.regions:
+        raise VerificationError(f"`{location}` cannot contain nested regions.")
+
+
+def _verify_yield(block: Block, expected: int, location: str) -> None:
+    if not block.operations or block.operations[-1].opcode != "scf.yield":
+        raise VerificationError(f"Region of `{location}` must end with `scf.yield`.")
+    actual = len(block.operations[-1].operands)
+    if actual != expected:
+        raise VerificationError(
+            f"Region of `{location}` yields {actual} values; expected {expected}."
+        )
 
 
 def render(program: Program | None) -> str:
@@ -164,5 +308,7 @@ __all__ = [
     "Program",
     "Type",
     "Value",
+    "VerificationError",
     "render",
+    "verify_program",
 ]

@@ -1,35 +1,31 @@
 import hashlib
-import json
 import os
 
-import triton
-
-from ninetoothed.aot import _KernelLaunchError
-from ninetoothed.generation import CACHE_DIR
+from ninetoothed.compiler.cache import CACHE_DIR, read_manifest, write_manifest
+from ninetoothed.compiler.runtime import KernelLaunchError
 
 
 class AutoTuner:
-    def __init__(self, funcs, keys):
+    """Select a runtime candidate using an injectable benchmark strategy."""
+
+    def __init__(self, funcs, keys, *, benchmark=None, cache_namespace=None):
         self._funcs = funcs
-
         self._keys = keys
-
-        self._func_to_key = {func: key for func, key in zip(self._funcs, self._keys)}
-
-        self._cache_dir = (
-            _AUTO_TUNING_CACHE_DIR
-            / f"{_project_key()}_triton_{triton.__version__.replace('.', '_')}"
-        )
+        self._benchmark = benchmark or _default_benchmark
+        self._key_ids = tuple(_candidate_id(key) for key in self._keys)
+        self._func_to_key = {func: key for func, key in zip(self._funcs, self._key_ids)}
+        namespace = cache_namespace or _default_cache_namespace()
+        self._cache_dir = _AUTO_TUNING_CACHE_DIR / f"{_project_key()}_{namespace}"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
-        auto_tuner_key = tuple(self._keys)
+        auto_tuner_key = self._key_ids
         cache_key = hashlib.sha256(str(auto_tuner_key).encode("utf-8")).hexdigest()
         self._cache_path = self._cache_dir / f"{cache_key}.json"
 
-        if self._cache_path.exists():
-            self._timings = json.loads(self._cache_path.read_text())
-        else:
-            self._timings = {key: {} for key in self._keys}
+        manifest = read_manifest(self._cache_path) or {}
+        self._timings = dict(manifest.get("timings", {}))
+        for key in self._key_ids:
+            self._timings.setdefault(key, {})
 
         self._best_func = {}
 
@@ -55,7 +51,7 @@ class AutoTuner:
 
         self._timings[arg_key] = timings
 
-        self._cache_path.write_text(json.dumps(self._timings))
+        self._write_cache(self._cache_path, self._timings)
 
         return timings
 
@@ -70,19 +66,20 @@ class AutoTuner:
         cache_path = self._get_func_cache_path(func)
 
         if cache_path.exists():
-            data |= json.loads(cache_path.read_text())
+            manifest = read_manifest(cache_path) or {}
+            data |= dict(manifest.get("timings", {}))
 
         if arg_key in data:
             return data[arg_key]
 
         try:
-            timing = triton.testing.do_bench(lambda: func(*args, **kwargs))
-        except _KernelLaunchError:
+            timing = self._benchmark(func, args, kwargs)
+        except KernelLaunchError:
             timing = float("inf")
 
         data[arg_key] = timing
 
-        cache_path.write_text(json.dumps(data))
+        self._write_cache(cache_path, data)
 
         return timing
 
@@ -92,6 +89,10 @@ class AutoTuner:
         cache_path = self._cache_dir / f"{cache_key}.json"
 
         return cache_path
+
+    @staticmethod
+    def _write_cache(path, timings):
+        write_manifest(path, {"schema": 1, "timings": timings})
 
     @staticmethod
     def _make_arg_key(args, kwargs):
@@ -125,6 +126,27 @@ _FILE_PATH = os.path.abspath(__file__)
 _PARENT_DIR = os.path.dirname(_FILE_PATH)
 
 
+def _default_benchmark(function, args, kwargs):
+    import torch
+
+    for _ in range(3):
+        function(*args, **kwargs)
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    for _ in range(10):
+        function(*args, **kwargs)
+    end.record()
+    end.synchronize()
+    return start.elapsed_time(end) / 10
+
+
+def _default_cache_namespace():
+    import torch
+
+    return f"cuda_event_torch_{torch.__version__.replace('.', '_')}"
+
+
 def _project_key():
     consolidated_hash = hashlib.sha256()
 
@@ -150,3 +172,9 @@ def _project_key():
 def _calculate_file_hash(file_path):
     with open(file_path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
+
+
+def _candidate_id(key):
+    if isinstance(key, (str, int, float, bool, type(None))):
+        return str(key)
+    return repr(key)

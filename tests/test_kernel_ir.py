@@ -5,7 +5,7 @@ import pytest
 from ninetoothed.backends import Artifact, Capability, Options, Target, emit
 from ninetoothed.compiler.passes import Context, Descriptor, PipelineSpec
 from ninetoothed.frontend.python import from_source
-from ninetoothed.ir import Kernel, Launch, TensorSpec, ir_to_dict, ssa
+from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict, ssa
 
 
 class FakeTensor:
@@ -31,7 +31,6 @@ class TestKernel:
     def test_public_ir_dataclass_constructors_are_keyword_only(self):
         classes = (
             TensorSpec,
-            Launch,
             Kernel,
             ssa.Type,
             ssa.Value,

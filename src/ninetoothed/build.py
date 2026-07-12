@@ -1,80 +1,125 @@
-import concurrent.futures
-import csv
-import enum
-import functools
-import hashlib
-import inspect
-import itertools
-import multiprocessing
-import pathlib
-import textwrap
+"""Multi-configuration builds backed by unified SSA compilations."""
 
-import ninetoothed
-from ninetoothed.aot import (
-    _DTYPE_TO_INDEX,
-    _HEADER_PATH,
-    _INDENTATION,
-    _MACRO_MAPPING,
-    _generate_launch_func,
-    _KernelLaunchError,
-    _load_launch_func,
-)
+import inspect
+import threading
+from dataclasses import dataclass
+
 from ninetoothed.auto_tuner import AutoTuner
-from ninetoothed.tensor import Symbol
+from ninetoothed.compiler import DEFAULT_COMPILER, CompileRequest
+
+
+@dataclass(frozen=True)
+class _Variant:
+    key: tuple
+    handle: object
+
+
+class _CandidateGroup:
+    def __init__(self, handles, keys, *, cache_namespace):
+        self._handles = tuple(handles)
+        self._tuner = (
+            AutoTuner(
+                self._handles,
+                tuple(keys),
+                cache_namespace=cache_namespace,
+            )
+            if len(self._handles) > 1
+            else None
+        )
+        self._selected = self._handles[0]
+        self._sync(self._selected)
+
+    def __call__(self, *args, **kwargs):
+        if self._tuner is None:
+            result = self._selected(*args, **kwargs)
+        else:
+            result = self._tuner(*args, **kwargs)
+            arg_key = self._tuner._make_arg_key(args, kwargs)
+            self._selected = self._tuner._best_func[arg_key]
+            self._sync(self._selected)
+        return result
+
+    def _sync(self, handle):
+        for name in (
+            "_source",
+            "_artifact",
+            "_backend",
+            "_kernel",
+            "_library",
+            "_ssa",
+            "_pass_trace",
+            "_launch_plan",
+            "_built_artifact",
+        ):
+            setattr(self, name, getattr(handle, name))
+
+
+class _BuildHandle:
+    def __init__(self, variants, num_key_args):
+        self._variants = tuple(variants)
+        self._num_key_args = num_key_args
+        first = self._variants[0].handle
+        self._sync(first)
+        self._launch = self.__call__
+
+    def __call__(self, *args, **kwargs):
+        key = args[-self._num_key_args :] if self._num_key_args else ()
+        tensor_args = args[: -self._num_key_args] if self._num_key_args else args
+        normalized = tuple(_arg_key(value) for value in key)
+        for variant in self._variants:
+            if variant.key == normalized:
+                result = variant.handle(*tensor_args, **kwargs)
+                self._sync(variant.handle)
+                return result
+        raise ValueError(f"No compiled kernel configuration matches {normalized}.")
+
+    def _sync(self, handle):
+        for name in (
+            "_source",
+            "_artifact",
+            "_backend",
+            "_kernel",
+            "_library",
+            "_ssa",
+            "_pass_trace",
+            "_launch_plan",
+            "_built_artifact",
+        ):
+            setattr(self, name, getattr(handle, name))
+
+
+class _LazyKernel:
+    def __init__(self, factory):
+        self._factory = factory
+        self._kernel = None
+        self._lock = threading.Lock()
+
+    def __call__(self, *args, **kwargs):
+        if self._kernel is None:
+            with self._lock:
+                if self._kernel is None:
+                    self._kernel = self._factory()
+        return self._kernel(*args, **kwargs)
 
 
 def build(
     premake,
     configs,
     *,
-    meta_parameters=None,
-    caller=None,
+    backend=None,
+    caller="cuda",
+    output_dir,
     kernel_name=None,
-    output_dir=None,
+    meta_parameters=None,
     lazy=False,
+    pipeline=None,
+    pass_options=None,
+    tuning=False,
+    **backend_options,
 ):
-    """Build a kernel from a ``premake`` function and ``configs``.
-
-    :param premake: A callable that returns the ``arrangement``,
-        ``application``, and ``tensors`` for a given configuration.
-    :param configs: An iterable of configurations where each
-        configuration is a tuple of
-        ``(args, kwargs, compilation_configs)``.
-        ``args`` and ``kwargs`` are passed to ``premake``, and
-        ``compilation_configs`` contains compilation configurations for
-        ``ninetoothed.make`` (e.g., ``num_warps`` and ``num_stages``).
-    :param meta_parameters: An iterable of meta-parameters that should
-        be auto-tuned.
-    :param caller: Who will call the compute kernel.
-    :param kernel_name: The name for the generated kernel.
-    :param output_dir: The directory to store the generated files.
-    :param lazy: If ``True``, defer the actual build until the returned
-        kernel is first called. Use this when ``build`` is invoked at
-        module import time and its ``ProcessPoolExecutor`` would
-        otherwise deadlock on the Python import lock.
-    """
-    if caller is None:
-        caller = "cuda"
-
-    output_dir = pathlib.Path(output_dir)
-
+    """Compile configured variants and return a common callable dispatcher."""
     configs = tuple(configs)
-
-    if meta_parameters is not None:
-        meta_parameters = tuple(meta_parameters)
-
-    fingerprint = _compute_fingerprint(premake, configs, meta_parameters, caller)
-
-    cached = _load_cached(
-        configs,
-        meta_parameters,
-        kernel_name=kernel_name,
-        output_dir=output_dir,
-        fingerprint=fingerprint,
-    )
-
-    if cached is not None:
-        return cached
+    meta_parameters = tuple(meta_parameters or ())
 
     if lazy:
         return _LazyKernel(
@@ -83,729 +128,95 @@ def build(
                 configs,
                 meta_parameters=meta_parameters,
                 caller=caller,
+                backend=backend,
                 kernel_name=kernel_name,
                 output_dir=output_dir,
+                pipeline=pipeline,
+                pass_options=pass_options,
+                tuning=tuning,
+                **backend_options,
             )
         )
 
-    kernel_names = []
-    all_param_names = []
-    combinations = []
-    all_tensors = []
+    signature = inspect.signature(premake)
+    runtime_names = tuple(
+        name for name in signature.parameters if name not in meta_parameters
+    )
+    base_name = kernel_name or _callable_name(premake)
+    grouped = {}
 
-    with concurrent.futures.ProcessPoolExecutor(
-        mp_context=multiprocessing.get_context("spawn")
-    ) as executor:
-        futures = []
-
-        for config in configs:
-            future = executor.submit(
-                _make,
-                premake,
-                config,
+    for index, (args, kwargs, compiler_options) in enumerate(configs):
+        arrangement, application, tensors = premake(*args, **kwargs)
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        key = tuple(_arg_key(bound.arguments[name]) for name in runtime_names)
+        variant_name = f"{base_name}_{index}" if len(configs) > 1 else base_name
+        compilation = DEFAULT_COMPILER.compile(
+            CompileRequest(
+                arrangement=arrangement,
+                application=application,
+                tensors=tuple(tensors),
+                backend=backend,
                 caller=caller,
-                kernel_name=kernel_name,
-                output_dir=output_dir,
+                kernel_name=variant_name,
+                num_warps=compiler_options.get("num_warps"),
+                num_stages=compiler_options.get("num_stages"),
+                max_num_configs=1,
+                pipeline=compiler_options.get("pipeline", pipeline),
+                pass_options=compiler_options.get("pass_options", pass_options),
+                tuning=compiler_options.get("tuning", tuning),
+                backend_options=backend_options
+                | dict(compiler_options.get("backend_options", {})),
             )
-
-            futures.append(future)
-
-        configs = []
-
-        for future in concurrent.futures.as_completed(futures):
-            kernel_name_, param_names, combination, config, tensors = future.result()
-
-            kernel_names.append(kernel_name_)
-            all_param_names.append(param_names)
-            combinations.append(combination)
-            configs.append(config)
-            all_tensors.append(tensors)
-
-    tensor_param_names = tuple(
-        functools.reduce(
-            lambda x, y: dict.fromkeys(x) | dict.fromkeys(y),
-            sorted(all_param_names, key=len, reverse=True),
-            {},
         )
-    )
-    tensor_param_types = tuple("NineToothedTensor" for _ in tensor_param_names)
-
-    non_tensor_param_names = tuple(
-        functools.reduce(lambda x, y: x | y, combinations, {})
-    )
-    non_tensor_param_types = tuple("int" for _ in non_tensor_param_names)
-
-    param_names = ("stream",) + tensor_param_names + non_tensor_param_names
-    param_types = ("NineToothedStream",) + tensor_param_types + non_tensor_param_types
-
-    param_decls = _generate_declaration_expressions(param_types, param_names)
-
-    headers = []
-    launches = []
-
-    for kernel_name_, param_names_, combination in zip(
-        kernel_names, all_param_names, combinations
-    ):
-        header = f"{kernel_name_}.h"
-        launch = f"""    if ({_generate_condition(combination)})
-        return launch_{kernel_name_}({", ".join((param_names[0],) + param_names_)});"""
-
-        headers.append(header)
-        launches.append(launch)
-
-    source_file_name = f"{kernel_name}.cpp"
-    header_file_name = f"{kernel_name}.h"
-
-    includes = "\n".join(f'#include "{header}"' for header in headers)
-
-    func_sig = f"NineToothedResult launch_{kernel_name}({param_decls})"
-
-    joined_launches = "\n".join(launches)
-
-    op_decl = f'#ifdef __cplusplus\nextern "C" {func_sig};\n#else\n{func_sig};\n#endif'
-    op_def = f"""extern "C" {func_sig} {{
-{joined_launches}
-    return 1;
-}}"""
-
-    source_content = f"""#include "{header_file_name}"
-
-{includes}\n\n{op_def}\n"""
-    header_content = f"""#include "{_HEADER_PATH}"
-\n{op_decl}\n"""
-
-    (output_dir / source_file_name).write_text(source_content)
-    (output_dir / header_file_name).write_text(header_content)
-
-    kernel = _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
-
-    _write_fingerprint(kernel_name, output_dir, fingerprint)
-
-    if meta_parameters is not None:
-        kernel_before_auto_tuning = kernel
-
-        config_to_best_meta_arguments = _auto_tune(
-            kernel_before_auto_tuning,
-            configs,
-            all_tensors,
-            meta_parameters,
-            caller=caller,
-            kernel_name=kernel_name,
+        handle = DEFAULT_COMPILER.materialize(
+            compilation,
             output_dir=output_dir,
+            mode="aot",
         )
-
-        kernel_after_auto_tuning = _generate_kernel_with_auto_tuning(
-            config_to_best_meta_arguments,
-            non_tensor_param_names,
-            kernel_name=kernel_name,
-            output_dir=output_dir,
-        )
-
-        return _AutoTunedKernel(
-            kernel_after_auto_tuning=kernel_after_auto_tuning,
-            kernel_before_auto_tuning=kernel_before_auto_tuning,
-            configs=configs,
-            meta_parameters=meta_parameters,
-            config_to_best_meta_arguments=config_to_best_meta_arguments,
-            kernel_name=kernel_name,
-            output_dir=output_dir,
-        )
-
-    return kernel
-
-
-# TODO: Revisit this value with broader benchmarks. Short experiments on
-# `add` and `silu` showed that very small sizes (e.g., 64) produce
-# unreliable auto-tuning picks, while 256, 1024, and 4096 are all within
-# noise for the cases tested.
-_DEFAULT_SIZES = (256,)
-
-_DEFAULT_RE_TUNE_AFTER = 16
-
-
-class _LazyKernel:
-    __slots__ = ("_factory", "_kernel")
-
-    def __init__(self, factory):
-        self._factory = factory
-
-        self._kernel = None
-
-    def __call__(self, *args, **kwargs):
-        if self._kernel is None:
-            self._kernel = self._factory()
-
-        return self._kernel(*args, **kwargs)
-
-
-class _AutoTunedKernel:
-    def __init__(
-        self,
-        kernel_after_auto_tuning,
-        kernel_before_auto_tuning,
-        configs,
-        meta_parameters,
-        config_to_best_meta_arguments,
-        kernel_name,
-        output_dir,
-        re_tune_after=_DEFAULT_RE_TUNE_AFTER,
-    ):
-        self._kernel_after_auto_tuning = kernel_after_auto_tuning
-
-        self._kernel_before_auto_tuning = kernel_before_auto_tuning
-
-        self._kernel_name = kernel_name
-
-        self._output_dir = output_dir
-
-        self._re_tune_after = re_tune_after
-
-        self._num_non_meta_premake_params = len(
-            next(iter(config_to_best_meta_arguments.keys()))
-        )
-
-        meta_values = set()
-
-        for _, kwargs, compilation_configs in configs:
-            meta = {
-                param: kwargs[param] for param in meta_parameters if param in kwargs
-            } | compilation_configs
-
-            meta_values.add(tuple(_arg_to_int(value) for value in meta.values()))
-
-        self._all_meta_values = tuple(meta_values)
-
-        self._known_configs = set(config_to_best_meta_arguments.keys())
-
-        self._new_inputs = []
-
-    def __call__(self, *args, **kwargs):
-        _, _, config_key = self._split_args(args)
-
-        if config_key not in self._known_configs:
-            self._new_inputs.append((args, kwargs))
-
-            if len(self._new_inputs) >= self._re_tune_after:
-                self._re_tune()
-
-        return self._kernel_after_auto_tuning(*args, **kwargs)
-
-    def _re_tune(self):
-        import triton
-
-        csv_path = self._output_dir / f"{self._kernel_name}.csv"
-
-        new_entries = {}
-        seen_config_keys = set()
-
-        for args, _ in self._new_inputs:
-            tensor_args, config_args, config_key = self._split_args(args)
-
-            if config_key in seen_config_keys or config_key in self._known_configs:
-                continue
-
-            seen_config_keys.add(config_key)
-
-            best_time = float("inf")
-            best_meta = self._all_meta_values[0]
-
-            for meta_values in self._all_meta_values:
-                try:
-                    timing = triton.testing.do_bench(
-                        lambda meta_values=meta_values: self._kernel_before_auto_tuning(
-                            *tensor_args, *config_args, *meta_values
-                        )
+        group = grouped.setdefault(key, {"handles": [], "keys": []})
+        group["handles"].append(handle)
+        group["keys"].append(
+            (
+                handle._built_artifact.cache_key,
+                tuple(
+                    sorted((str(name), repr(value)) for name, value in kwargs.items())
+                ),
+                tuple(
+                    sorted(
+                        (str(name), repr(value))
+                        for name, value in compiler_options.items()
                     )
-                except Exception:
-                    timing = float("inf")
-
-                if timing < best_time:
-                    best_time = timing
-                    best_meta = meta_values
-
-            new_entries[config_key] = best_meta
-
-        if new_entries:
-            _append_auto_tuning_cache(csv_path, new_entries)
-            self._known_configs.update(new_entries.keys())
-
-        self._new_inputs.clear()
-
-    def _split_args(self, args):
-        if self._num_non_meta_premake_params <= 0:
-            return args, (), ()
-
-        tensor_args = args[: -self._num_non_meta_premake_params]
-        config_args = args[-self._num_non_meta_premake_params :]
-        config_key = tuple(_arg_to_int(arg) for arg in config_args)
-
-        return tensor_args, config_args, config_key
-
-
-class _MetaTensor:
-    def __init__(self, shape, dtype):
-        self.shape = []
-
-        self.upper_bounds = []
-
-        for size in shape:
-            if isinstance(size, Symbol):
-                self.shape.append(None)
-                self.upper_bounds.append(getattr(size, "upper_bound", None))
-            else:
-                self.shape.append(size)
-                self.upper_bounds.append(None)
-
-        self.dtype = dtype
-
-
-def _generate_kernel_with_auto_tuning(
-    config_to_best_meta_arguments, non_tensor_param_names, *, kernel_name, output_dir
-):
-    num_non_meta_premake_params = len(next(iter(config_to_best_meta_arguments)))
-
-    config_param_names = non_tensor_param_names[:num_non_meta_premake_params]
-    meta_param_names = non_tensor_param_names[num_non_meta_premake_params:]
-    meta_param_types = tuple("int" for _ in meta_param_names)
-
-    declarations = _generate_declaration_statements(meta_param_types, meta_param_names)
-
-    branches = tuple(
-        _generate_dispatch_branch(
-            dict(zip(config_param_names, config)),
-            dict(zip(meta_param_names, meta_arguments)),
-        )
-        for config, meta_arguments in config_to_best_meta_arguments.items()
-    )
-
-    dispatch = "\nelse ".join(branches)
-
-    if config_param_names:
-        csv_path = output_dir / f"{kernel_name}.csv"
-        dispatch += "\nelse " + _generate_dispatch_fallback(
-            config_param_names, meta_param_names, csv_path
+                ),
+            )
         )
 
-    meta_param_initialization = textwrap.indent(
-        f"{declarations}\n{dispatch}", _INDENTATION
-    )
-
-    meta_param_decl_exprs = _generate_declaration_expressions(
-        meta_param_types, meta_param_names
-    )
-
-    source_file_name = f"{kernel_name}.cpp"
-    header_file_name = f"{kernel_name}.h"
-
-    source_path = output_dir / source_file_name
-    header_path = output_dir / header_file_name
-
-    source_content = source_path.read_text().replace(
-        f", {meta_param_decl_exprs}) {{", f") {{\n{meta_param_initialization}"
-    )
-    header_content = header_path.read_text().replace(f", {meta_param_decl_exprs}", "")
-
-    source_path.write_text(source_content)
-    header_path.write_text(header_content)
-
-    return _generate_launch_func(kernel_name=kernel_name, output_dir=output_dir)
-
-
-def _auto_tune(
-    kernel, configs, all_tensors, meta_parameters, *, caller, kernel_name, output_dir
-):
-    config_to_all_meta_arguments = {}
-
-    for config in configs:
-        args, kwargs, compilation_configs = config
-
-        meta_args = {
-            param: kwargs[param] for param in meta_parameters if param in kwargs
-        } | compilation_configs
-
-        kwargs_ = {key: value for key, value in kwargs.items() if key not in meta_args}
-
-        config_ = (args, tuple(kwargs_.items()))
-
-        if config_ not in config_to_all_meta_arguments:
-            config_to_all_meta_arguments[config_] = []
-
-        config_to_all_meta_arguments[config_].append(meta_args)
-
-    csv_path = output_dir / f"{kernel_name}.csv"
-    cached = _read_auto_tuning_cache(csv_path)
-
-    if cached is not None:
-        return cached
-
-    key = str(output_dir / kernel_name)
-
-    auto_tuner = AutoTuner(funcs=(kernel,), keys=(key,))
-
-    for config, tensors in zip(configs, all_tensors):
-        _warm_up(auto_tuner, config, tensors, caller=caller)
-
-    config_to_best_meta_arguments = {}
-
-    for config, all_meta_arguments in config_to_all_meta_arguments.items():
-        args, kwargs_items = config
-
-        config_ = (*args, *(item[1] for item in kwargs_items))
-        all_meta_arguments_ = tuple(
-            tuple(meta_args.values()) for meta_args in all_meta_arguments
+    if not grouped:
+        raise ValueError("At least one build configuration is required.")
+    variants = tuple(
+        _Variant(
+            key=key,
+            handle=_CandidateGroup(
+                group["handles"],
+                group["keys"],
+                cache_namespace=f"build_{base_name}_{backend or 'triton'}",
+            ),
         )
-
-        meta_args_to_timing = {}
-        func_timings = auto_tuner._timings[key]
-
-        for meta_args in all_meta_arguments_:
-            arg_key = auto_tuner._make_arg_key((*config_, *meta_args), {})
-
-            for full_arg_key, timing in func_timings.items():
-                if not full_arg_key.endswith(arg_key):
-                    continue
-
-                meta_args_to_timing[meta_args] = timing
-
-                break
-
-        best_meta_arguments = sorted(
-            meta_args_to_timing.items(), key=lambda item: item[1]
-        )[0][0]
-
-        int_configs = tuple(_arg_to_int(arg) for arg in config_)
-
-        config_to_best_meta_arguments[int_configs] = best_meta_arguments
-
-    _normalize_meta_arguments(config_to_best_meta_arguments, configs, meta_parameters)
-    _write_auto_tuning_cache(csv_path, config_to_best_meta_arguments)
-
-    return config_to_best_meta_arguments
-
-
-def _warm_up(kernel, config, meta_tensors, *, caller):
-    import torch
-
-    dtype_mapping = {
-        ninetoothed.int8: torch.int8,
-        ninetoothed.int16: torch.int16,
-        ninetoothed.int32: torch.int32,
-        ninetoothed.int64: torch.int64,
-        ninetoothed.uint8: torch.uint8,
-        ninetoothed.uint16: torch.uint16,
-        ninetoothed.uint32: torch.uint32,
-        ninetoothed.uint64: torch.uint64,
-        ninetoothed.float16: torch.float16,
-        ninetoothed.bfloat16: torch.bfloat16,
-        ninetoothed.float32: torch.float32,
-        ninetoothed.float64: torch.float64,
-    }
-
-    args, kwargs, compilation_configs = config
-
-    all_shapes = []
-
-    for meta_tensor in meta_tensors:
-        all_sizes = []
-
-        for size, upper_bound in zip(meta_tensor.shape, meta_tensor.upper_bounds):
-            if size is None:
-                if upper_bound is not None:
-                    all_sizes.append(
-                        tuple(
-                            dict.fromkeys(
-                                min(upper_bound, size) for size in _DEFAULT_SIZES
-                            )
-                        )
-                    )
-                else:
-                    all_sizes.append(_DEFAULT_SIZES)
-            else:
-                all_sizes.append((size,))
-
-        shapes = tuple(itertools.product(*all_sizes))
-
-        all_shapes.append(shapes)
-
-    for shapes in tuple(itertools.product(*all_shapes)):
-        tensors = []
-
-        for meta_tensor, shape in zip(meta_tensors, shapes):
-            dtype = dtype_mapping[meta_tensor.dtype]
-
-            if len(shape) == 0:
-                device = None
-            else:
-                device = caller
-
-            tensor = torch.empty(shape, dtype=dtype, device=device)
-
-            tensors.append(tensor)
-
-        try:
-            kernel(*tensors, *args, *kwargs.values(), *compilation_configs.values())
-        except _KernelLaunchError:
-            pass
-
-
-def _make(premake, config, caller, kernel_name, output_dir):
-    args, kwargs, compilation_configs = config
-
-    arrangement, application, tensors = premake(*args, **kwargs)
-
-    premake_signature = inspect.signature(premake)
-    bound_arguments = premake_signature.bind(*args, **kwargs)
-    bound_arguments.apply_defaults()
-    combination = bound_arguments.arguments
-    combination = {f"{name}_": value for name, value in combination.items()}
-    combination |= compilation_configs
-
-    for name, value in combination.items():
-        combination[name] = _arg_to_int(value)
-
-    kernel_name_ = f"{kernel_name}_{_generate_suffix(combination.values())}"
-
-    ninetoothed.make(
-        arrangement,
-        application,
-        tensors,
-        caller=caller,
-        kernel_name=kernel_name_,
-        output_dir=output_dir,
-        **compilation_configs,
+        for key, group in grouped.items()
     )
+    return _BuildHandle(variants, len(runtime_names))
 
-    application_signature = inspect.signature(application)
-    param_names = tuple(application_signature.parameters.keys())
-    tensors = tuple(
-        _MetaTensor(shape=tensor.shape, dtype=tensor.dtype) for tensor in tensors
-    )
 
-    return kernel_name_, param_names, combination, config, tensors
+def _arg_key(value):
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+    return str(value)
 
 
-def _load_cached(configs, meta_parameters, *, kernel_name, output_dir, fingerprint):
-    so_path = output_dir / f"{kernel_name}.so"
+def _callable_name(function):
+    while hasattr(function, "func"):
+        function = function.func
+    return getattr(function, "__name__", type(function).__name__.lower())
 
-    if not so_path.exists():
-        return None
 
-    if not _fingerprint_matches(kernel_name, output_dir, fingerprint):
-        return None
-
-    if meta_parameters is None:
-        return _load_launch_func(kernel_name=kernel_name, output_dir=output_dir)
-
-    csv_path = output_dir / f"{kernel_name}.csv"
-    config_to_best_meta_arguments = _read_auto_tuning_cache(csv_path)
-
-    if not config_to_best_meta_arguments:
-        return None
-
-    kernel = _load_launch_func(kernel_name=kernel_name, output_dir=output_dir)
-
-    return _AutoTunedKernel(
-        kernel_after_auto_tuning=kernel,
-        kernel_before_auto_tuning=kernel,
-        configs=configs,
-        meta_parameters=meta_parameters,
-        config_to_best_meta_arguments=config_to_best_meta_arguments,
-        kernel_name=kernel_name,
-        output_dir=output_dir,
-    )
-
-
-def _compute_fingerprint(premake, configs, meta_parameters, caller):
-    hasher = hashlib.sha256()
-
-    target = premake.func if isinstance(premake, functools.partial) else premake
-
-    try:
-        hasher.update(inspect.getsource(target).encode())
-    except (TypeError, OSError):
-        hasher.update(repr(target).encode())
-
-    if isinstance(premake, functools.partial):
-        hasher.update(repr(premake.args).encode())
-        hasher.update(repr(sorted(premake.keywords.items())).encode())
-
-    hasher.update(repr(configs).encode())
-    hasher.update(repr(meta_parameters).encode())
-    hasher.update(repr(caller).encode())
-
-    package_dir = pathlib.Path(__file__).parent
-
-    for path in (package_dir / "build.py", package_dir / "aot.py"):
-        try:
-            hasher.update(path.read_bytes())
-        except OSError:
-            pass
-
-    return hasher.hexdigest()
-
-
-def _fingerprint_matches(kernel_name, output_dir, fingerprint):
-    path = _fingerprint_path(kernel_name, output_dir)
-
-    if not path.exists():
-        return False
-
-    return path.read_text().strip() == fingerprint
-
-
-def _write_fingerprint(kernel_name, output_dir, fingerprint):
-    _fingerprint_path(kernel_name, output_dir).write_text(fingerprint)
-
-
-def _fingerprint_path(kernel_name, output_dir):
-    return output_dir / f"{kernel_name}.fingerprint"
-
-
-def _read_auto_tuning_cache(path):
-    if not path.exists():
-        return None
-
-    config_to_best_meta_arguments = {}
-
-    with open(path) as f:
-        rows = tuple(csv.reader(f))
-
-    for i in range(2, len(rows), 2):
-        config = tuple(int(value) for value in rows[i] if value)
-        meta_args = tuple(int(value) for value in rows[i + 1])
-
-        config_to_best_meta_arguments[config] = meta_args
-
-    return config_to_best_meta_arguments
-
-
-def _write_auto_tuning_cache(path, config_to_best_meta_arguments):
-    default_meta = next(iter(config_to_best_meta_arguments.values()))
-
-    with open(path, "w") as f:
-        writer = csv.writer(f)
-
-        writer.writerow(())
-        writer.writerow(default_meta)
-
-        for config, meta in config_to_best_meta_arguments.items():
-            writer.writerow(config)
-            writer.writerow(meta)
-
-
-def _append_auto_tuning_cache(path, new_entries):
-    with open(path, "a") as f:
-        writer = csv.writer(f)
-
-        for config, meta in new_entries.items():
-            writer.writerow(config)
-            writer.writerow(meta)
-
-
-def _normalize_meta_arguments(config_to_best_meta_arguments, configs, meta_parameters):
-    from ninetoothed.utils import calculate_default_configs
-
-    default_num_warps, default_num_stages = calculate_default_configs()
-    compilation_defaults = {
-        "num_warps": default_num_warps,
-        "num_stages": default_num_stages,
-    }
-
-    all_meta_names = {}
-
-    for config in configs:
-        _, kwargs, compilation_configs = config
-
-        meta_args = {
-            param: kwargs[param] for param in meta_parameters if param in kwargs
-        } | compilation_configs
-
-        for key in meta_args:
-            all_meta_names[key] = None
-
-    expected_len = len(all_meta_names)
-    meta_names = tuple(all_meta_names.keys())
-
-    for int_configs, meta_values in config_to_best_meta_arguments.items():
-        if len(meta_values) >= expected_len:
-            continue
-
-        padded = list(meta_values)
-
-        for i in range(len(meta_values), expected_len):
-            name = meta_names[i]
-            padded.append(compilation_defaults.get(name, 0))
-
-        config_to_best_meta_arguments[int_configs] = tuple(padded)
-
-
-def _generate_declaration_statements(types, names):
-    return "\n".join(
-        f"{_generate_declaration(type, name)};" for type, name in zip(types, names)
-    )
-
-
-def _generate_assignment_statements(names, values):
-    return "\n".join(f"{name} = {value};" for name, value in zip(names, values))
-
-
-def _generate_declaration_expressions(types, names):
-    return ", ".join(
-        _generate_declaration(type, name) for type, name in zip(types, names)
-    )
-
-
-def _generate_declaration(type, name):
-    return f"{type} {name}"
-
-
-def _generate_condition(combination):
-    return " && ".join(f"{param} == {value}" for param, value in combination.items())
-
-
-def _generate_dispatch_branch(config, meta_arguments):
-    body = textwrap.indent(
-        _generate_assignment_statements(meta_arguments.keys(), meta_arguments.values()),
-        _INDENTATION,
-    )
-
-    if not config:
-        return f"{{\n{body}\n}}"
-
-    return f"if ({_generate_condition(config)}) {{\n{body}\n}}"
-
-
-def _generate_dispatch_fallback(config_param_names, meta_param_names, csv_path):
-    config_arguments = ", ".join(
-        f"static_cast<int>({name})" for name in config_param_names
-    )
-    meta_arguments = tuple(f"meta_arguments[{i}]" for i in range(len(meta_param_names)))
-    body = "\n".join(
-        (
-            f'static ninetoothed::AutoTuningCache cache{{"{csv_path}"}};',
-            f"auto meta_arguments{{cache.lookup({{{config_arguments}}})}};",
-            _generate_assignment_statements(meta_param_names, meta_arguments),
-        )
-    )
-
-    return f"{{\n{textwrap.indent(body, _INDENTATION)}\n}}"
-
-
-def _generate_suffix(values):
-    return "_".join(f"{value}" for value in values)
-
-
-def _arg_to_int(arg):
-    if type(arg) is int:
-        return arg
-
-    if isinstance(arg, bool) or arg is None:
-        return _MACRO_MAPPING[arg][1]
-
-    if arg in _DTYPE_TO_INDEX:
-        return _DTYPE_TO_INDEX[arg]
-
-    if isinstance(arg, enum.Enum):
-        return arg.value
-
-    return arg
+__all__ = ["build"]

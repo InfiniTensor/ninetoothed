@@ -1,4 +1,5 @@
 from ninetoothed.build import build
+from ninetoothed.compiler import aot, jit, load_built_artifact, lower, make
 from ninetoothed.dtype import (
     bfloat16,
     float16,
@@ -15,8 +16,6 @@ from ninetoothed.dtype import (
 )
 from ninetoothed.eval import _eval as eval
 from ninetoothed.eval import _subs as subs
-from ninetoothed.jit import jit
-from ninetoothed.make import make
 from ninetoothed.symbol import Symbol, block_size
 from ninetoothed.tensor import Tensor
 
@@ -26,6 +25,7 @@ __all__ = [
     "bfloat16",
     "block_size",
     "build",
+    "aot",
     "float16",
     "float32",
     "float64",
@@ -36,6 +36,8 @@ __all__ = [
     "eval",
     "subs",
     "jit",
+    "load_built_artifact",
+    "lower",
     "make",
     "uint8",
     "uint16",

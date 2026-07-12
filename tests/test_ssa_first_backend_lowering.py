@@ -10,9 +10,9 @@ import pytest
 import ninetoothed.language as ntl
 from ninetoothed import Symbol, Tensor, block_size
 from ninetoothed.backends import emit as emit_kernel
+from ninetoothed.compiler import lower as lower_application
 from ninetoothed.frontend.python import from_source
 from ninetoothed.ir import Kernel, TensorSpec
-from ninetoothed.lowering import lower as lower_application
 
 
 def arrangement(x, out, BLOCK_SIZE=block_size()):
@@ -125,6 +125,36 @@ class TestSSAFirstBackendLowering:
 
             for token in forbidden:
                 assert token not in source
+
+    def test_cuda_injects_curand_support_only_for_rand_operations(self):
+        add_artifact = lower_application(
+            arrangement,
+            add_application,
+            (Tensor(1), Tensor(1)),
+            backend="cuda",
+            kernel_name="cuda_without_rand",
+        )
+        assert "curand_kernel.h" not in add_artifact.primary_source
+        assert "ninetoothed_curand_uniform" not in add_artifact.primary_source
+
+        random_kernel = _ssa_kernel(
+            """
+def random_application(seed, out):
+    index = out.offsets(0)
+    out = rand(seed, index)
+""",
+            "cuda_with_rand",
+            (
+                TensorSpec(ndim=0, shape=(), dtype="int64", name="seed"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
+            ),
+        )
+        random_artifact = emit_kernel(random_kernel, "cuda")
+        source = random_artifact.primary_source
+        assert "#include <curand_kernel.h>" in source
+        assert "ninetoothed_curand_uniform" in source
+        assert "curandStatePhilox4_32_10_t" in source
+        assert "curand_init" in source
 
     def test_public_lower_generates_fused_expression_without_kernel_template(self):
         expected = {

@@ -213,3 +213,49 @@ class TestPipeline:
         assert "ssa.triton.optimize_schedule" in selection["selected_passes"]
         assert selection["candidate_pipelines"]
         assert "policy-autotune" in selection["reason"]
+
+    def test_blocked_linalg_exposes_backend_schedule_candidates(self):
+        program = _program(
+            "\ndef matmul(a, b, out):\n    out = a @ b\n",
+            (
+                TensorSpec(ndim=2, shape=("m", "k"), dtype="float16", name="a"),
+                TensorSpec(ndim=2, shape=("k", "n"), dtype="float16", name="b"),
+                TensorSpec(ndim=2, shape=("m", "n"), dtype="float16", name="out"),
+            ),
+            "matmul",
+        )
+
+        for backend in Target:
+            lowered = lower_for_target(program, backend=backend)
+            candidates = lowered.metadata["schedule_candidates"]
+            assert len(candidates) >= 3
+            assert (
+                lowered.metadata["selected_schedule_candidate"] == candidates[0]["name"]
+            )
+            assert (
+                lowered.metadata["schedule"]["tile"]
+                == candidates[0]["schedule"]["tile"]
+            )
+
+    def test_schedule_candidate_can_be_selected_by_pass_option(self):
+        program = _program(
+            "\ndef matmul(a, b, out):\n    out = a @ b\n",
+            (
+                TensorSpec(ndim=2, shape=("m", "k"), dtype="float16", name="a"),
+                TensorSpec(ndim=2, shape=("k", "n"), dtype="float16", name="b"),
+                TensorSpec(ndim=2, shape=("m", "n"), dtype="float16", name="out"),
+            ),
+            "matmul",
+        )
+        lowered = lower_for_target(
+            program,
+            backend=Target.TRITON,
+            pass_options={"ssa.triton.optimize_schedule": {"candidate": "wide"}},
+        )
+        assert lowered.metadata["selected_schedule_candidate"] == "wide"
+        assert lowered.metadata["schedule"]["tile"] == {
+            "block_m": 64,
+            "block_n": 64,
+            "block_k": 32,
+        }
+        assert lowered.metadata["schedule"]["num_warps"] == 8

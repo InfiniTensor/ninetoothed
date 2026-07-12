@@ -1,7 +1,5 @@
 """Backend registry and artifact contracts for NineToothed."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -27,20 +25,22 @@ _CANONICAL_BACKEND_NAMES = {
 
 
 @dataclass(frozen=True, kw_only=True)
-class Options:
+class BackendOptions:
     """Options passed from public APIs to a backend lowerer."""
 
-    name: Target = Target.TRITON
+    target: Target = Target.TRITON
     caller: str | None = None
-    emit_only: bool = True
     extra: Mapping[str, Any] = field(default_factory=dict)
+
+
+Options = BackendOptions
 
 
 @dataclass(frozen=True, kw_only=True)
 class Capability:
     """Human-readable status for a backend implementation."""
 
-    name: Target
+    name: Target | str
     emits_source: bool
     can_execute: bool
     requires_external_compiler: bool = False
@@ -56,8 +56,14 @@ class Artifact:
     language: str
     sources: Mapping[str, str]
     entrypoint: str | None = None
-    executable: bool = False
+    stage: str = "source"
+    materializable: bool = True
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def executable(self) -> bool:
+        """Compatibility alias for source artifacts that can be materialized."""
+        return self.materializable
 
     @property
     def primary_source_name(self) -> str:
@@ -81,13 +87,25 @@ class Artifact:
         return tuple(paths)
 
 
+@dataclass(frozen=True, kw_only=True)
+class BuiltArtifact:
+    """A materialized artifact with a reloadable binary and ABI manifest."""
+
+    source: Artifact
+    cache_key: str
+    source_path: str
+    binary_path: str | None
+    manifest_path: str
+    abi: Mapping[str, Any]
+
+
 class Backend:
     """Base class for source and executable backend emitters."""
 
-    name: Target
+    name: Target | str
     capability: Capability
 
-    def emit(self, kernel: Kernel, options: Options | None = None) -> Artifact:
+    def emit(self, kernel: Kernel, options: BackendOptions | None = None) -> Artifact:
         raise NotImplementedError
 
 
@@ -95,24 +113,36 @@ class Registry:
     """Small explicit registry to avoid import-time backend guessing."""
 
     def __init__(self):
-        self._backends: MutableMapping[Target, Backend] = {}
+        self._backends: MutableMapping[str, Backend] = {}
 
-    def register(self, backend: Backend) -> None:
-        self._backends[backend.name] = backend
+    def register(self, backend: Backend, *, replace: bool = False) -> None:
+        backend_id = backend_id_for(backend.name)
+        if backend_id in self._backends and not replace:
+            raise ValueError(f"Backend `{backend_id}` is already registered.")
+        self._backends[backend_id] = backend
 
     def get(self, name: Target | str | None) -> Backend:
-        normalized = normalize_target(name)
+        normalized = backend_id_for(Target.TRITON if name is None else name)
 
         try:
             return self._backends[normalized]
         except KeyError as exc:
-            available = ", ".join(sorted(backend.value for backend in self._backends))
+            available = ", ".join(sorted(self._backends))
             raise ValueError(
-                f"Unsupported backend `{normalized.value}`. Available backends: {available}."
+                f"Unsupported backend `{normalized}`. Available backends: {available}."
             ) from exc
 
     def capabilities(self) -> tuple[Capability, ...]:
         return tuple(backend.capability for backend in self._backends.values())
+
+
+def backend_id_for(name: Target | str) -> str:
+    """Return a normalized registry id without restricting plugin backends."""
+    value = name.value if isinstance(name, Target) else str(name)
+    backend_id = value.strip().lower()
+    if not backend_id:
+        raise ValueError("Backend id must not be empty.")
+    return backend_id
 
 
 def normalize_target(name: Target | str | None) -> Target:
@@ -138,12 +168,14 @@ def normalize_options(
     backend: Target | str | None = None,
     *,
     caller: str | None = None,
-    emit_only: bool = True,
     **extra: Any,
-) -> Options:
-    return Options(
-        name=normalize_target(backend),
+) -> BackendOptions:
+    if "emit_only" in extra:
+        raise TypeError(
+            "`emit_only` was removed; use Artifact and BuiltArtifact stages."
+        )
+    return BackendOptions(
+        target=normalize_target(backend),
         caller=caller,
-        emit_only=emit_only,
         extra=extra,
     )

@@ -5,7 +5,7 @@ import re
 import numpy as np
 
 import ninetoothed.language
-from ninetoothed.generation import CodeGenerator
+from ninetoothed.frontend.layout import innermost_indices, overall_offsets_and_mask
 from ninetoothed.symbol import Symbol
 from ninetoothed.tensor import Tensor
 
@@ -39,12 +39,10 @@ def _eval(tensor, subs=None):
     result = np.empty(shape, dtype=np.intp)
 
     for index in np.ndindex(shape[: -tensor.innermost().ndim]):
-        overall_offsets, mask = CodeGenerator._generate_overall_offsets_and_mask(
+        overall_offsets, mask = overall_offsets_and_mask(
             tensor,
             tuple(Symbol(index) for index in index)
-            + CodeGenerator._generate_innermost_indices(
-                tensor, use_power_of_2_sizes=False
-            ),
+            + innermost_indices(tensor, use_power_of_2_sizes=False),
         )
 
         overall_offsets = _replace(str(overall_offsets), replacements)

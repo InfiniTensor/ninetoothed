@@ -10,7 +10,18 @@ from tests.utils import get_available_devices
 @pytest.mark.parametrize("kwargs", ({"a": 2, "b": 4}, {"a": 2, "b": 4, "c": 6, "d": 8}))
 @pytest.mark.parametrize("args", ((1,), (1, 3, 5)))
 def test_auto_tuner(args, kwargs, _):
-    auto_tuner = AutoTuner((_foo, _bar), (_foo.__name__, _bar.__name__))
+    benchmark_calls = []
+
+    def benchmark(function, candidate_args, candidate_kwargs):
+        benchmark_calls.append(function)
+        return _deterministic_benchmark(function, candidate_args, candidate_kwargs)
+
+    auto_tuner = AutoTuner(
+        (_foo, _bar),
+        (_foo.__name__, _bar.__name__),
+        benchmark=benchmark,
+        cache_namespace="test",
+    )
 
     assert not auto_tuner._get_func_cache_path(_foo).exists()
 
@@ -18,13 +29,8 @@ def test_auto_tuner(args, kwargs, _):
 
     assert not auto_tuner._cache_path.exists()
 
-    first_time_start_time = time.perf_counter()
-
     auto_tuner(*args, **kwargs)
-
-    first_time_end_time = time.perf_counter()
-
-    first_time_elapsed_time = first_time_end_time - first_time_start_time
+    assert benchmark_calls == [_foo, _bar]
 
     assert auto_tuner._get_func_cache_path(_foo).exists()
 
@@ -32,15 +38,8 @@ def test_auto_tuner(args, kwargs, _):
 
     assert auto_tuner._cache_path.exists()
 
-    second_time_start_time = time.perf_counter()
-
     auto_tuner(*args, **kwargs)
-
-    second_time_end_time = time.perf_counter()
-
-    second_time_elapsed_time = second_time_end_time - second_time_start_time
-
-    assert second_time_elapsed_time < first_time_elapsed_time
+    assert benchmark_calls == [_foo, _bar]
 
     auto_tuner._get_func_cache_path(_foo).unlink()
 
@@ -70,3 +69,11 @@ def _foo(*args, **kwargs):
 
 def _bar(*args, **kwargs):
     time.sleep(_bar_delay(*args, **kwargs))
+
+
+def _deterministic_benchmark(function, args, kwargs):
+    if function is _foo:
+        return _foo_delay(*args, **kwargs)
+    if function is _bar:
+        return _bar_delay(*args, **kwargs)
+    raise AssertionError(f"Unexpected tuning candidate: {function!r}")
