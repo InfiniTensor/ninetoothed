@@ -52,3 +52,91 @@ def test_triton_tuple_configurations_are_benchmarked_and_cached(device, monkeypa
 
     handle(input, other, output)
     assert len(benchmarked) == 2
+
+
+def test_autotuner_validates_arguments_before_benchmark(tmp_path, monkeypatch):
+    monkeypatch.setattr(auto_tuner, "_AUTO_TUNING_CACHE_DIR", tmp_path)
+    benchmarked = []
+
+    def validate(args, kwargs):
+        del args, kwargs
+
+        raise TypeError("Invalid public arguments.")
+
+    tuner = auto_tuner.AutoTuner(
+        (lambda value: value, lambda value: value),
+        ("first", "second"),
+        benchmark=lambda function, args, kwargs: benchmarked.append(function),
+        cache_namespace="validation",
+        validator=validate,
+    )
+
+    with pytest.raises(TypeError, match="Invalid public arguments"):
+        tuner(1)
+
+    assert not benchmarked
+
+
+def test_autotuner_cache_is_reused_across_instances(tmp_path, monkeypatch):
+    monkeypatch.setattr(auto_tuner, "_AUTO_TUNING_CACHE_DIR", tmp_path)
+    benchmarked = []
+
+    def benchmark(function, args, kwargs):
+        del args, kwargs
+        benchmarked.append(function)
+
+        return float(len(benchmarked))
+
+    first = auto_tuner.AutoTuner(
+        (lambda value: value + 1, lambda value: value + 2),
+        ("first", "second"),
+        benchmark=benchmark,
+        cache_namespace="shared",
+    )
+    assert first(1) == 2
+    assert len(benchmarked) == 2
+
+    second = auto_tuner.AutoTuner(
+        (lambda value: value + 3, lambda value: value + 4),
+        ("first", "second"),
+        benchmark=benchmark,
+        cache_namespace="shared",
+    )
+    assert second(1) == 4
+    assert len(benchmarked) == 2
+
+
+def test_autotuner_retries_transient_candidate_failures(tmp_path, monkeypatch):
+    monkeypatch.setattr(auto_tuner, "_AUTO_TUNING_CACHE_DIR", tmp_path)
+
+    def fail(function, args, kwargs):
+        del function, args, kwargs
+
+        raise RuntimeError("Transient compiler failure.")
+
+    first = auto_tuner.AutoTuner(
+        (lambda value: value + 1, lambda value: value + 2),
+        ("first", "second"),
+        benchmark=fail,
+        cache_namespace="retry",
+    )
+
+    with pytest.raises(RuntimeError, match="All autotuning candidates failed"):
+        first(1)
+
+    benchmarked = []
+
+    def succeed(function, args, kwargs):
+        benchmarked.append(function)
+        function(*args, **kwargs)
+
+        return float(len(benchmarked))
+
+    second = auto_tuner.AutoTuner(
+        (lambda value: value + 3, lambda value: value + 4),
+        ("first", "second"),
+        benchmark=succeed,
+        cache_namespace="retry",
+    )
+    assert second(1) == 4
+    assert len(benchmarked) == 2

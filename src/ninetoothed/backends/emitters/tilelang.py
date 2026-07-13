@@ -69,7 +69,14 @@ class TileLangTarget(EmitterTarget):
     buffer_suffix: str = "_buf"
     entrypoint_prefix: str = "build_"
     tir_value_semantics: bool = True
-    mutable_scalar_kind: str = "variable"
+
+    def uses_mutable_scalar_slots(self) -> bool:
+        return True
+
+    def mutable_scalar_decl(self, type_: ssa.Type, name: str, init: str) -> list[str]:
+        dtype = common.normalize_dtype(type_.dtype)
+
+        return [f'{name} = T.alloc_var("{dtype}", {init})']
 
     def literal(self, value: Any) -> str:
         if isinstance(value, float) and math.isinf(value):
@@ -196,6 +203,8 @@ def _render_tilelang_cooperative_dot_module(
     if plan is None or kernel.ssa is None:
         return None
 
+    threads = common.schedule_int(kernel, "threads", 128)
+    num_stages = common.schedule_int(kernel, "num_stages", 2)
     dot = plan.dot
     loop = plan.loop
     lhs, rhs = dot.operands[:2]
@@ -351,12 +360,12 @@ def build_{kernel.kernel_name}():
     @T.prim_func
     def {kernel.kernel_name}({handle_args}):
 {buffers}
-        with T.Kernel({grid_total}, threads=128) as outer_index:{bound_source}
+        with T.Kernel({grid_total}, threads={threads}) as outer_index:{bound_source}
             a_shared = T.alloc_shared(({bm}, {bk}), {lhs_dtype})
             b_shared = T.alloc_shared(({bk}, {bn}), {rhs_dtype})
             c_local = T.alloc_fragment(({bm}, {bn}), {accumulator_dtype})
             T.clear(c_local)
-            for ko in T.Pipelined({upper}, num_stages=2):
+            for ko in T.Pipelined({upper}, num_stages={num_stages}):
                 for mi, ki in T.Parallel({bm}, {bk}):
 {lhs_source}
                 for ki, ni in T.Parallel({bk}, {bn}):
@@ -380,6 +389,7 @@ def _render_tilelang_module(
     tensors: Mapping[str, _TensorInfo],
     value_types: Mapping[str, ssa.Type],
 ) -> str:
+    threads = common.schedule_int(kernel, "threads", 256)
     total = _rewrite_index_math(total, c_style=False)
     body = _rewrite_index_math(body, c_style=False)
     parameter_names = (*variables, *outputs)
@@ -428,9 +438,9 @@ def build_{kernel.kernel_name}():
     @T.prim_func
     def {kernel.kernel_name}({handle_args}):
 {buffers}
-        for block_id in T.thread_binding(({total} + 255) // 256, thread="blockIdx.x"):
-            for tx in T.thread_binding(256, thread="threadIdx.x"):
-                {target.index_name} = block_id * 256 + tx
+        for block_id in T.thread_binding(({total} + {threads - 1}) // {threads}, thread="blockIdx.x"):
+            for tx in T.thread_binding({threads}, thread="threadIdx.x"):
+                {target.index_name} = block_id * {threads} + tx
                 if {target.index_name} < {total}:
 {_indent_block(body, "                    ")}
 
@@ -441,8 +451,8 @@ def build_{kernel.kernel_name}():
 TARGET = TileLangTarget()
 
 
-def emit(kernel: Kernel, options=None):
-    return common.emit(kernel, TARGET, options)
+def emit(kernel: Kernel):
+    return common.emit(kernel, TARGET)
 
 
 __all__ = ["TARGET", "TileLangTarget", "emit"]

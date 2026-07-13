@@ -2,7 +2,29 @@
 
 from collections.abc import Iterator, Mapping
 
-from ninetoothed.ir import ssa
+from ninetoothed.ir import Kernel, ssa
+
+
+def schedule_int(kernel: Kernel, name: str, default: int) -> int:
+    """Return one positive integer schedule value from the lowered program."""
+    schedule = dict(kernel.ssa.metadata.get("schedule", {})) if kernel.ssa else {}
+    value = schedule.get(name, default)
+
+    if isinstance(value, bool):
+        raise ValueError(
+            f"Schedule `{name}` must be a positive integer, got {value!r}."
+        )
+
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Schedule `{name}` must be a positive integer, got {value!r}."
+        ) from exc
+
+    if normalized < 1:
+        raise ValueError(f"Schedule `{name}` must be positive, got {normalized}.")
+    return normalized
 
 
 def value_depends_on(
@@ -91,6 +113,7 @@ __all__ = [
     "atomic_output_tensors",
     "collect_value_types",
     "program_value_types",
+    "schedule_int",
     "value_depends_on",
     "walk_ops",
 ]

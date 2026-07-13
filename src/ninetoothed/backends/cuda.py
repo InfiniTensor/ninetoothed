@@ -11,10 +11,13 @@ from ninetoothed.backends.core import (
     Artifact,
     Backend,
     Capability,
-    Options,
     Target,
 )
 from ninetoothed.backends.emitters.cuda import emit
+from ninetoothed.backends.toolchain import (
+    cuda_compute_capability,
+    normalize_cuda_arch,
+)
 from ninetoothed.compiler.passes import (
     Context,
     OptimizeSchedule,
@@ -28,6 +31,14 @@ if TYPE_CHECKING:
 
 class CudaBackend(Backend):
     name = Target.CUDA
+    supported_options = frozenset(
+        {
+            "arch",
+            "compute_capability",
+            "max_shared_memory_bytes",
+            "max_threads_per_block",
+        }
+    )
     capability = Capability(
         name=name,
         emits_source=True,
@@ -39,22 +50,26 @@ class CudaBackend(Backend):
         ),
     )
 
-    def emit(self, kernel: Kernel, options: Options | None = None) -> Artifact:
-        return emit(kernel, options)
+    def normalize_options(self, options: Mapping[str, Any]) -> Mapping[str, Any]:
+        normalized = dict(super().normalize_options(options))
+        arch = normalize_cuda_arch(normalized.get("arch", "native"))
+        normalized["arch"] = arch
 
+        if "compute_capability" not in normalized:
+            capability = cuda_compute_capability(arch)
 
-def _generic_linear_or_reduction_policy(
-    schedule: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    if schedule.get("granularity") == "parallel-reduction":
-        return {
-            "passes": ("tree-reduction",),
-            "lowering": "ssa-reduction-scf-loop",
-        }
-    return {
-        "passes": ("coalesced-linear-indexing",),
-        "lowering": "ssa-operation-linear-emission",
-    }
+            if capability is not None:
+                normalized["compute_capability"] = capability
+
+        return normalized
+
+    def emit(self, kernel: Kernel) -> Artifact:
+        return emit(kernel)
+
+    def prepare_for_emission(self, kernel: Kernel) -> Kernel:
+        from ninetoothed.compiler.specialization import specialize_schedule_tiles
+
+        return specialize_schedule_tiles(kernel)
 
 
 class CudaOptimizeSchedule(OptimizeSchedule):
@@ -67,9 +82,11 @@ class CudaOptimizeSchedule(OptimizeSchedule):
         schedule: Mapping[str, Any],
         context: Context,
     ) -> tuple[ScheduleCandidate, ...]:
-        del analysis, context
+        del context
 
-        if schedule.get("granularity") != "blocked-linalg":
+        if schedule.get("granularity") != "blocked-linalg" or not analysis.get(
+            "dot_supports_low_precision_intrinsic", False
+        ):
             return ()
 
         mma = {"m": 16, "n": 16, "k": 16}
@@ -82,26 +99,12 @@ class CudaOptimizeSchedule(OptimizeSchedule):
                     "mma_shape": mma,
                     "threads": 256,
                 },
+                constraints={
+                    "dtypes": ("float16", "bfloat16"),
+                    "minimum_compute_capability": "7.0",
+                    "shared_memory_bytes": 2048,
+                },
                 tags=("default", "wmma"),
-            ),
-            ScheduleCandidate(
-                name="wmma-32x32",
-                schedule={
-                    "tile": {"block_m": 32, "block_n": 32, "block_k": 16},
-                    "mma_shape": mma,
-                    "threads": 256,
-                },
-                tags=("wmma", "balanced"),
-            ),
-            ScheduleCandidate(
-                name="wmma-64x64",
-                schedule={
-                    "tile": {"block_m": 64, "block_n": 64, "block_k": 32},
-                    "mma_shape": mma,
-                    "threads": 256,
-                },
-                constraints={"minimum_compute_capability": "7.0"},
-                tags=("wmma", "throughput"),
             ),
         )
 
@@ -116,19 +119,11 @@ class CudaOptimizeSchedule(OptimizeSchedule):
         if schedule.get("granularity") == "blocked-linalg":
             preserve_linalg = bool(
                 analysis.get("dot_supports_low_precision_intrinsic", False)
+                and schedule.get("mma_shape") == {"m": 16, "n": 16, "k": 16}
             )
 
-            return {
-                "passes": ("block-tiling", "wmma-intrinsic-selection"),
-                "lowering": (
-                    "cuda-wmma-block-dot"
-                    if preserve_linalg
-                    else "ssa-reduction-scf-loop"
-                ),
-                "preserve_linalg": preserve_linalg,
-                "use_tensor_cores": preserve_linalg,
-            }
-        return _generic_linear_or_reduction_policy(schedule)
+            return {"preserve_linalg": preserve_linalg}
+        return {}
 
 
 def register_ssa_passes(registry: "Registry") -> None:

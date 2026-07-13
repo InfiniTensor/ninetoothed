@@ -2,25 +2,31 @@
 
 import copy
 import inspect
+import itertools
+import math
 import os
 import textwrap
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
-from ninetoothed.backends import emit
+from ninetoothed.backends import default_registry, emit
 from ninetoothed.backends.core import (
     Artifact,
     Target,
-    normalize_options,
     normalize_target,
 )
 from ninetoothed.frontend.layout import tensor_specs
 from ninetoothed.frontend.python import LoweringError, from_application
 from ninetoothed.ir import IndexExpr, Kernel, LaunchABI, LaunchBinding, LaunchPlan
-from ninetoothed.naming import remove_prefixes
+from ninetoothed.naming import is_meta, remove_prefixes
 
-from .specialization import specialize_program, specialize_tensor_specs
+from .specialization import (
+    is_schedule_tile_parameter,
+    scheduled_meta_defaults,
+    specialize_program,
+    specialize_tensor_specs,
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -132,6 +138,8 @@ def make(
     **backend_options,
 ):
     """Arrange, compile, and materialize a NineToothed application."""
+    mode = "jit" if caller == "torch" else "aot"
+
     return DEFAULT_COMPILER.materialize(
         CompileRequest(
             application=application,
@@ -148,6 +156,7 @@ def make(
             backend_options=backend_options,
         ),
         output_dir=output_dir,
+        mode=mode,
     )
 
 
@@ -246,12 +255,27 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
             "source inspection did not produce ssa.Program."
         )
 
-    if request.specialization_values:
-        specs = specialize_tensor_specs(specs, request.specialization_values)
-        program = specialize_program(program, request.specialization_values)
-
     target = resolve_target(request.backend)
     _validate_tuning_options(target, request)
+    specialization_values = dict(request.specialization_values or {})
+
+    if target != Target.TRITON:
+        specialization_values = {
+            name: value
+            for name, value in specialization_values.items()
+            if not is_schedule_tile_parameter(name)
+        }
+
+    if specialization_values:
+        specs = specialize_tensor_specs(specs, specialization_values)
+        program = specialize_program(program, specialization_values)
+
+    backend_options = (
+        default_registry()
+        .get(target)
+        .normalize_options(dict(request.backend_options or {}))
+    )
+    request = replace(request, backend_options=backend_options)
     kernel = Kernel(
         kernel_name=kernel_name,
         source=_source(application),
@@ -264,7 +288,7 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
             "max_num_configs": request.max_num_configs,
             "ssa_pass_pipeline": request.pipeline,
             "ssa_pass_options": dict(request.pass_options or {}),
-            "backend_options": dict(request.backend_options or {}),
+            "backend_options": backend_options,
         },
         metadata={
             "caller": request.caller,
@@ -276,9 +300,8 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
         },
         ssa=program,
     )
-    options = normalize_options(target, **dict(request.backend_options or {}))
-    artifact = emit(kernel, options=options)
-    scheduled_meta_defaults = _scheduled_meta_defaults(
+    artifact = emit(kernel, backend=target)
+    scheduled_defaults = scheduled_meta_defaults(
         meta_defaults, artifact.metadata.get("ssa_schedule", {})
     )
     launch_abi = _launch_abi(
@@ -286,14 +309,14 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
         specs,
         artifact,
         arranged,
-        meta_defaults=scheduled_meta_defaults,
+        meta_defaults=scheduled_defaults,
     )
-    launch_plan = _launch_plan(launch_abi, artifact, request)
+    launch_plan = _launch_plan(launch_abi, artifact, request, arranged)
     kernel = replace(
         kernel,
         launch_abi=launch_abi,
         launch_plan=launch_plan,
-        metadata=dict(kernel.metadata) | {"meta_defaults": scheduled_meta_defaults},
+        metadata=dict(kernel.metadata) | {"meta_defaults": scheduled_defaults},
     )
     artifact = replace(
         artifact,
@@ -328,6 +351,10 @@ def _launch_abi(
         for binding in artifact.metadata.get("auxiliary_bindings", ())
     }
     meta_defaults = dict(meta_defaults or _meta_defaults(arranged))
+    constexpr_values = {
+        name: getattr(getattr(tensor, "source", tensor), "value", None)
+        for name, tensor in zip(params, arranged)
+    }
     bindings = []
 
     for name in (
@@ -365,7 +392,7 @@ def _launch_abi(
     shape_params = tuple(artifact.metadata.get("shape_params", ()))
 
     for name in shape_params:
-        binding = _derived_binding(name, specs)
+        binding = _derived_binding(name, specs, constexpr_values)
         bindings.append(
             binding
             or LaunchBinding(
@@ -388,6 +415,7 @@ def _launch_plan(
     abi: LaunchABI,
     artifact: Artifact,
     request: CompileRequest,
+    arranged,
 ) -> LaunchPlan:
     metadata = artifact.metadata
     grid = tuple(
@@ -418,7 +446,7 @@ def _launch_plan(
         )
     )
     candidates = (
-        _triton_tuning_candidates(metadata, request)
+        _triton_tuning_candidates(metadata, request, arranged)
         if artifact.backend == Target.TRITON
         else ()
     )
@@ -466,6 +494,7 @@ def _validate_tuning_options(target: Target, request: CompileRequest) -> None:
 def _triton_tuning_candidates(
     metadata: Mapping[str, Any],
     request: CompileRequest,
+    arranged,
 ) -> tuple[Mapping[str, Any], ...]:
     schedule = dict(metadata.get("ssa_schedule", {}))
     warps = _configuration_values(
@@ -480,22 +509,98 @@ def _triton_tuning_candidates(
     )
     candidates = []
 
-    for num_warps in warps:
-        for num_stages in stages:
-            candidate = {
-                "id": f"warps-{num_warps}_stages-{num_stages}",
-                "num_warps": num_warps,
-                "num_stages": num_stages,
-            }
+    for meta, num_warps, num_stages in itertools.product(
+        _meta_parameter_configurations(arranged), warps, stages
+    ):
+        meta_id = "_".join(
+            f"{remove_prefixes(name)}-{value}" for name, value in meta.items()
+        )
+        candidate = {
+            "id": "_".join(
+                value
+                for value in (
+                    meta_id,
+                    f"warps-{num_warps}",
+                    f"stages-{num_stages}",
+                )
+                if value
+            ),
+            "num_warps": num_warps,
+            "num_stages": num_stages,
+        }
 
-            if candidate not in candidates:
-                candidates.append(candidate)
+        if meta:
+            candidate["meta_parameters"] = meta
+
+        if candidate not in candidates:
+            candidates.append(candidate)
 
     limit = request.max_num_configs
 
-    if limit is not None:
-        candidates = candidates[:limit]
+    if limit is not None and len(candidates) > limit:
+        candidates = [
+            candidates[index * len(candidates) // limit] for index in range(limit)
+        ]
     return tuple(candidates)
+
+
+def _meta_parameter_configurations(arranged) -> tuple[dict[str, int], ...]:
+    symbols = {
+        str(symbol): symbol
+        for tensor in arranged
+        for symbol in tensor.names()
+        if is_meta(str(symbol))
+    }
+
+    if not symbols:
+        return ({},)
+
+    names = tuple(sorted(symbols))
+    values = tuple(_symbol_values(symbols[name]) for name in names)
+    configurations = tuple(
+        configuration
+        for combination in itertools.product(*values)
+        if _meta_configuration_is_legal(
+            arranged, configuration := dict(zip(names, combination))
+        )
+    )
+
+    if not configurations:
+        raise ValueError(
+            "Failed to generate Triton tuning candidates. Check the lower and "
+            "upper bounds of the block-size symbols."
+        )
+    return configurations
+
+
+def _symbol_values(symbol) -> tuple[int, ...]:
+    values = range(int(symbol.lower_bound), int(symbol.upper_bound) + 1)
+
+    if getattr(symbol, "power_of_two", False):
+        return tuple(
+            value for value in values if value > 0 and value & (value - 1) == 0
+        )
+    return tuple(values)
+
+
+def _meta_configuration_is_legal(arranged, configuration) -> bool:
+    """Apply the old generator's conservative innermost-tile size bound."""
+    import sympy
+
+    max_num_elements = 2**15
+
+    for tensor in arranged:
+        expression = sympy.sympify(str(math.prod(tensor.innermost().shape)))
+        specialized = expression.subs(configuration)
+
+        if specialized.free_symbols:
+            continue
+
+        num_elements = int(specialized)
+
+        if not 1 <= num_elements <= max_num_elements:
+            return False
+    return True
 
 
 def _configuration_values(value, scheduled, *, default: int) -> tuple[int, ...]:
@@ -512,7 +617,7 @@ def _configuration_values(value, scheduled, *, default: int) -> tuple[int, ...]:
     return normalized
 
 
-def _derived_binding(name: str, specs):
+def _derived_binding(name: str, specs, constexpr_values):
     for spec in specs:
         attrs = spec.attrs
 
@@ -548,7 +653,12 @@ def _derived_binding(name: str, specs):
                 )
 
         if spec.constexpr and name == spec.name:
-            return LaunchBinding(name=name, kind="constexpr", source=spec.name)
+            return LaunchBinding(
+                name=name,
+                kind="constexpr",
+                source=spec.name,
+                value=constexpr_values.get(spec.name),
+            )
     return None
 
 
@@ -596,21 +706,6 @@ def _runtime_shape_params(specs) -> tuple[str, ...]:
             ):
                 params.append(name)
     return tuple(params)
-
-
-def _scheduled_meta_defaults(
-    defaults: Mapping[str, int], schedule: Mapping[str, Any]
-) -> dict[str, int]:
-    result = dict(defaults)
-    tile = dict(schedule.get("tile", {}))
-
-    for name in result:
-        logical_name = remove_prefixes(name).lower()
-        schedule_name = logical_name.replace("block_size_", "block_")
-
-        if schedule_name in tile:
-            result[name] = int(tile[schedule_name])
-    return result
 
 
 def _abi_dict(abi: LaunchABI) -> dict[str, Any]:

@@ -1,14 +1,14 @@
 """Public backend utilities."""
 
+from dataclasses import replace
+
 from ninetoothed.backends.core import (
     Artifact,
     Backend,
     BuiltArtifact,
     Capability,
-    Options,
     Registry,
     Target,
-    normalize_options,
     normalize_target,
 )
 from ninetoothed.ir import Kernel
@@ -18,13 +18,11 @@ def create_default_registry() -> Registry:
     from ninetoothed.backends.cuda import CudaBackend
     from ninetoothed.backends.tilelang import TileLangBackend
     from ninetoothed.backends.triton import TritonBackend
-    from ninetoothed.backends.tvm import TvmBackend
 
     registry = Registry()
     registry.register(TritonBackend())
     registry.register(TileLangBackend())
     registry.register(CudaBackend())
-    registry.register(TvmBackend())
 
     return registry
 
@@ -43,18 +41,27 @@ def default_registry() -> Registry:
 def emit(
     kernel: Kernel,
     backend: Target | str | None = None,
-    options: Options | None = None,
 ) -> Artifact:
-    if options is None:
-        options = normalize_options(backend)
+    target = normalize_target(backend)
+    backend_impl = default_registry().get(target)
+    backend_options = backend_impl.normalize_options(
+        dict(kernel.compiler_options.get("backend_options", {}))
+    )
 
-    kernel = _prepare_kernel_for_backend(kernel, options)
-    backend_impl = default_registry().get(options.target)
+    if backend_options != kernel.compiler_options.get("backend_options", {}):
+        kernel = replace(
+            kernel,
+            compiler_options=dict(kernel.compiler_options)
+            | {"backend_options": backend_options},
+        )
 
-    return backend_impl.emit(kernel, options)
+    kernel = _prepare_kernel_for_backend(kernel, target)
+    kernel = backend_impl.prepare_for_emission(kernel)
+
+    return backend_impl.emit(kernel)
 
 
-def _prepare_kernel_for_backend(kernel: Kernel, options: Options) -> Kernel:
+def _prepare_kernel_for_backend(kernel: Kernel, target: Target) -> Kernel:
     from ninetoothed.compiler.passes import lower_for_target
 
     ssa = kernel.ssa
@@ -62,10 +69,10 @@ def _prepare_kernel_for_backend(kernel: Kernel, options: Options) -> Kernel:
     if ssa is None:
         return kernel
 
-    if ssa.metadata.get("target_backend") != options.target.value:
+    if ssa.metadata.get("target_backend") != target.value:
         ssa = lower_for_target(
             ssa,
-            backend=options.target,
+            backend=target,
             compiler_options=kernel.compiler_options,
             kernel_metadata=kernel.metadata,
             pass_pipeline=kernel.compiler_options.get("ssa_pass_pipeline"),
@@ -101,7 +108,6 @@ __all__ = [
     "Artifact",
     "Capability",
     "Target",
-    "Options",
     "Registry",
     "Kernel",
     "backend_capabilities",
@@ -109,5 +115,4 @@ __all__ = [
     "default_registry",
     "emit",
     "normalize_target",
-    "normalize_options",
 ]

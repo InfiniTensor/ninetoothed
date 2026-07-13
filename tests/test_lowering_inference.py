@@ -1,4 +1,7 @@
 import inspect
+import math
+
+import triton.language as tl
 
 import ninetoothed.language as ntl
 from ninetoothed.frontend.python import from_application
@@ -64,6 +67,15 @@ def bitwise_shift(x, y, out):
 
 def compare_float_inf(x, out):
     out = (x == x) & (x != float("inf")) & (x != -float("inf"))  # noqa: F841
+
+
+def method_math_and_dim_alias(x, out):
+    denom = x.sqrt().sum(dim=0)
+    out = x.exp() / denom  # noqa: F841
+
+
+def namespace_math_alias(x, out):
+    out = math.exp(x) + tl.sqrt(x)  # noqa: F841
 
 
 def eye_offsets(out):
@@ -222,6 +234,29 @@ class TestLoweringInference:
 
             assert "mem.store" in opcodes
             self._assert_no_coarse_ir_nodes(program)
+
+    def test_method_namespace_and_dim_aliases_normalize_to_generic_ssa(self):
+        cases = (
+            (
+                method_math_and_dim_alias,
+                ("math.sqrt", "reduce.sum", "math.exp", "arith.div", "mem.store"),
+            ),
+            (
+                namespace_math_alias,
+                ("math.exp", "math.sqrt", "arith.add", "mem.store"),
+            ),
+        )
+
+        for func, expected_opcodes in cases:
+            program = _ssa(func)
+            assert _opcodes(program) == expected_opcodes
+            self._assert_no_coarse_ir_nodes(program)
+
+            if func is method_math_and_dim_alias:
+                reduction = next(
+                    op for op in _walk(program) if op.opcode == "reduce.sum"
+                )
+                assert reduction.attrs["axis"] == 0
 
     def test_offsets_lower_to_explicit_index_ops(self):
         program = _ssa(

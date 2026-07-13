@@ -2,7 +2,7 @@ import inspect
 
 import pytest
 
-from ninetoothed.backends import Artifact, Capability, Options, Target, emit
+from ninetoothed.backends import Artifact, Capability, Target, emit
 from ninetoothed.compiler.passes import Context, Descriptor, PipelineSpec
 from ninetoothed.frontend.python import from_source
 from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict, ssa
@@ -37,7 +37,6 @@ class TestKernel:
             ssa.Operation,
             ssa.Block,
             ssa.Program,
-            Options,
             Capability,
             Artifact,
             PipelineSpec,

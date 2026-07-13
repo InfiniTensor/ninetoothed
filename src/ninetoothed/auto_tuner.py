@@ -1,7 +1,9 @@
 import math
+import threading
 
 from ninetoothed.compiler.cache import (
     CACHE_DIR,
+    cache_lock,
     read_manifest,
     stable_digest,
     write_manifest,
@@ -11,7 +13,15 @@ from ninetoothed.compiler.cache import (
 class AutoTuner:
     """Select a runtime candidate using an injectable benchmark strategy."""
 
-    def __init__(self, funcs, keys, *, benchmark=None, cache_namespace=None):
+    def __init__(
+        self,
+        funcs,
+        keys,
+        *,
+        benchmark=None,
+        cache_namespace=None,
+        validator=None,
+    ):
         self._funcs = tuple(funcs)
         self._keys = tuple(keys)
 
@@ -19,6 +29,8 @@ class AutoTuner:
             raise ValueError("AutoTuner requires one key for every candidate.")
 
         self._benchmark = benchmark or _default_benchmark
+        self._validator = validator
+        self._lock = threading.Lock()
         self._key_ids = tuple(_candidate_id(key) for key in self._keys)
         self._func_to_key = {func: key for func, key in zip(self._funcs, self._key_ids)}
         namespace = cache_namespace or _default_cache_namespace()
@@ -39,36 +51,50 @@ class AutoTuner:
         self._best_func = {}
 
     def __call__(self, *args, **kwargs):
-        if (arg_key := type(self)._make_arg_key(args, kwargs)) in self._best_func:
-            return self._best_func[arg_key](*args, **kwargs)
+        if self._validator is not None:
+            self._validator(args, kwargs)
 
-        timings = self._get_timings(args, kwargs)
+        arg_key = type(self)._make_arg_key(args, kwargs)
 
-        if all(math.isinf(timing) for timing in timings):
-            raise RuntimeError(self._all_candidates_failed_message(arg_key))
+        with self._lock:
+            best_func = self._best_func.get(arg_key)
 
-        best_timing = min(timings)
-        best_timing_index = timings.index(best_timing)
-        best_func = self._funcs[best_timing_index]
+            if best_func is None:
+                timings = self._get_timings(args, kwargs)
 
-        self._best_func[arg_key] = best_func
+                if all(math.isinf(timing) for timing in timings):
+                    raise RuntimeError(self._all_candidates_failed_message(arg_key))
+
+                best_timing = min(timings)
+                best_timing_index = timings.index(best_timing)
+                best_func = self._funcs[best_timing_index]
+                self._best_func[arg_key] = best_func
 
         return best_func(*args, **kwargs)
 
     def _get_timings(self, args, kwargs):
         arg_key = type(self)._make_arg_key(args, kwargs)
 
-        if arg_key in self._selection_timings:
-            return self._selection_timings[arg_key]
+        update_lock = self._cache_path.with_suffix(".update")
 
-        timings = [self._get_timing(func, args, kwargs) for func in self._funcs]
+        with cache_lock(update_lock):
+            manifest = read_manifest(self._cache_path) or {}
+            self._selection_timings |= dict(manifest.get("timings", {}))
 
-        self._selection_timings[arg_key] = timings
+            if arg_key in self._selection_timings:
+                cached = self._selection_timings[arg_key]
 
-        write_manifest(
-            self._cache_path,
-            {"schema": 2, "timings": self._selection_timings},
-        )
+                if not all(math.isinf(timing) for timing in cached):
+                    return cached
+
+                del self._selection_timings[arg_key]
+
+            timings = [self._get_timing(func, args, kwargs) for func in self._funcs]
+            self._selection_timings[arg_key] = timings
+            write_manifest(
+                self._cache_path,
+                {"schema": 2, "timings": self._selection_timings},
+            )
 
         return timings
 
@@ -77,36 +103,46 @@ class AutoTuner:
 
         data = self._candidate_timings[func_key]
 
-        if (arg_key := type(self)._make_arg_key(args, kwargs)) in data:
+        arg_key = type(self)._make_arg_key(args, kwargs)
+
+        if arg_key in data and not math.isinf(data[arg_key]):
             return data[arg_key]
+
+        data.pop(arg_key, None)
 
         cache_path = self._get_func_cache_path(func)
 
-        if cache_path.exists():
+        update_lock = cache_path.with_suffix(".update")
+
+        with cache_lock(update_lock):
             manifest = read_manifest(cache_path) or {}
             data |= dict(manifest.get("timings", {}))
 
-        if arg_key in data:
-            return data[arg_key]
+            if arg_key in data and not math.isinf(data[arg_key]):
+                return data[arg_key]
 
-        failure = None
+            data.pop(arg_key, None)
 
-        try:
-            timing = self._benchmark(func, args, kwargs)
-        except Exception as exc:  # noqa: BLE001
-            timing = float("inf")
-            failure = f"{type(exc).__name__}: {exc}"
+            failure = None
 
-        data[arg_key] = timing
-        failures = dict((read_manifest(cache_path) or {}).get("failures", {}))
+            try:
+                timing = self._benchmark(func, args, kwargs)
+            except Exception as exc:  # noqa: BLE001
+                timing = float("inf")
+                failure = f"{type(exc).__name__}: {exc}"
 
-        if failure is not None:
-            failures[arg_key] = failure
+            data[arg_key] = timing
+            failures = dict((read_manifest(cache_path) or {}).get("failures", {}))
 
-        write_manifest(
-            cache_path,
-            {"schema": 2, "timings": data, "failures": failures},
-        )
+            if failure is not None:
+                failures[arg_key] = failure
+            else:
+                failures.pop(arg_key, None)
+
+            write_manifest(
+                cache_path,
+                {"schema": 2, "timings": data, "failures": failures},
+            )
 
         return timing
 

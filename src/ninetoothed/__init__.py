@@ -1,5 +1,6 @@
+from ninetoothed.aot import aot
 from ninetoothed.build import build
-from ninetoothed.compiler import aot, jit, lower, make
+from ninetoothed.compiler import lower
 from ninetoothed.dtype import (
     bfloat16,
     float16,
@@ -16,6 +17,8 @@ from ninetoothed.dtype import (
 )
 from ninetoothed.eval import _eval as eval
 from ninetoothed.eval import _subs as subs
+from ninetoothed.jit import jit
+from ninetoothed.make import make
 from ninetoothed.symbol import Symbol, block_size
 from ninetoothed.tensor import Tensor
 

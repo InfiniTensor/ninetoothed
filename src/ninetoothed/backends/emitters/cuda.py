@@ -40,6 +40,14 @@ class CudaTarget(EmitterTarget):
     c_style_syntax: bool = True
     native_block_matmul: bool = True
 
+    def index_cast(self, value: str) -> str:
+        return f"static_cast<int64_t>({value})"
+
+    def assign_scalar(self, name: str, value: str, *, mutable: bool) -> str:
+        del mutable
+
+        return f"{name} = {value};"
+
     def literal(self, value: Any) -> str:
         if isinstance(value, bool):
             return "true" if value else "false"
@@ -160,6 +168,7 @@ class CudaTarget(EmitterTarget):
 
     def render_module(self, context: ModuleRenderContext) -> str:
         kernel = context.kernel
+        threads = common.schedule_int(kernel, "threads", 256)
         total = _cuda_integer_expr(context.total)
         grid_total = _cuda_integer_expr(context.grid_total)
         body = _cuda_integer_expr(context.body)
@@ -207,6 +216,11 @@ class CudaTarget(EmitterTarget):
         args = ", ".join((*context.variables, *context.outputs, *context.shape_params))
 
         if context.block_program:
+            if threads != 256:
+                raise ValueError(
+                    "CUDA WMMA lowering currently requires exactly 256 threads."
+                )
+
             schedule = kernel.ssa.metadata.get("schedule", {}) if kernel.ssa else {}
             mma_shape = schedule.get("mma_shape", {"m": 16, "n": 16, "k": 16})
             mma_m = int(mma_shape.get("m", 16))
@@ -272,7 +286,7 @@ extern "C" __global__ void {kernel.kernel_name}_kernel(
 extern "C" int launch_{kernel.kernel_name}(
 {launch_params}
 ) {{
-    constexpr int threads = 256;
+    constexpr int threads = {threads};
     int64_t blocks = {blocks_expr};
     {kernel.kernel_name}_kernel<<<static_cast<unsigned int>(blocks), threads, 0, stream>>>(
         {args}
@@ -370,7 +384,7 @@ def _cuda_integer_expr(expr: str) -> str:
 def _cuda_arithmetic_result_type(op: ssa.Operation, ctx: _EmitContext) -> ssa.Type:
     result_type = op.results[0].type
 
-    if ctx.target.backend != Target.CUDA or not op.opcode.startswith("arith."):
+    if not op.opcode.startswith("arith."):
         return result_type
 
     if _normalize_dtype(result_type.dtype) not in {
@@ -402,7 +416,7 @@ def _emit_cuda_direct_dot_operand(
     if info is not None and info.ndim == 0:
         return _emit_value(name, ctx), None
 
-    if ctx.target.backend != Target.CUDA or info is None or _load_other(info) != 0.0:
+    if info is None or _load_other(info) != 0.0:
         return _emit_element(original_name, original_coords, ctx), None
 
     dtype_level = _dtype_level(name, ctx)
@@ -525,7 +539,7 @@ def _emit_cuda_wmma_dot(
 def _coerce_cuda_binary_args(
     op: ssa.Operation, args: tuple[str, ...], ctx: _EmitContext
 ) -> tuple[str, ...]:
-    if ctx.target.backend != Target.CUDA or len(args) != len(op.operands):
+    if len(args) != len(op.operands):
         return args
 
     result_type = op.results[0].type if op.results else None
@@ -748,8 +762,8 @@ def _emit_cuda_wmma_reduction_loop(
 TARGET = CudaTarget()
 
 
-def emit(kernel: Kernel, options=None):
-    return common.emit(kernel, TARGET, options)
+def emit(kernel: Kernel):
+    return common.emit(kernel, TARGET)
 
 
 __all__ = ["CudaTarget", "TARGET", "emit"]

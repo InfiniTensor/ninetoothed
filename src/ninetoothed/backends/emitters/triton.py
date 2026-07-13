@@ -18,6 +18,15 @@ class TritonTarget(EmitterTarget):
     source_route: str = "ssa-unified-triton-emitter"
     vector_value_semantics: bool = True
 
+    def program_id(self, axis: int = 0) -> str:
+        return f"tl.program_id({axis})"
+
+    def vector_reduce(self, operator: str, operand: str, axis: int) -> str:
+        return f"tl.{operator}({operand}, axis={axis})"
+
+    def vector_splat(self, shape: str, value: str, dtype: str) -> str:
+        return f"tl.full({shape}, {value}, tl.{common.normalize_dtype(dtype)})"
+
     def literal(self, value: Any) -> str:
         if isinstance(value, float) and math.isinf(value):
             return "float('inf')" if value > 0 else "-float('inf')"
@@ -290,8 +299,8 @@ def launch_{kernel.kernel_name}({launch_params}):
 TARGET = TritonTarget()
 
 
-def emit(kernel: Kernel, options=None):
-    return common.emit(kernel, TARGET, options)
+def emit(kernel: Kernel):
+    return common.emit(kernel, TARGET)
 
 
 __all__ = ["TARGET", "TritonTarget", "emit"]

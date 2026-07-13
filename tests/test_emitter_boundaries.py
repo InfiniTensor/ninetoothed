@@ -10,16 +10,14 @@ def test_shared_ssa_emitter_uses_capabilities_instead_of_backend_flags():
         "is_cuda",
         "is_triton",
         "is_tilelang",
-        "is_tvm",
         "Target.CUDA",
         "Target.TRITON",
         "Target.TILELANG",
-        "Target.TVM",
     ):
         assert marker not in source
 
 
 def test_backend_strategies_only_use_public_shared_emitter_hooks():
-    for name in ("cuda.py", "triton.py", "tilelang.py", "tvm.py"):
+    for name in ("cuda.py", "triton.py", "tilelang.py"):
         source = (_EMITTERS / name).read_text(encoding="utf-8")
         assert "common._" not in source

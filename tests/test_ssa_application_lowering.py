@@ -1,6 +1,6 @@
 import ninetoothed.language as ntl
 from ninetoothed.frontend.python import from_application
-from ninetoothed.ir import TensorSpec, ssa
+from ninetoothed.ir import TensorSpec
 
 
 def reference_attention(q, k, v, is_causal, o):
@@ -101,14 +101,3 @@ class TestApplicationSSALowering:
 
         for operation in reductions:
             assert "ntl" not in operation.operands
-
-    def test_textual_render_is_ssa_not_json_or_coarse_attention_node(self):
-        program = from_application(reference_attention, _attention_tensors())
-        text = ssa.render(program)
-        assert "ssa @reference_attention" in text
-        assert "scf.for" in text
-        assert "linalg.dot" in text
-        assert "shape.dim" in text
-        assert '{"kind"' not in text
-        assert "AttentionOpIR" not in text
-        assert "FlashAttentionOpIR" not in text

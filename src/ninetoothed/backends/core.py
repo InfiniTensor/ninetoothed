@@ -12,7 +12,6 @@ class Target(str, Enum):
     TRITON = "triton"
     TILELANG = "tilelang"
     CUDA = "cuda"
-    TVM = "tvm"
 
 
 _CANONICAL_BACKEND_NAMES = {
@@ -20,16 +19,7 @@ _CANONICAL_BACKEND_NAMES = {
     "triton": Target.TRITON,
     "tilelang": Target.TILELANG,
     "cuda": Target.CUDA,
-    "tvm": Target.TVM,
 }
-
-
-@dataclass(frozen=True, kw_only=True)
-class Options:
-    """Options passed from public APIs to a backend lowerer."""
-
-    target: Target = Target.TRITON
-    extra: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -52,7 +42,6 @@ class Artifact:
     language: str
     sources: Mapping[str, str]
     entrypoint: str | None = None
-    materializable: bool = True
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     @property
@@ -94,8 +83,25 @@ class Backend:
 
     name: Target | str
     capability: Capability
+    supported_options: frozenset[str] = frozenset()
 
-    def emit(self, kernel: Kernel, options: Options | None = None) -> Artifact:
+    def normalize_options(self, options: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Validate and normalize options before target lowering starts."""
+        unknown = sorted(set(options) - self.supported_options)
+
+        if unknown:
+            names = ", ".join(f"`{name}`" for name in unknown)
+            raise TypeError(
+                f"Unsupported {backend_id_for(self.name)} backend option(s): {names}."
+            )
+
+        return dict(options)
+
+    def prepare_for_emission(self, kernel: Kernel) -> Kernel:
+        """Apply deterministic target choices that source emission must observe."""
+        return kernel
+
+    def emit(self, kernel: Kernel) -> Artifact:
         raise NotImplementedError
 
 
@@ -155,22 +161,3 @@ def normalize_target(name: Target | str | None) -> Target:
         raise ValueError(
             f"Unsupported backend `{name}`. Supported backends: {supported}."
         ) from exc
-
-
-def normalize_options(
-    backend: Target | str | None = None,
-    **extra: Any,
-) -> Options:
-    if "caller" in extra:
-        raise TypeError("The `caller` value is a runtime option, not a backend option.")
-
-    if "emit_only" in extra:
-        raise TypeError(
-            "The `emit_only` option was removed; use Artifact for source lowering "
-            "and BuiltArtifact for materialized binaries."
-        )
-
-    return Options(
-        target=normalize_target(backend),
-        extra=extra,
-    )

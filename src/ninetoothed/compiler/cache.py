@@ -40,10 +40,10 @@ def compilation_cache_key(compilation) -> str:
 
     return stable_digest(
         {
-            "schema": 1,
+            "schema": 2,
             "source": artifact.sources,
             "ssa": ir_to_dict(compilation.kernel.ssa),
-            "launch_abi": ir_to_dict(compilation.launch_abi),
+            "launch_plan": ir_to_dict(compilation.launch_plan),
             "backend": artifact.backend.value,
             "compiler_options": compilation.kernel.compiler_options,
             "backend_options": request.backend_options,
@@ -183,7 +183,7 @@ def _unlock_file(file) -> None:
 def _compiler_versions() -> Mapping[str, str]:
     result = {"python": platform.python_version()}
 
-    for package in ("ninetoothed", "triton", "tilelang", "apache-tvm"):
+    for package in ("ninetoothed", "triton", "tilelang"):
         try:
             result[package] = version(package)
         except PackageNotFoundError:

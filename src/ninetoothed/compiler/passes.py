@@ -8,8 +8,8 @@ Pass execution is intentionally organized like a compiler pipeline:
 
 * hardware-independent passes canonicalize, analyze, and attach generic
   schedule intent to SSA;
-* backend-specific passes, registered from ``ninetoothed.backends``, attach
-  target policies such as tiling, memory scopes, and intrinsic choices.
+* backend-specific passes, registered from ``ninetoothed.backends``, select
+  schedules that are consumed by target emitters and launch planning.
 
 The pass registry is the public control point for default pipelines, custom
 pipelines, and deterministic target schedule selection.
@@ -23,7 +23,6 @@ from ninetoothed.backends.core import Target, normalize_target
 from ninetoothed.ir import ssa
 
 HARDWARE_INDEPENDENT = "hardware_independent"
-HARDWARE_DEPENDENT = "hardware_dependent"
 BACKEND_SPECIFIC = "backend_specific"
 
 
@@ -233,11 +232,6 @@ class Pipeline:
                 for descriptor in self.descriptors
                 if descriptor.category == HARDWARE_INDEPENDENT
             ),
-            HARDWARE_DEPENDENT: tuple(
-                descriptor.name
-                for descriptor in self.descriptors
-                if descriptor.category == HARDWARE_DEPENDENT
-            ),
             BACKEND_SPECIFIC: tuple(
                 descriptor.name
                 for descriptor in self.descriptors
@@ -400,9 +394,13 @@ class OptimizeSchedule(Pass):
         optimization = dict(
             self.optimization_policy(context.backend, analysis, schedule)
         )
+        optimization_options = dict(
+            _pass_options(context, self.name, "ssa.optimize_schedule")
+        )
+        optimization_options.pop("candidate", None)
         optimization = _merge_nested(
             optimization,
-            _pass_options(context, self.name, "ssa.optimize_schedule"),
+            optimization_options,
         )
         optimized_schedule = _merge_nested(
             schedule,
@@ -410,23 +408,8 @@ class OptimizeSchedule(Pass):
         )
         candidate_metadata = tuple(candidate.as_metadata() for candidate in candidates)
 
-        if candidate_metadata and selected is not None:
-            optimization["schedule_candidates"] = candidate_metadata
-            optimization["selected_schedule_candidate"] = selected.name
-
-        if rejected:
-            optimization["rejected_schedule_candidates"] = rejected
-
-        blocks = tuple(
-            _map_block(
-                block, lambda op: _annotate_operation(op, optimization=optimization)
-            )
-            for block in program.blocks
-        )
-
         return _replace_program(
             program,
-            blocks=blocks,
             metadata=dict(program.metadata)
             | {
                 "schedule": optimized_schedule,
@@ -1301,16 +1284,6 @@ def _fresh_value(
     existing_names.add(name)
 
     return ssa.Value(name=name, type=type_), temp_index + 1
-
-
-def _annotate_operation(operation: ssa.Operation, **attrs: Any) -> ssa.Operation:
-    return ssa.Operation(
-        opcode=operation.opcode,
-        operands=operation.operands,
-        results=operation.results,
-        attrs=dict(operation.attrs) | attrs,
-        regions=operation.regions,
-    )
 
 
 def _with_metadata(program: ssa.Program, **metadata: Any) -> ssa.Program:

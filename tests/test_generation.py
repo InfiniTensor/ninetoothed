@@ -54,7 +54,19 @@ def test_auto_tuning_generation(
     if backend == "triton":
         warps = num_warps if isinstance(num_warps, tuple) else (num_warps or 4,)
         stages = num_stages if isinstance(num_stages, tuple) else (num_stages or 3,)
-        assert len(candidates) == len(set(warps)) * len(set(stages))
+        compiler_config_count = len(set(warps)) * len(set(stages))
+        has_meta = any(
+            not isinstance(value, int)
+            for value in (block_size_m, block_size_n, block_size_k)
+        )
+
+        if has_meta:
+            assert len(candidates) > compiler_config_count
+            assert all(candidate.get("meta_parameters") for candidate in candidates)
+        else:
+            assert len(candidates) == compiler_config_count
+            assert all("meta_parameters" not in candidate for candidate in candidates)
+
         assert (handle._tuner is not None) == (len(candidates) > 1)
     else:
         assert not candidates

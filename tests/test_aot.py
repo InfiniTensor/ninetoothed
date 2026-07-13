@@ -1,4 +1,5 @@
 import functools
+from pathlib import Path
 
 import pytest
 import torch
@@ -44,7 +45,6 @@ def test_add(test_multi_device, size, dtype, device, ninetoothed_dtype):
         kernel_name=kernel_name,
         output_dir=output_dir,
     )
-
     shape = (size,)
 
     if test_multi_device:
@@ -62,6 +62,8 @@ def test_add(test_multi_device, size, dtype, device, ninetoothed_dtype):
             output = torch.empty_like(input)
 
             kernel(input, other, output)
+            assert kernel._library is not None
+            assert Path(kernel._library).is_file()
 
             expected = torch.add(input, other)
 

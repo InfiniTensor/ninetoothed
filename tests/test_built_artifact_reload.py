@@ -24,7 +24,7 @@ def _application(input, other, output):
 
 
 @pytest.mark.parametrize("device", get_available_devices())
-@pytest.mark.parametrize("backend", ("triton", "cuda", "tilelang", "tvm"))
+@pytest.mark.parametrize("backend", ("triton", "cuda", "tilelang"))
 def test_aot_built_artifact_can_be_reloaded(backend, device, tmp_path):
     tensors = tuple(Tensor(shape=(257,), dtype=ninetoothed.float32) for _ in range(3))
     compilation = DEFAULT_COMPILER.compile(

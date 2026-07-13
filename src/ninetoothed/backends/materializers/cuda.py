@@ -2,13 +2,13 @@
 
 import ctypes
 import os
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
 from ninetoothed.backends.core import BuiltArtifact, Target
 from ninetoothed.backends.materializers.base import Materializer
+from ninetoothed.backends.toolchain import cuda_compile_command
 from ninetoothed.compiler.cache import (
     TOOLCHAIN_LOCK_DIR,
     artifact_directory,
@@ -64,7 +64,13 @@ def _materialize(compilation, *, output_dir=None):
 
     with cache_lock(cache_library):
         if not cache_library.is_file():
-            _compile_library(source, cache_library)
+            _compile_library(
+                source,
+                cache_library,
+                arch=dict(compilation.request.backend_options or {}).get(
+                    "arch", "native"
+                ),
+            )
 
         write_manifest(
             cache_library.with_suffix(".manifest.json"),
@@ -164,7 +170,7 @@ def _cuda_scalar(value, dtype):
     return ctype(value.item() if hasattr(value, "item") else value)
 
 
-def _compile_library(source: Path, library: Path) -> None:
+def _compile_library(source: Path, library: Path, *, arch: str) -> None:
     library.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         dir=library.parent,
@@ -178,36 +184,13 @@ def _compile_library(source: Path, library: Path) -> None:
     try:
         with cache_lock(TOOLCHAIN_LOCK_DIR / "nvcc"):
             subprocess.run(
-                [
-                    _nvcc(),
-                    "-shared",
-                    "-Xcompiler",
-                    "-fPIC",
-                    "-O3",
-                    "-arch=native",
-                    str(source),
-                    "-o",
-                    str(temporary),
-                ],
+                cuda_compile_command(source, temporary, arch=arch),
                 check=True,
             )
 
         os.replace(temporary, library)
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def _nvcc() -> str:
-    candidates = [
-        shutil.which("nvcc"),
-        str(Path(os.environ.get("CUDA_HOME", "/usr/local/cuda")) / "bin" / "nvcc"),
-    ]
-
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            return candidate
-
-    raise RuntimeError("CUDA backend requires nvcc; set CUDA_HOME or add nvcc to PATH.")
 
 
 __all__ = ["CudaMaterializer"]

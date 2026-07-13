@@ -3,10 +3,6 @@
 import re
 from collections.abc import Mapping
 
-_TYPED_INDEX_LITERAL_RE = re.compile(
-    r"(?<!T\.int64\()(?<![A-Za-z0-9_.'\"])([0-9]+)(?![A-Za-z0-9_.'\"])"
-)
-
 
 def default_strides(shape: tuple[str, ...]) -> tuple[str, ...]:
     strides: list[str] = []
@@ -34,10 +30,6 @@ def replace_symbols(expr: str, replacements: Mapping[str, str]) -> str:
     for name in sorted(replacements, key=len, reverse=True):
         expr = re.sub(rf"\b{re.escape(name)}\b", f"({replacements[name]})", expr)
     return expr
-
-
-def typed_index_literals(expr: str) -> str:
-    return _TYPED_INDEX_LITERAL_RE.sub(r"T.int64(\1)", expr)
 
 
 def shape_dim(axes: tuple[str, ...], dim) -> str:
@@ -252,6 +244,5 @@ __all__ = [
     "split_top_level_binary",
     "stride_dim",
     "symbols_in_text",
-    "typed_index_literals",
     "valid_symbol",
 ]

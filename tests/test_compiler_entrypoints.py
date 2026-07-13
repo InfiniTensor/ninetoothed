@@ -1,3 +1,4 @@
+import importlib
 import os
 import subprocess
 import sys
@@ -7,6 +8,7 @@ import pytest
 import ninetoothed
 from ninetoothed import Tensor
 from ninetoothed.compiler import DEFAULT_COMPILER, Compiler, CompileRequest
+from ninetoothed.compiler import driver as compiler_driver
 
 
 def _arrangement(input, other, output):
@@ -24,6 +26,63 @@ def test_public_entrypoints_are_functions_backed_by_default_compiler():
     assert callable(ninetoothed.lower)
     assert callable(ninetoothed.make)
     assert not hasattr(ninetoothed, "load_built_artifact")
+
+
+def test_legacy_entrypoint_modules_remain_importable():
+    assert callable(importlib.import_module("ninetoothed.aot").aot)
+    assert callable(importlib.import_module("ninetoothed.jit").jit)
+    assert callable(importlib.import_module("ninetoothed.make").make)
+
+
+def test_make_preserves_legacy_caller_materialization_mode(tmp_path, monkeypatch):
+    calls = []
+
+    def materialize(request, *, output_dir=None, mode="jit"):
+        calls.append((request, output_dir, mode))
+
+        return mode
+
+    monkeypatch.setattr(DEFAULT_COMPILER, "materialize", materialize)
+    tensors = (Tensor(1), Tensor(1), Tensor(1))
+
+    assert ninetoothed.make(_arrangement, _application, tensors) == "jit"
+    assert (
+        ninetoothed.make(
+            _arrangement,
+            _application,
+            tensors,
+            "cuda",
+            "legacy_aot",
+            tmp_path,
+        )
+        == "aot"
+    )
+    assert calls[0][2] == "jit"
+    assert calls[1][0].caller == "cuda"
+    assert calls[1][1] == tmp_path
+    assert calls[1][2] == "aot"
+
+
+def test_triton_launch_plan_enumerates_symbolic_meta_parameters():
+    block = ninetoothed.block_size(lower_bound=32, upper_bound=64)
+
+    def arrangement(input, other, output):
+        return tuple(tensor.tile((block,)) for tensor in (input, other, output))
+
+    compilation = compiler_driver.compile_kernel(
+        CompileRequest(
+            arrangement=arrangement,
+            application=_application,
+            tensors=(Tensor(1), Tensor(1), Tensor(1)),
+            backend="triton",
+        )
+    )
+    candidates = compilation.launch_plan.tuning_candidates
+
+    assert len(candidates) == 2
+    assert {
+        next(iter(candidate["meta_parameters"].values())) for candidate in candidates
+    } == {32, 64}
 
 
 def test_package_import_does_not_create_compiler_cache(tmp_path):
@@ -57,7 +116,7 @@ def test_triton_launch_plan_contains_limited_runtime_variants():
     )
 
 
-@pytest.mark.parametrize("backend", ("cuda", "tilelang", "tvm"))
+@pytest.mark.parametrize("backend", ("cuda", "tilelang"))
 @pytest.mark.parametrize(
     "options",
     (

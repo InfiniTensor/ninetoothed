@@ -3,14 +3,17 @@
 import ctypes
 import functools
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 from ninetoothed.backends.core import BuiltArtifact, Target
 from ninetoothed.backends.emitters.expressions import replace_symbols
 from ninetoothed.backends.materializers.base import Materializer
+from ninetoothed.backends.toolchain import find_nvcc
 from ninetoothed.compiler.cache import (
     TRITON_CACHE_DIR,
     artifact_directory,
@@ -54,6 +57,24 @@ class TritonMaterializer(Materializer):
         return _aot_wrapper(function, _launch_abi_from_dict(built.abi), specs)
 
 
+def _ensure_c_compiler() -> None:
+    if os.environ.get("CC"):
+        return
+
+    candidates = (
+        shutil.which("cc"),
+        shutil.which("gcc"),
+        "/usr/bin/cc",
+        "/usr/bin/gcc",
+    )
+
+    for candidate in candidates:
+        if candidate is not None and Path(candidate).is_file():
+            os.environ["CC"] = candidate
+
+            return
+
+
 def _materialize(compilation):
     from ninetoothed.compiler.runtime import (
         Handle,
@@ -61,6 +82,7 @@ def _materialize(compilation):
         import_python_module,
     )
 
+    _ensure_c_compiler()
     artifact = compilation.artifact
     cache_key = compilation_cache_key(compilation)
     source = write_source(
@@ -75,16 +97,7 @@ def _materialize(compilation):
     launch = getattr(module, artifact.entrypoint)
     candidates = tuple(compilation.launch_plan.tuning_candidates)
     candidate_launches = tuple(
-        _runtime_wrapper(
-            functools.partial(
-                launch,
-                _ninetoothed_num_warps=int(candidate["num_warps"]),
-                _ninetoothed_num_stages=int(candidate["num_stages"]),
-            ),
-            compilation.launch_abi,
-            specs=compilation.kernel.tensors,
-        )
-        for candidate in candidates
+        _candidate_launch(compilation, launch, candidate) for candidate in candidates
     )
     tuner = None
 
@@ -95,6 +108,7 @@ def _materialize(compilation):
             candidate_launches,
             tuple((cache_key, candidate["id"]) for candidate in candidates),
             cache_namespace=f"jit_{cache_key}",
+            validator=_runtime_validator(compilation),
         )
         wrapped = tuner
     elif candidate_launches:
@@ -124,6 +138,47 @@ def _materialize(compilation):
         handle._launch = tuned_launch
 
     return handle
+
+
+def _candidate_launch(compilation, launch, candidate):
+    from ninetoothed.compiler.runtime import _runtime_wrapper
+
+    wrapped = _runtime_wrapper(
+        functools.partial(
+            launch,
+            _ninetoothed_num_warps=int(candidate["num_warps"]),
+            _ninetoothed_num_stages=int(candidate["num_stages"]),
+        ),
+        compilation.launch_abi,
+        specs=compilation.kernel.tensors,
+    )
+    bindings = {binding.name: binding for binding in compilation.launch_abi.kernel_args}
+    meta_kwargs = {
+        str(bindings[name].source): value
+        for name, value in dict(candidate.get("meta_parameters", {})).items()
+    }
+
+    if not meta_kwargs:
+        return wrapped
+
+    def launch_candidate(*args, **kwargs):
+        return wrapped(*args, **(dict(kwargs) | meta_kwargs))
+
+    return launch_candidate
+
+
+def _runtime_validator(compilation):
+    from ninetoothed.compiler.runtime import _public_values
+
+    def validate(args, kwargs):
+        _public_values(
+            compilation.launch_abi,
+            args,
+            kwargs,
+            specs=compilation.kernel.tensors,
+        )
+
+    return validate
 
 
 def _aot_materialize(compilation, *, output_dir):
@@ -162,8 +217,7 @@ def _aot_materialize(compilation, *, output_dir):
 
 
 def _compile_aot_library(compilation, source: Path, library: Path) -> None:
-    from ninetoothed.backends.materializers.cuda import _nvcc
-
+    _ensure_c_compiler()
     artifact = compilation.artifact
     kernel_name = f"{artifact.kernel_name}_kernel"
     signature = _compile_signature(compilation)
@@ -223,7 +277,7 @@ def _compile_aot_library(compilation, source: Path, library: Path) -> None:
         output = temporary / library.name
         subprocess.run(
             [
-                _nvcc(),
+                find_nvcc(),
                 "-shared",
                 "-Xcompiler",
                 "-fPIC",
@@ -247,7 +301,7 @@ def _compile_signature(compilation) -> str:
         if binding.kind in {"tensor", "jagged_values", "jagged_offsets"}:
             values.append(f"*{_triton_dtype(specs[binding.source].dtype)}")
         elif binding.kind == "scalar":
-            values.append(_triton_dtype(specs[binding.source].dtype))
+            values.append(_triton_scalar_dtype(specs[binding.source].dtype))
         elif binding.kind in {"constexpr", "meta"}:
             if binding.value is None:
                 raise ValueError(f"Triton AOT requires a value for `{binding.name}`.")
@@ -284,6 +338,23 @@ def _triton_dtype(dtype) -> str:
         return prefix + "".join(character for character in name if character.isdigit())
 
     raise TypeError(f"Unsupported Triton AOT dtype: {dtype!r}.")
+
+
+def _triton_scalar_dtype(dtype) -> str:
+    name = str(dtype).split(".")[-1]
+
+    if name in {
+        "fp16",
+        "float16",
+        "bf16",
+        "bfloat16",
+        "fp32",
+        "float32",
+        "fp64",
+        "float64",
+    }:
+        return "fp64"
+    return _triton_dtype(dtype)
 
 
 def _compile_block(compilation) -> int:
@@ -327,7 +398,7 @@ def _compile_grid(compilation) -> str:
 
 
 def _specialized_grid_total(compilation) -> str:
-    expression = str(compilation.artifact.metadata.get("launch_grid", ("1",))[0])
+    expression = compilation.launch_plan.grid[0].render()
     replacements = {
         binding.name: str(binding.value)
         for binding in compilation.launch_abi.kernel_args
@@ -351,7 +422,6 @@ def _compile_schedule(compilation) -> tuple[int, int]:
 
 
 def _aot_wrapper(function, abi, tensor_specs):
-    from ninetoothed.backends.materializers.cuda import _cuda_scalar
     from ninetoothed.compiler.runtime import (
         KernelLaunchError,
         _bound_values,
@@ -361,21 +431,35 @@ def _aot_wrapper(function, abi, tensor_specs):
     )
 
     specs = {spec.name: spec for spec in tensor_specs}
+    runtime_bindings = tuple(
+        binding
+        for binding in abi.kernel_args
+        if binding.kind not in {"constexpr", "meta"}
+    )
+    function.argtypes = [
+        ctypes.c_void_p,
+        *(_triton_aot_ctype(binding, specs) for binding in runtime_bindings),
+    ]
 
     def launch(*args, **kwargs):
         import torch
 
         public = _public_values(abi, args, kwargs, specs=tensor_specs)
+        _validate_aot_constants(abi, public)
 
         if _empty_launch(abi, public):
             return _first_output(abi, public)
 
-        values, keepalive = _bound_values(
+        runtime_abi = replace(
             abi,
+            kernel_args=runtime_bindings,
+        )
+        values, keepalive = _bound_values(
+            runtime_abi,
             public,
             scalar_mode="cuda",
             specs=specs,
-            cuda_scalar=_cuda_scalar,
+            cuda_scalar=_triton_aot_scalar,
         )
         stream = ctypes.c_void_p(torch.cuda.current_stream().cuda_stream)
         result = function(stream, *values)
@@ -386,6 +470,92 @@ def _aot_wrapper(function, abi, tensor_specs):
         return _first_output(abi, public)
 
     return launch
+
+
+def _triton_aot_scalar(value, dtype):
+    name = str(dtype).split(".")[-1]
+    name = {
+        "fp16": "float16",
+        "fp32": "float32",
+        "fp64": "float64",
+        "bf16": "bfloat16",
+    }.get(name, name)
+
+    if hasattr(value, "item"):
+        value = value.item()
+
+    if name in {"float16", "bfloat16", "float32", "float64"}:
+        return ctypes.c_double(float(value))
+
+    ctype = {
+        "bool": ctypes.c_int8,
+        "int8": ctypes.c_int8,
+        "uint8": ctypes.c_uint8,
+        "int16": ctypes.c_int16,
+        "uint16": ctypes.c_uint16,
+        "int32": ctypes.c_int32,
+        "uint32": ctypes.c_uint32,
+        "int64": ctypes.c_int64,
+        "uint64": ctypes.c_uint64,
+    }.get(name)
+
+    if ctype is None:
+        raise TypeError(f"Unsupported Triton AOT scalar dtype: {dtype!r}.")
+    return ctype(value)
+
+
+def _triton_aot_ctype(binding, specs):
+    if binding.kind in {"tensor", "jagged_values", "jagged_offsets"}:
+        return ctypes.c_void_p
+
+    if binding.kind == "scalar":
+        name = str(specs[binding.source].dtype).split(".")[-1]
+        name = {
+            "fp16": "float16",
+            "fp32": "float32",
+            "fp64": "float64",
+            "bf16": "bfloat16",
+        }.get(name, name)
+
+        if name in {"float16", "bfloat16", "float32", "float64"}:
+            return ctypes.c_double
+
+        ctype = {
+            "bool": ctypes.c_int8,
+            "int8": ctypes.c_int8,
+            "uint8": ctypes.c_uint8,
+            "int16": ctypes.c_int16,
+            "uint16": ctypes.c_uint16,
+            "int32": ctypes.c_int32,
+            "uint32": ctypes.c_uint32,
+            "int64": ctypes.c_int64,
+            "uint64": ctypes.c_uint64,
+        }.get(name)
+
+        if ctype is None:
+            raise TypeError(f"Unsupported Triton AOT scalar dtype: {name!r}.")
+        return ctype
+    return ctypes.c_int64
+
+
+def _validate_aot_constants(abi, public) -> None:
+    for binding in abi.kernel_args:
+        if binding.kind not in {"constexpr", "meta"} or binding.value is None:
+            continue
+
+        if binding.source not in public:
+            continue
+
+        actual = public[binding.source]
+
+        if hasattr(actual, "item"):
+            actual = actual.item()
+
+        if actual != binding.value:
+            raise ValueError(
+                f"Kernel argument `{binding.source}` is specialized to "
+                f"{binding.value!r}, but received {actual!r}."
+            )
 
 
 __all__ = ["TritonMaterializer"]

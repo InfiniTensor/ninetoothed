@@ -28,7 +28,6 @@ class ModuleRenderContext:
     vector_program: bool
     block_program: bool
     scalar_program: bool
-    backend_options: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -41,15 +40,11 @@ class EmitterTarget(ABC):
     source_route: str
     buffer_suffix: str = ""
     index_name: str = "index"
-    block_size: int = 256
     entrypoint_prefix: str = "launch_"
     c_style_syntax: bool = False
     vector_value_semantics: bool = False
     tir_value_semantics: bool = False
     native_block_matmul: bool = False
-    typed_index_literals: bool = False
-    external_atomic_add: bool = False
-    mutable_scalar_kind: str = "value"
 
     def symbol(self, name: str) -> str:
         return f"v{name[1:]}" if name.startswith("%") else name
@@ -109,6 +104,43 @@ class EmitterTarget(ABC):
         del local, operation, context
 
         return None
+
+    def program_id(self, axis: int = 0) -> str:
+        raise NotImplementedError(
+            f"Emitter {type(self).__name__} has no program-id expression."
+        )
+
+    def vector_reduce(self, operator: str, operand: str, axis: int) -> str:
+        raise NotImplementedError(
+            f"Emitter {type(self).__name__} has no vector reduction syntax."
+        )
+
+    def vector_splat(self, shape: str, value: str, dtype: str) -> str:
+        raise NotImplementedError(
+            f"Emitter {type(self).__name__} has no vector splat syntax."
+        )
+
+    def atomic_add(self, operands: tuple[str, ...], dtype: str) -> str:
+        del dtype
+
+        return self.call("atomic_add", operands)
+
+    def index_cast(self, value: str) -> str:
+        return value
+
+    def uses_mutable_scalar_slots(self) -> bool:
+        return False
+
+    def mutable_scalar_decl(self, type_: ssa.Type, name: str, init: str) -> list[str]:
+        return [self.local_decl(type_, name, init)]
+
+    def mutable_scalar_read(self, name: str) -> str:
+        return name
+
+    def assign_scalar(self, name: str, value: str, *, mutable: bool) -> str:
+        del mutable
+
+        return f"{name} = {value}"
 
     @abstractmethod
     def literal(self, value: Any) -> str: ...

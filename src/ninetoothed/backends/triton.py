@@ -11,7 +11,6 @@ from ninetoothed.backends.core import (
     Artifact,
     Backend,
     Capability,
-    Options,
     Target,
 )
 from ninetoothed.backends.emitters.triton import emit
@@ -39,8 +38,8 @@ class TritonBackend(Backend):
         ),
     )
 
-    def emit(self, kernel: Kernel, options: Options | None = None) -> Artifact:
-        return emit(kernel, options)
+    def emit(self, kernel: Kernel) -> Artifact:
+        return emit(kernel)
 
 
 class TritonOptimizeSchedule(OptimizeSchedule):
@@ -99,12 +98,6 @@ class TritonOptimizeSchedule(OptimizeSchedule):
 
         if granularity == "exp-reduction-dot-region":
             return {
-                "passes": (
-                    "coalesced-load",
-                    "online-reduction-fusion",
-                    "blocked-dot",
-                ),
-                "lowering": "tl.dot-with-online-reduction",
                 "schedule": {"num_warps": 4, "num_stages": 2},
             }
 
@@ -114,32 +107,12 @@ class TritonOptimizeSchedule(OptimizeSchedule):
             )
 
             return {
-                "passes": ("linalg-block-tiling", "strict-fp32-dot-selection"),
-                "lowering": (
-                    "tl.dot-blocked-matmul"
-                    if preserve_linalg
-                    else "strict-fp32-scf-decomposition"
-                ),
                 "preserve_linalg": preserve_linalg,
-                "small_problem_lowering": "vector-kloop-microkernel",
-                "small_problem_threshold": {"m": 128, "n": 128, "k": 128},
-                "use_tensor_cores": preserve_linalg,
-                "input_precision": "ieee",
             }
 
         if granularity == "parallel-reduction":
-            return {
-                "passes": ("coalesced-load", "single-program-tree-reduction"),
-                "lowering": "tl.sum/tl.max",
-                "block_size": 1024,
-                "schedule": {"num_warps": 4},
-            }
-        return {
-            "passes": ("coalesced-vector-blocks", "load-store-combine"),
-            "lowering": "tl.load/tl.store-vectorized",
-            "block_size": 1024,
-            "schedule": {"vector_width": 4, "num_warps": 4},
-        }
+            return {"schedule": {"num_warps": 4}}
+        return {"schedule": {"num_warps": 4}}
 
 
 def register_ssa_passes(registry: "Registry") -> None:

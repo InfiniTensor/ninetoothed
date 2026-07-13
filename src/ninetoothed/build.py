@@ -22,6 +22,7 @@ class _CandidateGroup:
                 self._handles,
                 tuple(keys),
                 cache_namespace=cache_namespace,
+                validator=_handle_validator(self._handles[0]),
             )
             if len(self._handles) > 1
             else None
@@ -89,6 +90,20 @@ class _BuildHandle:
             "_built_artifact",
         ):
             setattr(self, name, getattr(handle, name))
+
+
+def _handle_validator(handle):
+    from ninetoothed.compiler.runtime import _public_values
+
+    def validate(args, kwargs):
+        _public_values(
+            handle._compilation.launch_abi,
+            args,
+            kwargs,
+            specs=handle._compilation.kernel.tensors,
+        )
+
+    return validate
 
 
 class _LazyKernel:

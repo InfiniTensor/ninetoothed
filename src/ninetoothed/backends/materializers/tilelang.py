@@ -29,7 +29,6 @@ class TileLangMaterializer(Materializer):
         import tilelang  # noqa: F401 -- exposes its bundled TVM runtime
         import tvm
 
-        from ninetoothed.backends.materializers.tvm import _host_wrapper
         from ninetoothed.compiler.runtime import (
             _launch_abi_from_dict,
             _runtime_specs,
@@ -46,7 +45,6 @@ class TileLangMaterializer(Materializer):
 
 
 def _materialize(compilation, *, output_dir=None):
-    from ninetoothed.backends.materializers.tvm import _host_wrapper
     from ninetoothed.compiler.runtime import (
         Handle,
         _built_manifest,
@@ -114,6 +112,45 @@ def _materialize(compilation, *, output_dir=None):
         source,
         library_path,
     )
+
+
+def _host_wrapper(function, abi, *, specs=()):
+    from ninetoothed.compiler.runtime import (
+        _bound_values,
+        _empty_launch,
+        _first_output,
+        _flatten_ffi_tensor_args,
+        _public_values,
+    )
+
+    def launch(*args, **kwargs):
+        import torch
+        import tvm
+
+        public = _public_values(abi, args, kwargs, specs=specs)
+
+        if _empty_launch(abi, public):
+            return _first_output(abi, public)
+
+        values, keepalive = _bound_values(abi, public, scalar_mode="value")
+        values, flattened = _flatten_ffi_tensor_args(abi.kernel_args, values)
+        keepalive.extend(flattened)
+        converted = [
+            tvm.runtime.from_dlpack(value)
+            if isinstance(value, torch.Tensor) and value.ndim > 0
+            else value.item()
+            if hasattr(value, "item")
+            else value
+            for value in values
+        ]
+        device = torch.cuda.current_device()
+        tvm.cuda(device).set_raw_stream(torch.cuda.current_stream(device).cuda_stream)
+        function(*converted)
+        del keepalive
+
+        return _first_output(abi, public)
+
+    return launch
 
 
 __all__ = ["TileLangMaterializer"]

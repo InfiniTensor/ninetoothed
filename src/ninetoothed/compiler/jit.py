@@ -18,6 +18,10 @@ def jit(
     **backend_options,
 ):
     """Compile an annotated application through SSA as a decorator or function."""
+    if _prettify:
+        raise NotImplementedError(
+            "The legacy `_prettify` source rewrite is not supported by SSA emitters."
+        )
 
     def wrapper(application):
         return JIT(
@@ -30,7 +34,6 @@ def jit(
             max_num_configs=max_num_configs,
             pipeline=pipeline,
             pass_options=pass_options,
-            _prettify=_prettify,
             backend_options=backend_options,
         )()
 
@@ -52,7 +55,6 @@ class JIT:
         max_num_configs,
         pipeline,
         pass_options,
-        _prettify=False,
         backend_options=None,
     ):
         self.func = func
@@ -64,7 +66,6 @@ class JIT:
         self._max_num_configs = max_num_configs
         self._pipeline = pipeline
         self._pass_options = pass_options
-        self._prettify = _prettify
         self._backend_options = dict(backend_options or {})
 
     def __call__(self):
@@ -79,7 +80,7 @@ class JIT:
                 max_num_configs=self._max_num_configs,
                 pipeline=self._pipeline,
                 pass_options=self._pass_options,
-                backend_options=self._backend_options | {"prettify": self._prettify},
+                backend_options=self._backend_options,
             )
         )
 

@@ -1,7 +1,10 @@
+import inspect
+
 import pytest
 
 from ninetoothed.backends.core import Target
 from ninetoothed.backends.materializers import create_default_registry
+from ninetoothed.backends.materializers import triton as triton_materializer
 from ninetoothed.backends.materializers.base import MaterializerRegistry
 from ninetoothed.backends.materializers.cuda import CudaMaterializer
 
@@ -24,3 +27,9 @@ def test_materializer_registry_rejects_duplicate_without_replace():
         registry.register(CudaMaterializer())
 
     registry.register(CudaMaterializer(), replace=True)
+
+
+def test_triton_materializer_uses_shared_toolchain_boundary():
+    source = inspect.getsource(triton_materializer)
+    assert "ninetoothed.backends.toolchain import find_nvcc" in source
+    assert "ninetoothed.backends.materializers.cuda" not in source

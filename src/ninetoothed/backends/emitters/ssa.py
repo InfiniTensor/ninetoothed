@@ -18,6 +18,7 @@ from ninetoothed.backends.emitters.analysis import (
 from ninetoothed.backends.emitters.analysis import (
     program_value_types as _program_value_types,
 )
+from ninetoothed.backends.emitters.analysis import schedule_int as _schedule_int
 from ninetoothed.backends.emitters.analysis import (
     value_depends_on as _value_depends_on,
 )
@@ -70,9 +71,6 @@ from ninetoothed.backends.emitters.expressions import (
     symbols_in_text as _symbols_in_text,
 )
 from ninetoothed.backends.emitters.expressions import (
-    typed_index_literals as _typed_index_literals,
-)
-from ninetoothed.backends.emitters.expressions import (
     valid_symbol as _valid_symbol,
 )
 from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict, ssa
@@ -112,7 +110,7 @@ _UNARY = {
 _Target = EmitterTarget
 
 
-def emit(kernel: Kernel, target: EmitterTarget, options=None) -> Artifact:
+def emit(kernel: Kernel, target: EmitterTarget) -> Artifact:
     if kernel.ssa is None:
         raise ValueError("Backend emission requires ssa.Program.")
 
@@ -141,11 +139,9 @@ def emit(kernel: Kernel, target: EmitterTarget, options=None) -> Artifact:
         binding["name"] for binding in auxiliary_bindings
     )
     shape_params = _shape_params(kernel.tensors, block.operations)
-    backend_options = dict(getattr(options, "extra", {}) or {})
     source, render_context = _render_source(
         kernel,
         target,
-        backend_options,
         shape_params=shape_params,
     )
     metadata = {
@@ -167,7 +163,6 @@ def emit(kernel: Kernel, target: EmitterTarget, options=None) -> Artifact:
         ),
         "ssa_optimization": dict(kernel.ssa.metadata.get("optimization", {})),
         "tensors": [ir_to_dict(tensor) for tensor in kernel.tensors],
-        "backend_options": backend_options,
         "launch_grid": (render_context.grid_total,),
         "launch_block": _launch_block(kernel),
         "program_mode": {
@@ -188,7 +183,6 @@ def emit(kernel: Kernel, target: EmitterTarget, options=None) -> Artifact:
             ),
         },
         entrypoint=target.entrypoint(kernel.kernel_name),
-        materializable=True,
         metadata=metadata,
     )
 
@@ -196,7 +190,6 @@ def emit(kernel: Kernel, target: EmitterTarget, options=None) -> Artifact:
 def _render_source(
     kernel: Kernel,
     target: _Target,
-    backend_options: Mapping[str, Any],
     *,
     shape_params: tuple[str, ...],
 ) -> tuple[str, ModuleRenderContext]:
@@ -315,19 +308,19 @@ def _render_source(
         axes = outer_axes
         total = _target_index_expr(target, _product(outer_axes))
         grid_total = total
-        outer_index_expr = "tl.program_id(0)"
-        inner_index_expr = "tl.program_id(0)"
+        outer_index_expr = target.program_id(0)
+        inner_index_expr = target.program_id(0)
     elif vector_block_program:
         axes = value_axes
         total = _target_index_expr(target, _product(value_axes))
         grid_total = _target_index_expr(target, _product(outer_axes))
-        outer_index_expr = "tl.program_id(0)"
+        outer_index_expr = target.program_id(0)
         inner_index_expr = "0"
     elif vector_reduction_program:
         axes = value_axes
         total = _target_index_expr(target, _product(value_axes))
         grid_total = _target_index_expr(target, _product(outer_axes))
-        outer_index_expr = "tl.program_id(0)"
+        outer_index_expr = target.program_id(0)
         inner_index_expr = "offsets"
     elif native_block_program:
         axes = value_axes
@@ -413,7 +406,6 @@ def _render_source(
             else native_block_program
         ),
         scalar_program=vector_scalar_program,
-        backend_options=backend_options,
     )
 
     return target.render_module(context), context
@@ -423,12 +415,13 @@ def _launch_block(kernel: Kernel) -> tuple[str, ...]:
     if kernel.ssa is None:
         return ()
 
-    schedule = dict(kernel.ssa.metadata.get("schedule", {}))
-    threads = schedule.get("threads")
+    target_backend = kernel.ssa.metadata.get("target_backend")
+    warps = kernel.compiler_options.get("num_warps")
+    fallback = (
+        32 * warps if target_backend == "triton" and isinstance(warps, int) else 256
+    )
+    threads = _schedule_int(kernel, "threads", fallback)
 
-    if threads is None:
-        warps = kernel.compiler_options.get("num_warps")
-        threads = 32 * warps if isinstance(warps, int) else 256
     return (str(threads),)
 
 
@@ -815,7 +808,7 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
             operator = op.opcode[len("reduce.") :]
             operand = _emit_value(op.operands[0], ctx)
             axis = int(op.attrs.get("axis", 0) or 0)
-            expr = f"tl.{operator}({operand}, axis={axis})"
+            expr = ctx.target.vector_reduce(operator, operand, axis)
             ctx.lines.append(ctx.target.local_decl(op.results[0].type, local, expr))
             ctx.memo[name] = local
 
@@ -947,15 +940,10 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     if opcode == "mem.atomic_add":
         operands = tuple(_emit_value(operand, ctx) for operand in op.operands)
 
-        if target.external_atomic_add:
-            value_type = ctx.value_types.get(op.operands[-1])
-            dtype = _normalize_dtype(None if value_type is None else value_type.dtype)
+        value_type = ctx.value_types.get(op.operands[-1])
+        dtype = _normalize_dtype(None if value_type is None else value_type.dtype)
 
-            return (
-                f'T.call_extern("{dtype}", "atomicAdd", '
-                f'{operands[0]}.access_ptr("w"), {operands[1]})'
-            )
-        return target.call("atomic_add", operands)
+        return target.atomic_add(operands, dtype)
 
     if opcode == "tensor.view":
         if ctx.block_program:
@@ -1110,7 +1098,7 @@ def _emit_linalg_dot(
 
     if ctx.target.vector_value_semantics and ctx.mask_expr is not None:
         dtype = _normalize_dtype(acc_type.dtype or "float32")
-        init = f"tl.full((BLOCK,), {init}, tl.{dtype})"
+        init = ctx.target.vector_splat("(BLOCK,)", init, dtype)
 
     mutable = _uses_mutable_scalar_slots(ctx.target)
 
@@ -1528,7 +1516,7 @@ def _emit_reduce_element(
 
     if ctx.target.vector_value_semantics and ctx.mask_expr is not None:
         dtype = _normalize_dtype(result_type.dtype or "float32")
-        init = f"tl.full((BLOCK,), {init}, tl.{dtype})"
+        init = ctx.target.vector_splat("(BLOCK,)", init, dtype)
 
     mutable = _uses_mutable_scalar_slots(ctx.target)
 
@@ -1961,7 +1949,7 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
 
     if ctx.target.vector_value_semantics and (ctx.vector_program or ctx.block_program):
         operand = _emit_value(op.operands[0], ctx)
-        expr = f"tl.{operator}({operand}, axis=0)"
+        expr = ctx.target.vector_reduce(operator, operand, 0)
         ctx.lines.append(ctx.target.local_decl(op.results[0].type, local, expr))
 
         return local
@@ -1984,7 +1972,7 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
 
     if ctx.target.vector_value_semantics and axis is not None:
         dtype = _normalize_dtype(result_type.dtype or "float32")
-        init = f"tl.full((BLOCK,), {init}, tl.{dtype})"
+        init = ctx.target.vector_splat("(BLOCK,)", init, dtype)
 
     if _uses_mutable_scalar_slots(ctx.target):
         ctx.lines.extend(
@@ -2046,7 +2034,7 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
             and ctx.target.needs_block_init(initial_name, value, ctx)
         ):
             dtype = _normalize_dtype(value.type.dtype or "float32")
-            init = f"tl.full((BLOCK,), {init}, tl.{dtype})"
+            init = ctx.target.vector_splat("(BLOCK,)", init, dtype)
         elif (
             ctx.target.vector_value_semantics
             and ctx.block_program
@@ -2054,7 +2042,7 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
         ):
             dtype = _normalize_dtype(value.type.dtype or "float32")
             shape = ctx.target.block_shape(tuple(str(dim) for dim in value.type.shape))
-            init = f"tl.full({shape}, {init}, tl.{dtype})"
+            init = ctx.target.vector_splat(shape, init, dtype)
 
         result_local = _local_symbol(result, ctx)
         result_locals[result] = result_local
@@ -2886,8 +2874,6 @@ def _coords_from_linear(
 def _target_index_expr(target: _Target, expr: str) -> str:
     rewritten = _rewrite_index_math(expr, c_style=target.c_style_syntax)
 
-    if target.typed_index_literals:
-        return _typed_index_literals(rewritten)
     return rewritten
 
 
@@ -2994,7 +2980,7 @@ def _emit_store_index_value(
     )
 
     if ctx.target.c_style_syntax and not _integer_expr(value):
-        return f"static_cast<int64_t>({value})"
+        return ctx.target.index_cast(value)
     return value
 
 
@@ -3002,7 +2988,7 @@ def _emit_index_value(name: str, ctx: _EmitContext) -> str:
     value = _emit_value(name, ctx)
 
     if ctx.target.c_style_syntax and not _integer_expr(value):
-        return f"static_cast<int64_t>({value})"
+        return ctx.target.index_cast(value)
     return value
 
 
@@ -3477,7 +3463,7 @@ def _zero_value(type_: ssa.Type, target: _Target) -> str:
 
 
 def _uses_mutable_scalar_slots(target: _Target) -> bool:
-    return target.tir_value_semantics
+    return target.uses_mutable_scalar_slots()
 
 
 def _mutable_scalar_decl_lines(
@@ -3486,31 +3472,17 @@ def _mutable_scalar_decl_lines(
     name: str,
     init: str,
 ) -> list[str]:
-    dtype = _normalize_dtype(type_.dtype)
-
-    if target.mutable_scalar_kind == "variable":
-        return [f'{name} = T.alloc_var("{dtype}", {init})']
-
-    if target.mutable_scalar_kind == "buffer":
-        return [
-            f'{name} = T.alloc_buffer((1,), "{dtype}", scope="local")',
-            f"{name}[0] = {init}",
-        ]
-    return [target.local_decl(type_, name, init)]
+    return target.mutable_scalar_decl(type_, name, init)
 
 
 def _mutable_scalar_read(target: _Target, name: str) -> str:
-    if target.mutable_scalar_kind == "buffer":
-        return f"{name}[0]"
-    return name
+    return target.mutable_scalar_read(name)
 
 
 def _assign_scalar(
     target: _Target, name: str, value: str, *, mutable: bool = False
 ) -> str:
-    lhs = f"{name}[0]" if mutable and target.mutable_scalar_kind == "buffer" else name
-
-    return f"{lhs} = {value}" + (";" if target.c_style_syntax else "")
+    return target.assign_scalar(name, value, mutable=mutable)
 
 
 def _resolved_cast_dtype(op: ssa.Operation, ctx: _EmitContext) -> str:
@@ -3598,6 +3570,7 @@ normalize_dtype = _normalize_dtype
 product = _product
 resolved_dot_operand_dtype = _resolved_dot_operand_dtype
 rewrite_index_math = _rewrite_index_math
+schedule_int = _schedule_int
 source_index_for_value = _source_index_for_value
 target_index_expr = _target_index_expr
 value_axes = _value_axes
@@ -3630,6 +3603,7 @@ __all__ = [
     "product",
     "resolved_dot_operand_dtype",
     "rewrite_index_math",
+    "schedule_int",
     "source_index_for_value",
     "target_index_expr",
     "value_axes",

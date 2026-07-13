@@ -1,14 +1,16 @@
 import json
+from dataclasses import replace
 
 import pytest
 
 from ninetoothed.backends import (
     Target,
     backend_capabilities,
+    default_registry,
     emit,
-    normalize_options,
     normalize_target,
 )
+from ninetoothed.backends.toolchain import cuda_compile_command
 from ninetoothed.frontend.python import from_source
 from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict
 
@@ -58,14 +60,14 @@ def _add_kernel(dtype: str = "float32") -> Kernel:
     )
 
 
-def _matmul_kernel() -> Kernel:
+def _matmul_kernel(dtype: str = "float32") -> Kernel:
     return _kernel_from_source(
         "\ndef matmul(a, b, out):\n    out = a @ b\n",
         name="matmul",
         tensors=(
-            TensorSpec(ndim=2, shape=("m", "k"), dtype="float32", name="a"),
-            TensorSpec(ndim=2, shape=("k", "n"), dtype="float32", name="b"),
-            TensorSpec(ndim=2, shape=("m", "n"), dtype="float32", name="out"),
+            TensorSpec(ndim=2, shape=("m", "k"), dtype=dtype, name="a"),
+            TensorSpec(ndim=2, shape=("k", "n"), dtype=dtype, name="b"),
+            TensorSpec(ndim=2, shape=("m", "n"), dtype=dtype, name="out"),
         ),
     )
 
@@ -76,31 +78,50 @@ class TestRegistry:
         assert normalize_target("triton") == Target.TRITON
         assert normalize_target("tilelang") == Target.TILELANG
         assert normalize_target("cuda") == Target.CUDA
-        assert normalize_target("tvm") == Target.TVM
 
-        for alias in ("tl", "tile-lang", "tile_lang", "cu", "tvm-script", "tvmscript"):
+        for alias in ("tl", "tile-lang", "tile_lang", "cu"):
             with pytest.raises(ValueError, match="Unsupported backend"):
                 normalize_target(alias)
 
-    def test_backend_options_only_keep_backend_values(self):
-        options = normalize_options("cuda", arch="sm_90")
-        assert options.target == Target.CUDA
-        assert options.extra["arch"] == "sm_90"
+        with pytest.raises(ValueError, match="Unsupported backend"):
+            normalize_target("tvm")
 
-        with pytest.raises(TypeError, match="runtime option"):
-            normalize_options("cuda", caller="cuda")
+    def test_backend_options_are_validated_and_normalized_by_target(self):
+        cuda = default_registry().get(Target.CUDA)
+        options = cuda.normalize_options({"arch": "SM_90"})
+        assert options == {"arch": "sm_90", "compute_capability": "9.0"}
 
-    def test_default_registry_reports_four_backends(self):
+        with pytest.raises(TypeError, match="Unsupported cuda backend option"):
+            cuda.normalize_options({"caller": "cuda"})
+
+        with pytest.raises(TypeError, match="Unsupported triton backend option"):
+            emit(
+                replace(
+                    _add_kernel(),
+                    compiler_options={"backend_options": {"arch": "sm_90"}},
+                ),
+                "triton",
+            )
+
+    def test_cuda_arch_is_materialized_in_nvcc_command(self):
+        command = cuda_compile_command(
+            "kernel.cu",
+            "kernel.so",
+            arch="sm_90",
+            nvcc="/opt/cuda/bin/nvcc",
+        )
+        assert "-arch=sm_90" in command
+
+    def test_default_registry_reports_three_backends(self):
         names = {capability.name for capability in backend_capabilities()}
         assert names == {
             Target.TRITON,
             Target.TILELANG,
             Target.CUDA,
-            Target.TVM,
         }
 
     def test_backends_reject_source_only_kernel_without_ssa(self):
-        for backend in ("triton", "cuda", "tilelang", "tvm"):
+        for backend in ("triton", "cuda", "tilelang"):
             with pytest.raises(ValueError, match="requires ssa.Program"):
                 emit(_source_only_kernel(), backend)
 
@@ -109,12 +130,10 @@ class TestRegistry:
             "triton": ("python/triton", "tl.store(out + index, v0, mask=mask)"),
             "cuda": ("cuda/c++", "out[index] = v0;"),
             "tilelang": ("python/tilelang", "out_buf[index] = v0"),
-            "tvm": ("python/tvm-script", "out_buf[index] = v0"),
         }
 
         for backend, (language, fragment) in expected.items():
             artifact = emit(_add_kernel(), backend)
-            assert artifact.materializable
             assert artifact.language == language
             assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["ssa_metadata"]["target_backend"] == backend
@@ -132,14 +151,62 @@ class TestRegistry:
             "triton": "for v10_i in range(0, k, 1):",
             "cuda": "for (int64_t v10_i = 0; v10_i < k; v10_i += 1)",
             "tilelang": "for v10_i in T.serial(k)",
-            "tvm": "for v10_i in T.serial(k)",
         }
 
         for backend, fragment in expected_fragments.items():
             artifact = emit(_matmul_kernel(), backend)
-            assert artifact.materializable
             assert fragment in artifact.primary_source
             assert "linalg.matmul" not in artifact.primary_source
+
+    def test_cuda_exposes_only_materialized_wmma_schedule(self):
+        artifact = emit(_matmul_kernel("float16"), "cuda")
+        candidates = artifact.metadata["ssa_metadata"]["schedule_candidates"]
+        assert tuple(candidate["name"] for candidate in candidates) == ("wmma-16x16",)
+
+        kernel = replace(
+            _matmul_kernel("float16"),
+            compiler_options={
+                "ssa_pass_options": {
+                    "ssa.cuda.optimize_schedule": {"candidate": "wmma-32x32"}
+                }
+            },
+        )
+
+        with pytest.raises(ValueError, match="Unknown schedule candidate"):
+            emit(kernel, "cuda")
+
+    def test_cuda_constraints_fall_back_to_generic_dot(self):
+        kernel = replace(
+            _matmul_kernel("float16"),
+            compiler_options={"backend_options": {"arch": "sm_60"}},
+        )
+        artifact = emit(kernel, "cuda")
+        assert "wmma::" not in artifact.primary_source
+        rejected = artifact.metadata["ssa_metadata"]["rejected_schedule_candidates"]
+        assert "requires compute capability 7.0" in rejected[0]["reason"]
+
+    def test_optimization_metadata_contains_only_materialized_choices(self):
+        forbidden_fields = {
+            "input_precision",
+            "lowering",
+            "passes",
+            "use_tensor_cores",
+            "vector_width",
+        }
+
+        for backend in Target:
+            artifact = emit(_matmul_kernel("float16"), backend)
+            optimization = artifact.metadata["ssa_optimization"]
+            assert set(optimization) <= {"preserve_linalg", "schedule"}
+            assert forbidden_fields.isdisjoint(optimization)
+            assert "small_problem_" not in json.dumps(
+                ir_to_dict(artifact.metadata["ssa"])
+            )
+
+    def test_generic_cuda_launch_matches_emitted_thread_count(self):
+        artifact = emit(_add_kernel(), "cuda")
+        assert "constexpr int threads = 256;" in artifact.primary_source
+        assert artifact.metadata["launch_block"] == ("256",)
 
     def test_artifact_can_write_all_sources(self, tmp_path):
         artifact = emit(_add_kernel(), "cuda")

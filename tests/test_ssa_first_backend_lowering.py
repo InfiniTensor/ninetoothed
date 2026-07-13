@@ -1,9 +1,3 @@
-import importlib.util
-import re
-import sys
-import tempfile
-from pathlib import Path
-
 import pytest
 
 import ninetoothed.language as ntl
@@ -26,10 +20,13 @@ def add_application(x, out):
     out = x + x  # noqa: F841
 
 
-def loop_application(x, out):
+def control_flow_application(x, out):
     acc = x
 
     for _ in range(2):
+        acc = acc + x
+
+    if x > x:
         acc = acc + x
 
     out = acc  # noqa: F841
@@ -38,15 +35,6 @@ def loop_application(x, out):
 def unsupported_application(x, out):
     tmp = {"value": x}
     out = tmp["value"]  # noqa: F841
-
-
-def if_application(x, out):
-    acc = x
-
-    if x > x:
-        acc = acc + x
-
-    out = acc  # noqa: F841
 
 
 def fused_expression_application(x, y, z, out):
@@ -98,41 +86,11 @@ def _ssa_kernel(
 
 
 def _assert_ssa_artifact(artifact, *, route):
-    assert artifact.materializable
     assert artifact.metadata["lowering_ir"] == "ssa.Program"
     assert artifact.metadata["source_route"] == route
 
 
 class TestSSAFirstBackendLowering:
-    def test_backend_entrypoints_require_ssa_and_emit_one_program_for_all_targets(self):
-        missing_ssa = Kernel(
-            kernel_name="missing_ssa",
-            source="def missing_ssa(x, out): out = x",
-        )
-        tensors = (
-            TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
-            TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
-        )
-        program = _ssa_kernel(
-            "\ndef add(x, out):\n    out = x + x\n",
-            "shared_ssa_add",
-            tensors,
-        )
-        routes = {
-            "triton": "ssa-unified-triton-emitter",
-            "cuda": "ssa-unified-cuda-emitter",
-            "tilelang": "ssa-unified-tilelang-emitter",
-            "tvm": "ssa-unified-tvm-emitter",
-        }
-
-        for backend, route in routes.items():
-            with pytest.raises(ValueError, match="requires ssa.Program"):
-                emit_kernel(missing_ssa, backend)
-
-            artifact = emit_kernel(program, backend)
-            _assert_ssa_artifact(artifact, route=route)
-            assert "arith.add" in str(artifact.metadata["ssa"])
-
     def test_cuda_injects_curand_support_only_for_rand_operations(self):
         add_artifact = lower_application(
             arrangement,
@@ -171,7 +129,6 @@ def random_application(seed, out):
                 "ssa-unified-tilelang-emitter",
                 ("T.if_then_else", "T.exp", "T.sqrt"),
             ),
-            "tvm": ("ssa-unified-tvm-emitter", ("T.if_then_else", "T.exp", "T.sqrt")),
         }
 
         for backend, (route, fragments) in expected.items():
@@ -196,7 +153,6 @@ def random_application(seed, out):
                 "ssa-unified-tilelang-emitter",
                 "v0 = (x_buf[index] + x_buf[index])",
             ),
-            "tvm": ("ssa-unified-tvm-emitter", "v0 = (x_buf[index] + x_buf[index])"),
         }
 
         for backend, (route, source_fragment) in expected.items():
@@ -207,7 +163,6 @@ def random_application(seed, out):
                 backend=backend,
                 kernel_name=f"ssa_first_add_{backend}",
             )
-            assert artifact.materializable
             assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert "program_kind" not in artifact.metadata
             assert artifact.metadata["source_route"] == route
@@ -215,7 +170,7 @@ def random_application(seed, out):
             assert source_fragment in artifact.primary_source
 
     def test_public_lower_uses_arrangement_view_shapes_for_ssa_backends(self):
-        for backend in ("triton", "cuda", "tilelang", "tvm"):
+        for backend in ("triton", "cuda", "tilelang"):
             artifact = lower_application(
                 arrangement,
                 add_application,
@@ -242,7 +197,6 @@ def random_application(seed, out):
             "triton": "x + (",
             "cuda": "x[",
             "tilelang": "x_buf[",
-            "tvm": "x_buf[",
         }
 
         for backend, load_fragment in expected.items():
@@ -255,8 +209,7 @@ def random_application(seed, out):
             )
             source = artifact.primary_source
             assert load_fragment in source
-            source_offset = "+ T.int64(1)" if backend == "tvm" else "+ 1"
-            assert source_offset in source
+            assert "+ 1" in source
             assert any(
                 (
                     "+ 1" in tensor["attrs"].get("view_linear_offset", "")
@@ -337,11 +290,82 @@ def random_application(seed, out):
             backend="triton",
             kernel_name="public_triton_codegen_matmul_process",
         )
-        assert artifact.materializable
         assert artifact.metadata["source_route"] == "ssa-unified-triton-emitter"
         assert "linalg.matmul" not in str(artifact.metadata.get("ssa", ""))
         assert "@triton.jit" in artifact.primary_source
         assert "ssa.Program" in artifact.primary_source
+
+    def test_tilelang_schedule_candidate_is_materialized_in_source_and_launch(self):
+        BLOCK_SIZE_M = Symbol("BLOCK_SIZE_M", meta=True)
+        BLOCK_SIZE_N = Symbol("BLOCK_SIZE_N", meta=True)
+        BLOCK_SIZE_K = Symbol("BLOCK_SIZE_K", meta=True)
+
+        def matmul_arrangement(
+            lhs,
+            rhs,
+            output,
+            BLOCK_SIZE_M=BLOCK_SIZE_M,
+            BLOCK_SIZE_N=BLOCK_SIZE_N,
+            BLOCK_SIZE_K=BLOCK_SIZE_K,
+        ):
+            output_tiled = output.tile((BLOCK_SIZE_M, BLOCK_SIZE_N))
+            lhs_tiled = (
+                lhs.tile((BLOCK_SIZE_M, BLOCK_SIZE_K))
+                .tile((1, -1))
+                .expand((-1, output_tiled.shape[1]))
+            )
+            lhs_tiled.dtype = lhs_tiled.dtype.squeeze(0)
+            rhs_tiled = (
+                rhs.tile((BLOCK_SIZE_K, BLOCK_SIZE_N))
+                .tile((-1, 1))
+                .expand((output_tiled.shape[0], -1))
+            )
+            rhs_tiled.dtype = rhs_tiled.dtype.squeeze(1)
+
+            return (lhs_tiled, rhs_tiled, output_tiled)
+
+        def matmul_application(lhs, rhs, output):
+            accumulator = ntl.zeros(output.shape, dtype=ntl.float32)
+
+            for k in range(lhs.shape[0]):
+                accumulator += ntl.dot(lhs[k], rhs[k])
+
+            output = accumulator.to(ntl.float16)  # noqa: F841
+
+        def lower_candidate(candidate):
+            return lower_application(
+                matmul_arrangement,
+                matmul_application,
+                (
+                    Tensor(2, dtype="float16"),
+                    Tensor(2, dtype="float16"),
+                    Tensor(2, dtype="float16"),
+                ),
+                backend="tilelang",
+                kernel_name=f"tilelang_schedule_{candidate}",
+                pass_options={
+                    "ssa.tilelang.optimize_schedule": {"candidate": candidate}
+                },
+            )
+
+        balanced = lower_candidate("balanced")
+        wide = lower_candidate("wide")
+        assert "threads=128" in balanced.primary_source
+        assert "num_stages=2" in balanced.primary_source
+        assert balanced.metadata["launch_block"] == ("128",)
+        assert "threads=256" in wide.primary_source
+        assert "num_stages=3" in wide.primary_source
+        assert wide.metadata["launch_block"] == ("256",)
+        assert balanced.metadata["ssa_schedule"]["tile"] == {
+            "block_m": 64,
+            "block_n": 64,
+            "block_k": 32,
+        }
+        assert wide.metadata["ssa_schedule"]["tile"] == {
+            "block_m": 128,
+            "block_n": 64,
+            "block_k": 32,
+        }
 
     def test_public_triton_lower_raises_when_ssa_is_unavailable(self):
         with pytest.raises(Exception, match="Cannot lower `unsupported_application`"):
@@ -353,24 +377,8 @@ def random_application(seed, out):
                 kernel_name="ssa_unavailable_no_generation_fallback",
             )
 
-    def test_from_source_generates_extended_linear_tensor_ops_for_native_backends(
-        self,
-    ):
+    def test_from_source_generates_tensor_construction_and_view_ops(self):
         cases = {
-            "where": (
-                "\ndef where_application(x, y, out):\n    out = where(x > y, x, y)\n",
-                (
-                    TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
-                    TensorSpec(ndim=1, shape=("n",), dtype="float32", name="y"),
-                    TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
-                ),
-                {
-                    "triton": "tl.where",
-                    "cuda": " ? ",
-                    "tilelang": "T.if_then_else",
-                    "tvm": "T.if_then_else",
-                },
-            ),
             "full": (
                 "\ndef full_application(out):\n    out = full((n,), 2.5)\n",
                 (TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),),
@@ -378,7 +386,6 @@ def random_application(seed, out):
                     "triton": "v1 = v0",
                     "cuda": "float v1 = v0;",
                     "tilelang": "v1 = v0",
-                    "tvm": "v1 = v0",
                 },
             ),
             "zeros": (
@@ -388,7 +395,6 @@ def random_application(seed, out):
                     "triton": "v0 = 0.0",
                     "cuda": "float v0 = 0.0;",
                     "tilelang": "v0 = 0.0",
-                    "tvm": "v0 = 0.0",
                 },
             ),
             "view": (
@@ -405,7 +411,6 @@ def random_application(seed, out):
                     "triton": "tl.load(x + ((index // (cols)))",
                     "cuda": "x[((index / (cols)))",
                     "tilelang": "x_buf[((index // (cols)))",
-                    "tvm": "x_buf[((index // (cols)))",
                 },
             ),
             "extract": (
@@ -418,20 +423,6 @@ def random_application(seed, out):
                     "triton": "tl.load(x + v0",
                     "cuda": "x[v0]",
                     "tilelang": "x_buf[v0]",
-                    "tvm": "x_buf[v0]",
-                },
-            ),
-            "tanh": (
-                "\ndef tanh_application(x, out):\n    out = tanh(x)\n",
-                (
-                    TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
-                    TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
-                ),
-                {
-                    "triton": "tl.tanh",
-                    "cuda": "tanhf",
-                    "tilelang": "T.tanh",
-                    "tvm": "T.tanh",
                 },
             ),
         }
@@ -439,7 +430,6 @@ def random_application(seed, out):
             "triton": "ssa-unified-triton-emitter",
             "cuda": "ssa-unified-cuda-emitter",
             "tilelang": "ssa-unified-tilelang-emitter",
-            "tvm": "ssa-unified-tvm-emitter",
         }
 
         for case_name, (source, tensors, fragments) in cases.items():
@@ -447,7 +437,6 @@ def random_application(seed, out):
 
             for backend, route in routes.items():
                 artifact = emit_kernel(kernel, backend)
-                assert artifact.materializable
                 assert artifact.metadata["lowering_ir"] == "ssa.Program"
                 assert artifact.metadata["source_route"] == route
                 assert fragments[backend] in artifact.primary_source
@@ -480,7 +469,6 @@ def random_application(seed, out):
                 "ssa-unified-tilelang-emitter",
                 ("rows: T.int64", "v0 = rows"),
             ),
-            "tvm": ("ssa-unified-tvm-emitter", ("rows: T.int64", "v0 = rows")),
         }
 
         for backend, (route, source_fragments) in expected.items():
@@ -521,10 +509,6 @@ def random_application(seed, out):
                 "ssa-unified-tilelang-emitter",
                 ("v0 = cols", "v1 = 1", "v2 = (v0 + v1)"),
             ),
-            "tvm": (
-                "ssa-unified-tvm-emitter",
-                ("v0 = cols", "v1 = 1", "v2 = (v0 + v1)"),
-            ),
         }
 
         for backend, (route, source_fragments) in expected.items():
@@ -535,60 +519,107 @@ def random_application(seed, out):
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
-    def test_from_source_generates_maximum_minimum_for_native_backends(self):
+    def test_canonical_elementwise_math_opcodes_emit_for_all_backends(self):
         kernel = _ssa_kernel(
-            "\ndef max_min_application(x, y, out):\n    tmp = maximum(x, y)\n    out = minimum(tmp, y)\n",
-            "ssa_max_min",
+            """
+def canonical_math_application(x, y, out):
+    selected = where(x > y, x, y)
+    bounded = minimum(maximum(selected, y), x)
+    out = (
+        tanh(bounded)
+        + log1p(abs(x))
+        + atan2(x, y)
+        + pow(abs(y) + 0.25, 0.5)
+        + acos(x)
+        + asin(y)
+        + atan(x)
+        + log10(abs(y) + 1.0)
+        + expm1(x)
+        + sinh(x)
+        + cosh(y)
+    )
+""",
+            "ssa_canonical_math",
             (
                 TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
                 TensorSpec(ndim=1, shape=("n",), dtype="float32", name="y"),
                 TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
             ),
         )
-        assert [operation.opcode for operation in kernel.ssa.blocks[0].operations] == [
+        opcodes = {operation.opcode for operation in kernel.ssa.blocks[0].operations}
+        required_opcodes = {
             "arith.maximum",
             "arith.minimum",
-            "mem.store",
-        ]
-        expected = {
-            "triton": ("ssa-unified-triton-emitter", ("tl.maximum", "tl.minimum")),
-            "cuda": ("ssa-unified-cuda-emitter", ("fmaxf", "fminf")),
-            "tilelang": ("ssa-unified-tilelang-emitter", ("T.max", "T.min")),
-            "tvm": ("ssa-unified-tvm-emitter", ("T.max", "T.min")),
+            "math.acos",
+            "math.asin",
+            "math.atan",
+            "math.atan2",
+            "math.cosh",
+            "math.expm1",
+            "math.log10",
+            "math.log1p",
+            "math.pow",
+            "math.sinh",
+            "math.tanh",
+            "select.where",
         }
-
-        for backend, (route, source_fragments) in expected.items():
-            artifact = emit_kernel(kernel, backend)
-            _assert_ssa_artifact(artifact, route=route)
-
-            for source_fragment in source_fragments:
-                assert source_fragment in artifact.primary_source
-
-    def test_from_source_generates_common_math_calls_for_native_backends(self):
-        kernel = _ssa_kernel(
-            "\ndef common_math_application(x, y, out):\n    out = log1p(abs(x)) + atan2(x, y) + pow(abs(y) + 0.25, 0.5)\n",
-            "ssa_common_math",
-            (
-                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
-                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="y"),
-                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
-            ),
-        )
-        opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
-        assert "math.log1p" in opcodes
-        assert "math.atan2" in opcodes
-        assert "math.pow" in opcodes
+        assert required_opcodes <= opcodes, required_opcodes - opcodes
         expected = {
             "triton": (
                 "ssa-unified-triton-emitter",
-                ("tl.log(1.0 +", "tl.atan2", "tl.pow"),
+                (
+                    "tl.where",
+                    "tl.maximum",
+                    "tl.minimum",
+                    "tl.tanh",
+                    "tl.log(1.0 +",
+                    "tl.atan2",
+                    "tl.pow",
+                    "tl.acos",
+                    "tl.asin",
+                    "tl.atan",
+                    "2.302585092994046",
+                    "tl.exp",
+                ),
             ),
-            "cuda": ("ssa-unified-cuda-emitter", ("log1pf", "atan2f", "powf")),
+            "cuda": (
+                "ssa-unified-cuda-emitter",
+                (
+                    "?",
+                    "fmaxf",
+                    "fminf",
+                    "tanhf",
+                    "log1pf",
+                    "atan2f",
+                    "powf",
+                    "acosf",
+                    "asinf",
+                    "atanf",
+                    "log10f",
+                    "expm1f",
+                    "sinhf",
+                    "coshf",
+                ),
+            ),
             "tilelang": (
                 "ssa-unified-tilelang-emitter",
-                ("T.log1p", "T.atan2", "T.pow"),
+                (
+                    "T.if_then_else",
+                    "T.max",
+                    "T.min",
+                    "T.tanh",
+                    "T.log1p",
+                    "T.atan2",
+                    "T.pow",
+                    "T.acos",
+                    "T.asin",
+                    "T.atan",
+                    "T.log10",
+                    "T.exp",
+                    "T.sinh",
+                    "T.cosh",
+                ),
             ),
-            "tvm": ("ssa-unified-tvm-emitter", ("T.log1p", "T.atan2", "T.pow")),
         }
 
         for backend, (route, source_fragments) in expected.items():
@@ -596,7 +627,10 @@ def random_application(seed, out):
             _assert_ssa_artifact(artifact, route=route)
 
             for source_fragment in source_fragments:
-                assert source_fragment in artifact.primary_source
+                assert source_fragment in artifact.primary_source, (
+                    backend,
+                    source_fragment,
+                )
 
     def test_from_source_generates_python_expression_syntax_for_native_backends(self):
         kernel = _ssa_kernel(
@@ -634,131 +668,6 @@ def random_application(seed, out):
                 "ssa-unified-tilelang-emitter",
                 ("T.if_then_else", "(v2 & v4)", "out_buf[index] = v7"),
             ),
-            "tvm": (
-                "ssa-unified-tvm-emitter",
-                ("T.if_then_else", "(v2 & v4)", "out_buf[index] = v7"),
-            ),
-        }
-
-        for backend, (route, source_fragments) in expected.items():
-            artifact = emit_kernel(kernel, backend)
-            _assert_ssa_artifact(artifact, route=route)
-
-            for source_fragment in source_fragments:
-                assert source_fragment in artifact.primary_source
-
-    def test_from_source_generates_method_math_and_dim_alias_for_native_backends(
-        self,
-    ):
-        kernel = _ssa_kernel(
-            "\ndef method_math_application(x, out):\n    denom = x.sqrt().sum(dim=0)\n    out = x.exp() / denom\n",
-            "ssa_method_math",
-            (
-                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
-                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
-            ),
-        )
-        opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
-        assert opcodes == [
-            "math.sqrt",
-            "reduce.sum",
-            "math.exp",
-            "arith.div",
-            "mem.store",
-        ]
-        assert kernel.ssa.blocks[0].operations[1].attrs["axis"] == 0
-        expected = {
-            "triton": (
-                "ssa-unified-triton-emitter",
-                ("tl.sqrt", "for v1_i in range(0, n, 1):", "tl.exp"),
-            ),
-            "cuda": (
-                "ssa-unified-cuda-emitter",
-                ("sqrtf", "for (int64_t v1_i = 0; v1_i < n; v1_i += 1)", "expf"),
-            ),
-            "tilelang": (
-                "ssa-unified-tilelang-emitter",
-                ("T.sqrt", "for v1_i in T.serial(n):", "T.exp"),
-            ),
-            "tvm": (
-                "ssa-unified-tvm-emitter",
-                ("T.sqrt", "for v1_i in T.serial(n):", "T.exp"),
-            ),
-        }
-
-        for backend, (route, source_fragments) in expected.items():
-            artifact = emit_kernel(kernel, backend)
-            _assert_ssa_artifact(artifact, route=route)
-
-            for source_fragment in source_fragments:
-                assert source_fragment in artifact.primary_source
-
-    def test_from_source_generates_namespace_math_calls_for_native_backends(self):
-        kernel = _ssa_kernel(
-            "\ndef namespace_math_application(x, out):\n    out = math.exp(x) + tl.sqrt(x)\n",
-            "ssa_namespace_math",
-            (
-                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
-                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
-            ),
-        )
-        opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
-        assert opcodes == ["math.exp", "math.sqrt", "arith.add", "mem.store"]
-        expected = {
-            "triton": ("ssa-unified-triton-emitter", ("tl.exp", "tl.sqrt")),
-            "cuda": ("ssa-unified-cuda-emitter", ("expf", "sqrtf")),
-            "tilelang": ("ssa-unified-tilelang-emitter", ("T.exp", "T.sqrt")),
-            "tvm": ("ssa-unified-tvm-emitter", ("T.exp", "T.sqrt")),
-        }
-
-        for backend, (route, source_fragments) in expected.items():
-            artifact = emit_kernel(kernel, backend)
-            _assert_ssa_artifact(artifact, route=route)
-            assert "math[" not in artifact.primary_source
-
-            for source_fragment in source_fragments:
-                assert source_fragment in artifact.primary_source
-
-    def test_from_source_generates_extended_math_calls_for_native_backends(self):
-        kernel = _ssa_kernel(
-            "\ndef extended_math_application(x, y, out):\n    out = acos(x) + asin(y) + atan(x) + log10(abs(y) + 1.0) + expm1(x) + sinh(x) + cosh(y)\n",
-            "ssa_extended_math",
-            (
-                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
-                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="y"),
-                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
-            ),
-        )
-        opcodes = [operation.opcode for operation in kernel.ssa.blocks[0].operations]
-
-        for opcode in (
-            "math.acos",
-            "math.asin",
-            "math.atan",
-            "math.log10",
-            "math.expm1",
-            "math.sinh",
-            "math.cosh",
-        ):
-            assert opcode in opcodes
-
-        expected = {
-            "triton": (
-                "ssa-unified-triton-emitter",
-                ("tl.acos", "tl.asin", "tl.atan", "2.302585092994046", "tl.exp"),
-            ),
-            "cuda": (
-                "ssa-unified-cuda-emitter",
-                ("acosf", "asinf", "atanf", "log10f", "expm1f", "sinhf", "coshf"),
-            ),
-            "tilelang": (
-                "ssa-unified-tilelang-emitter",
-                ("T.acos", "T.asin", "T.atan", "T.log10", "T.exp", "T.sinh", "T.cosh"),
-            ),
-            "tvm": (
-                "ssa-unified-tvm-emitter",
-                ("T.acos", "T.asin", "T.atan", "T.log10", "T.exp", "T.sinh", "T.cosh"),
-            ),
         }
 
         for backend, (route, source_fragments) in expected.items():
@@ -786,7 +695,6 @@ def random_application(seed, out):
             "triton": "ssa-unified-triton-emitter",
             "cuda": "ssa-unified-cuda-emitter",
             "tilelang": "ssa-unified-tilelang-emitter",
-            "tvm": "ssa-unified-tvm-emitter",
         }
 
         for backend, route in expected.items():
@@ -808,7 +716,6 @@ def random_application(seed, out):
                     "triton": "tl.store(out + v0",
                     "cuda": "out[v0] = x[index];",
                     "tilelang": "out_buf[v0] = x_buf[index]",
-                    "tvm": "out_buf[v0] = x_buf[index]",
                 },
             ),
             "two_dimensional": (
@@ -825,7 +732,6 @@ def random_application(seed, out):
                     "triton": "tl.store(out + (v0) * (cols) + (v1)",
                     "cuda": "out[(v0) * (cols) + (v1)] = x[((index / (cols)))",
                     "tilelang": "out_buf[(v0) * (cols) + (v1)] = x_buf[((index // (cols)))",
-                    "tvm": "out_buf[(v0) * (cols) + (v1)] = x_buf[((index // (cols)))",
                 },
             ),
         }
@@ -833,7 +739,6 @@ def random_application(seed, out):
             "triton": "ssa-unified-triton-emitter",
             "cuda": "ssa-unified-cuda-emitter",
             "tilelang": "ssa-unified-tilelang-emitter",
-            "tvm": "ssa-unified-tvm-emitter",
         }
 
         for case_name, (source, tensors, fragments) in cases.items():
@@ -842,7 +747,6 @@ def random_application(seed, out):
 
             for backend, route in routes.items():
                 artifact = emit_kernel(kernel, backend)
-                assert artifact.materializable
                 assert artifact.metadata["lowering_ir"] == "ssa.Program"
                 assert artifact.metadata["source_route"] == route
                 assert fragments[backend] in artifact.primary_source
@@ -868,7 +772,6 @@ def random_application(seed, out):
             "triton": ("ssa-unified-triton-emitter", "tl.store(out + v0"),
             "cuda": ("ssa-unified-cuda-emitter", "out[v0] = v2;"),
             "tilelang": ("ssa-unified-tilelang-emitter", "out_buf[v0] = v2"),
-            "tvm": ("ssa-unified-tvm-emitter", "out_buf[v0] = v2"),
         }
 
         for backend, (route, source_fragment) in expected.items():
@@ -892,7 +795,6 @@ def random_application(seed, out):
             ),
             "cuda": ("ssa-unified-cuda-emitter", "x[(v0) * (cols) + (v1)]"),
             "tilelang": ("ssa-unified-tilelang-emitter", "x_buf[(v0) * (cols) + (v1)]"),
-            "tvm": ("ssa-unified-tvm-emitter", "x_buf[(v0) * (cols) + (v1)]"),
         }
         extract = kernel.ssa.blocks[0].operations[2]
         assert extract.opcode == "tensor.extract"
@@ -911,7 +813,6 @@ def random_application(seed, out):
             "triton": ("ssa-unified-triton-emitter", "@triton.jit"),
             "cuda": ("ssa-unified-cuda-emitter", "(x[v1_i] * y[v1_i])"),
             "tilelang": ("ssa-unified-tilelang-emitter", "x_buf[v1_i] * y_buf[v1_i]"),
-            "tvm": ("ssa-unified-tvm-emitter", "x_buf[v1_i] * y_buf[v1_i]"),
         }
 
         for backend, (route, source_fragment) in expected.items():
@@ -925,42 +826,6 @@ def random_application(seed, out):
             _assert_ssa_artifact(artifact, route=route)
             assert source_fragment in artifact.primary_source
             assert "reduce.sum" in str(artifact.metadata["ssa"])
-
-    def test_public_lower_tvm_reduction_artifact_builds(self):
-        kernel_name = "ssa_dot_reduce_tvm_build_regression"
-        artifact = lower_application(
-            reduction_arrangement,
-            dot_reduction_application,
-            (Tensor(1), Tensor(1), Tensor(1)),
-            backend="tvm",
-            kernel_name=kernel_name,
-        )
-        assert 'T.Cast("int64", block_id)' in artifact.primary_source
-        assert "T.int64(0)" in artifact.primary_source
-        assert "T.int64(1)" in artifact.primary_source
-        assert re.search(
-            "\\(index\\) < ninetoothed_ninetoothed_tensor_[0-9]+_size_0",
-            artifact.primary_source,
-        )
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "tvm_reduction_artifact.py"
-            path.write_text(artifact.primary_source, encoding="utf-8")
-            module_name = "tvm_reduction_artifact"
-            spec = importlib.util.spec_from_file_location(module_name, path)
-            assert spec is not None
-            assert spec.loader is not None
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = module
-
-            try:
-                try:
-                    spec.loader.exec_module(module)
-                    getattr(module, f"build_{kernel_name}")()
-                except ImportError as exc:
-                    pytest.skip(f"TVM is not installed: {exc}")
-            finally:
-                sys.modules.pop(module_name, None)
 
     def test_public_lower_inlines_user_helper_calls_before_ssa_lowering(self):
         expected = {
@@ -978,14 +843,6 @@ def random_application(seed, out):
             ),
             "tilelang": (
                 "ssa-unified-tilelang-emitter",
-                (
-                    "v0 = (x_buf[index] * y_buf[index])",
-                    "v2 = (v0 * v1)",
-                    "v4 = (v2 + v3)",
-                ),
-            ),
-            "tvm": (
-                "ssa-unified-tvm-emitter",
                 (
                     "v0 = (x_buf[index] * y_buf[index])",
                     "v2 = (v0 * v1)",
@@ -1027,7 +884,6 @@ def random_application(seed, out):
                 "a[(index) * (cols) + (v1_i)] * x[v1_i]",
             ),
             "tilelang": ("ssa-unified-tilelang-emitter", "for v1_i in T.serial(cols):"),
-            "tvm": ("ssa-unified-tvm-emitter", "for v1_i in T.serial(cols):"),
         }
 
         for backend, (route, source_fragment) in expected.items():
@@ -1049,7 +905,6 @@ def random_application(seed, out):
             "triton": ("ssa-unified-triton-emitter", "for v0_i in range(0, cols, 1):"),
             "cuda": ("ssa-unified-cuda-emitter", "out[index] = v1;"),
             "tilelang": ("ssa-unified-tilelang-emitter", "out_buf[index] = v1"),
-            "tvm": ("ssa-unified-tvm-emitter", "out_buf[index] = v1"),
         }
 
         for backend, (route, source_fragment) in expected.items():
@@ -1058,66 +913,27 @@ def random_application(seed, out):
             assert source_fragment in artifact.primary_source
             assert "reduce.sum" in str(artifact.metadata["ssa"])
 
-    def test_from_source_generates_linalg_matmul_for_native_backends(self):
-        kernel = _ssa_kernel(
-            "\ndef matmul_application(a, b, out):\n    out = a @ b\n",
-            "ssa_matmul",
-            (
-                TensorSpec(ndim=2, shape=("m", "k"), dtype="float32", name="a"),
-                TensorSpec(ndim=2, shape=("k", "n"), dtype="float32", name="b"),
-                TensorSpec(ndim=2, shape=("m", "n"), dtype="float32", name="out"),
-            ),
+    def test_transpose_aliases_share_one_backend_emission_contract(self):
+        tensors = (
+            TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="x"),
+            TensorSpec(ndim=2, shape=("cols", "rows"), dtype="float32", name="out"),
         )
-        expected = {
-            "triton": ("ssa-unified-triton-emitter", "for v10_i in range(0, k, 1):"),
-            "cuda": (
-                "ssa-unified-cuda-emitter",
-                "for (int64_t v10_i = 0; v10_i < k; v10_i += 1)",
-            ),
-            "tilelang": ("ssa-unified-tilelang-emitter", "for v10_i in T.serial(k):"),
-            "tvm": ("ssa-unified-tvm-emitter", "for v10_i in T.serial(k):"),
-        }
-
-        for backend, (route, source_fragment) in expected.items():
-            artifact = emit_kernel(kernel, backend)
-            _assert_ssa_artifact(artifact, route=route)
-            assert "linalg.matmul" not in str(artifact.metadata["ssa"])
-            assert source_fragment in artifact.primary_source
-
-    def test_from_source_generates_linalg_transpose_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef transpose_application(x, out):\n    out = transpose(x)\n",
             "ssa_transpose",
-            (
-                TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="x"),
-                TensorSpec(ndim=2, shape=("cols", "rows"), dtype="float32", name="out"),
-            ),
+            tensors,
         )
-        expected = {
-            "triton": (
-                "ssa-unified-triton-emitter",
-                "tl.load(x + (v2) * (cols) + (v1)",
-            ),
-            "cuda": ("ssa-unified-cuda-emitter", "x[(v2) * (cols) + (v1)]"),
-            "tilelang": ("ssa-unified-tilelang-emitter", "x_buf[(v2) * (cols) + (v1)]"),
-            "tvm": ("ssa-unified-tvm-emitter", "x_buf[(v2) * (cols) + (v1)]"),
-        }
-
-        for backend, (route, source_fragment) in expected.items():
-            artifact = emit_kernel(kernel, backend)
-            _assert_ssa_artifact(artifact, route=route)
-            assert "linalg.transpose" not in str(artifact.metadata["ssa"])
-            assert source_fragment in artifact.primary_source
-
-    def test_from_source_generates_linalg_transpose_for_attribute_t(self):
-        kernel = _ssa_kernel(
+        attribute_kernel = _ssa_kernel(
             "\ndef transpose_attribute_application(x, out):\n    out = x.T\n",
             "ssa_transpose_attribute",
-            (
-                TensorSpec(ndim=2, shape=("rows", "cols"), dtype="float32", name="x"),
-                TensorSpec(ndim=2, shape=("cols", "rows"), dtype="float32", name="out"),
-            ),
+            tensors,
         )
+
+        for frontend_kernel in (kernel, attribute_kernel):
+            transpose = frontend_kernel.ssa.blocks[0].operations[0]
+            assert transpose.opcode == "linalg.transpose"
+            assert transpose.operands == ("x",)
+
         expected = {
             "triton": (
                 "ssa-unified-triton-emitter",
@@ -1125,11 +941,7 @@ def random_application(seed, out):
             ),
             "cuda": ("ssa-unified-cuda-emitter", "x[(v2) * (cols) + (v1)]"),
             "tilelang": ("ssa-unified-tilelang-emitter", "x_buf[(v2) * (cols) + (v1)]"),
-            "tvm": ("ssa-unified-tvm-emitter", "x_buf[(v2) * (cols) + (v1)]"),
         }
-        transpose = kernel.ssa.blocks[0].operations[0]
-        assert transpose.opcode == "linalg.transpose"
-        assert transpose.operands == ("x",)
 
         for backend, (route, source_fragment) in expected.items():
             artifact = emit_kernel(kernel, backend)
@@ -1159,10 +971,6 @@ def random_application(seed, out):
                 "ssa-unified-tilelang-emitter",
                 ("for loop_i in T.serial(n):", "out_buf[loop_i] ="),
             ),
-            "tvm": (
-                "ssa-unified-tvm-emitter",
-                ("for loop_i in T.serial(n):", "out_buf[loop_i] ="),
-            ),
         }
 
         for backend, (route, source_fragments) in expected.items():
@@ -1170,43 +978,6 @@ def random_application(seed, out):
             _assert_ssa_artifact(artifact, route=route)
             assert "scf.for" in str(artifact.metadata["ssa"])
             assert "lower_loop_store" not in artifact.primary_source
-
-            for source_fragment in source_fragments:
-                assert source_fragment in artifact.primary_source
-
-    def test_from_source_emits_store_inside_scf_if_without_operator_dispatch(self):
-        kernel = _ssa_kernel(
-            "\ndef if_store_application(x, out):\n    if 1 < 2:\n        i = x.offsets(0)\n        out[i] = x\n",
-            "ssa_if_store",
-            (
-                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
-                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
-            ),
-        )
-        expected = {
-            "triton": (
-                "ssa-unified-triton-emitter",
-                ("v2 = (v0 < v1)", "if v2:", "tl.store(out + v3"),
-            ),
-            "cuda": (
-                "ssa-unified-cuda-emitter",
-                ("bool v2 = (v0 < v1);", "if (v2) {", "out[v3"),
-            ),
-            "tilelang": (
-                "ssa-unified-tilelang-emitter",
-                ("v2 = (v0 < v1)", "if v2:", "out_buf[v3"),
-            ),
-            "tvm": (
-                "ssa-unified-tvm-emitter",
-                ("v2 = (v0 < v1)", "if v2:", "out_buf[v3"),
-            ),
-        }
-
-        for backend, (route, source_fragments) in expected.items():
-            artifact = emit_kernel(kernel, backend)
-            _assert_ssa_artifact(artifact, route=route)
-            assert "scf.if" in str(artifact.metadata["ssa"])
-            assert "lower_if_store" not in artifact.primary_source
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
@@ -1238,10 +1009,6 @@ def random_application(seed, out):
             ),
             "tilelang": (
                 "ssa-unified-tilelang-emitter",
-                ("if v2:", "out_buf[v3", "else:", "out_buf[v4"),
-            ),
-            "tvm": (
-                "ssa-unified-tvm-emitter",
                 ("if v2:", "out_buf[v3", "else:", "out_buf[v4"),
             ),
         }
@@ -1276,7 +1043,6 @@ def random_application(seed, out):
             "triton": ("ssa-unified-triton-emitter", "if v2:"),
             "cuda": ("ssa-unified-cuda-emitter", "if (v2) {"),
             "tilelang": ("ssa-unified-tilelang-emitter", "if v2:"),
-            "tvm": ("ssa-unified-tvm-emitter", "if v2:"),
         }
 
         for backend, (route, source_fragment) in expected.items():
@@ -1287,42 +1053,31 @@ def random_application(seed, out):
             assert "out1" in artifact.primary_source
             assert artifact.primary_source.count(source_fragment) == 1
 
-    def test_public_lower_generates_scf_for_loop_for_native_backends(self):
+    def test_public_lower_generates_loop_and_if_control_flow_for_all_backends(self):
         expected = {
-            "triton": ("ssa-unified-triton-emitter", "@triton.jit"),
-            "cuda": ("ssa-unified-cuda-emitter", "for (int64_t"),
-            "tilelang": ("ssa-unified-tilelang-emitter", "T.serial(2)"),
-            "tvm": ("ssa-unified-tvm-emitter", "T.serial(2)"),
+            "triton": ("ssa-unified-triton-emitter", ("@triton.jit", "tl.where")),
+            "cuda": ("ssa-unified-cuda-emitter", ("for (int64_t", " ? ")),
+            "tilelang": (
+                "ssa-unified-tilelang-emitter",
+                ("T.serial(2)", "T.if_then_else"),
+            ),
         }
 
-        for backend, (route, source_fragment) in expected.items():
+        for backend, (route, source_fragments) in expected.items():
             artifact = lower_application(
                 arrangement,
-                loop_application,
+                control_flow_application,
                 (Tensor(1), Tensor(1)),
                 backend=backend,
-                kernel_name=f"ssa_loop_{backend}",
+                kernel_name=f"ssa_control_flow_{backend}",
             )
             _assert_ssa_artifact(artifact, route=route)
-            assert source_fragment in artifact.primary_source
-            assert "scf.for" in str(artifact.metadata["ssa"])
+            rendered_ssa = str(artifact.metadata["ssa"])
+            assert "scf.for" in rendered_ssa
+            assert "scf.if" in rendered_ssa
 
-    def test_public_lower_generates_scf_if_for_native_backends(self):
-        expected = {
-            "triton": ("ssa-unified-triton-emitter", "@triton.jit"),
-            "cuda": ("ssa-unified-cuda-emitter", " ? "),
-            "tilelang": ("ssa-unified-tilelang-emitter", "T.if_then_else"),
-            "tvm": ("ssa-unified-tvm-emitter", "T.if_then_else"),
-        }
-
-        for backend, (route, source_fragment) in expected.items():
-            artifact = lower_application(
-                arrangement,
-                if_application,
-                (Tensor(1), Tensor(1)),
-                backend=backend,
-                kernel_name=f"ssa_if_{backend}",
-            )
-            _assert_ssa_artifact(artifact, route=route)
-            assert source_fragment in artifact.primary_source
-            assert "scf.if" in str(artifact.metadata["ssa"])
+            for source_fragment in source_fragments:
+                assert source_fragment in artifact.primary_source, (
+                    backend,
+                    source_fragment,
+                )

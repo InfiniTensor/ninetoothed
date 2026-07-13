@@ -19,7 +19,7 @@ from ninetoothed.compiler.cache import (
     write_manifest,
     write_source,
 )
-from ninetoothed.ir import LaunchABI, LaunchBinding
+from ninetoothed.ir import LaunchABI, LaunchBinding, ir_to_dict
 
 
 class KernelLaunchError(RuntimeError):
@@ -148,7 +148,7 @@ def _requires_runtime_specialization(compilation) -> bool:
 
     if compilation.request.specialization_values:
         return False
-    return compilation.artifact.backend in {Target.TILELANG, Target.TVM} and any(
+    return compilation.artifact.backend == Target.TILELANG and any(
         binding.kind
         in {
             "shape",
@@ -166,7 +166,6 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
     suffix = {
         Target.CUDA: "cu",
         Target.TILELANG: "tilelang.py",
-        Target.TVM: "tvm.py",
     }[artifact.backend]
     cache_key = compilation_cache_key(compilation)
     source = write_source(
@@ -232,15 +231,10 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
 
 def _runtime_specialization_values(compilation, public) -> dict[str, Any]:
     values = {}
+    dynamic_parameters = set(compilation.launch_plan.dynamic_parameters)
 
     for binding in compilation.launch_abi.kernel_args:
-        if binding.kind not in {
-            "shape",
-            "stride",
-            "meta",
-            "jagged_values_numel",
-            "jagged_offsets_numel",
-        }:
+        if binding.name not in dynamic_parameters:
             continue
 
         value = _binding_value(binding, public)
@@ -589,7 +583,7 @@ def _publish_library(cache_library: Path, output_dir, filename: str) -> Path:
 
 def _built_manifest(compilation, cache_key, source, library):
     return {
-        "schema": 1,
+        "schema": 2,
         "cache_key": cache_key,
         "backend": compilation.artifact.backend.value,
         "kernel_name": compilation.artifact.kernel_name,
@@ -597,6 +591,7 @@ def _built_manifest(compilation, cache_key, source, library):
         "source": str(source),
         "library": None if library is None else str(library),
         "launch_abi": compilation.artifact.metadata.get("launch_abi", {}),
+        "launch_plan": ir_to_dict(compilation.launch_plan),
         "pass_trace": compilation.pass_trace,
     }
 
