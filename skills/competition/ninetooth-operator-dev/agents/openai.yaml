@@ -1,0 +1,7 @@
+interface:
+  display_name: "NineToothed Operator Dev"
+  short_description: "Guide agents through NineToothed operator tasks"
+  default_prompt: "Use $ninetooth-operator-dev to implement, test, benchmark, or debug a NineToothed operator task."
+
+policy:
+  allow_implicit_invocation: true

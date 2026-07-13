@@ -1,0 +1,93 @@
+cases:
+  - id: elementwise_broadcast
+    category: elementwise_broadcast
+    display_name: Elementwise / broadcast operator
+    required_example: examples/elementwise-broadcast/TASK.md
+    benchmark_required: true
+    required_evidence:
+      - pytorch_or_repository_oracle
+      - ordinary_shape
+      - broadcast_variant
+      - dtype_tolerance_decision
+      - boundary_or_mask_case
+      - correctness_command_result
+      - benchmark_command_result_or_blocker
+    score_areas:
+      task_completion: semantics, shape, dtype, broadcast, mask, boundaries
+      tests_and_verification: correctness command and rerun result
+      performance_awareness: benchmark or explicit blocker
+      patch_minimality: focused operator/test/example diff
+      repository_style: nearby elementwise or broadcast patterns
+      process_and_compliance: traceable commands and unsupported scope
+  - id: reduction_block
+    category: reduction_block
+    display_name: Reduction / blocked operator
+    required_example: examples/reduction-block/TASK.md
+    benchmark_required: true
+    required_evidence:
+      - pytorch_or_repository_oracle
+      - reduce_axis
+      - block_or_tile_shape
+      - numerical_stability_decision
+      - tail_block_or_non_power_of_two_case
+      - correctness_command_result
+      - benchmark_command_result_or_blocker
+    score_areas:
+      task_completion: semantics, shape, dtype, reduce axis, boundaries
+      tests_and_verification: correctness command and rerun result
+      performance_awareness: benchmark or generated-source evidence
+      patch_minimality: focused operator/test/benchmark diff
+      repository_style: nearby reduction or blocked-kernel patterns
+      process_and_compliance: traceable commands and unsupported scope
+  - id: layout_sensitive
+    category: layout_sensitive
+    display_name: Layout-sensitive operator
+    required_example: examples/layout-sensitive/TASK.md
+    benchmark_required: false
+    required_evidence:
+      - pytorch_or_repository_oracle
+      - sliced_transposed_strided_or_offset_input
+      - stride_aware_load_store_or_contiguous_only_scope
+      - ordinary_shape
+      - boundary_shape
+      - correctness_command_result
+    score_areas:
+      task_completion: semantics, layout, stride, offset, boundaries
+      tests_and_verification: correctness command and rerun result
+      performance_awareness: benchmark optional unless requested
+      patch_minimality: focused operator/test diff
+      repository_style: nearby layout or stride-sensitive patterns
+      process_and_compliance: traceable commands and unsupported scope
+  - id: performance_diagnostics
+    category: performance_diagnostics
+    display_name: Performance / diagnostics / integration
+    required_example: examples/performance-diagnostics/TASK.md
+    benchmark_required: true
+    required_evidence:
+      - repro_command
+      - baseline
+      - input_sizes
+      - generated_source_or_aot_notes
+      - failure_root_cause_or_blocker
+      - minimal_fix_or_workaround
+      - rerun_result
+    score_areas:
+      task_completion: diagnostic target and root-cause path
+      tests_and_verification: correctness or repro command result
+      performance_awareness: benchmark, generated-source, or AOT evidence
+      patch_minimality: focused diagnostic/fix diff
+      repository_style: nearby benchmark, generation, or AOT patterns
+      process_and_compliance: traceable commands and unsupported scope
+  - id: subagent_result_only
+    category: subagent_orchestration
+    display_name: Result-only subagent session
+    role: supporting
+    required_reference: references/subagent-orchestration.md
+    required_template: subagent-sessions/_template/summary.md
+    benchmark_required: false
+    required_evidence:
+      - parent_request
+      - l0_parent_return
+      - l1_session_summary
+      - l2_action_log_pointer
+      - l3_raw_evidence_pointer
