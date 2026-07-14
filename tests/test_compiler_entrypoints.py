@@ -30,8 +30,48 @@ def test_public_entrypoints_are_functions_backed_by_default_compiler():
 
 def test_legacy_entrypoint_modules_remain_importable():
     assert callable(importlib.import_module("ninetoothed.aot").aot)
-    assert callable(importlib.import_module("ninetoothed.jit").jit)
     assert callable(importlib.import_module("ninetoothed.make").make)
+
+
+def test_jit_implementation_class_is_not_public():
+    compiler = importlib.import_module("ninetoothed.compiler")
+
+    assert not hasattr(compiler, "JIT")
+    assert "JIT" not in compiler.__all__
+
+
+def test_jit_function_and_decorator_use_the_default_compiler(monkeypatch):
+    requests = []
+
+    def materialize(request, *, output_dir=None, mode="jit"):
+        requests.append((request, output_dir, mode))
+
+        return request.backend
+
+    monkeypatch.setattr(DEFAULT_COMPILER, "materialize", materialize)
+
+    assert ninetoothed.jit(_application, backend="cuda", arch="sm_90") == "cuda"
+    assert ninetoothed.jit(backend="tilelang")(_application) == "tilelang"
+    assert requests[0][0].kernel_name == "_application"
+    assert requests[0][0].backend_options == {"arch": "sm_90"}
+    assert requests[1][2] == "jit"
+
+
+def test_pure_lowering_does_not_query_runtime_cuda_architecture(monkeypatch):
+    import ninetoothed.compiler.cache as cache
+
+    def unexpected_query():
+        raise AssertionError("Pure lowering must not query a runtime device.")
+
+    monkeypatch.setattr(cache, "_runtime_cuda_architecture", unexpected_query)
+    artifact = ninetoothed.lower(
+        _arrangement,
+        _application,
+        (Tensor(1), Tensor(1), Tensor(1)),
+        backend="cuda",
+    )
+
+    assert artifact.backend.value == "cuda"
 
 
 def test_make_preserves_legacy_caller_materialization_mode(tmp_path, monkeypatch):

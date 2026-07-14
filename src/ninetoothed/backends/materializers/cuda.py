@@ -96,6 +96,7 @@ def _cuda_wrapper(function, abi, tensor_specs):
     from ninetoothed.compiler.runtime import (
         KernelLaunchError,
         _bound_values,
+        _empty_launch,
         _first_output,
         _public_values,
     )
@@ -103,9 +104,13 @@ def _cuda_wrapper(function, abi, tensor_specs):
     spec_by_name = {spec.name: spec for spec in tensor_specs}
 
     def launch(*args, **kwargs):
+        public = _public_values(abi, args, kwargs, specs=tensor_specs)
+
+        if _empty_launch(abi, public):
+            return _first_output(abi, public)
+
         import torch
 
-        public = _public_values(abi, args, kwargs, specs=tensor_specs)
         values, keepalive = _bound_values(
             abi,
             public,

@@ -276,6 +276,10 @@ def _runtime_wrapper(
 ):
     def launch(*args, **kwargs):
         public = _public_values(abi, args, kwargs, specs=specs)
+
+        if _empty_launch(abi, public):
+            return _first_output(abi, public)
+
         values, keepalive = _bound_values(abi, public, scalar_mode="value")
         bindings = abi.kernel_args
 

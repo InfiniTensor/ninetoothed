@@ -49,7 +49,7 @@ def compilation_cache_key(compilation) -> str:
             "backend_options": request.backend_options,
             "pipeline": request.pipeline,
             "pass_options": request.pass_options,
-            "architecture": _architecture(),
+            "architecture": _architecture(compilation),
             "versions": _compiler_versions(),
         }
     )
@@ -191,11 +191,49 @@ def _compiler_versions() -> Mapping[str, str]:
     return result
 
 
-def _architecture() -> Mapping[str, str | None]:
-    return {
+def _architecture(compilation) -> Mapping[str, Any]:
+    backend = compilation.artifact.backend.value
+    backend_options = dict(compilation.request.backend_options or {})
+    architecture = {
         "machine": platform.machine(),
         "cuda_arch": os.environ.get("TORCH_CUDA_ARCH_LIST"),
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+    }
+
+    if backend == "cuda":
+        target = str(backend_options.get("arch", "native"))
+        architecture["cuda_target"] = target
+
+        if target != "native":
+            return architecture
+
+    if backend in {"cuda", "tilelang", "triton"}:
+        architecture.update(_runtime_cuda_architecture())
+    return architecture
+
+
+def _runtime_cuda_architecture() -> Mapping[str, Any]:
+    import torch
+
+    if not torch.cuda.is_available():
+        return {
+            "cuda_current_capability": None,
+            "cuda_visible_capabilities": (),
+        }
+
+    def capability(device: int) -> str:
+        major, minor = torch.cuda.get_device_capability(device)
+
+        return f"sm_{major}{minor}"
+
+    current = capability(torch.cuda.current_device())
+    visible = tuple(
+        dict.fromkeys(capability(device) for device in range(torch.cuda.device_count()))
+    )
+
+    return {
+        "cuda_current_capability": current,
+        "cuda_visible_capabilities": visible,
     }
 
 

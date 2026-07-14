@@ -11,7 +11,7 @@ from ninetoothed.compiler.driver import (
     make,
     resolve_target,
 )
-from ninetoothed.compiler.jit import JIT, jit
+from ninetoothed.compiler.jit import jit
 from ninetoothed.compiler.runtime import load_built_artifact
 
 __all__ = [
@@ -19,7 +19,6 @@ __all__ = [
     "Compilation",
     "CompileRequest",
     "DEFAULT_COMPILER",
-    "JIT",
     "aot",
     "compile_kernel",
     "jit",

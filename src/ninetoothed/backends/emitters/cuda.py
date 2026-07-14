@@ -288,6 +288,9 @@ extern "C" int launch_{kernel.kernel_name}(
 ) {{
     constexpr int threads = {threads};
     int64_t blocks = {blocks_expr};
+    if (blocks <= 0) {{
+        return static_cast<int>(cudaSuccess);
+    }}
     {kernel.kernel_name}_kernel<<<static_cast<unsigned int>(blocks), threads, 0, stream>>>(
         {args}
     );

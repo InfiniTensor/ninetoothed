@@ -206,6 +206,7 @@ class TestRegistry:
     def test_generic_cuda_launch_matches_emitted_thread_count(self):
         artifact = emit(_add_kernel(), "cuda")
         assert "constexpr int threads = 256;" in artifact.primary_source
+        assert "if (blocks <= 0)" in artifact.primary_source
         assert artifact.metadata["launch_block"] == ("256",)
 
     def test_artifact_can_write_all_sources(self, tmp_path):
