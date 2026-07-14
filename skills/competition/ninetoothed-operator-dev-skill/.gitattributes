@@ -2,3 +2,4 @@
 *.pdf binary
 *.patch binary
 *.log binary
+*.zip binary
