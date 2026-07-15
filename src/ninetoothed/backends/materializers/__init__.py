@@ -25,6 +25,7 @@ def materializer_for(target: Target | str):
 
     if _DEFAULT_REGISTRY is None:
         _DEFAULT_REGISTRY = create_default_registry()
+
     return _DEFAULT_REGISTRY.get(target)
 
 

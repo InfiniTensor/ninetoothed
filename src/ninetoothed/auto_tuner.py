@@ -163,7 +163,7 @@ class AutoTuner:
             )
             failures.append(f"{candidate_id}: {reason}")
 
-        return "All autotuning candidates failed: " + "; ".join(failures)
+        return "All auto-tuning candidates failed: " + "; ".join(failures)
 
     @staticmethod
     def _make_arg_key(args, kwargs):

@@ -1,6 +1,4 @@
-from ninetoothed.aot import aot
 from ninetoothed.build import build
-from ninetoothed.compiler import lower
 from ninetoothed.compiler.jit import jit
 from ninetoothed.dtype import (
     bfloat16,
@@ -28,7 +26,6 @@ __all__ = [
     "bfloat16",
     "block_size",
     "build",
-    "aot",
     "float16",
     "float32",
     "float64",
@@ -39,7 +36,6 @@ __all__ = [
     "eval",
     "subs",
     "jit",
-    "lower",
     "make",
     "uint8",
     "uint16",

@@ -2,13 +2,14 @@ import importlib
 import os
 import subprocess
 import sys
+from dataclasses import fields
 
 import pytest
+from ninetoothed.compiler import DEFAULT_COMPILER, Compiler, CompileRequest
+from ninetoothed.compiler import driver as compiler_driver
 
 import ninetoothed
 from ninetoothed import Tensor
-from ninetoothed.compiler import DEFAULT_COMPILER, Compiler, CompileRequest
-from ninetoothed.compiler import driver as compiler_driver
 
 
 def _arrangement(input, other, output):
@@ -19,13 +20,27 @@ def _application(input, other, output):
     output = input + other  # noqa: F841
 
 
-def test_public_entrypoints_are_functions_backed_by_default_compiler():
+def test_public_entrypoints_remain_conservative():
     assert isinstance(DEFAULT_COMPILER, Compiler)
-    assert callable(ninetoothed.aot)
+    assert callable(ninetoothed.build)
     assert callable(ninetoothed.jit)
-    assert callable(ninetoothed.lower)
     assert callable(ninetoothed.make)
+    assert "aot" not in ninetoothed.__all__
+    assert "lower" not in ninetoothed.__all__
     assert not hasattr(ninetoothed, "load_built_artifact")
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import ninetoothed; "
+                "assert 'aot' not in vars(ninetoothed); "
+                "assert 'lower' not in vars(ninetoothed)"
+            ),
+        ],
+        check=True,
+    )
 
 
 def test_legacy_entrypoint_modules_remain_importable():
@@ -38,6 +53,14 @@ def test_jit_implementation_class_is_not_public():
 
     assert not hasattr(compiler, "JIT")
     assert "JIT" not in compiler.__all__
+
+
+def test_compile_request_preserves_public_argument_order():
+    assert tuple(field.name for field in fields(CompileRequest))[:3] == (
+        "arrangement",
+        "application",
+        "tensors",
+    )
 
 
 def test_jit_function_and_decorator_use_the_default_compiler(monkeypatch):
@@ -64,7 +87,7 @@ def test_pure_lowering_does_not_query_runtime_cuda_architecture(monkeypatch):
         raise AssertionError("Pure lowering must not query a runtime device.")
 
     monkeypatch.setattr(cache, "_runtime_cuda_architecture", unexpected_query)
-    artifact = ninetoothed.lower(
+    artifact = compiler_driver.lower(
         _arrangement,
         _application,
         (Tensor(1), Tensor(1), Tensor(1)),
@@ -165,8 +188,8 @@ def test_triton_launch_plan_contains_limited_runtime_variants():
         {"max_num_configs": 2},
     ),
 )
-def test_non_triton_backends_reject_unsupported_autotuning(backend, options):
-    with pytest.raises(NotImplementedError, match="autotuning is not supported"):
+def test_non_triton_backends_reject_unsupported_auto_tuning(backend, options):
+    with pytest.raises(NotImplementedError, match="auto-tuning is not supported"):
         DEFAULT_COMPILER.compile(
             CompileRequest(
                 arrangement=_arrangement,

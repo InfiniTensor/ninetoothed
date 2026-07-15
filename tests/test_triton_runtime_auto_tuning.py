@@ -1,10 +1,10 @@
 import uuid
 
+import ninetoothed.auto_tuner as auto_tuner
 import pytest
 import torch
 
 import ninetoothed
-import ninetoothed.auto_tuner as auto_tuner
 from ninetoothed import Tensor
 from tests.utils import get_available_devices
 
@@ -33,7 +33,7 @@ def test_triton_tuple_configurations_are_benchmarked_and_cached(device, monkeypa
         _application,
         tuple(Tensor(shape=(257,), dtype=ninetoothed.float32) for _ in range(3)),
         backend="triton",
-        kernel_name=f"runtime_autotune_{uuid.uuid4().hex}",
+        kernel_name=f"runtime_auto_tuning_{uuid.uuid4().hex}",
         num_warps=(4, 8),
         num_stages=(1,),
         max_num_configs=2,
@@ -54,7 +54,7 @@ def test_triton_tuple_configurations_are_benchmarked_and_cached(device, monkeypa
     assert len(benchmarked) == 2
 
 
-def test_autotuner_validates_arguments_before_benchmark(tmp_path, monkeypatch):
+def test_auto_tuner_validates_arguments_before_benchmark(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_tuner, "_AUTO_TUNING_CACHE_DIR", tmp_path)
     benchmarked = []
 
@@ -77,7 +77,7 @@ def test_autotuner_validates_arguments_before_benchmark(tmp_path, monkeypatch):
     assert not benchmarked
 
 
-def test_autotuner_cache_is_reused_across_instances(tmp_path, monkeypatch):
+def test_auto_tuner_cache_is_reused_across_instances(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_tuner, "_AUTO_TUNING_CACHE_DIR", tmp_path)
     benchmarked = []
 
@@ -106,7 +106,7 @@ def test_autotuner_cache_is_reused_across_instances(tmp_path, monkeypatch):
     assert len(benchmarked) == 2
 
 
-def test_autotuner_retries_transient_candidate_failures(tmp_path, monkeypatch):
+def test_auto_tuner_retries_transient_candidate_failures(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_tuner, "_AUTO_TUNING_CACHE_DIR", tmp_path)
 
     def fail(function, args, kwargs):
@@ -121,7 +121,7 @@ def test_autotuner_retries_transient_candidate_failures(tmp_path, monkeypatch):
         cache_namespace="retry",
     )
 
-    with pytest.raises(RuntimeError, match="All autotuning candidates failed"):
+    with pytest.raises(RuntimeError, match="All auto-tuning candidates failed"):
         first(1)
 
     benchmarked = []
