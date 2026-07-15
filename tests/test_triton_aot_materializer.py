@@ -1,4 +1,5 @@
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ import torch
 from ninetoothed.backends.core import Artifact, BuiltArtifact, Target
 from ninetoothed.backends.materializers import triton as triton_materializer
 from ninetoothed.compiler.runtime import KernelLaunchError
+from ninetoothed.ir import LaunchABI
 
 
 def _generated_source(name):
@@ -135,6 +137,88 @@ def _load_fake_artifact(
     )
 
     return launch, library, events
+
+
+def test_fresh_aot_materialization_enters_launches_and_leaves(monkeypatch, tmp_path):
+    events = []
+    library = SimpleNamespace(
+        fresh_guarded_kernel_default=_FakeExport("kernel", events),
+        ninetoothed_triton_enter=_FakeExport("enter", events),
+        ninetoothed_triton_leave=_FakeExport("leave", events),
+    )
+    cache_directory = tmp_path / "cache"
+    cache_directory.mkdir()
+    cache_library = cache_directory / "fresh_guarded.triton.so"
+    cache_library.write_bytes(b"library")
+    cache_library.with_suffix(".manifest.json").write_text(
+        json.dumps({"triton_aot_launcher_schema": 1}),
+        encoding="utf-8",
+    )
+    source = tmp_path / "fresh_guarded.py"
+    published = tmp_path / "fresh_guarded.published.so"
+
+    class FakeHandle:
+        def __init__(self, compilation, function, launch, source, library_path):
+            del compilation, function, source
+            self._launch = launch
+            self._built_artifact = SimpleNamespace(
+                manifest_path=str(Path(library_path).with_suffix(".manifest.json"))
+            )
+
+        def __call__(self, *args, **kwargs):
+            return self._launch(*args, **kwargs)
+
+    from ninetoothed.compiler import runtime
+
+    monkeypatch.setattr(triton_materializer.ctypes, "CDLL", lambda path: library)
+    monkeypatch.setattr(
+        torch.cuda,
+        "current_stream",
+        lambda: SimpleNamespace(cuda_stream=17),
+    )
+    monkeypatch.setattr(
+        triton_materializer, "compilation_cache_key", lambda compilation: "fresh-key"
+    )
+    monkeypatch.setattr(
+        triton_materializer,
+        "write_source",
+        lambda *args, **kwargs: source,
+    )
+    monkeypatch.setattr(
+        triton_materializer,
+        "artifact_directory",
+        lambda cache_key: cache_directory,
+    )
+    monkeypatch.setattr(
+        triton_materializer,
+        "cache_lock",
+        lambda path: nullcontext(),
+    )
+    monkeypatch.setattr(triton_materializer, "write_manifest", lambda *args: None)
+    monkeypatch.setattr(runtime, "Handle", FakeHandle)
+    monkeypatch.setattr(runtime, "_built_manifest", lambda *args: {})
+    monkeypatch.setattr(
+        runtime,
+        "_publish_library",
+        lambda *args: published,
+    )
+    compilation = SimpleNamespace(
+        artifact=SimpleNamespace(
+            kernel_name="fresh_guarded",
+            primary_source="",
+        ),
+        launch_abi=LaunchABI(),
+        kernel=SimpleNamespace(tensors=()),
+    )
+
+    handle = triton_materializer._aot_materialize(compilation, output_dir=tmp_path)
+
+    assert handle() is None
+    assert events == ["enter", "kernel", "leave"]
+    assert library.ninetoothed_triton_enter.argtypes == []
+    assert library.ninetoothed_triton_enter.restype is triton_materializer.ctypes.c_int
+    assert library.ninetoothed_triton_leave.argtypes == []
+    assert library.ninetoothed_triton_leave.restype is None
 
 
 def test_reloaded_aot_wrapper_enters_launches_and_leaves(monkeypatch, tmp_path):
