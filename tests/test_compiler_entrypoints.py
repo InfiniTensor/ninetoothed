@@ -5,11 +5,11 @@ import sys
 from dataclasses import fields
 
 import pytest
-from ninetoothed.compiler import DEFAULT_COMPILER, Compiler, CompileRequest
-from ninetoothed.compiler import driver as compiler_driver
 
 import ninetoothed
 from ninetoothed import Tensor
+from ninetoothed.compiler import DEFAULT_COMPILER, Compiler, CompileRequest
+from ninetoothed.compiler import driver as compiler_driver
 
 
 def _arrangement(input, other, output):

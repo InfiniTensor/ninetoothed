@@ -1,10 +1,10 @@
 import uuid
 
-import ninetoothed.auto_tuner as auto_tuner
 import pytest
 import torch
 
 import ninetoothed
+import ninetoothed.auto_tuner as auto_tuner
 from ninetoothed import Tensor
 from tests.utils import get_available_devices
 
