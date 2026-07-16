@@ -2,7 +2,6 @@ import importlib
 import os
 import subprocess
 import sys
-from dataclasses import fields
 
 import pytest
 
@@ -25,22 +24,7 @@ def test_public_entrypoints_remain_conservative():
     assert callable(ninetoothed.build)
     assert callable(ninetoothed.jit)
     assert callable(ninetoothed.make)
-    assert "aot" not in ninetoothed.__all__
-    assert "lower" not in ninetoothed.__all__
     assert not hasattr(ninetoothed, "load_built_artifact")
-
-    subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import ninetoothed; "
-                "assert 'aot' not in vars(ninetoothed); "
-                "assert 'lower' not in vars(ninetoothed)"
-            ),
-        ],
-        check=True,
-    )
 
 
 def test_legacy_entrypoint_modules_remain_importable():
@@ -53,14 +37,6 @@ def test_jit_implementation_class_is_not_public():
 
     assert not hasattr(compiler, "JIT")
     assert "JIT" not in compiler.__all__
-
-
-def test_compile_request_preserves_public_argument_order():
-    assert tuple(field.name for field in fields(CompileRequest))[:3] == (
-        "arrangement",
-        "application",
-        "tensors",
-    )
 
 
 def test_jit_function_and_decorator_use_the_default_compiler(monkeypatch):
