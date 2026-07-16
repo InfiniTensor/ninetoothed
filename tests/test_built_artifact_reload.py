@@ -1,6 +1,7 @@
 import pickle
 import subprocess
 import sys
+import uuid
 
 import pytest
 import torch
@@ -66,6 +67,50 @@ def test_aot_built_artifact_can_be_reloaded(backend, device, tmp_path):
         ],
         check=True,
     )
+
+
+def test_triton_aot_handle_is_reusable_across_cuda_contexts(tmp_path):
+    if not torch.cuda.is_available() or torch.cuda.device_count() < 2:
+        pytest.skip("Triton multi-context testing requires at least 2 CUDA devices")
+
+    capabilities = tuple(torch.cuda.get_device_capability(device) for device in (0, 1))
+
+    if capabilities[0] != capabilities[1]:
+        pytest.skip("Triton multi-context testing requires matching CUDA capabilities")
+
+    tensors = tuple(Tensor(shape=(257,), dtype=ninetoothed.float32) for _ in range(3))
+    compilation = DEFAULT_COMPILER.compile(
+        CompileRequest(
+            arrangement=_arrangement,
+            application=_application,
+            tensors=tensors,
+            backend="triton",
+            kernel_name=f"triton_multi_context_{uuid.uuid4().hex}",
+            max_num_configs=1,
+        )
+    )
+    handle = DEFAULT_COMPILER.materialize(
+        compilation,
+        output_dir=tmp_path,
+        mode="aot",
+    )
+
+    def check_launch(launch, device):
+        with torch.cuda.device(device):
+            input = torch.randn(257, device=device)
+            other = torch.randn_like(input)
+            output = torch.empty_like(input)
+            launch(input, other, output)
+            torch.cuda.synchronize()
+            torch.testing.assert_close(output, input + other)
+
+    for device in (0, 1, 0):
+        check_launch(handle, device)
+
+    reloaded = load_built_artifact(handle._built_artifact)
+
+    for device in (1, 0, 1):
+        check_launch(reloaded, device)
 
 
 @pytest.mark.parametrize("device", get_available_devices())

@@ -3,6 +3,7 @@
 import ctypes
 import functools
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,8 +20,20 @@ from ninetoothed.compiler.cache import (
     artifact_directory,
     cache_lock,
     compilation_cache_key,
+    read_manifest,
     write_manifest,
     write_source,
+)
+
+_TRITON_AOT_LAUNCHER_SCHEMA = 1
+_TRITON_MODULE_PATTERN = re.compile(
+    r"^CUmodule ([A-Za-z_][A-Za-z0-9_]*)_mod = NULL;$", re.MULTILINE
+)
+_TRITON_FUNCTION_PATTERN = re.compile(
+    r"^CUfunction ([A-Za-z_][A-Za-z0-9_]*)_func = NULL;$", re.MULTILINE
+)
+_TRITON_LOADER_PATTERN = re.compile(
+    r"^void load_([A-Za-z_][A-Za-z0-9_]*)\(\) \{$", re.MULTILINE
 )
 
 
@@ -49,12 +62,19 @@ class TritonMaterializer(Materializer):
             _runtime_specs,
         )
 
-        library = ctypes.CDLL(built.binary_path)
-        function = getattr(library, f"{built.source.kernel_name}_kernel_default")
-        function.restype = ctypes.c_int
+        _, function, enter, leave = _load_aot_exports(
+            built.binary_path,
+            built.source.kernel_name,
+        )
         specs = _runtime_specs(built.source)
 
-        return _aot_wrapper(function, _launch_abi_from_dict(built.abi), specs)
+        return _aot_wrapper(
+            function,
+            enter,
+            leave,
+            _launch_abi_from_dict(built.abi),
+            specs,
+        )
 
 
 def _ensure_c_compiler() -> None:
@@ -182,7 +202,7 @@ def _runtime_validator(compilation):
 
 
 def _aot_materialize(compilation, *, output_dir):
-    from ninetoothed.compiler.runtime import Handle, _built_manifest, _publish_library
+    from ninetoothed.compiler.runtime import Handle, _publish_library
 
     artifact = compilation.artifact
     cache_key = compilation_cache_key(compilation)
@@ -195,12 +215,11 @@ def _aot_materialize(compilation, *, output_dir):
     cache_library = artifact_directory(cache_key) / f"{artifact.kernel_name}.triton.so"
 
     with cache_lock(cache_library):
-        if not cache_library.is_file():
-            _compile_aot_library(compilation, source, cache_library)
+        _ensure_aot_library(compilation, source, cache_library)
 
         write_manifest(
             cache_library.with_suffix(".manifest.json"),
-            _built_manifest(compilation, cache_key, source, cache_library),
+            _triton_aot_manifest(compilation, cache_key, source, cache_library),
         )
 
     library_path = _publish_library(
@@ -208,12 +227,62 @@ def _aot_materialize(compilation, *, output_dir):
         output_dir,
         f"{artifact.kernel_name}.triton.so",
     )
-    library = ctypes.CDLL(str(library_path))
-    function = getattr(library, f"{artifact.kernel_name}_kernel_default")
-    function.restype = ctypes.c_int
-    wrapped = _aot_wrapper(function, compilation.launch_abi, compilation.kernel.tensors)
+    _, function, enter, leave = _load_aot_exports(
+        library_path,
+        artifact.kernel_name,
+    )
+    wrapped = _aot_wrapper(
+        function,
+        enter,
+        leave,
+        compilation.launch_abi,
+        compilation.kernel.tensors,
+    )
+    handle = Handle(compilation, function, wrapped, source, library_path)
+    write_manifest(
+        handle._built_artifact.manifest_path,
+        _triton_aot_manifest(compilation, cache_key, source, library_path),
+    )
 
-    return Handle(compilation, function, wrapped, source, library_path)
+    return handle
+
+
+def _ensure_aot_library(compilation, source: Path, library: Path) -> None:
+    manifest = read_manifest(library.with_suffix(".manifest.json"))
+    schema = None if manifest is None else manifest.get("triton_aot_launcher_schema")
+
+    if not library.is_file() or schema != _TRITON_AOT_LAUNCHER_SCHEMA:
+        _compile_aot_library(compilation, source, library)
+
+
+def _triton_aot_manifest(compilation, cache_key, source, library):
+    from ninetoothed.compiler.runtime import _built_manifest
+
+    return dict(_built_manifest(compilation, cache_key, source, library)) | {
+        "triton_aot_launcher_schema": _TRITON_AOT_LAUNCHER_SCHEMA,
+    }
+
+
+def _load_aot_exports(library_path, kernel_name):
+    library = ctypes.CDLL(str(library_path))
+    function = getattr(library, f"{kernel_name}_kernel_default")
+
+    try:
+        enter = library.ninetoothed_triton_enter
+        leave = library.ninetoothed_triton_leave
+    except AttributeError as exc:
+        raise RuntimeError(
+            "Triton AOT artifact is missing the CUDA context guard exports; "
+            "rebuild the artifact with the current NineToothed version."
+        ) from exc
+
+    function.restype = ctypes.c_int
+    enter.argtypes = []
+    enter.restype = ctypes.c_int
+    leave.argtypes = []
+    leave.restype = None
+
+    return library, function, enter, leave
 
 
 def _compile_aot_library(compilation, source: Path, library: Path) -> None:
@@ -262,6 +331,13 @@ def _compile_aot_library(compilation, source: Path, library: Path) -> None:
         if not headers or not sources:
             raise RuntimeError("Triton AOT compiler did not produce C artifacts.")
 
+        kernel_names = _triton_aot_kernel_names(sources)
+        context_guard = temporary / "ninetoothed_triton_context_guard.cu"
+        context_guard.write_text(
+            _triton_context_guard_source(kernel_names),
+            encoding="utf-8",
+        )
+
         subprocess.run(
             [
                 sys.executable,
@@ -279,18 +355,159 @@ def _compile_aot_library(compilation, source: Path, library: Path) -> None:
             [
                 find_nvcc(),
                 "-shared",
+                "-std=c++17",
                 "-Xcompiler",
                 "-fPIC",
+                "-Xcompiler",
+                "-pthread",
                 "-O3",
-                "-lcuda",
                 *(str(path) for path in sources),
                 str(linked.with_suffix(".c")),
+                str(context_guard),
+                "-lcuda",
+                "-Xlinker",
+                "-z",
+                "-Xlinker",
+                "defs",
                 "-o",
                 str(output),
             ],
             check=True,
         )
         os.replace(output, library)
+
+
+def _triton_aot_kernel_names(sources: tuple[Path, ...]) -> tuple[str, ...]:
+    """Return low-level kernels with matching module, function, and loader symbols."""
+    if not sources:
+        raise ValueError("Unsupported Triton AOT source format: no C sources found.")
+
+    kernel_names = []
+
+    for source in sources:
+        text = source.read_text(encoding="utf-8")
+        modules = _TRITON_MODULE_PATTERN.findall(text)
+        functions = _TRITON_FUNCTION_PATTERN.findall(text)
+        loaders = _TRITON_LOADER_PATTERN.findall(text)
+        module_names = set(modules)
+
+        if (
+            not modules
+            or len(modules) != len(module_names)
+            or len(functions) != len(set(functions))
+            or len(loaders) != len(set(loaders))
+            or module_names != set(functions)
+            or module_names != set(loaders)
+        ):
+            raise ValueError(
+                f"Unsupported Triton AOT source format in `{source}`: expected "
+                "one matching `CUmodule`, `CUfunction`, and `load_*` symbol per "
+                "low-level kernel."
+            )
+
+        kernel_names.extend(modules)
+
+    if len(kernel_names) != len(set(kernel_names)):
+        raise ValueError(
+            "Unsupported Triton AOT source format: duplicate low-level kernel symbols."
+        )
+    return tuple(kernel_names)
+
+
+def _triton_context_guard_source(kernel_names: tuple[str, ...]) -> str:
+    """Generate the CUDA-context guard linked beside Triton's AOT launchers."""
+    declarations = "\n".join(
+        (
+            f'extern "C" CUmodule {name}_mod;\n'
+            f'extern "C" CUfunction {name}_func;\n'
+            f'extern "C" void load_{name}(void);'
+        )
+        for name in kernel_names
+    )
+    resets_and_loads = "\n".join(
+        (
+            f"        {name}_mod = nullptr;\n"
+            f"        {name}_func = nullptr;\n"
+            f"        load_{name}();\n"
+            f"        if ({name}_mod == nullptr || {name}_func == nullptr) {{\n"
+            "            launch_mutex.unlock();\n"
+            "            return CUDA_ERROR_INVALID_HANDLE;\n"
+            "        }"
+        )
+        for name in kernel_names
+    )
+    stores = "\n".join(
+        (
+            f"        state.modules[{index}] = {name}_mod;\n"
+            f"        state.functions[{index}] = {name}_func;"
+        )
+        for index, name in enumerate(kernel_names)
+    )
+    restores = "\n".join(
+        (
+            f"        {name}_mod = found->second.modules[{index}];\n"
+            f"        {name}_func = found->second.functions[{index}];"
+        )
+        for index, name in enumerate(kernel_names)
+    )
+
+    return f"""#include <array>
+#include <cuda.h>
+#include <mutex>
+#include <unordered_map>
+
+{declarations}
+
+namespace {{
+struct State {{
+    std::array<CUmodule, {len(kernel_names)}> modules{{}};
+    std::array<CUfunction, {len(kernel_names)}> functions{{}};
+}};
+
+std::mutex launch_mutex;
+std::unordered_map<CUcontext, State> context_states;
+}}
+
+extern "C" CUresult ninetoothed_triton_enter(void) {{
+    launch_mutex.lock();
+
+    CUcontext context = nullptr;
+    CUresult result = cuCtxGetCurrent(&context);
+
+    if (result != CUDA_SUCCESS) {{
+        launch_mutex.unlock();
+        return result;
+    }}
+
+    if (context == nullptr) {{
+        launch_mutex.unlock();
+        return CUDA_ERROR_INVALID_CONTEXT;
+    }}
+
+    try {{
+        auto found = context_states.find(context);
+
+        if (found == context_states.end()) {{
+{resets_and_loads}
+
+            State state{{}};
+{stores}
+            context_states.emplace(context, state);
+        }} else {{
+{restores}
+        }}
+    }} catch (...) {{
+        launch_mutex.unlock();
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }}
+
+    return CUDA_SUCCESS;
+}}
+
+extern "C" void ninetoothed_triton_leave(void) {{
+    launch_mutex.unlock();
+}}
+"""
 
 
 def _compile_signature(compilation) -> str:
@@ -421,7 +638,7 @@ def _compile_schedule(compilation) -> tuple[int, int]:
     return int(warps), int(stages)
 
 
-def _aot_wrapper(function, abi, tensor_specs):
+def _aot_wrapper(function, enter, leave, abi, tensor_specs):
     from ninetoothed.compiler.runtime import (
         KernelLaunchError,
         _bound_values,
@@ -462,7 +679,16 @@ def _aot_wrapper(function, abi, tensor_specs):
             cuda_scalar=_triton_aot_scalar,
         )
         stream = ctypes.c_void_p(torch.cuda.current_stream().cuda_stream)
-        result = function(stream, *values)
+        enter_result = enter()
+
+        if enter_result != 0:
+            raise KernelLaunchError(enter_result)
+
+        try:
+            result = function(stream, *values)
+        finally:
+            leave()
+
         del keepalive
 
         if result != 0:
