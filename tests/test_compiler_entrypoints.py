@@ -19,11 +19,10 @@ def _application(input, other, output):
     output = input + other  # noqa: F841
 
 
-def test_public_entrypoints_are_functions_backed_by_default_compiler():
+def test_public_entrypoints_remain_conservative():
     assert isinstance(DEFAULT_COMPILER, Compiler)
-    assert callable(ninetoothed.aot)
+    assert callable(ninetoothed.build)
     assert callable(ninetoothed.jit)
-    assert callable(ninetoothed.lower)
     assert callable(ninetoothed.make)
     assert not hasattr(ninetoothed, "load_built_artifact")
 
@@ -64,7 +63,7 @@ def test_pure_lowering_does_not_query_runtime_cuda_architecture(monkeypatch):
         raise AssertionError("Pure lowering must not query a runtime device.")
 
     monkeypatch.setattr(cache, "_runtime_cuda_architecture", unexpected_query)
-    artifact = ninetoothed.lower(
+    artifact = compiler_driver.lower(
         _arrangement,
         _application,
         (Tensor(1), Tensor(1), Tensor(1)),
@@ -165,8 +164,8 @@ def test_triton_launch_plan_contains_limited_runtime_variants():
         {"max_num_configs": 2},
     ),
 )
-def test_non_triton_backends_reject_unsupported_autotuning(backend, options):
-    with pytest.raises(NotImplementedError, match="autotuning is not supported"):
+def test_non_triton_backends_reject_unsupported_auto_tuning(backend, options):
+    with pytest.raises(NotImplementedError, match="auto-tuning is not supported"):
         DEFAULT_COMPILER.compile(
             CompileRequest(
                 arrangement=_arrangement,

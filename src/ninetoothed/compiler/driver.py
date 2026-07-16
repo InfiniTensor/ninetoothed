@@ -31,9 +31,9 @@ from .specialization import (
 
 @dataclass(frozen=True, kw_only=True)
 class CompileRequest:
+    arrangement: Any | None = None
     application: Any
     tensors: tuple[Any, ...] = ()
-    arrangement: Any | None = None
     backend: Target | str | None = None
     caller: str = "torch"
     kernel_name: str | None = None
@@ -142,8 +142,8 @@ def make(
 
     return DEFAULT_COMPILER.materialize(
         CompileRequest(
-            application=application,
             arrangement=arrangement,
+            application=application,
             tensors=tuple(tensors),
             backend=backend,
             caller=caller,
@@ -180,8 +180,8 @@ def lower(
     """Lower a NineToothed kernel without initializing a backend runtime."""
     compilation = DEFAULT_COMPILER.compile(
         CompileRequest(
-            application=application,
             arrangement=arrangement,
+            application=application,
             tensors=tuple(tensors),
             backend=backend,
             caller=caller,
@@ -486,7 +486,7 @@ def _validate_tuning_options(target: Target, request: CompileRequest) -> None:
         or request.max_num_configs not in {None, 1}
     ):
         raise NotImplementedError(
-            f"Backend autotuning is not supported for `{target.value}` yet; "
+            f"Backend auto-tuning is not supported for `{target.value}` yet; "
             "use scalar num_warps/num_stages and max_num_configs=1."
         )
 

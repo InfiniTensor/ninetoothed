@@ -36,7 +36,7 @@ def test_auto_tuning_generation(
     if backend != "triton" and (
         isinstance(num_warps, tuple) or isinstance(num_stages, tuple)
     ):
-        with pytest.raises(NotImplementedError, match="autotuning is not supported"):
+        with pytest.raises(NotImplementedError, match="auto-tuning is not supported"):
             ninetoothed.make(
                 arrangement,
                 application,
