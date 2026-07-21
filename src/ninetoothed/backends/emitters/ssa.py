@@ -6,6 +6,7 @@ plans before lowering.  Backend-specific code is limited to spelling scalar
 expressions, loops, buffers, and launch wrappers.
 """
 
+import functools
 import json
 import re
 from dataclasses import replace
@@ -669,7 +670,12 @@ def _with_contiguous_1d_fast_path(
     predicate = (
         " && ".join(f"({stride} == 1)" for stride in stride_params)
         if target.c_style_syntax
-        else " and ".join(f"({stride} == 1)" for stride in stride_params)
+        # Some Triton frontends (e.g. MetaX's) reject chained boolean operators
+        # (a and b and c), so nest them pairwise into two-operand comparisons.
+        else functools.reduce(
+            lambda acc, term: f"({acc} and {term})",
+            (f"({stride} == 1)" for stride in stride_params),
+        )
     )
 
     if target.c_style_syntax:
