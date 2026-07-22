@@ -181,6 +181,7 @@ def _candidate_launch(compilation, launch, kernel, candidate):
         _ninetoothed_num_warps=int(candidate["num_warps"]),
         _ninetoothed_num_stages=int(candidate["num_stages"]),
     )
+
     return _runtime_wrapper(
         function,
         compilation.launch_abi,
@@ -324,6 +325,7 @@ def _tuned_runtime_launch(tuner, candidates_by_launch, handle, compilation):
         ):
             prepared_calls[identity] = cached
             activate(identity, cached)
+
             return cached[1]._ninetoothed_invoke_prepared(cached[2], args, kwargs)
 
         public = _public_values(
@@ -361,10 +363,12 @@ def _tuned_runtime_launch(tuner, candidates_by_launch, handle, compilation):
             selected = tuner._best_func[key]
             prepared = selected._ninetoothed_prepare(args, kwargs, public=public)
             remember(identity, key, selected, prepared)
+
             return result
 
         prepared = selected._ninetoothed_prepare(args, kwargs, public=public)
         remember(identity, key, selected, prepared)
+
         return selected._ninetoothed_invoke_prepared(prepared, args, kwargs)
 
     return launch
@@ -393,6 +397,7 @@ def _triton_specialization_key(compilation, args, kwargs):
         scalar_values.append((binding.source, type(value).__name__, repr(value)))
 
     base = AutoTuner._make_arg_key(args, kwargs)
+
     return f"{base}, specialization={tuple(scalar_values)!r}"
 
 

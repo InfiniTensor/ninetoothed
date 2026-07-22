@@ -353,10 +353,12 @@ class _RuntimeValueContract:
 
         if current_state != self.tensor_state:
             return False
+
         if self.scalar_value is None:
             return True
 
         item = value.item()
+
         return type(item) is self.scalar_value[0] and item == self.scalar_value[1]
 
 
@@ -440,6 +442,7 @@ class _VerifiedRuntimeCall:
             return None
 
         first, second = args
+
         return (
             expected_name,
             type(scalar),
@@ -570,6 +573,7 @@ def _verified_runtime_launch(launch):
         ):
             prepared_calls[identity] = cached
             activate(identity, cached)
+
             return launch._ninetoothed_invoke_prepared(cached, args, kwargs)
 
         prepared = launch._ninetoothed_prepare(args, kwargs)
@@ -579,6 +583,7 @@ def _verified_runtime_launch(launch):
             else identity,
             prepared,
         )
+
         return launch._ninetoothed_invoke_prepared(prepared, args, kwargs)
 
     return verified
@@ -890,6 +895,7 @@ def _first_output_from_call(abi, args, kwargs):
 
     name = abi.outputs[0]
     index = abi.public_args.index(name)
+
     return args[index] if index < len(args) else kwargs[name]
 
 

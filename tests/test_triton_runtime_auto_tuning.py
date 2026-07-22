@@ -88,6 +88,7 @@ class _FakeTuner:
         key = self._make_arg_key(args, kwargs)
         selected = self._funcs[0] if args[0].shape[0] == 4 else self._funcs[1]
         self._best_func[key] = selected
+
         return selected(*args, **kwargs)
 
 
@@ -125,6 +126,7 @@ def _runtime_fixture(*, with_constexpr=False):
         handle,
         compilation,
     )
+
     return launch, tuner, handle, calls
 
 
@@ -152,6 +154,7 @@ def test_triton_single_and_plain_materialization_use_verified_launch(
 
     def raw_launch(*values, **kwargs):
         raw_calls.append((values, kwargs))
+
         return values[0]
 
     class FakeHandle:
@@ -180,6 +183,7 @@ def test_triton_single_and_plain_materialization_use_verified_launch(
     def public(*args, **kwargs):
         nonlocal public_calls
         public_calls += 1
+
         return original_public(*args, **kwargs)
 
     monkeypatch.setattr(runtime, "Handle", FakeHandle)
@@ -228,6 +232,7 @@ def _verified_runtime_fixture(*, with_constexpr=False, outputs=()):
         lambda *values: calls.append(values),
         abi,
     )
+
     return runtime._verified_runtime_launch(wrapped), calls
 
 
@@ -238,6 +243,7 @@ def test_verified_runtime_launch_rebinds_zero_dimensional_value(monkeypatch):
     def bound(*args, **kwargs):
         nonlocal binding_calls
         binding_calls += 1
+
         return original_bound(*args, **kwargs)
 
     monkeypatch.setattr(runtime, "_bound_values", bound)
@@ -261,6 +267,7 @@ def test_verified_runtime_launch_keeps_eight_recent_identities(monkeypatch):
     def bound(*args, **kwargs):
         nonlocal binding_calls
         binding_calls += 1
+
         return original_bound(*args, **kwargs)
 
     monkeypatch.setattr(runtime, "_bound_values", bound)
@@ -297,8 +304,10 @@ def test_verified_runtime_launch_preserves_argument_errors():
 
     with pytest.raises(TypeError, match="passed twice"):
         launch(value, 2, scale=2)
+
     with pytest.raises(TypeError, match="Missing kernel arguments"):
         launch(value)
+
     with pytest.raises(TypeError, match="Unknown kernel arguments"):
         launch(value, 2, unknown=True)
 
@@ -366,6 +375,7 @@ def test_triton_prepared_invocation_caches_grid_without_launching(monkeypatch):
 
             def launch(*args, **kwargs):
                 kernel_calls.append((args, kwargs))
+
                 return object()
 
             return launch
@@ -375,13 +385,15 @@ def test_triton_prepared_invocation_caches_grid_without_launching(monkeypatch):
 
     def generated_launch(value, size, _ninetoothed_num_warps=4):
         if size <= 0:
-            raise ValueError("size must be positive")
+            raise ValueError("Size must be positive.")
+
         _prepared_test_kernel[(size,)](
             value,
             size,
             BLOCK=1,
             num_warps=_ninetoothed_num_warps,
         )
+
         return value
 
     function = functools.partial(generated_launch, _ninetoothed_num_warps=8)
@@ -413,11 +425,13 @@ def test_triton_direct_winner_reuses_verified_binding_and_restores_aba(monkeypat
     def public(*args, **kwargs):
         nonlocal public_calls
         public_calls += 1
+
         return original_public(*args, **kwargs)
 
     def bound(*args, **kwargs):
         nonlocal binding_calls
         binding_calls += 1
+
         return original_bound(*args, **kwargs)
 
     monkeypatch.setattr(runtime, "_public_values", public)
@@ -514,8 +528,10 @@ def test_triton_direct_winner_validates_constexpr_and_argument_errors():
 
     with pytest.raises(TypeError, match="passed twice"):
         launch(tensor, 2, scale=2)
+
     with pytest.raises(TypeError, match="Missing kernel arguments"):
         launch(tensor)
+
     with pytest.raises(TypeError, match="Unknown kernel arguments"):
         launch(tensor, 2, unknown=True)
 
