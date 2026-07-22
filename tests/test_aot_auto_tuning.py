@@ -54,7 +54,7 @@ def test_auto_tuning(size, dtype, device, ninetoothed_dtype, rtol, atol):
     output_dir = CACHE_DIR / "test_auto_tuning"
 
     shutil.rmtree(output_dir, ignore_errors=True)
-    output_dir.mkdir()
+    output_dir.mkdir(parents=True)
 
     configs = (
         ((), {"size": 20260128, "dtype": ninetoothed.float16, "block_size": 256}, {}),

@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 from dataclasses import replace
 from pathlib import Path
 
@@ -99,6 +100,7 @@ def _materialize(compilation):
     from ninetoothed.compiler.runtime import (
         Handle,
         _runtime_wrapper,
+        _verified_runtime_launch,
         import_python_module,
     )
 
@@ -115,16 +117,23 @@ def _materialize(compilation):
     os.environ.setdefault("TRITON_CACHE_DIR", str(TRITON_CACHE_DIR))
     module = import_python_module(source)
     launch = getattr(module, artifact.entrypoint)
+    kernel = getattr(module, f"{artifact.kernel_name}_kernel", None)
     candidates = tuple(compilation.launch_plan.tuning_candidates)
     candidate_launches = tuple(
-        _candidate_launch(compilation, launch, candidate) for candidate in candidates
+        _candidate_launch(compilation, launch, kernel, candidate)
+        for candidate in candidates
     )
     tuner = None
 
     if len(candidate_launches) > 1:
         from ninetoothed.auto_tuner import AutoTuner
 
-        tuner = AutoTuner(
+        class TritonAutoTuner(AutoTuner):
+            @staticmethod
+            def _make_arg_key(args, kwargs):
+                return _triton_specialization_key(compilation, args, kwargs)
+
+        tuner = TritonAutoTuner(
             candidate_launches,
             tuple((cache_key, candidate["id"]) for candidate in candidates),
             cache_namespace=f"jit_{cache_key}",
@@ -132,59 +141,259 @@ def _materialize(compilation):
         )
         wrapped = tuner
     elif candidate_launches:
-        wrapped = candidate_launches[0]
+        wrapped = _verified_runtime_launch(candidate_launches[0])
     else:
-        wrapped = _runtime_wrapper(
-            launch,
-            compilation.launch_abi,
-            specs=compilation.kernel.tensors,
+        wrapped = _verified_runtime_launch(
+            _runtime_wrapper(
+                launch,
+                compilation.launch_abi,
+                specs=compilation.kernel.tensors,
+                prepare_invocation=_triton_prepare_invocation(launch, kernel),
+            )
         )
 
-    kernel = getattr(module, f"{artifact.kernel_name}_kernel", None)
     handle = Handle(compilation, kernel, wrapped, source)
     handle._tuner = tuner
     handle._selected_tuning_candidate = candidates[0] if len(candidates) == 1 else None
 
     if tuner is not None:
         by_launch = dict(zip(candidate_launches, candidates))
-
-        def tuned_launch(*args, **kwargs):
-            result = tuner(*args, **kwargs)
-            arg_key = tuner._make_arg_key(args, kwargs)
-            handle._selected_tuning_candidate = by_launch[tuner._best_func[arg_key]]
-
-            return result
-
-        handle._launch = tuned_launch
+        handle._launch = _tuned_runtime_launch(
+            tuner,
+            by_launch,
+            handle,
+            compilation,
+        )
 
     return handle
 
 
-def _candidate_launch(compilation, launch, candidate):
+def _candidate_launch(compilation, launch, kernel, candidate):
     from ninetoothed.compiler.runtime import _runtime_wrapper
 
-    wrapped = _runtime_wrapper(
-        functools.partial(
-            launch,
-            _ninetoothed_num_warps=int(candidate["num_warps"]),
-            _ninetoothed_num_stages=int(candidate["num_stages"]),
-        ),
-        compilation.launch_abi,
-        specs=compilation.kernel.tensors,
-    )
     bindings = {binding.name: binding for binding in compilation.launch_abi.kernel_args}
-    meta_kwargs = {
+    meta_values = {
         str(bindings[name].source): value
         for name, value in dict(candidate.get("meta_parameters", {})).items()
     }
+    function = functools.partial(
+        launch,
+        _ninetoothed_num_warps=int(candidate["num_warps"]),
+        _ninetoothed_num_stages=int(candidate["num_stages"]),
+    )
+    return _runtime_wrapper(
+        function,
+        compilation.launch_abi,
+        specs=compilation.kernel.tensors,
+        binding_overrides=meta_values,
+        prepare_invocation=_triton_prepare_invocation(function, kernel),
+    )
 
-    if not meta_kwargs:
-        return wrapped
 
-    def launch_candidate(*args, **kwargs):
-        return wrapped(*args, **(dict(kwargs) | meta_kwargs))
+def _triton_prepare_invocation(function, kernel):
+    if kernel is None:
+        return None
 
-    return launch_candidate
+    target = getattr(function, "func", function)
+
+    if not isinstance(target, types.FunctionType):
+        return None
+
+    kernel_names = tuple(
+        name
+        for name in target.__code__.co_names
+        if target.__globals__.get(name) is kernel
+    )
+
+    if len(kernel_names) != 1:
+        return None
+
+    kernel_name = kernel_names[0]
+    partial_args = getattr(function, "args", ())
+    partial_keywords = getattr(function, "keywords", None) or {}
+
+    def prepare(values):
+        calls = []
+
+        class KernelProxy:
+            def __getitem__(self, grid):
+                bound_kernel = kernel[grid]
+
+                def capture(*args, **kwargs):
+                    calls.append((bound_kernel, args, kwargs))
+
+                return capture
+
+        globals_copy = dict(target.__globals__)
+        globals_copy[kernel_name] = KernelProxy()
+        dry_launch = types.FunctionType(
+            target.__code__,
+            globals_copy,
+            target.__name__,
+            target.__defaults__,
+            target.__closure__,
+        )
+        dry_launch.__kwdefaults__ = target.__kwdefaults__
+        functools.partial(
+            dry_launch,
+            *partial_args,
+            **partial_keywords,
+        )(*values)
+        bound_calls = tuple(calls)
+
+        if not bound_calls:
+            return None
+
+        def invoke():
+            for bound_kernel, args, kwargs in bound_calls:
+                bound_kernel(*args, **kwargs)
+
+        return invoke
+
+    return prepare
+
+
+def _runtime_outputs_alias_inputs(abi, public):
+    outputs = {
+        name: public[name]
+        for name in abi.outputs
+        if name in public and hasattr(public[name], "data_ptr")
+    }
+
+    for output_name, output in outputs.items():
+        for input_name, value in public.items():
+            if input_name == output_name or not hasattr(value, "data_ptr"):
+                continue
+
+            if output is value:
+                return True
+
+            try:
+                same_device = output.device == value.device
+                output_storage = output.untyped_storage().data_ptr()
+                input_storage = value.untyped_storage().data_ptr()
+            except (AttributeError, RuntimeError, TypeError):
+                continue
+
+            if same_device and output_storage == input_storage:
+                return True
+
+    return False
+
+
+def _tuned_runtime_launch(tuner, candidates_by_launch, handle, compilation):
+    from ninetoothed.compiler.runtime import (
+        _empty_launch,
+        _first_output,
+        _public_values,
+        _remember_verified_runtime_call,
+        _runtime_call_identity,
+    )
+
+    active_identity = None
+    active = None
+    prepared_calls = {}
+
+    def activate(identity, entry):
+        nonlocal active, active_identity
+        active_identity = identity
+        active = entry
+        handle._selected_tuning_candidate = candidates_by_launch[entry[1]]
+
+    def remember(identity, key, selected, prepared):
+        entry = (key, selected, prepared)
+        _remember_verified_runtime_call(prepared_calls, identity, entry)
+        activate(identity, entry)
+
+    def launch(*args, **kwargs):
+        identity = _runtime_call_identity(args, kwargs)
+
+        if (
+            active is not None
+            and identity == active_identity
+            and active[2].guard.matches(args, kwargs, identity_verified=True)
+        ):
+            return active[1]._ninetoothed_invoke_prepared(active[2], args, kwargs)
+
+        cached = prepared_calls.pop(identity, None)
+
+        if cached is not None and cached[2].guard.matches(
+            args,
+            kwargs,
+            identity_verified=True,
+        ):
+            prepared_calls[identity] = cached
+            activate(identity, cached)
+            return cached[1]._ninetoothed_invoke_prepared(cached[2], args, kwargs)
+
+        public = _public_values(
+            compilation.launch_abi,
+            args,
+            kwargs,
+            specs=compilation.kernel.tensors,
+        )
+
+        if _empty_launch(compilation.launch_abi, public):
+            return _first_output(compilation.launch_abi, public)
+
+        key = tuner._make_arg_key(args, kwargs)
+        selected = next(
+            (
+                entry[1]
+                for entry in reversed(tuple(prepared_calls.values()))
+                if entry[0] == key
+            ),
+            None,
+        )
+
+        if selected is None and cached is not None and cached[0] == key:
+            selected = cached[1]
+
+        if selected is None and _runtime_outputs_alias_inputs(
+            compilation.launch_abi,
+            public,
+        ):
+            selected = tuner._funcs[0]
+            tuner._best_func[key] = selected
+
+        if selected is None:
+            result = tuner(*args, **kwargs)
+            selected = tuner._best_func[key]
+            prepared = selected._ninetoothed_prepare(args, kwargs, public=public)
+            remember(identity, key, selected, prepared)
+            return result
+
+        prepared = selected._ninetoothed_prepare(args, kwargs, public=public)
+        remember(identity, key, selected, prepared)
+        return selected._ninetoothed_invoke_prepared(prepared, args, kwargs)
+
+    return launch
+
+
+def _triton_specialization_key(compilation, args, kwargs):
+    from ninetoothed.auto_tuner import AutoTuner
+
+    public = dict(zip(compilation.launch_abi.public_args, args))
+    public.update(kwargs)
+    scalar_values = []
+
+    for binding in compilation.launch_abi.kernel_args:
+        if (
+            binding.kind not in {"scalar", "constexpr", "meta"}
+            or binding.source not in public
+        ):
+            continue
+
+        value = public[binding.source]
+        shape = getattr(value, "shape", None)
+
+        if shape is not None and not tuple(shape) and hasattr(value, "item"):
+            value = value.item()
+
+        scalar_values.append((binding.source, type(value).__name__, repr(value)))
+
+    base = AutoTuner._make_arg_key(args, kwargs)
+    return f"{base}, specialization={tuple(scalar_values)!r}"
 
 
 def _runtime_validator(compilation):

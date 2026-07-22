@@ -7,10 +7,10 @@ import os
 import shutil
 import sys
 import tempfile
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 
 from ninetoothed.backends.core import BuiltArtifact, Target
 from ninetoothed.compiler.cache import (
@@ -267,32 +267,405 @@ def _runtime_dtypes(compilation, public) -> dict[str, str]:
     return result
 
 
+@dataclass(frozen=True)
+class _RuntimeValueContract:
+    is_tensor: bool
+    identity: int
+    value_type: type
+    value: Any = None
+    shape: tuple | None = None
+    stride: tuple | None = None
+    dtype: Any = None
+    device: Any = None
+    data_ptr: int | None = None
+    storage_offset: int | None = None
+    scalar_value: tuple[type, Any] | None = None
+    stride_callable: bool = False
+    data_ptr_callable: bool = False
+    storage_offset_callable: bool = False
+    tensor_state: tuple | None = None
+
+    @classmethod
+    def from_value(cls, value, *, compare_scalar_tensor=False):
+        shape = getattr(value, "shape", None)
+
+        if shape is None or not hasattr(value, "dtype"):
+            return cls(False, 0, type(value), value=value)
+
+        stride = getattr(value, "stride", None)
+        data_ptr = getattr(value, "data_ptr", None)
+        storage_offset = getattr(value, "storage_offset", None)
+        shape = tuple(shape)
+        stride_callable = callable(stride)
+        data_ptr_callable = callable(data_ptr)
+        storage_offset_callable = callable(storage_offset)
+        stride_value = tuple(stride()) if stride_callable else None
+        device = getattr(value, "device", None)
+        data_ptr_value = data_ptr() if data_ptr_callable else None
+        storage_offset_value = storage_offset() if storage_offset_callable else None
+        scalar_value = None
+
+        if compare_scalar_tensor and not shape:
+            item = value.item()
+            scalar_value = (type(item), item)
+
+        return cls(
+            True,
+            id(value),
+            type(value),
+            shape=shape,
+            stride=stride_value,
+            dtype=value.dtype,
+            device=device,
+            data_ptr=data_ptr_value,
+            storage_offset=storage_offset_value,
+            scalar_value=scalar_value,
+            stride_callable=stride_callable,
+            data_ptr_callable=data_ptr_callable,
+            storage_offset_callable=storage_offset_callable,
+            tensor_state=(
+                shape,
+                stride_value,
+                value.dtype,
+                device,
+                data_ptr_value,
+                storage_offset_value,
+            ),
+        )
+
+    def matches(self, value, *, identity_verified=False) -> bool:
+        if not self.is_tensor:
+            return type(value) is self.value_type and value == self.value
+
+        if not identity_verified and (
+            id(value) != self.identity or type(value) is not self.value_type
+        ):
+            return False
+
+        current_state = (
+            getattr(value, "shape", None),
+            value.stride() if self.stride_callable else None,
+            getattr(value, "dtype", None),
+            getattr(value, "device", None),
+            value.data_ptr() if self.data_ptr_callable else None,
+            value.storage_offset() if self.storage_offset_callable else None,
+        )
+
+        if current_state != self.tensor_state:
+            return False
+        if self.scalar_value is None:
+            return True
+
+        item = value.item()
+        return type(item) is self.scalar_value[0] and item == self.scalar_value[1]
+
+
+@dataclass(frozen=True)
+class _VerifiedRuntimeCall:
+    positional: tuple[_RuntimeValueContract, ...]
+    keywords: tuple[tuple[str, _RuntimeValueContract], ...]
+    two_tensor_state: tuple | None = None
+
+    @classmethod
+    def from_call(cls, abi, args, kwargs):
+        scalar_sources = {
+            binding.source
+            for binding in abi.kernel_args
+            if binding.kind in {"scalar", "constexpr", "meta"}
+        }
+        positional_names = abi.public_args[: len(args)]
+        positional = tuple(
+            _RuntimeValueContract.from_value(
+                value,
+                compare_scalar_tensor=name in scalar_sources,
+            )
+            for name, value in zip(positional_names, args)
+        )
+        keywords = tuple(
+            (
+                name,
+                _RuntimeValueContract.from_value(
+                    value,
+                    compare_scalar_tensor=name in scalar_sources,
+                ),
+            )
+            for name, value in kwargs.items()
+        )
+        two_tensor_state = None
+
+        if (
+            len(positional) == 2
+            and all(
+                contract.is_tensor
+                and contract.stride_callable
+                and contract.data_ptr_callable
+                and contract.storage_offset_callable
+                for contract in positional
+            )
+            and len(keywords) == 1
+            and not keywords[0][1].is_tensor
+        ):
+            scalar = keywords[0][1]
+
+            try:
+                hash(scalar.value)
+            except TypeError:
+                pass
+            else:
+                two_tensor_state = (
+                    keywords[0][0],
+                    scalar.value_type,
+                    scalar.value,
+                    positional[0].identity,
+                    positional[0].value_type,
+                    *positional[0].tensor_state,
+                    positional[1].identity,
+                    positional[1].value_type,
+                    *positional[1].tensor_state,
+                )
+        return cls(positional, keywords, two_tensor_state)
+
+    def call_key(self, args, kwargs):
+        if self.two_tensor_state is None or len(args) != 2 or len(kwargs) != 1:
+            return None
+
+        expected_name = self.keywords[0][0]
+
+        try:
+            scalar = kwargs[expected_name]
+        except KeyError:
+            return None
+
+        if type(scalar) is not self.keywords[0][1].value_type:
+            return None
+
+        first, second = args
+        return (
+            expected_name,
+            type(scalar),
+            scalar,
+            id(first),
+            type(first),
+            first.shape,
+            first.stride(),
+            first.dtype,
+            first.device,
+            first.data_ptr(),
+            first.storage_offset(),
+            id(second),
+            type(second),
+            second.shape,
+            second.stride(),
+            second.dtype,
+            second.device,
+            second.data_ptr(),
+            second.storage_offset(),
+        )
+
+    def matches(
+        self,
+        args,
+        kwargs,
+        *,
+        identity_verified=False,
+        call_key=None,
+    ) -> bool:
+        if len(args) != len(self.positional) or len(kwargs) != len(self.keywords):
+            return False
+
+        if self.two_tensor_state is not None:
+            if call_key is None:
+                call_key = self.call_key(args, kwargs)
+            return call_key == self.two_tensor_state
+
+        for contract, value in zip(self.positional, args):
+            if not contract.matches(value, identity_verified=identity_verified):
+                return False
+
+        for (name, value), (expected_name, contract) in zip(
+            kwargs.items(), self.keywords
+        ):
+            if name != expected_name or not contract.matches(
+                value,
+                identity_verified=identity_verified,
+            ):
+                return False
+        return True
+
+
+@dataclass(frozen=True)
+class _PreparedRuntimeLaunch:
+    guard: _VerifiedRuntimeCall
+    values: tuple
+    keepalive: tuple
+    empty: bool
+    invocation: Callable[[], Any] | None = None
+
+
+_VERIFIED_RUNTIME_CALL_CACHE_SIZE = 8
+
+
+def _runtime_call_identity(args, kwargs):
+    return (len(args), *map(id, args), *map(id, kwargs.values()))
+
+
+def _two_tensor_call_identity(call_key):
+    return (call_key[3], call_key[11], call_key[1], call_key[2])
+
+
+def _remember_verified_runtime_call(prepared_calls, identity, prepared):
+    prepared_calls.pop(identity, None)
+
+    if len(prepared_calls) >= _VERIFIED_RUNTIME_CALL_CACHE_SIZE:
+        prepared_calls.pop(next(iter(prepared_calls)))
+
+    prepared_calls[identity] = prepared
+
+
+def _verified_runtime_launch(launch):
+    active_identity = None
+    active = None
+    prepared_calls = {}
+
+    def activate(identity, prepared):
+        nonlocal active, active_identity
+        active_identity = identity
+        active = prepared
+
+    def remember(identity, prepared):
+        _remember_verified_runtime_call(prepared_calls, identity, prepared)
+        activate(identity, prepared)
+
+    def verified(*args, **kwargs):
+        call_key = (
+            active.guard.call_key(args, kwargs)
+            if active is not None and active.guard.two_tensor_state is not None
+            else None
+        )
+        identity = (
+            _two_tensor_call_identity(call_key)
+            if call_key is not None
+            else _runtime_call_identity(args, kwargs)
+        )
+
+        if (
+            active is not None
+            and identity == active_identity
+            and active.guard.matches(
+                args,
+                kwargs,
+                identity_verified=True,
+                call_key=call_key,
+            )
+        ):
+            return launch._ninetoothed_invoke_prepared(active, args, kwargs)
+
+        cached = prepared_calls.pop(identity, None)
+
+        if cached is not None and cached.guard.matches(
+            args,
+            kwargs,
+            identity_verified=True,
+            call_key=call_key,
+        ):
+            prepared_calls[identity] = cached
+            activate(identity, cached)
+            return launch._ninetoothed_invoke_prepared(cached, args, kwargs)
+
+        prepared = launch._ninetoothed_prepare(args, kwargs)
+        remember(
+            _two_tensor_call_identity(prepared.guard.two_tensor_state)
+            if prepared.guard.two_tensor_state is not None
+            else identity,
+            prepared,
+        )
+        return launch._ninetoothed_invoke_prepared(prepared, args, kwargs)
+
+    return verified
+
+
 def _runtime_wrapper(
     function,
     abi: LaunchABI,
     *,
     low_level: bool = True,
     specs=(),
+    binding_overrides=None,
+    prepare_invocation=None,
 ):
-    def launch(*args, **kwargs):
-        public = _public_values(abi, args, kwargs, specs=specs)
+    overrides = dict(binding_overrides or {})
+
+    def prepare(args, kwargs, *, public=None):
+        if public is None:
+            public = _public_values(abi, args, kwargs, specs=specs)
+
+        bound_public = dict(public) | overrides
 
         if _empty_launch(abi, public):
-            return _first_output(abi, public)
+            return _PreparedRuntimeLaunch(
+                _VerifiedRuntimeCall.from_call(abi, args, kwargs),
+                (),
+                (),
+                True,
+            )
 
-        values, keepalive = _bound_values(abi, public, scalar_mode="value")
+        values, keepalive = _bound_values(abi, bound_public, scalar_mode="value")
         bindings = abi.kernel_args
 
         if low_level:
             values, flattened = _flatten_ffi_tensor_args(bindings, values)
             keepalive.extend(flattened)
 
-        result = function(*values) if low_level else function(*args)
+        values = tuple(values)
+
+        return _PreparedRuntimeLaunch(
+            _VerifiedRuntimeCall.from_call(abi, args, kwargs),
+            values,
+            tuple(keepalive),
+            False,
+            prepare_invocation(values) if prepare_invocation is not None else None,
+        )
+
+    def invoke(prepared, args, kwargs):
+        if prepared.empty:
+            return _first_output_from_call(abi, args, kwargs)
+
+        if prepared.invocation is not None:
+            result = prepared.invocation()
+        else:
+            result = (
+                function(*prepared.values) if low_level else function(*args, **kwargs)
+            )
+
+        if result is not None and not abi.outputs:
+            return result
+        return _first_output_from_call(abi, args, kwargs)
+
+    def launch(*args, **kwargs):
+        public = _public_values(abi, args, kwargs, specs=specs)
+
+        if _empty_launch(abi, public):
+            return _first_output(abi, public)
+
+        values, keepalive = _bound_values(
+            abi,
+            dict(public) | overrides,
+            scalar_mode="value",
+        )
+
+        if low_level:
+            values, flattened = _flatten_ffi_tensor_args(abi.kernel_args, values)
+            keepalive.extend(flattened)
+
+        result = function(*values) if low_level else function(*args, **kwargs)
         del keepalive
 
-        if result is not None:
+        if result is not None and not abi.outputs:
             return result
         return _first_output(abi, public)
+
+    launch._ninetoothed_prepare = prepare
+    launch._ninetoothed_invoke_prepared = invoke
 
     return launch
 
@@ -509,6 +882,15 @@ def _jagged_binding_value(binding: LaunchBinding, value):
 
 def _first_output(abi, public):
     return public[abi.outputs[0]] if abi.outputs else None
+
+
+def _first_output_from_call(abi, args, kwargs):
+    if not abi.outputs:
+        return None
+
+    name = abi.outputs[0]
+    index = abi.public_args.index(name)
+    return args[index] if index < len(args) else kwargs[name]
 
 
 def _empty_launch(abi, public) -> bool:
