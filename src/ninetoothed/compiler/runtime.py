@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 import tempfile
+import weakref
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -267,6 +268,17 @@ def _runtime_dtypes(compilation, public) -> dict[str, str]:
     return result
 
 
+def _is_cacheable_runtime_literal(value) -> bool:
+    return (
+        value is None
+        or type(value) in (bool, int, float, complex, str, bytes)
+        or (
+            isinstance(value, tuple)
+            and all(_is_cacheable_runtime_literal(item) for item in value)
+        )
+    )
+
+
 @dataclass(frozen=True)
 class _RuntimeValueContract:
     is_tensor: bool
@@ -284,6 +296,10 @@ class _RuntimeValueContract:
     data_ptr_callable: bool = False
     storage_offset_callable: bool = False
     tensor_state: tuple | None = None
+
+    @property
+    def cacheable(self) -> bool:
+        return self.is_tensor or _is_cacheable_runtime_literal(self.value)
 
     @classmethod
     def from_value(cls, value, *, compare_scalar_tensor=False):
@@ -367,6 +383,12 @@ class _VerifiedRuntimeCall:
     positional: tuple[_RuntimeValueContract, ...]
     keywords: tuple[tuple[str, _RuntimeValueContract], ...]
     two_tensor_state: tuple | None = None
+
+    @property
+    def cacheable(self) -> bool:
+        return all(contract.cacheable for contract in self.positional) and all(
+            contract.cacheable for _name, contract in self.keywords
+        )
 
     @classmethod
     def from_call(cls, abi, args, kwargs):
@@ -496,13 +518,274 @@ class _VerifiedRuntimeCall:
         return True
 
 
+def _jagged_tensor_state(value):
+    try:
+        return (
+            type(value),
+            value.shape,
+            value.stride(),
+            value.dtype,
+            value.device,
+            value.data_ptr(),
+            value.storage_offset(),
+            getattr(value, "_version", None),
+        )
+    except (AttributeError, RuntimeError, TypeError):
+        return None
+
+
+@dataclass(frozen=True)
+class _JaggedOwnerContract:
+    owner: weakref.ReferenceType
+    values_state: tuple
+    offsets_state: tuple
+
+    @classmethod
+    def from_owner(cls, owner):
+        try:
+            reference = weakref.ref(owner)
+            values_state = _jagged_tensor_state(owner.values())
+            offsets_state = _jagged_tensor_state(owner.offsets())
+        except (AttributeError, RuntimeError, TypeError):
+            return None
+
+        if values_state is None or offsets_state is None:
+            return None
+
+        return cls(reference, values_state, offsets_state)
+
+    def matches(self):
+        owner = self.owner()
+
+        if owner is None:
+            return False
+
+        try:
+            state = (
+                _jagged_tensor_state(owner.values()),
+                _jagged_tensor_state(owner.offsets()),
+            )
+        except (AttributeError, RuntimeError, TypeError):
+            return False
+
+        return state == (self.values_state, self.offsets_state)
+
+
+@dataclass(frozen=True)
+class _PreparedBoundValue:
+    value: Any = None
+    tensor: weakref.ReferenceType | None = None
+    owner: weakref.ReferenceType | None = None
+    binding: LaunchBinding | None = None
+    flatten_tensor: bool = False
+
+    @classmethod
+    def from_value(cls, binding, value, public, *, flatten_tensors):
+        if binding.kind.startswith("jagged_"):
+            try:
+                owner = weakref.ref(public[binding.source])
+            except (KeyError, TypeError):
+                return None
+
+            return cls(
+                owner=owner,
+                binding=binding,
+                flatten_tensor=flatten_tensors
+                and binding.kind in {"jagged_values", "jagged_offsets"},
+            )
+
+        is_tensor = hasattr(value, "shape") and hasattr(value, "dtype")
+
+        if binding.kind != "tensor":
+            return cls(value=value) if _is_cacheable_runtime_literal(value) else None
+
+        if not is_tensor:
+            return None
+
+        try:
+            tensor = weakref.ref(value)
+        except TypeError:
+            return None
+
+        return cls(tensor=tensor, flatten_tensor=flatten_tensors)
+
+    def resolve(self, *, flatten_tensor=False):
+        if self.binding is not None:
+            owner = self.owner()
+
+            if owner is None:
+                return None, None
+
+            value = _jagged_binding_value(self.binding, owner)
+        elif self.tensor is not None:
+            value = self.tensor()
+        else:
+            return self.value, None
+
+        if value is None:
+            return None, None
+
+        if (
+            not self.flatten_tensor
+            or not flatten_tensor
+            or not hasattr(value, "as_strided")
+        ):
+            return value, None
+
+        storage_numel = value.untyped_storage().nbytes() // value.element_size()
+        storage_offset = value.storage_offset()
+        flattened = value.as_strided(
+            (storage_numel - storage_offset,),
+            (1,),
+            storage_offset=storage_offset,
+        )
+
+        return flattened, flattened
+
+
+@dataclass(frozen=True)
+class _RuntimeBindingPlan:
+    values: tuple[_PreparedBoundValue, ...]
+    jagged_owners: tuple[_JaggedOwnerContract, ...]
+
+    @classmethod
+    def from_values(cls, bindings, values, public, *, flatten_tensors):
+        planned = tuple(
+            _PreparedBoundValue.from_value(
+                binding,
+                value,
+                public,
+                flatten_tensors=flatten_tensors,
+            )
+            for binding, value in zip(bindings, values)
+        )
+
+        if any(value is None for value in planned):
+            return None
+
+        jagged_owners = []
+        owner_ids = set()
+
+        for value in planned:
+            if value.owner is None:
+                continue
+
+            owner = value.owner()
+
+            if owner is None:
+                return None
+
+            identity = id(owner)
+
+            if identity in owner_ids:
+                continue
+
+            contract = _JaggedOwnerContract.from_owner(owner)
+
+            if contract is None:
+                return None
+
+            owner_ids.add(identity)
+            jagged_owners.append(contract)
+
+        return cls(planned, tuple(jagged_owners))
+
+    @property
+    def owner_refs(self):
+        return tuple(
+            owner
+            for value in self.values
+            for owner in (value.tensor, value.owner)
+            if owner is not None
+        )
+
+    def static_values(self):
+        values = []
+
+        for planned in self.values:
+            if planned.binding is not None:
+                return None
+
+            if planned.tensor is None:
+                values.append(planned.value)
+                continue
+
+            value = planned.tensor()
+
+            if value is None:
+                return None
+
+            values.append(None)
+
+        return tuple(values)
+
+    def call_sources(self, bindings, args, kwargs, public_args):
+        positions = {name: index for index, name in enumerate(public_args[: len(args)])}
+        sources = []
+
+        for binding, planned in zip(bindings, self.values):
+            if planned.tensor is None:
+                sources.append(None)
+            elif binding.source in positions:
+                sources.append(("positional", positions[binding.source]))
+            elif binding.source in kwargs:
+                sources.append(("keyword", binding.source))
+            else:
+                return None
+
+        return tuple(sources)
+
+    def resolve(self, *, flatten_tensors=False):
+        values = []
+        keepalive = []
+
+        for planned in self.values:
+            value, temporary = planned.resolve(flatten_tensor=flatten_tensors)
+
+            if (
+                planned.tensor is not None or planned.owner is not None
+            ) and value is None:
+                return None
+
+            values.append(value)
+
+            if temporary is not None:
+                keepalive.append(temporary)
+
+        return tuple(values), tuple(keepalive)
+
+
 @dataclass(frozen=True)
 class _PreparedRuntimeLaunch:
     guard: _VerifiedRuntimeCall
-    values: tuple
-    keepalive: tuple
+    binding_plan: _RuntimeBindingPlan | None
+    owner_refs: tuple[weakref.ReferenceType, ...] | None
     empty: bool
-    invocation: Callable[[], Any] | None = None
+    invocation_plan: Callable[[tuple, tuple, dict], Any] | None = None
+    cache_token: object | None = None
+
+    @property
+    def cacheable(self) -> bool:
+        return (
+            self.guard.cacheable
+            and self.owner_refs is not None
+            and (self.empty or self.binding_plan is not None)
+        )
+
+    def matches(self, args, kwargs, *, identity_verified=False, call_key=None):
+        if not self.guard.matches(
+            args,
+            kwargs,
+            identity_verified=identity_verified,
+            call_key=call_key,
+        ):
+            return False
+
+        return (
+            self.binding_plan is None
+            or not self.binding_plan.jagged_owners
+            or all(contract.matches() for contract in self.binding_plan.jagged_owners)
+        )
 
 
 _VERIFIED_RUNTIME_CALL_CACHE_SIZE = 8
@@ -525,10 +808,74 @@ def _remember_verified_runtime_call(prepared_calls, identity, prepared):
     prepared_calls[identity] = prepared
 
 
+def _runtime_owner_refs(args, kwargs, binding_plan=None):
+    refs = []
+    identities = set()
+
+    def append(owner, reference=None):
+        identity = id(owner)
+
+        if identity in identities:
+            return True
+
+        try:
+            reference = reference or weakref.ref(owner)
+        except TypeError:
+            return False
+
+        identities.add(identity)
+        refs.append(reference)
+
+        return True
+
+    for value in (*args, *kwargs.values()):
+        if getattr(value, "shape", None) is None or not hasattr(value, "dtype"):
+            continue
+
+        if not append(value):
+            return None
+
+    if binding_plan is not None:
+        for reference in binding_plan.owner_refs:
+            owner = reference()
+
+            if owner is None or not append(owner, reference):
+                return None
+
+    return tuple(refs)
+
+
+def _arm_prepared_runtime_launch(prepared, callback, token):
+    if not prepared.cacheable:
+        return None
+
+    owners = tuple(owner() for owner in prepared.owner_refs)
+
+    if any(owner is None for owner in owners):
+        return None
+
+    return replace(
+        prepared,
+        owner_refs=tuple(weakref.ref(owner, callback) for owner in owners),
+        cache_token=token,
+    )
+
+
 def _verified_runtime_launch(launch):
     active_identity = None
     active = None
     prepared_calls = {}
+
+    def evict(identity, token):
+        nonlocal active, active_identity
+        cached = prepared_calls.get(identity)
+
+        if cached is not None and cached.cache_token is token:
+            prepared_calls.pop(identity, None)
+
+        if active is not None and active.cache_token is token:
+            active = None
+            active_identity = None
 
     def activate(identity, prepared):
         nonlocal active, active_identity
@@ -536,13 +883,26 @@ def _verified_runtime_launch(launch):
         active = prepared
 
     def remember(identity, prepared):
-        _remember_verified_runtime_call(prepared_calls, identity, prepared)
-        activate(identity, prepared)
+        token = object()
+
+        def collected(_reference):
+            evict(identity, token)
+
+        prepared = _arm_prepared_runtime_launch(prepared, collected, token)
+
+        if prepared is not None:
+            _remember_verified_runtime_call(prepared_calls, identity, prepared)
+            activate(identity, prepared)
+
+        return prepared
 
     def verified(*args, **kwargs):
+        active_snapshot = active
+        active_identity_snapshot = active_identity
         call_key = (
-            active.guard.call_key(args, kwargs)
-            if active is not None and active.guard.two_tensor_state is not None
+            active_snapshot.guard.call_key(args, kwargs)
+            if active_snapshot is not None
+            and active_snapshot.guard.two_tensor_state is not None
             else None
         )
         identity = (
@@ -552,20 +912,24 @@ def _verified_runtime_launch(launch):
         )
 
         if (
-            active is not None
-            and identity == active_identity
-            and active.guard.matches(
+            active_snapshot is not None
+            and identity == active_identity_snapshot
+            and active_snapshot.matches(
                 args,
                 kwargs,
                 identity_verified=True,
                 call_key=call_key,
             )
         ):
-            return launch._ninetoothed_invoke_prepared(active, args, kwargs)
+            return launch._ninetoothed_invoke_prepared(
+                active_snapshot,
+                args,
+                kwargs,
+            )
 
         cached = prepared_calls.pop(identity, None)
 
-        if cached is not None and cached.guard.matches(
+        if cached is not None and cached.matches(
             args,
             kwargs,
             identity_verified=True,
@@ -577,14 +941,18 @@ def _verified_runtime_launch(launch):
             return launch._ninetoothed_invoke_prepared(cached, args, kwargs)
 
         prepared = launch._ninetoothed_prepare(args, kwargs)
-        remember(
+        cached_prepared = remember(
             _two_tensor_call_identity(prepared.guard.two_tensor_state)
             if prepared.guard.two_tensor_state is not None
             else identity,
             prepared,
         )
 
-        return launch._ninetoothed_invoke_prepared(prepared, args, kwargs)
+        return launch._ninetoothed_invoke_prepared(
+            cached_prepared or prepared,
+            args,
+            kwargs,
+        )
 
     return verified
 
@@ -609,38 +977,89 @@ def _runtime_wrapper(
         if _empty_launch(abi, public):
             return _PreparedRuntimeLaunch(
                 _VerifiedRuntimeCall.from_call(abi, args, kwargs),
-                (),
-                (),
+                None,
+                _runtime_owner_refs(args, kwargs),
                 True,
             )
 
-        values, keepalive = _bound_values(abi, bound_public, scalar_mode="value")
+        values, _keepalive = _bound_values(abi, bound_public, scalar_mode="value")
         bindings = abi.kernel_args
 
-        if low_level:
-            values, flattened = _flatten_ffi_tensor_args(bindings, values)
-            keepalive.extend(flattened)
+        binding_plan = _RuntimeBindingPlan.from_values(
+            bindings,
+            values,
+            bound_public,
+            flatten_tensors=low_level,
+        )
+        resolved = (
+            binding_plan.resolve(flatten_tensors=low_level)
+            if binding_plan is not None
+            else None
+        )
+        resolved_values = resolved[0] if resolved is not None else ()
+        static_values = (
+            binding_plan.static_values() if binding_plan is not None else None
+        )
+        call_sources = (
+            binding_plan.call_sources(
+                bindings,
+                args,
+                kwargs,
+                abi.public_args,
+            )
+            if binding_plan is not None and static_values is not None
+            else None
+        )
 
-        values = tuple(values)
+        if static_values is not None and call_sources is None:
+            static_values = None
+
+        invocation_plan = (
+            prepare_invocation(resolved_values, static_values, call_sources)
+            if prepare_invocation is not None and resolved is not None
+            else None
+        )
+        owner_refs = _runtime_owner_refs(args, kwargs, binding_plan)
 
         return _PreparedRuntimeLaunch(
             _VerifiedRuntimeCall.from_call(abi, args, kwargs),
-            values,
-            tuple(keepalive),
+            binding_plan,
+            owner_refs,
             False,
-            prepare_invocation(values) if prepare_invocation is not None else None,
+            invocation_plan,
         )
 
     def invoke(prepared, args, kwargs):
         if prepared.empty:
             return _first_output_from_call(abi, args, kwargs)
 
-        if prepared.invocation is not None:
-            result = prepared.invocation()
-        else:
-            result = (
-                function(*prepared.values) if low_level else function(*args, **kwargs)
+        invocation_plan = prepared.invocation_plan
+        static_invocation = invocation_plan is not None and not getattr(
+            invocation_plan,
+            "requires_values",
+            True,
+        )
+        resolved = (
+            ((), ())
+            if static_invocation
+            else (
+                prepared.binding_plan.resolve(flatten_tensors=low_level)
+                if prepared.binding_plan is not None
+                else None
             )
+        )
+
+        if resolved is None:
+            return launch(*args, **kwargs)
+
+        values, keepalive = resolved
+
+        if invocation_plan is not None:
+            result = invocation_plan(values, args, kwargs)
+        else:
+            result = function(*values) if low_level else function(*args, **kwargs)
+
+        del keepalive
 
         if result is not None and not abi.outputs:
             return result

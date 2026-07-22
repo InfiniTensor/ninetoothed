@@ -1,6 +1,8 @@
 import functools
+import gc
 import inspect
 import uuid
+import weakref
 from types import SimpleNamespace
 
 import pytest
@@ -330,7 +332,51 @@ def test_verified_runtime_four_buffer_call_has_no_cached_output_field():
     prepared = inspect.getclosurevars(launch).nonlocals["active"]
     assert not hasattr(prepared, "output")
     assert not hasattr(prepared, "result")
-    assert all(contract.value is None for contract in prepared.guard.positional)
+
+
+def test_verified_runtime_cache_does_not_retain_tensor_or_flattened_view():
+    abi = LaunchABI(
+        public_args=("value",),
+        kernel_args=(LaunchBinding(name="value", kind="tensor", source="value"),),
+    )
+    view_refs = []
+    invoked_refs = []
+
+    def prepare_invocation(values, _static_values, _call_sources):
+        view_refs.append(weakref.ref(values[0]))
+
+        def invoke(current_values, _args, _kwargs):
+            invoked_refs.append(weakref.ref(current_values[0]))
+
+        return invoke
+
+    wrapped = runtime._runtime_wrapper(
+        lambda _value: None,
+        abi,
+        prepare_invocation=prepare_invocation,
+    )
+    launch = runtime._verified_runtime_launch(wrapped)
+    value = torch.arange(8)
+    value_ref = weakref.ref(value)
+
+    launch(value)
+    launch(value)
+    gc.collect()
+
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert len(nonlocals["prepared_calls"]) == 1
+    assert len(view_refs) == 1
+    assert all(reference() is None for reference in view_refs)
+    assert len(invoked_refs) == 2
+    assert all(reference() is None for reference in invoked_refs)
+    assert torch.equal(value, torch.arange(8))
+
+    del value
+    gc.collect()
+
+    assert value_ref() is None
+    assert nonlocals["prepared_calls"] == {}
+    assert inspect.getclosurevars(launch).nonlocals["active"] is None
 
 
 def test_verified_runtime_uses_prepared_low_level_invocation():
@@ -342,11 +388,11 @@ def test_verified_runtime_uses_prepared_low_level_invocation():
     invoked_values = []
     raw_calls = []
 
-    def prepare_invocation(values):
+    def prepare_invocation(values, _static_values, _call_sources):
         prepared_values.append(values)
 
-        def invoke():
-            invoked_values.append(values)
+        def invoke(current_values, _args, _kwargs):
+            invoked_values.append(current_values)
 
         return invoke
 
@@ -405,12 +451,28 @@ def test_triton_prepared_invocation_caches_grid_without_launching(monkeypatch):
     assert bound_grids == [(4,)]
     assert kernel_calls == []
 
-    assert invocation() is None
-    assert invocation() is None
+    assert invocation(("pointer", 4), (), {}) is None
+    assert invocation(("pointer", 4), (), {}) is None
     assert kernel_calls == [
         (("pointer", 4), {"BLOCK": 1, "num_warps": 8}),
         (("pointer", 4), {"BLOCK": 1, "num_warps": 8}),
     ]
+
+    value = _FakeTensor((4,))
+    value_ref = weakref.ref(value)
+    unowned_invocation = prepare(
+        (value, 4),
+        (None, 4),
+        (("positional", 0), None),
+    )
+    assert unowned_invocation((), (value,), {}) is None
+    kernel_calls.clear()
+    del value
+    gc.collect()
+
+    assert unowned_invocation is not None
+    assert not unowned_invocation.requires_values
+    assert value_ref() is None
 
     with pytest.raises(ValueError, match="positive"):
         prepare(("pointer", 0))
@@ -665,6 +727,48 @@ def test_triton_tuple_configurations_are_benchmarked_and_cached(device, monkeypa
 
     handle(input, other, output)
     assert len(benchmarked) == 2
+
+
+@pytest.mark.parametrize("device", get_available_devices())
+def test_triton_prepared_cache_releases_gpu_tensor_storage(device):
+    handle = ninetoothed.make(
+        _arrangement,
+        _application,
+        tuple(Tensor(shape=(1 << 20,), dtype=ninetoothed.float32) for _ in range(3)),
+        backend="triton",
+        kernel_name=f"runtime_weak_cache_{uuid.uuid4().hex}",
+    )
+    warm_input = torch.randn(1 << 20, device=device)
+    warm_other = torch.randn_like(warm_input)
+    warm_output = torch.empty_like(warm_input)
+    handle(warm_input, warm_other, warm_output)
+    torch.cuda.synchronize(device)
+    del warm_input, warm_other, warm_output
+    gc.collect()
+    baseline = torch.cuda.memory_allocated(device)
+
+    input = torch.randn(1 << 20, device=device)
+    other = torch.randn_like(input)
+    output = torch.empty_like(input)
+    references = tuple(weakref.ref(value) for value in (input, other, output))
+    handle(input, other, output)
+    torch.cuda.synchronize(device)
+    allocated = torch.cuda.memory_allocated(device)
+    del input, other, output
+    gc.collect()
+    torch.cuda.synchronize(device)
+
+    assert allocated > baseline
+    assert all(reference() is None for reference in references)
+    assert torch.cuda.memory_allocated(device) <= baseline
+
+    replacement_input = torch.randn(1 << 20, device=device)
+    replacement_other = torch.randn_like(replacement_input)
+    replacement_output = torch.empty_like(replacement_input)
+    handle(replacement_input, replacement_other, replacement_output)
+    torch.cuda.synchronize(device)
+
+    assert torch.allclose(replacement_output, replacement_input + replacement_other)
 
 
 def test_auto_tuner_validates_arguments_before_benchmark(tmp_path, monkeypatch):

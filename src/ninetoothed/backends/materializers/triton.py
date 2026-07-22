@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import types
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ninetoothed.backends.core import BuiltArtifact, Target
@@ -192,6 +192,8 @@ def _candidate_launch(compilation, launch, kernel, candidate):
 
 
 def _triton_prepare_invocation(function, kernel):
+    from ninetoothed.compiler.runtime import _is_cacheable_runtime_literal
+
     if kernel is None:
         return None
 
@@ -213,7 +215,100 @@ def _triton_prepare_invocation(function, kernel):
     partial_args = getattr(function, "args", ())
     partial_keywords = getattr(function, "keywords", None) or {}
 
-    def prepare(values):
+    @dataclass(frozen=True)
+    class ValueRef:
+        index: int
+
+        def resolve(self, values, _args, _kwargs):
+            return values[self.index]
+
+    @dataclass(frozen=True)
+    class CallRef:
+        kind: str
+        key: object
+
+        def resolve(self, _values, args, kwargs):
+            return args[self.key] if self.kind == "positional" else kwargs[self.key]
+
+    @dataclass(frozen=True)
+    class Literal:
+        value: object
+
+        def resolve(self, _values, _args, _kwargs):
+            return self.value
+
+    @dataclass(frozen=True)
+    class BoundCall:
+        function: object
+        args: tuple
+        kwargs: tuple
+
+        def invoke(self, values, args, kwargs):
+            self.function(
+                *(value.resolve(values, args, kwargs) for value in self.args),
+                **{
+                    name: value.resolve(values, args, kwargs)
+                    for name, value in self.kwargs
+                },
+            )
+
+    @dataclass(frozen=True)
+    class InvocationPlan:
+        call: object
+        requires_values: bool
+
+        def __call__(self, values, args, kwargs):
+            if self.requires_values:
+                self.call.invoke(values, args, kwargs)
+            else:
+                self.call(args, kwargs)
+
+    def plan_value(value, values, static_values, call_sources):
+        for index, candidate in enumerate(values):
+            if value is candidate:
+                if call_sources is not None and call_sources[index] is not None:
+                    return CallRef(*call_sources[index])
+
+                return (
+                    Literal(static_values[index])
+                    if static_values is not None
+                    else ValueRef(index)
+                )
+
+        if hasattr(value, "data_ptr") or (
+            hasattr(value, "shape") and hasattr(value, "dtype")
+        ):
+            return None
+
+        if _is_cacheable_runtime_literal(value):
+            return Literal(value)
+
+        return None
+
+    def build_direct_invocation(function, args, kwargs):
+        namespace = {"_function": function}
+        expressions = []
+
+        def expression(value):
+            if isinstance(value, CallRef):
+                container = "_args" if value.kind == "positional" else "_kwargs"
+                return f"{container}[{value.key!r}]"
+
+            name = f"_value_{len(namespace)}"
+            namespace[name] = value.value
+
+            return name
+
+        expressions.extend(expression(value) for value in args)
+        expressions.extend(f"{name}={expression(value)}" for name, value in kwargs)
+        source = (
+            "def invoke(_args, _kwargs):\n    _function(" + ", ".join(expressions) + ")"
+        )
+        exec(compile(source, "<ninetoothed-triton-invocation>", "exec"), namespace)
+
+        return namespace["invoke"]
+
+    def prepare(values, static_values=None, call_sources=None):
         calls = []
 
         class KernelProxy:
@@ -240,16 +335,43 @@ def _triton_prepare_invocation(function, kernel):
             *partial_args,
             **partial_keywords,
         )(*values)
-        bound_calls = tuple(calls)
 
-        if not bound_calls:
+        if len(calls) != 1:
             return None
 
-        def invoke():
-            for bound_kernel, args, kwargs in bound_calls:
-                bound_kernel(*args, **kwargs)
+        bound_kernel, args, kwargs = calls[0]
+        planned_args = tuple(
+            plan_value(value, values, static_values, call_sources) for value in args
+        )
+        planned_kwargs = tuple(
+            (
+                name,
+                plan_value(value, values, static_values, call_sources),
+            )
+            for name, value in kwargs.items()
+        )
 
-        return invoke
+        if any(value is None for value in planned_args) or any(
+            value is None for _name, value in planned_kwargs
+        ):
+            return None
+
+        planned_call = BoundCall(bound_kernel, planned_args, planned_kwargs)
+
+        requires_values = any(
+            isinstance(value, ValueRef) for value in planned_args
+        ) or any(isinstance(value, ValueRef) for _name, value in planned_kwargs)
+
+        if requires_values:
+            return InvocationPlan(planned_call, True)
+
+        direct_call = build_direct_invocation(
+            planned_call.function,
+            planned_call.args,
+            planned_call.kwargs,
+        )
+
+        return InvocationPlan(direct_call, False)
 
     return prepare
 
@@ -284,6 +406,7 @@ def _runtime_outputs_alias_inputs(abi, public):
 
 def _tuned_runtime_launch(tuner, candidates_by_launch, handle, compilation):
     from ninetoothed.compiler.runtime import (
+        _arm_prepared_runtime_launch,
         _empty_launch,
         _first_output,
         _public_values,
@@ -295,6 +418,17 @@ def _tuned_runtime_launch(tuner, candidates_by_launch, handle, compilation):
     active = None
     prepared_calls = {}
 
+    def evict(identity, token):
+        nonlocal active, active_identity
+        cached = prepared_calls.get(identity)
+
+        if cached is not None and cached[2].cache_token is token:
+            prepared_calls.pop(identity, None)
+
+        if active is not None and active[2].cache_token is token:
+            active = None
+            active_identity = None
+
     def activate(identity, entry):
         nonlocal active, active_identity
         active_identity = identity
@@ -302,23 +436,45 @@ def _tuned_runtime_launch(tuner, candidates_by_launch, handle, compilation):
         handle._selected_tuning_candidate = candidates_by_launch[entry[1]]
 
     def remember(identity, key, selected, prepared):
+        token = object()
+
+        def collected(_reference):
+            evict(identity, token)
+
+        prepared = _arm_prepared_runtime_launch(prepared, collected, token)
+
+        if prepared is None:
+            return None
+
         entry = (key, selected, prepared)
         _remember_verified_runtime_call(prepared_calls, identity, entry)
         activate(identity, entry)
 
+        return prepared
+
     def launch(*args, **kwargs):
+        active_snapshot = active
+        active_identity_snapshot = active_identity
         identity = _runtime_call_identity(args, kwargs)
 
         if (
-            active is not None
-            and identity == active_identity
-            and active[2].guard.matches(args, kwargs, identity_verified=True)
+            active_snapshot is not None
+            and identity == active_identity_snapshot
+            and active_snapshot[2].matches(
+                args,
+                kwargs,
+                identity_verified=True,
+            )
         ):
-            return active[1]._ninetoothed_invoke_prepared(active[2], args, kwargs)
+            return active_snapshot[1]._ninetoothed_invoke_prepared(
+                active_snapshot[2],
+                args,
+                kwargs,
+            )
 
         cached = prepared_calls.pop(identity, None)
 
-        if cached is not None and cached[2].guard.matches(
+        if cached is not None and cached[2].matches(
             args,
             kwargs,
             identity_verified=True,
@@ -367,9 +523,13 @@ def _tuned_runtime_launch(tuner, candidates_by_launch, handle, compilation):
             return result
 
         prepared = selected._ninetoothed_prepare(args, kwargs, public=public)
-        remember(identity, key, selected, prepared)
+        cached_prepared = remember(identity, key, selected, prepared)
 
-        return selected._ninetoothed_invoke_prepared(prepared, args, kwargs)
+        return selected._ninetoothed_invoke_prepared(
+            cached_prepared or prepared,
+            args,
+            kwargs,
+        )
 
     return launch
 
