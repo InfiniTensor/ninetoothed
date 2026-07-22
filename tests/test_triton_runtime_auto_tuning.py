@@ -72,10 +72,11 @@ def _contiguous_stride(shape):
 
 
 class _FakeTuner:
-    def __init__(self, candidates, key_function):
+    def __init__(self, candidates, key_function, *, selected_index=None):
         self._funcs = tuple(candidates)
         self._best_func = {}
         self._key_function = key_function
+        self._selected_index = selected_index
         self.calls = 0
 
     def _make_arg_key(self, args, kwargs):
@@ -88,7 +89,13 @@ class _FakeTuner:
             candidate(*args, **kwargs)
 
         key = self._make_arg_key(args, kwargs)
-        selected = self._funcs[0] if args[0].shape[0] == 4 else self._funcs[1]
+        selected = (
+            self._funcs[self._selected_index]
+            if self._selected_index is not None
+            else self._funcs[0]
+            if args[0].shape[0] == 4
+            else self._funcs[1]
+        )
         self._best_func[key] = selected
 
         return selected(*args, **kwargs)
@@ -518,7 +525,7 @@ def test_triton_direct_winner_reuses_verified_binding_and_restores_aba(monkeypat
     assert binding_calls == 0
 
 
-def test_triton_aliasing_output_uses_one_statically_ranked_candidate():
+def test_triton_alias_selection_does_not_pollute_non_alias_tuning():
     abi = LaunchABI(
         public_args=("value", "output"),
         kernel_args=(
@@ -536,7 +543,59 @@ def test_triton_aliasing_output_uses_one_statically_ranked_candidate():
         )
 
     candidates = (candidate("first"), candidate("second"))
-    tuner = _FakeTuner(candidates, lambda args, kwargs: "alias-key")
+    tuner = _FakeTuner(
+        candidates,
+        lambda args, kwargs: "shared-key",
+        selected_index=1,
+    )
+    handle = SimpleNamespace(_selected_tuning_candidate=None)
+    launch = triton_materializer._tuned_runtime_launch(
+        tuner,
+        dict(zip(candidates, ({"id": "first"}, {"id": "second"}))),
+        handle,
+        SimpleNamespace(launch_abi=abi, kernel=SimpleNamespace(tensors=())),
+    )
+    aliased = _FakeTensor((4,))
+
+    assert launch(aliased, output=aliased) is aliased
+    assert tuner.calls == 0
+    assert [name for name, _ in calls] == ["first"]
+    assert handle._selected_tuning_candidate == {"id": "first"}
+    assert tuner._best_func == {}
+
+    calls.clear()
+    value = _FakeTensor((4,))
+    output = _FakeTensor((4,))
+
+    assert launch(value, output=output) is output
+    assert tuner.calls == 1
+    assert [name for name, _ in calls] == ["first", "second", "second"]
+    assert tuner._best_func["shared-key"] is candidates[1]
+    assert handle._selected_tuning_candidate == {"id": "second"}
+
+
+def test_triton_alias_selection_skips_failed_candidate():
+    abi = LaunchABI(
+        public_args=("value", "output"),
+        kernel_args=(
+            LaunchBinding(name="value", kind="tensor", source="value"),
+            LaunchBinding(name="output", kind="tensor", source="output"),
+        ),
+        outputs=("output",),
+    )
+    calls = []
+
+    def candidate(name, *, fails=False):
+        def invoke(*_values):
+            calls.append(name)
+
+            if fails:
+                raise RuntimeError("Candidate unavailable.")
+
+        return runtime._runtime_wrapper(invoke, abi)
+
+    candidates = (candidate("first", fails=True), candidate("second"))
+    tuner = _FakeTuner(candidates, lambda args, kwargs: "shared-key")
     handle = SimpleNamespace(_selected_tuning_candidate=None)
     launch = triton_materializer._tuned_runtime_launch(
         tuner,
@@ -547,9 +606,10 @@ def test_triton_aliasing_output_uses_one_statically_ranked_candidate():
     value = _FakeTensor((4,))
 
     assert launch(value, output=value) is value
+    assert calls == ["first", "second"]
     assert tuner.calls == 0
-    assert [name for name, _ in calls] == ["first"]
-    assert handle._selected_tuning_candidate == {"id": "first"}
+    assert tuner._best_func == {}
+    assert handle._selected_tuning_candidate == {"id": "second"}
 
 
 @pytest.mark.parametrize(

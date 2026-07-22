@@ -292,6 +292,7 @@ def _triton_prepare_invocation(function, kernel):
         def expression(value):
             if isinstance(value, CallRef):
                 container = "_args" if value.kind == "positional" else "_kwargs"
+
                 return f"{container}[{value.key!r}]"
 
             name = f"_value_{len(namespace)}"
@@ -376,32 +377,64 @@ def _triton_prepare_invocation(function, kernel):
     return prepare
 
 
-def _runtime_outputs_alias_inputs(abi, public):
-    outputs = {
-        name: public[name]
-        for name in abi.outputs
-        if name in public and hasattr(public[name], "data_ptr")
-    }
+def _tensor_memory_span(value):
+    try:
+        shape = tuple(value.shape)
 
-    for output_name, output in outputs.items():
+        if any(size == 0 for size in shape):
+            return None
+
+        element_size = value.element_size()
+        storage = value.untyped_storage().data_ptr()
+        lower = upper = value.storage_offset()
+
+        for size, stride in zip(shape, value.stride()):
+            extent = (size - 1) * stride
+            lower += min(0, extent)
+            upper += max(0, extent)
+
+        return (
+            value.device,
+            storage,
+            storage + lower * element_size,
+            storage + (upper + 1) * element_size,
+        )
+    except (AttributeError, RuntimeError, TypeError):
+        return None
+
+
+def _runtime_alias_signature(abi, public):
+    output_names = set(abi.outputs)
+    aliases = []
+
+    for output_name in abi.outputs:
+        output = public.get(output_name)
+
+        if output is None or not hasattr(output, "data_ptr"):
+            continue
+
+        output_span = _tensor_memory_span(output)
+
         for input_name, value in public.items():
-            if input_name == output_name or not hasattr(value, "data_ptr"):
+            if input_name in output_names or not hasattr(value, "data_ptr"):
                 continue
 
             if output is value:
-                return True
-
-            try:
-                same_device = output.device == value.device
-                output_storage = output.untyped_storage().data_ptr()
-                input_storage = value.untyped_storage().data_ptr()
-            except (AttributeError, RuntimeError, TypeError):
+                aliases.append((output_name, input_name))
                 continue
 
-            if same_device and output_storage == input_storage:
-                return True
+            input_span = _tensor_memory_span(value)
 
-    return False
+            if (
+                output_span is not None
+                and input_span is not None
+                and output_span[:2] == input_span[:2]
+                and output_span[2] < input_span[3]
+                and input_span[2] < output_span[3]
+            ):
+                aliases.append((output_name, input_name))
+
+    return tuple(aliases)
 
 
 def _tuned_runtime_launch(tuner, candidates_by_launch, handle, compilation):
@@ -435,7 +468,7 @@ def _tuned_runtime_launch(tuner, candidates_by_launch, handle, compilation):
         active = entry
         handle._selected_tuning_candidate = candidates_by_launch[entry[1]]
 
-    def remember(identity, key, selected, prepared):
+    def remember(identity, selection_key, selected, prepared):
         token = object()
 
         def collected(_reference):
@@ -446,7 +479,7 @@ def _tuned_runtime_launch(tuner, candidates_by_launch, handle, compilation):
         if prepared is None:
             return None
 
-        entry = (key, selected, prepared)
+        entry = (selection_key, selected, prepared)
         _remember_verified_runtime_call(prepared_calls, identity, entry)
         activate(identity, entry)
 
@@ -495,35 +528,58 @@ def _tuned_runtime_launch(tuner, candidates_by_launch, handle, compilation):
             return _first_output(compilation.launch_abi, public)
 
         key = tuner._make_arg_key(args, kwargs)
+        alias_signature = _runtime_alias_signature(compilation.launch_abi, public)
+        selection_key = (key, alias_signature)
         selected = next(
             (
                 entry[1]
                 for entry in reversed(tuple(prepared_calls.values()))
-                if entry[0] == key
+                if entry[0] == selection_key
             ),
             None,
         )
 
-        if selected is None and cached is not None and cached[0] == key:
+        if selected is None and cached is not None and cached[0] == selection_key:
             selected = cached[1]
 
-        if selected is None and _runtime_outputs_alias_inputs(
-            compilation.launch_abi,
-            public,
-        ):
-            selected = tuner._funcs[0]
-            tuner._best_func[key] = selected
+        if selected is None and alias_signature:
+            failures = []
+
+            for candidate in tuner._funcs:
+                try:
+                    prepared = candidate._ninetoothed_prepare(
+                        args,
+                        kwargs,
+                        public=public,
+                    )
+                    result = candidate._ninetoothed_invoke_prepared(
+                        prepared,
+                        args,
+                        kwargs,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    candidate_id = candidates_by_launch[candidate].get("id", "unknown")
+                    failures.append(f"{candidate_id}: {type(exc).__name__}: {exc}")
+                    continue
+
+                remember(identity, selection_key, candidate, prepared)
+
+                return result
+
+            raise RuntimeError(
+                "All alias-safe Triton candidates failed: " + "; ".join(failures)
+            )
 
         if selected is None:
             result = tuner(*args, **kwargs)
             selected = tuner._best_func[key]
             prepared = selected._ninetoothed_prepare(args, kwargs, public=public)
-            remember(identity, key, selected, prepared)
+            remember(identity, selection_key, selected, prepared)
 
             return result
 
         prepared = selected._ninetoothed_prepare(args, kwargs, public=public)
-        cached_prepared = remember(identity, key, selected, prepared)
+        cached_prepared = remember(identity, selection_key, selected, prepared)
 
         return selected._ninetoothed_invoke_prepared(
             cached_prepared or prepared,
