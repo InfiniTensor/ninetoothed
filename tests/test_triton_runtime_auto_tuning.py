@@ -28,12 +28,29 @@ def _application(input, other, output):
     output = input + other  # noqa: F841
 
 
-def _inplace_arrangement(output):
-    return (output.tile((64,)),)
+def _control_dependent_inplace_arrangement(output):
+    return (output.tile((1,)),)
 
 
-def _inplace_application(output):
-    output = output + 1  # noqa: F841
+def _loop_carried_arrangement(input, output):
+    return (input.tile((1,)), output.tile((1,)))
+
+
+def _control_dependent_inplace_application(output):
+    if output[0] > 1:
+        output[0] = 0
+    elif output[0] > 0:
+        output[0] = 2
+    else:
+        output[0] = 1
+
+
+def _loop_carried_application(input, output):
+    value = input
+
+    for _ in range(2):
+        output = value  # noqa: F841
+        value = value + 1
 
 
 class _FakeTensor:
@@ -615,8 +632,8 @@ def test_triton_alias_selection_does_not_pollute_non_alias_tuning():
 def test_triton_read_write_binding_uses_alias_safe_selection():
     compilation = DEFAULT_COMPILER.compile(
         CompileRequest(
-            arrangement=_inplace_arrangement,
-            application=_inplace_application,
+            arrangement=_control_dependent_inplace_arrangement,
+            application=_control_dependent_inplace_application,
             tensors=(Tensor(1),),
             backend="triton",
             num_warps=(4, 8),
@@ -629,6 +646,7 @@ def test_triton_read_write_binding_uses_alias_safe_selection():
     def candidate(name):
         def increment(value, *_metadata):
             calls.append(name)
+
             return value.add_(1)
 
         return runtime._runtime_wrapper(increment, abi)
@@ -649,6 +667,24 @@ def test_triton_read_write_binding_uses_alias_safe_selection():
     assert torch.equal(output, torch.ones(4))
     assert calls == ["first"]
     assert tuner.calls == 0
+
+
+def test_triton_loop_carried_binding_access_preserves_input_dependency():
+    compilation = DEFAULT_COMPILER.compile(
+        CompileRequest(
+            arrangement=_loop_carried_arrangement,
+            application=_loop_carried_application,
+            tensors=(Tensor(1), Tensor(1)),
+            backend="triton",
+        )
+    )
+    access = {
+        binding.source: binding.access
+        for binding in compilation.launch_abi.kernel_args
+        if binding.kind == "tensor"
+    }
+
+    assert access == {"input": "read", "output": "write"}
 
 
 def test_triton_alias_selection_uses_jagged_binding_access():
