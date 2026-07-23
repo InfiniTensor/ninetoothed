@@ -13,6 +13,7 @@ import ninetoothed.auto_tuner as auto_tuner
 import ninetoothed.backends.materializers.triton as triton_materializer
 import ninetoothed.compiler.runtime as runtime
 from ninetoothed import Tensor
+from ninetoothed.compiler import DEFAULT_COMPILER, CompileRequest
 from ninetoothed.ir import LaunchABI, LaunchBinding
 from tests.utils import get_available_devices
 
@@ -25,6 +26,14 @@ def _arrangement(input, other, output):
 
 def _application(input, other, output):
     output = input + other  # noqa: F841
+
+
+def _inplace_arrangement(output):
+    return (output.tile((64,)),)
+
+
+def _inplace_application(output):
+    output = output + 1  # noqa: F841
 
 
 class _FakeTensor:
@@ -603,15 +612,72 @@ def test_triton_alias_selection_does_not_pollute_non_alias_tuning():
     assert handle._selected_tuning_candidate == {"id": "second"}
 
 
-def test_triton_alias_selection_uses_jagged_physical_bindings():
+def test_triton_read_write_binding_uses_alias_safe_selection():
+    compilation = DEFAULT_COMPILER.compile(
+        CompileRequest(
+            arrangement=_inplace_arrangement,
+            application=_inplace_application,
+            tensors=(Tensor(1),),
+            backend="triton",
+            num_warps=(4, 8),
+        )
+    )
+    abi = compilation.launch_abi
+    binding = next(binding for binding in abi.kernel_args if binding.kind == "tensor")
+    calls = []
+
+    def candidate(name):
+        def increment(value, *_metadata):
+            calls.append(name)
+            return value.add_(1)
+
+        return runtime._runtime_wrapper(increment, abi)
+
+    candidates = (candidate("first"), candidate("second"))
+    tuner = _FakeTuner(candidates, lambda args, kwargs: "shared-key")
+    handle = SimpleNamespace(_selected_tuning_candidate=None)
+    launch = triton_materializer._tuned_runtime_launch(
+        tuner,
+        dict(zip(candidates, ({"id": "first"}, {"id": "second"}))),
+        handle,
+        SimpleNamespace(launch_abi=abi, kernel=SimpleNamespace(tensors=())),
+    )
+    output = torch.zeros(4)
+
+    assert binding.access == "read_write"
+    assert launch(output) is output
+    assert torch.equal(output, torch.ones(4))
+    assert calls == ["first"]
+    assert tuner.calls == 0
+
+
+def test_triton_alias_selection_uses_jagged_binding_access():
     abi = LaunchABI(
         public_args=("value", "output"),
         kernel_args=(
-            LaunchBinding(name="value_values", kind="jagged_values", source="value"),
-            LaunchBinding(name="value_offsets", kind="jagged_offsets", source="value"),
-            LaunchBinding(name="output_values", kind="jagged_values", source="output"),
             LaunchBinding(
-                name="output_offsets", kind="jagged_offsets", source="output"
+                name="value_values",
+                kind="jagged_values",
+                source="value",
+                access="read",
+            ),
+            LaunchBinding(
+                name="value_offsets",
+                kind="jagged_offsets",
+                source="value",
+                access="read",
+            ),
+            LaunchBinding(
+                name="output_values",
+                kind="jagged_values",
+                source="output",
+                access="write",
+            ),
+            LaunchBinding(
+                name="output_offsets",
+                kind="jagged_offsets",
+                source="output",
+                access="read",
             ),
         ),
         outputs=("output",),
@@ -641,6 +707,16 @@ def test_triton_alias_selection_uses_jagged_physical_bindings():
     assert tuner.calls == 0
     assert [name for name, _ in calls] == ["first"]
     assert handle._selected_tuning_candidate == {"id": "first"}
+
+    calls.clear()
+    offsets = torch.tensor((0, 4, 8))
+    value = torch.nested.nested_tensor_from_jagged(torch.arange(8.0), offsets)
+    output = torch.nested.nested_tensor_from_jagged(torch.empty(8), offsets)
+
+    assert launch(value, output=output) is output
+    assert tuner.calls == 1
+    assert [name for name, _ in calls] == ["first", "second", "second"]
+    assert handle._selected_tuning_candidate == {"id": "second"}
 
 
 def test_triton_alias_selection_skips_failed_candidate():

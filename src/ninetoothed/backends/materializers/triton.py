@@ -425,28 +425,37 @@ def _runtime_alias_signature(abi, public):
 
         seen.add(identity)
         value = _binding_value(binding, public)
-        physical_tensors.append((*identity, value, _tensor_memory_span(value)))
+        access = binding.access or (
+            "read"
+            if binding.kind == "jagged_offsets"
+            else "write"
+            if binding.source in output_names
+            else "read"
+        )
+        physical_tensors.append((*identity, access, value, _tensor_memory_span(value)))
 
-    outputs = tuple(tensor for tensor in physical_tensors if tensor[0] in output_names)
-    inputs = tuple(
-        tensor for tensor in physical_tensors if tensor[0] not in output_names
+    writers = tuple(
+        tensor for tensor in physical_tensors if tensor[2] in {"write", "read_write"}
+    )
+    readers = tuple(
+        tensor for tensor in physical_tensors if tensor[2] in {"read", "read_write"}
     )
 
-    for output_name, output_kind, output, output_span in outputs:
-        for input_name, input_kind, value, input_span in inputs:
-            overlaps = output is value
+    for writer_name, writer_kind, _access, writer, writer_span in writers:
+        for reader_name, reader_kind, _access, reader, reader_span in readers:
+            overlaps = writer is reader
 
             if not overlaps and (
-                output_span is not None
-                and input_span is not None
-                and output_span[:2] == input_span[:2]
-                and output_span[2] < input_span[3]
-                and input_span[2] < output_span[3]
+                writer_span is not None
+                and reader_span is not None
+                and writer_span[:2] == reader_span[:2]
+                and writer_span[2] < reader_span[3]
+                and reader_span[2] < writer_span[3]
             ):
                 overlaps = True
 
             if overlaps:
-                aliases.append((output_name, output_kind, input_name, input_kind))
+                aliases.append((writer_name, writer_kind, reader_name, reader_kind))
 
     return tuple(aliases)
 

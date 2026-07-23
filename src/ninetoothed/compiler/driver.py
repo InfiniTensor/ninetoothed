@@ -18,7 +18,7 @@ from ninetoothed.backends.core import (
 )
 from ninetoothed.frontend.layout import tensor_specs
 from ninetoothed.frontend.python import LoweringError, from_application
-from ninetoothed.ir import IndexExpr, Kernel, LaunchABI, LaunchBinding, LaunchPlan
+from ninetoothed.ir import IndexExpr, Kernel, LaunchABI, LaunchBinding, LaunchPlan, ssa
 from ninetoothed.naming import is_meta, remove_prefixes
 
 from .specialization import (
@@ -309,6 +309,7 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
         specs,
         artifact,
         arranged,
+        program=program,
         meta_defaults=scheduled_defaults,
     )
     launch_plan = _launch_plan(launch_abi, artifact, request, arranged)
@@ -343,6 +344,7 @@ def _launch_abi(
     artifact: Artifact,
     arranged,
     *,
+    program: ssa.Program,
     meta_defaults: Mapping[str, int] | None = None,
 ) -> LaunchABI:
     by_name = {spec.name: spec for spec in specs}
@@ -355,37 +357,44 @@ def _launch_abi(
         name: getattr(getattr(tensor, "source", tensor), "value", None)
         for name, tensor in zip(params, arranged)
     }
+    output_names = tuple(artifact.metadata.get("outputs", ()))
+    access_modes = _tensor_access_modes(program)
     bindings = []
 
     for name in (
         *artifact.metadata.get("variables", ()),
-        *artifact.metadata.get("outputs", ()),
+        *output_names,
     ):
         if name in auxiliary_bindings:
             auxiliary = auxiliary_bindings[name]
+            kind = str(auxiliary["kind"])
+            source = str(auxiliary["source"])
             bindings.append(
                 LaunchBinding(
                     name=name,
-                    kind=str(auxiliary["kind"]),
-                    source=str(auxiliary["source"]),
+                    kind=kind,
+                    source=source,
+                    access=_binding_access(kind, source, access_modes, output_names),
                 )
             )
             continue
 
         spec = by_name[name]
+        kind = (
+            "constexpr"
+            if spec.constexpr
+            else "scalar"
+            if spec.ndim == 0
+            else "jagged_values"
+            if spec.jagged_dim is not None
+            else "tensor"
+        )
         bindings.append(
             LaunchBinding(
                 name=name,
-                kind=(
-                    "constexpr"
-                    if spec.constexpr
-                    else "scalar"
-                    if spec.ndim == 0
-                    else "jagged_values"
-                    if spec.jagged_dim is not None
-                    else "tensor"
-                ),
+                kind=kind,
                 source=name,
+                access=_binding_access(kind, name, access_modes, output_names),
             )
         )
 
@@ -406,9 +415,108 @@ def _launch_abi(
     return LaunchABI(
         public_args=tuple(params),
         kernel_args=tuple(bindings),
-        outputs=tuple(artifact.metadata.get("outputs", ())),
+        outputs=output_names,
         shape_params=shape_params,
     )
+
+
+def _binding_access(kind, source, access_modes, output_names):
+    if kind == "jagged_offsets":
+        return "read"
+
+    if kind not in {"tensor", "jagged_values"}:
+        return None
+
+    return access_modes.get(source, "write" if source in output_names else "read")
+
+
+def _tensor_access_modes(program: ssa.Program) -> dict[str, str]:
+    tensor_names = {
+        value.name for value in program.inputs if value.type.kind == "tensor"
+    }
+    operations = tuple(
+        operation
+        for block in program.blocks
+        for operation in _walk_ssa_operations(block.operations)
+    )
+    producers = {
+        result.name: operation
+        for operation in operations
+        for result in operation.results
+    }
+    dependencies: dict[str, frozenset[str]] = {}
+
+    def data_dependencies(name, visiting=frozenset()):
+        if name in tensor_names:
+            return frozenset((name,))
+
+        if name in dependencies:
+            return dependencies[name]
+
+        if name in visiting:
+            return frozenset()
+
+        producer = producers.get(name)
+
+        if producer is None or producer.opcode.startswith(("index.", "shape.")):
+            return frozenset()
+
+        nested_yields = (
+            operand
+            for region in producer.regions
+            for operation in _walk_ssa_operations(region.operations)
+            if operation.opcode == "scf.yield"
+            for operand in operation.operands
+        )
+        result = frozenset().union(
+            *(
+                data_dependencies(operand, visiting | {name})
+                for operand in (*producer.operands, *nested_yields)
+            )
+        )
+        dependencies[name] = result
+        return result
+
+    reads = set()
+    writes = set()
+
+    for operation in operations:
+        if operation.opcode == "mem.store" and len(operation.operands) >= 2:
+            reads.update(data_dependencies(operation.operands[0]))
+
+            for index in operation.attrs.get("indices", ()):
+                reads.update(data_dependencies(str(index)))
+
+            writes.update(data_dependencies(operation.operands[1]))
+        elif operation.opcode == "mem.atomic_add" and operation.operands:
+            target = data_dependencies(operation.operands[0])
+            reads.update(target)
+            writes.update(target)
+
+            for operand in operation.operands[1:]:
+                reads.update(data_dependencies(operand))
+
+    writes.update(value.name for value in program.outputs if value.name in tensor_names)
+
+    return {
+        name: (
+            "read_write"
+            if name in reads and name in writes
+            else "write"
+            if name in writes
+            else "read"
+        )
+        for name in tensor_names
+        if name in reads or name in writes
+    }
+
+
+def _walk_ssa_operations(operations):
+    for operation in operations:
+        yield operation
+
+        for region in operation.regions:
+            yield from _walk_ssa_operations(region.operations)
 
 
 def _launch_plan(

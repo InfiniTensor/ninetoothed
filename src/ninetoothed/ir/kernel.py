@@ -188,6 +188,11 @@ class LaunchBinding:
     source: str | None = None
     dim: int | None = None
     value: Any = None
+    access: str | None = None
+
+    def __post_init__(self):
+        if self.access not in {None, "read", "write", "read_write"}:
+            raise ValueError(f"Unsupported launch binding access `{self.access}`.")
 
 
 @dataclass(frozen=True, kw_only=True)
