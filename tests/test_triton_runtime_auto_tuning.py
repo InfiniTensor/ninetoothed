@@ -321,6 +321,35 @@ def test_verified_runtime_launch_preserves_argument_errors():
         launch(value, 2, unknown=True)
 
 
+def test_verified_runtime_fast_key_defers_invalid_tensor_to_validation():
+    abi = LaunchABI(
+        public_args=("first", "second", "scale"),
+        kernel_args=(
+            LaunchBinding(name="first", kind="tensor", source="first"),
+            LaunchBinding(name="second", kind="tensor", source="second"),
+            LaunchBinding(name="scale", kind="scalar", source="scale"),
+        ),
+    )
+    specs = tuple(
+        SimpleNamespace(
+            name=name,
+            ndim=1,
+            dtype=None,
+            attrs={"source_ndim": 1},
+        )
+        for name in ("first", "second")
+    )
+    wrapped = runtime._runtime_wrapper(lambda *_values: None, abi, specs=specs)
+    launch = runtime._verified_runtime_launch(wrapped)
+    first = _FakeTensor((4,))
+    second = _FakeTensor((4,))
+
+    launch(first, second, scale=1)
+
+    with pytest.raises(TypeError, match="`first` must be a tensor"):
+        launch(None, second, scale=1)
+
+
 def test_verified_runtime_four_buffer_call_has_no_cached_output_field():
     names = ("first", "second", "third", "output")
     abi = LaunchABI(
@@ -572,6 +601,46 @@ def test_triton_alias_selection_does_not_pollute_non_alias_tuning():
     assert [name for name, _ in calls] == ["first", "second", "second"]
     assert tuner._best_func["shared-key"] is candidates[1]
     assert handle._selected_tuning_candidate == {"id": "second"}
+
+
+def test_triton_alias_selection_uses_jagged_physical_bindings():
+    abi = LaunchABI(
+        public_args=("value", "output"),
+        kernel_args=(
+            LaunchBinding(name="value_values", kind="jagged_values", source="value"),
+            LaunchBinding(name="value_offsets", kind="jagged_offsets", source="value"),
+            LaunchBinding(name="output_values", kind="jagged_values", source="output"),
+            LaunchBinding(
+                name="output_offsets", kind="jagged_offsets", source="output"
+            ),
+        ),
+        outputs=("output",),
+    )
+    calls = []
+
+    def candidate(name):
+        return runtime._runtime_wrapper(
+            lambda *values: calls.append((name, values)),
+            abi,
+        )
+
+    candidates = (candidate("first"), candidate("second"))
+    tuner = _FakeTuner(candidates, lambda args, kwargs: "shared-key")
+    handle = SimpleNamespace(_selected_tuning_candidate=None)
+    launch = triton_materializer._tuned_runtime_launch(
+        tuner,
+        dict(zip(candidates, ({"id": "first"}, {"id": "second"}))),
+        handle,
+        SimpleNamespace(launch_abi=abi, kernel=SimpleNamespace(tensors=())),
+    )
+    values = torch.arange(8.0)
+    value = torch.nested.nested_tensor_from_jagged(values, torch.tensor((0, 4, 8)))
+    output = torch.nested.nested_tensor_from_jagged(values, torch.tensor((0, 2, 8)))
+
+    assert launch(value, output=output) is output
+    assert tuner.calls == 0
+    assert [name for name, _ in calls] == ["first"]
+    assert handle._selected_tuning_candidate == {"id": "first"}
 
 
 def test_triton_alias_selection_skips_failed_candidate():

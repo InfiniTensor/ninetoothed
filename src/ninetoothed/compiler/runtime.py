@@ -465,27 +465,30 @@ class _VerifiedRuntimeCall:
 
         first, second = args
 
-        return (
-            expected_name,
-            type(scalar),
-            scalar,
-            id(first),
-            type(first),
-            first.shape,
-            first.stride(),
-            first.dtype,
-            first.device,
-            first.data_ptr(),
-            first.storage_offset(),
-            id(second),
-            type(second),
-            second.shape,
-            second.stride(),
-            second.dtype,
-            second.device,
-            second.data_ptr(),
-            second.storage_offset(),
-        )
+        try:
+            return (
+                expected_name,
+                type(scalar),
+                scalar,
+                id(first),
+                type(first),
+                first.shape,
+                first.stride(),
+                first.dtype,
+                first.device,
+                first.data_ptr(),
+                first.storage_offset(),
+                id(second),
+                type(second),
+                second.shape,
+                second.stride(),
+                second.dtype,
+                second.device,
+                second.data_ptr(),
+                second.storage_offset(),
+            )
+        except (AttributeError, RuntimeError, TypeError):
+            return None
 
     def matches(
         self,

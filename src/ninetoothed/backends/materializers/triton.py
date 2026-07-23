@@ -404,35 +404,49 @@ def _tensor_memory_span(value):
 
 
 def _runtime_alias_signature(abi, public):
+    from ninetoothed.compiler.runtime import _binding_value
+
     output_names = set(abi.outputs)
+    physical_tensors = []
+    seen = set()
     aliases = []
 
-    for output_name in abi.outputs:
-        output = public.get(output_name)
-
-        if output is None or not hasattr(output, "data_ptr"):
+    for binding in abi.kernel_args:
+        if (
+            binding.kind not in {"tensor", "jagged_values", "jagged_offsets"}
+            or binding.source not in public
+        ):
             continue
 
-        output_span = _tensor_memory_span(output)
+        identity = (binding.source, binding.kind)
 
-        for input_name, value in public.items():
-            if input_name in output_names or not hasattr(value, "data_ptr"):
-                continue
+        if identity in seen:
+            continue
 
-            if output is value:
-                aliases.append((output_name, input_name))
-                continue
+        seen.add(identity)
+        value = _binding_value(binding, public)
+        physical_tensors.append((*identity, value, _tensor_memory_span(value)))
 
-            input_span = _tensor_memory_span(value)
+    outputs = tuple(tensor for tensor in physical_tensors if tensor[0] in output_names)
+    inputs = tuple(
+        tensor for tensor in physical_tensors if tensor[0] not in output_names
+    )
 
-            if (
+    for output_name, output_kind, output, output_span in outputs:
+        for input_name, input_kind, value, input_span in inputs:
+            overlaps = output is value
+
+            if not overlaps and (
                 output_span is not None
                 and input_span is not None
                 and output_span[:2] == input_span[:2]
                 and output_span[2] < input_span[3]
                 and input_span[2] < output_span[3]
             ):
-                aliases.append((output_name, input_name))
+                overlaps = True
+
+            if overlaps:
+                aliases.append((output_name, output_kind, input_name, input_kind))
 
     return tuple(aliases)
 
