@@ -427,7 +427,10 @@ def _binding_access(kind, source, access_modes, output_names):
     if kind not in {"tensor", "jagged_values"}:
         return None
 
-    return access_modes.get(source, "write" if source in output_names else "read")
+    return access_modes.get(
+        source,
+        "read_write" if source in output_names else "read",
+    )
 
 
 def _tensor_access_modes(program: ssa.Program) -> dict[str, str]:

@@ -76,6 +76,9 @@ class _FakeTensor:
     def data_ptr(self):
         return self._data_ptr
 
+    def element_size(self):
+        return 4
+
     def storage_offset(self):
         return self._storage_offset
 
@@ -585,7 +588,9 @@ def test_triton_alias_selection_does_not_pollute_non_alias_tuning():
         public_args=("value", "output"),
         kernel_args=(
             LaunchBinding(name="value", kind="tensor", source="value"),
-            LaunchBinding(name="output", kind="tensor", source="output"),
+            LaunchBinding(
+                name="output", kind="tensor", source="output", access="write"
+            ),
         ),
         outputs=("output",),
     )
@@ -610,13 +615,23 @@ def test_triton_alias_selection_does_not_pollute_non_alias_tuning():
         handle,
         SimpleNamespace(launch_abi=abi, kernel=SimpleNamespace(tensors=())),
     )
+    first_value = _FakeTensor((4,))
+    first_output = _FakeTensor((4,))
+
+    assert launch(first_value, output=first_output) is first_output
+    assert tuner.calls == 1
+    assert [name for name, _ in calls] == ["first", "second", "second"]
+    assert tuner._best_func["shared-key"] is candidates[1]
+    assert handle._selected_tuning_candidate == {"id": "second"}
+
+    calls.clear()
     aliased = _FakeTensor((4,))
 
     assert launch(aliased, output=aliased) is aliased
-    assert tuner.calls == 0
+    assert tuner.calls == 1
     assert [name for name, _ in calls] == ["first"]
     assert handle._selected_tuning_candidate == {"id": "first"}
-    assert tuner._best_func == {}
+    assert tuner._best_func["shared-key"] is candidates[1]
 
     calls.clear()
     value = _FakeTensor((4,))
@@ -624,9 +639,100 @@ def test_triton_alias_selection_does_not_pollute_non_alias_tuning():
 
     assert launch(value, output=output) is output
     assert tuner.calls == 1
-    assert [name for name, _ in calls] == ["first", "second", "second"]
-    assert tuner._best_func["shared-key"] is candidates[1]
+    assert [name for name, _ in calls] == ["second"]
     assert handle._selected_tuning_candidate == {"id": "second"}
+
+
+@pytest.mark.parametrize("kind", ("scalar", "constexpr"))
+def test_triton_tensor_scalar_alias_uses_alias_safe_selection(kind):
+    abi = LaunchABI(
+        public_args=("scale", "output"),
+        kernel_args=(
+            LaunchBinding(name="scale", kind=kind, source="scale"),
+            LaunchBinding(
+                name="output",
+                kind="tensor",
+                source="output",
+                access="write",
+            ),
+        ),
+        outputs=("output",),
+    )
+    calls = []
+
+    def candidate(name):
+        return runtime._runtime_wrapper(
+            lambda *_values: calls.append(name),
+            abi,
+        )
+
+    candidates = (candidate("first"), candidate("second"))
+    tuner = _FakeTuner(candidates, lambda args, kwargs: "shared-key")
+    handle = SimpleNamespace(_selected_tuning_candidate=None)
+    launch = triton_materializer._tuned_runtime_launch(
+        tuner,
+        dict(zip(candidates, ({"id": "first"}, {"id": "second"}))),
+        handle,
+        SimpleNamespace(launch_abi=abi, kernel=SimpleNamespace(tensors=())),
+    )
+    output = torch.zeros(4)
+
+    assert launch(output[0], output) is output
+    assert calls == ["first"]
+    assert tuner.calls == 0
+
+
+def test_triton_alias_signature_uses_absolute_spans_and_fails_closed():
+    abi = LaunchABI(
+        public_args=("value", "output"),
+        kernel_args=(
+            LaunchBinding(name="value", kind="tensor", source="value", access="read"),
+            LaunchBinding(
+                name="output",
+                kind="tensor",
+                source="output",
+                access="write",
+            ),
+        ),
+        outputs=("output",),
+    )
+    output = _FakeTensor((4,), data_ptr=1024)
+
+    overlapping = _FakeTensor((4,), data_ptr=1032)
+    assert triton_materializer._runtime_alias_signature(
+        abi, {"value": overlapping, "output": output}
+    )
+
+    unknown = SimpleNamespace(
+        shape=(4,),
+        stride=lambda: (1,),
+        data_ptr=lambda: 2048,
+        device="cuda:0",
+    )
+    assert triton_materializer._runtime_alias_signature(
+        abi, {"value": unknown, "output": output}
+    )
+
+    legacy_output_abi = LaunchABI(
+        public_args=("output",),
+        kernel_args=(LaunchBinding(name="output", kind="tensor", source="output"),),
+        outputs=("output",),
+    )
+    assert triton_materializer._runtime_alias_signature(
+        legacy_output_abi, {"output": output}
+    )
+
+    mixed_access_abi = LaunchABI(
+        public_args=("output",),
+        kernel_args=(
+            LaunchBinding(name="read", kind="tensor", source="output", access="read"),
+            LaunchBinding(name="write", kind="tensor", source="output", access="write"),
+        ),
+        outputs=("output",),
+    )
+    assert triton_materializer._runtime_alias_signature(
+        mixed_access_abi, {"output": output}
+    )
 
 
 def test_triton_read_write_binding_uses_alias_safe_selection():
@@ -755,12 +861,14 @@ def test_triton_alias_selection_uses_jagged_binding_access():
     assert handle._selected_tuning_candidate == {"id": "second"}
 
 
-def test_triton_alias_selection_skips_failed_candidate():
+def test_triton_alias_selection_handles_candidate_failures_safely():
     abi = LaunchABI(
         public_args=("value", "output"),
         kernel_args=(
             LaunchBinding(name="value", kind="tensor", source="value"),
-            LaunchBinding(name="output", kind="tensor", source="output"),
+            LaunchBinding(
+                name="output", kind="tensor", source="output", access="write"
+            ),
         ),
         outputs=("output",),
     )
@@ -786,11 +894,51 @@ def test_triton_alias_selection_skips_failed_candidate():
     )
     value = _FakeTensor((4,))
 
-    assert launch(value, output=value) is value
-    assert calls == ["first", "second"]
+    with pytest.raises(RuntimeError, match="Candidate unavailable"):
+        launch(value, output=value)
+
+    assert calls == ["first"]
     assert tuner.calls == 0
     assert tuner._best_func == {}
-    assert handle._selected_tuning_candidate == {"id": "second"}
+    assert handle._selected_tuning_candidate is None
+
+    calls.clear()
+    candidates = (candidate("first"), candidate("second"))
+
+    def fail_prepare(*_args, **_kwargs):
+        raise RuntimeError("Candidate did not prepare.")
+
+    candidates[0]._ninetoothed_prepare = fail_prepare
+    tuner = _FakeTuner(candidates, lambda args, kwargs: "shared-key")
+    launch = triton_materializer._tuned_runtime_launch(
+        tuner,
+        dict(zip(candidates, ({"id": "first"}, {"id": "second"}))),
+        handle,
+        SimpleNamespace(launch_abi=abi, kernel=SimpleNamespace(tensors=())),
+    )
+
+    assert launch(value, output=value) is value
+    assert calls == ["first"]
+    assert handle._selected_tuning_candidate == {"id": "first"}
+
+    calls.clear()
+    candidates = (candidate("first"), candidate("second"))
+    candidates[0]._ninetoothed_prepare = fail_prepare
+    tuner = _FakeTuner(
+        candidates,
+        lambda args, kwargs: "shared-key",
+        selected_index=0,
+    )
+    launch = triton_materializer._tuned_runtime_launch(
+        tuner,
+        dict(zip(candidates, ({"id": "first"}, {"id": "second"}))),
+        handle,
+        SimpleNamespace(launch_abi=abi, kernel=SimpleNamespace(tensors=())),
+    )
+
+    assert launch(_FakeTensor((4,)), output=_FakeTensor((4,))) is not None
+    assert calls == ["first", "second", "first"]
+    assert handle._selected_tuning_candidate == {"id": "first"}
 
 
 @pytest.mark.parametrize(

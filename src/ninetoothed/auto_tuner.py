@@ -68,7 +68,10 @@ class AutoTuner:
                 best_timing = min(timings)
                 best_timing_index = timings.index(best_timing)
                 best_func = self._funcs[best_timing_index]
+                result = best_func(*args, **kwargs)
                 self._best_func[arg_key] = best_func
+
+                return result
 
         return best_func(*args, **kwargs)
 

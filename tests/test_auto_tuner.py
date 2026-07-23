@@ -84,6 +84,21 @@ def test_auto_tuner_reports_every_failed_candidate(_):
     with pytest.raises(RuntimeError, match="first.*_foo failed.*second.*_bar failed"):
         tuner(1)
 
+    def fail_after_benchmark(*_args, **_kwargs):
+        raise RuntimeError("Winner invocation failed.")
+
+    tuner = AutoTuner(
+        (fail_after_benchmark,),
+        ("winner",),
+        benchmark=lambda *_args: 1.0,
+        cache_namespace=f"winner_failure_{uuid.uuid4().hex}",
+    )
+
+    with pytest.raises(RuntimeError, match="Winner invocation failed"):
+        tuner(1)
+
+    assert tuner._best_func == {}
+
 
 def _foo_delay(*args, **kwargs):
     return 0.001 * (2 * len(args) + len(kwargs))

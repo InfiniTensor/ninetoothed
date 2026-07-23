@@ -379,14 +379,19 @@ def _triton_prepare_invocation(function, kernel):
 
 def _tensor_memory_span(value):
     try:
+        device = value.device
+    except (AttributeError, RuntimeError, TypeError):
+        device = None
+
+    try:
         shape = tuple(value.shape)
 
         if any(size == 0 for size in shape):
-            return None
+            return (device, 0, 0)
 
         element_size = value.element_size()
-        storage = value.untyped_storage().data_ptr()
-        lower = upper = value.storage_offset()
+        data_ptr = value.data_ptr()
+        lower = upper = 0
 
         for size, stride in zip(shape, value.stride()):
             extent = (size - 1) * stride
@@ -394,65 +399,95 @@ def _tensor_memory_span(value):
             upper += max(0, extent)
 
         return (
-            value.device,
-            storage,
-            storage + lower * element_size,
-            storage + (upper + 1) * element_size,
+            device,
+            data_ptr + lower * element_size,
+            data_ptr + (upper + 1) * element_size,
         )
     except (AttributeError, RuntimeError, TypeError):
-        return None
+        return (device, None, None)
+
+
+def _memory_spans_overlap(first, second):
+    first_device, first_start, first_end = first
+    second_device, second_start, second_end = second
+
+    if (
+        first_device is not None
+        and second_device is not None
+        and first_device != second_device
+    ):
+        return False
+
+    if None in (first_start, first_end, second_start, second_end):
+        return True
+
+    if first_start == first_end or second_start == second_end:
+        return False
+
+    return first_start < second_end and second_start < first_end
 
 
 def _runtime_alias_signature(abi, public):
     from ninetoothed.compiler.runtime import _binding_value
 
     output_names = set(abi.outputs)
-    physical_tensors = []
-    seen = set()
+    physical_tensors = {}
     aliases = []
 
     for binding in abi.kernel_args:
-        if (
-            binding.kind not in {"tensor", "jagged_values", "jagged_offsets"}
-            or binding.source not in public
+        if binding.source not in public or binding.kind not in {
+            "tensor",
+            "scalar",
+            "constexpr",
+            "jagged_values",
+            "jagged_offsets",
+        }:
+            continue
+
+        value = _binding_value(binding, public)
+
+        if binding.kind in {"scalar", "constexpr"} and not all(
+            hasattr(value, attribute) for attribute in ("data_ptr", "shape", "stride")
         ):
             continue
 
         identity = (binding.source, binding.kind)
-
-        if identity in seen:
-            continue
-
-        seen.add(identity)
-        value = _binding_value(binding, public)
         access = binding.access or (
             "read"
-            if binding.kind == "jagged_offsets"
-            else "write"
+            if binding.kind in {"scalar", "constexpr", "jagged_offsets"}
+            else "read_write"
             if binding.source in output_names
             else "read"
         )
-        physical_tensors.append((*identity, access, value, _tensor_memory_span(value)))
+        previous = physical_tensors.get(identity)
+
+        if previous is not None and previous[2] != access:
+            access = "read_write"
+
+        physical_tensors[identity] = (
+            *identity,
+            access,
+            value,
+            _tensor_memory_span(value),
+        )
 
     writers = tuple(
-        tensor for tensor in physical_tensors if tensor[2] in {"write", "read_write"}
+        tensor
+        for tensor in physical_tensors.values()
+        if tensor[2] in {"write", "read_write"}
     )
     readers = tuple(
-        tensor for tensor in physical_tensors if tensor[2] in {"read", "read_write"}
+        tensor
+        for tensor in physical_tensors.values()
+        if tensor[2] in {"read", "read_write"}
     )
 
     for writer_name, writer_kind, _access, writer, writer_span in writers:
         for reader_name, reader_kind, _access, reader, reader_span in readers:
             overlaps = writer is reader
 
-            if not overlaps and (
-                writer_span is not None
-                and reader_span is not None
-                and writer_span[:2] == reader_span[:2]
-                and writer_span[2] < reader_span[3]
-                and reader_span[2] < writer_span[3]
-            ):
-                overlaps = True
+            if not overlaps:
+                overlaps = _memory_spans_overlap(writer_span, reader_span)
 
             if overlaps:
                 aliases.append((writer_name, writer_kind, reader_name, reader_kind))
@@ -489,7 +524,10 @@ def _tuned_runtime_launch(tuner, candidates_by_launch, handle, compilation):
         nonlocal active, active_identity
         active_identity = identity
         active = entry
-        handle._selected_tuning_candidate = candidates_by_launch[entry[1]]
+        record(entry[1])
+
+    def record(selected):
+        handle._selected_tuning_candidate = candidates_by_launch[selected]
 
     def remember(identity, selection_key, selected, prepared):
         token = object()
@@ -507,6 +545,12 @@ def _tuned_runtime_launch(tuner, candidates_by_launch, handle, compilation):
         activate(identity, entry)
 
         return prepared
+
+    def remember_best_effort(identity, selection_key, selected, prepared):
+        try:
+            return remember(identity, selection_key, selected, prepared)
+        except TypeError:
+            return None
 
     def launch(*args, **kwargs):
         active_snapshot = active
@@ -566,49 +610,64 @@ def _tuned_runtime_launch(tuner, candidates_by_launch, handle, compilation):
             selected = cached[1]
 
         if selected is None and alias_signature:
-            failures = []
+            selected = tuner._funcs[0]
 
-            for candidate in tuner._funcs:
-                try:
-                    prepared = candidate._ninetoothed_prepare(
-                        args,
-                        kwargs,
-                        public=public,
-                    )
-                    result = candidate._ninetoothed_invoke_prepared(
-                        prepared,
-                        args,
-                        kwargs,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    candidate_id = candidates_by_launch[candidate].get("id", "unknown")
-                    failures.append(f"{candidate_id}: {type(exc).__name__}: {exc}")
-                    continue
+            try:
+                prepared = selected._ninetoothed_prepare(
+                    args,
+                    kwargs,
+                    public=public,
+                )
+            except Exception:  # noqa: BLE001
+                result = selected(*args, **kwargs)
+            else:
+                result = selected._ninetoothed_invoke_prepared(
+                    prepared,
+                    args,
+                    kwargs,
+                )
+                remember_best_effort(
+                    identity,
+                    selection_key,
+                    selected,
+                    prepared,
+                )
 
-                remember(identity, selection_key, candidate, prepared)
+            record(selected)
 
-                return result
-
-            raise RuntimeError(
-                "All alias-safe Triton candidates failed: " + "; ".join(failures)
-            )
+            return result
 
         if selected is None:
             result = tuner(*args, **kwargs)
             selected = tuner._best_func[key]
-            prepared = selected._ninetoothed_prepare(args, kwargs, public=public)
-            remember(identity, selection_key, selected, prepared)
+            record(selected)
+
+            try:
+                prepared = selected._ninetoothed_prepare(args, kwargs, public=public)
+            except Exception:  # noqa: BLE001
+                return result
+
+            remember_best_effort(identity, selection_key, selected, prepared)
 
             return result
 
-        prepared = selected._ninetoothed_prepare(args, kwargs, public=public)
-        cached_prepared = remember(identity, selection_key, selected, prepared)
+        try:
+            prepared = selected._ninetoothed_prepare(args, kwargs, public=public)
+        except Exception:  # noqa: BLE001
+            result = selected(*args, **kwargs)
+            record(selected)
 
-        return selected._ninetoothed_invoke_prepared(
-            cached_prepared or prepared,
+            return result
+
+        result = selected._ninetoothed_invoke_prepared(
+            prepared,
             args,
             kwargs,
         )
+        record(selected)
+        remember_best_effort(identity, selection_key, selected, prepared)
+
+        return result
 
     return launch
 
