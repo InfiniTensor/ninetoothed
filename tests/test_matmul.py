@@ -61,13 +61,31 @@ def matmul(lhs, rhs):
     return output
 
 
-_FLOAT8_E5M2_CONFIG = (
-    ((torch.float8_e5m2, 0.125),) if hasattr(torch, "float8_e5m2") else ()
+def _device_dtype_config(devices, fp16_atol):
+    config = []
+
+    for device in devices:
+        config.append(pytest.param(device, torch.float16, fp16_atol))
+
+        if hasattr(torch, "float8_e5m2"):
+            config.append(
+                pytest.param(
+                    device,
+                    torch.float8_e5m2,
+                    0.125,
+                    marks=pytest.mark.requires_capability(
+                        f"tests.capabilities.float8:float8_e5m2_{device}"
+                    ),
+                )
+            )
+
+    return tuple(config)
+
+
+@pytest.mark.parametrize(
+    "device, dtype, atol",
+    _device_dtype_config(get_available_devices(), fp16_atol=1e-8),
 )
-
-
-@pytest.mark.parametrize("device", get_available_devices())
-@pytest.mark.parametrize("dtype, atol", ((torch.float16, 1e-8),) + _FLOAT8_E5M2_CONFIG)
 @pytest.mark.parametrize("k", (512,))
 @pytest.mark.parametrize("n", (512,))
 @pytest.mark.parametrize("m", (512,))

@@ -54,9 +54,9 @@ def addmm(input, mat1, mat2, beta=1, alpha=1):
     return output
 
 
-@pytest.mark.parametrize("device", get_available_devices())
 @pytest.mark.parametrize(
-    "dtype, atol", ((torch.float16, 0.075),) + matmul._FLOAT8_E5M2_CONFIG
+    "device, dtype, atol",
+    matmul._device_dtype_config(get_available_devices(), fp16_atol=0.075),
 )
 @pytest.mark.parametrize("k", (512,))
 @pytest.mark.parametrize("n", (512,))
