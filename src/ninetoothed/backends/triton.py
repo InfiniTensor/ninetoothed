@@ -111,6 +111,10 @@ class TritonOptimizeSchedule(OptimizeSchedule):
             }
 
         if granularity == "parallel-reduction":
+            reduction = schedule.get("reduction", {})
+
+            if reduction.get("mode") == "row-vector":
+                return {"schedule": {"num_warps": (4, 8, 1), "num_stages": 1}}
             return {"schedule": {"num_warps": 4}}
         return {"schedule": {"num_warps": 4}}
 

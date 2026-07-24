@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from ninetoothed.backends.core import Target, normalize_target
+from ninetoothed.compiler.reductions import analyze_reductions
 from ninetoothed.ir import ssa
 
 HARDWARE_INDEPENDENT = "hardware_independent"
@@ -276,6 +277,7 @@ class AnalyzeEffects(Pass):
         reductions = sum(1 for opcode in opcodes if opcode.startswith("reduce."))
         loops = sum(1 for opcode in opcodes if opcode == "scf.for")
         dot_input_dtypes = _linalg_input_dtypes(program)
+        reduction_analysis = analyze_reductions(program)
 
         return _with_metadata(
             program,
@@ -291,6 +293,7 @@ class AnalyzeEffects(Pass):
                 "has_exp_reduction_dot_pattern": _has_exp_reduction_dot_pattern(
                     opcodes
                 ),
+                **reduction_analysis,
             },
         )
 
@@ -344,7 +347,18 @@ class SelectSchedule(Pass):
             "indexing": "flat-contiguous",
             "parallelism": "program-blocks",
         }
+        reduction = analysis.get("reduction_schedule")
+
+        if "reduction" in options:
+            raise ValueError(
+                "Reduction schedule options are compiler-owned and cannot be "
+                "overridden through `ssa.select_schedule`."
+            )
+
         schedule = _merge_nested(schedule, options)
+
+        if isinstance(reduction, Mapping):
+            schedule["reduction"] = dict(reduction)
 
         return _with_metadata(program, schedule=schedule)
 
@@ -398,6 +412,13 @@ class OptimizeSchedule(Pass):
             _pass_options(context, self.name, "ssa.optimize_schedule")
         )
         optimization_options.pop("candidate", None)
+
+        if "reduction" in dict(optimization_options.get("schedule", {})):
+            raise ValueError(
+                "Reduction schedule options are compiler-owned and cannot be "
+                "overridden by an optimization pass."
+            )
+
         optimization = _merge_nested(
             optimization,
             optimization_options,
@@ -406,6 +427,11 @@ class OptimizeSchedule(Pass):
             schedule,
             dict(optimization.get("schedule", {})),
         )
+        reduction = analysis.get("reduction_schedule")
+
+        if isinstance(reduction, Mapping):
+            optimized_schedule["reduction"] = dict(reduction)
+
         candidate_metadata = tuple(candidate.as_metadata() for candidate in candidates)
 
         return _replace_program(

@@ -187,6 +187,29 @@ def emit(kernel: Kernel, target: EmitterTarget) -> Artifact:
     )
 
 
+def _row_reduction_schedule(program: ssa.Program) -> Mapping[str, Any] | None:
+    schedule = program.metadata.get("schedule", {})
+
+    if not isinstance(schedule, Mapping):
+        return None
+
+    reduction = schedule.get("reduction", {})
+
+    if not isinstance(reduction, Mapping):
+        return None
+
+    if reduction.get("mode") == "scalar-fallback" and not reduction.get(
+        "emittable", True
+    ):
+        raise ValueError(
+            "Reduction outputs with different domains require separate kernels."
+        )
+
+    if reduction.get("mode") != "row-vector":
+        return None
+    return reduction
+
+
 def _render_source(
     kernel: Kernel,
     target: _Target,
@@ -195,6 +218,7 @@ def _render_source(
 ) -> tuple[str, ModuleRenderContext]:
     program = kernel.ssa
     assert program is not None
+    reduction_schedule = _row_reduction_schedule(program)
     block = program.blocks[0] if program.blocks else ssa.Block()
     tensor_infos = {tensor.name: _tensor_info(tensor) for tensor in kernel.tensors}
     auxiliary_bindings = _auxiliary_pointer_bindings(kernel.tensors)
@@ -271,6 +295,11 @@ def _render_source(
     else:
         value_axes = store_value_axes
 
+    if target.vector_value_semantics and reduction_schedule is not None:
+        value_axes = tuple(
+            str(axis) for axis in reduction_schedule.get("value_shape", ())
+        )
+
     output_attrs = output_info.attrs or {} if output_info is not None else {}
     split_outer_inner = bool(
         value_axes
@@ -291,10 +320,8 @@ def _render_source(
     )
     vector_reduction_program = bool(
         target.vector_value_semantics
-        and split_outer_inner
+        and reduction_schedule is not None
         and not vector_block_program
-        and sum(str(axis).strip("() ") != "1" for axis in value_axes) <= 1
-        and any(op.opcode.startswith("reduce.") for op in walked_ops)
     )
     native_block_program = bool(
         target.native_block_matmul
@@ -318,10 +345,52 @@ def _render_source(
         inner_index_expr = "0"
     elif vector_reduction_program:
         axes = value_axes
-        total = _target_index_expr(target, _product(value_axes))
-        grid_total = _target_index_expr(target, _product(outer_axes))
-        outer_index_expr = target.program_id(0)
-        inner_index_expr = "offsets"
+        reduction_axis = int(reduction_schedule["axis"])
+        parallel_shape = tuple(
+            str(axis) for axis in reduction_schedule.get("parallel_shape", ())
+        )
+        parallel_total = _product(parallel_shape)
+        program_index = target.program_id(0)
+        parallel_index = (
+            "0"
+            if _is_one_expr(parallel_total)
+            else _target_index_expr(target, f"({program_index}) % ({parallel_total})")
+        )
+        coordinate_exprs = []
+        parallel_dim = 0
+
+        for dim in range(len(value_axes)):
+            if dim == reduction_axis:
+                coordinate_exprs.append("offsets")
+                continue
+
+            coordinate_exprs.append(
+                _axis_offset_expr(
+                    parallel_shape,
+                    parallel_dim,
+                    parallel_index,
+                    target,
+                )
+            )
+            parallel_dim += 1
+
+        coordinate_exprs = tuple(coordinate_exprs)
+        total = _target_index_expr(target, str(reduction_schedule["extent"]))
+        outer_program_shape = outer_axes if split_outer_inner else ()
+        grid_total = _target_index_expr(
+            target,
+            _product((*outer_program_shape, *parallel_shape)),
+        )
+        outer_index_expr = (
+            "0"
+            if not outer_program_shape
+            else program_index
+            if _is_one_expr(parallel_total)
+            else _target_index_expr(
+                target, f"floor(({program_index})/({parallel_total}))"
+            )
+        )
+        inner_index_expr = _linearized_index(coordinate_exprs, value_axes)
     elif native_block_program:
         axes = value_axes
         total = _target_index_expr(target, _product(value_axes))
@@ -367,6 +436,8 @@ def _render_source(
         block_program=vector_block_program,
         native_block_program=native_block_program,
         vector_program=vector_reduction_program,
+        coordinate_exprs=(coordinate_exprs if vector_reduction_program else ()),
+        reduction_schedule=(reduction_schedule if vector_reduction_program else None),
     )
     body = _with_contiguous_1d_fast_path(
         kernel,
@@ -443,6 +514,9 @@ def _with_contiguous_1d_fast_path(
     vector_program: bool,
 ) -> str:
     logical_infos = tuple(tensor_infos[tensor.name] for tensor in kernel.tensors)
+
+    if vector_program:
+        return generic_body
 
     if not logical_infos or any(
         info.ndim != 1
@@ -560,10 +634,11 @@ def _render_body(
     native_block_program: bool = False,
     layout_contiguous: bool = False,
     vector_program: bool = False,
+    coordinate_exprs: tuple[str, ...] = (),
+    reduction_schedule: Mapping[str, Any] | None = None,
 ) -> str:
     output = outputs[0] if outputs else "out"
     lines: list[str] = []
-    coordinate_exprs: tuple[str, ...] = ()
     enable_index_cse = (
         not target.vector_value_semantics and outer_index_expr != inner_index_expr
     )
@@ -641,6 +716,7 @@ def _render_body(
         native_block_program=native_block_program,
         layout_contiguous=layout_contiguous,
         vector_program=vector_program,
+        reduction_lane="offsets" if reduction_schedule is not None else None,
     )
 
     for op in operations:
@@ -680,6 +756,24 @@ def _nested_local_suffix(ctx: _EmitContext, label: str) -> str:
     suffix = f"_{clean}_body"
 
     return f"{ctx.local_suffix}{suffix}" if ctx.local_suffix else suffix
+
+
+def _coords_use_reduction_lane(coords: tuple[str, ...], ctx: _EmitContext) -> bool:
+    return bool(
+        ctx.vector_program
+        and ctx.reduction_lane is not None
+        and ctx.reduction_lane in coords
+    )
+
+
+def _mask_for_coords(coords: tuple[str, ...], ctx: _EmitContext) -> str | None:
+    if not ctx.vector_program:
+        return ctx.mask_expr
+    return ctx.mask_expr if _coords_use_reduction_lane(coords, ctx) else None
+
+
+def _mask_for_axes(axes: tuple[str, ...], ctx: _EmitContext) -> str | None:
+    return _mask_for_coords(_current_coords(axes, ctx), ctx)
 
 
 def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
@@ -753,7 +847,7 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
         else:
             mask = _store_mask(
                 ctx.target,
-                ctx.mask_expr,
+                _mask_for_axes(_value_axes(tensor, ctx), ctx),
                 info,
                 view_index,
                 ctx=ctx,
@@ -804,6 +898,27 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
     local = _local_symbol(name, ctx)
 
     if op.opcode.startswith("reduce."):
+        if ctx.vector_program:
+            operator = op.opcode[len("reduce.") :]
+            operand_axes = _value_axes(op.operands[0], ctx)
+            operand = _emit_element(
+                op.operands[0], _current_coords(operand_axes, ctx), ctx
+            )
+            result_type = ssa.Type(
+                kind="scalar",
+                dtype=op.results[0].type.dtype if op.results else "float32",
+            )
+            identity = _reduction_identity(operator, result_type, ctx.target)
+
+            if ctx.mask_expr is not None:
+                operand = ctx.target.where(ctx.mask_expr, operand, identity)
+
+            expr = ctx.target.vector_reduce(operator, operand, 0)
+            ctx.lines.append(ctx.target.local_decl(result_type, local, expr))
+            ctx.memo[name] = local
+
+            return local
+
         if ctx.block_program:
             operator = op.opcode[len("reduce.") :]
             operand = _emit_value(op.operands[0], ctx)
@@ -1306,7 +1421,7 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
         )
 
     if op.opcode.startswith("reduce."):
-        if ctx.block_program:
+        if ctx.block_program or ctx.vector_program:
             return _emit_value(name, ctx)
         return _emit_reduce_element(op, coords, ctx)
 
@@ -1401,11 +1516,18 @@ def _emit_pointer_load(pointer: str, coords: tuple[str, ...], ctx: _EmitContext)
     address = _pointer_address(pointer, coords, ctx)
 
     if address is None:
+        if ctx.vector_program:
+            raise ValueError(
+                "Row-vector reductions require a decomposable pointer address."
+            )
+
         return ctx.target.call("load", (_emit_element(pointer, coords, ctx),))
 
     base, offset = address
 
-    return ctx.target.load(base, offset)
+    mask = _mask_for_coords(coords, ctx) if ctx.vector_program else None
+
+    return ctx.target.load(base, offset, mask=mask)
 
 
 def _pointer_address(
@@ -1446,21 +1568,19 @@ def _pointer_address(
 
 
 def _reduction_identity(operator: str, type_: ssa.Type, target: _Target) -> str:
-    if operator == "sum":
-        return "0.0"
-
     dtype = _normalize_dtype(type_.dtype or "float32")
+
+    if operator == "sum":
+        return target.literal(0.0 if "float" in dtype else 0)
 
     if dtype == "bool":
         return target.literal(operator == "min")
 
+    if dtype in {"float8_e5m2", "float16", "bfloat16", "float32", "float64"}:
+        return target.literal(float("-inf") if operator == "max" else float("inf"))
+
     limits: Mapping[str, tuple[int | float, int | float]] = {
         "float8_e4m3fn": (-448.0, 448.0),
-        "float8_e5m2": (-57344.0, 57344.0),
-        "float16": (-65504.0, 65504.0),
-        "bfloat16": (-3.3895313892515355e38, 3.3895313892515355e38),
-        "float32": (-3.4028234663852886e38, 3.4028234663852886e38),
-        "float64": (-1.7976931348623157e308, 1.7976931348623157e308),
         "int8": (-128, 127),
         "uint8": (0, 255),
         "int16": (-32768, 32767),
@@ -1631,7 +1751,7 @@ def _load_tensor_at(
     source_index = _materialize_index_expr(source_index, ctx)
     mask = _combined_mask(
         ctx.target,
-        ctx.mask_expr if ctx.target.vector_value_semantics else None,
+        (_mask_for_coords(coords, ctx) if ctx.target.vector_value_semantics else None),
         info,
         view_index,
         ctx=ctx,
@@ -1779,6 +1899,11 @@ def _current_coords(axes: tuple[str, ...], ctx: _EmitContext) -> tuple[str, ...]
             _axis_offset_expr(output_axes, dim, ctx.inner_index_expr, ctx.target)
             for dim in range(len(output_axes))
         )
+        vector_reduction_axis = (
+            output_coords.index(ctx.reduction_lane)
+            if ctx.vector_program and ctx.reduction_lane in output_coords
+            else None
+        )
         coords: tuple[str, ...] | None = None
 
         if len(axes) == len(output_axes):
@@ -1786,6 +1911,18 @@ def _current_coords(axes: tuple[str, ...], ctx: _EmitContext) -> tuple[str, ...]
                 "0" if axis == "1" else output_coords[index]
                 for index, axis in enumerate(axes)
             )
+        elif vector_reduction_axis is not None and len(axes) == len(output_axes) - 1:
+            parallel_dims = tuple(
+                index
+                for index in range(len(output_axes))
+                if index != vector_reduction_axis
+            )
+
+            if axes == tuple(output_axes[index] for index in parallel_dims):
+                coords = tuple(
+                    "0" if axis == "1" else output_coords[parallel_dim]
+                    for axis, parallel_dim in zip(axes, parallel_dims)
+                )
         elif len(axes) < len(output_axes):
             if _axes_compatible_prefix(axes, output_axes):
                 coords = tuple(
@@ -2457,9 +2594,10 @@ def _source_bounds_mask(
     info: _TensorInfo | None, indices: tuple[str, ...], ctx: _EmitContext
 ) -> str | None:
     checks = []
+    base_mask = _mask_for_coords(indices, ctx)
 
-    if ctx.mask_expr:
-        checks.append(ctx.mask_expr)
+    if base_mask:
+        checks.append(base_mask)
 
     shape = () if info is None else info.source_shape
 
@@ -2959,6 +3097,12 @@ def _store_index(op: ssa.Operation, ctx: _EmitContext) -> str:
         rendered = tuple(_emit_index_value(str(index), ctx) for index in indices)
 
         return _linearized_index(rendered, _value_axes(op.operands[1], ctx))
+
+    if ctx.vector_program:
+        axes = _value_axes(op.operands[1], ctx)
+        coords = _current_coords(axes, ctx)
+
+        return _linearized_index(coords, axes) if coords else "0"
 
     if ctx.block_program and ctx.coordinate_exprs:
         return _linearized_index(ctx.coordinate_exprs, ctx.output_axes)

@@ -878,7 +878,7 @@ def canonical_math_application(x, y, out):
             ),
         )
         expected = {
-            "triton": ("ssa-unified-triton-emitter", "for v1_i in range(0, cols, 1):"),
+            "triton": ("ssa-unified-triton-emitter", "tl.sum("),
             "cuda": (
                 "ssa-unified-cuda-emitter",
                 "a[(index) * (cols) + (v1_i)] * x[v1_i]",
@@ -891,6 +891,9 @@ def canonical_math_application(x, y, out):
             _assert_ssa_artifact(artifact, route=route)
             assert source_fragment in artifact.primary_source
             assert "reduce.sum" in str(artifact.metadata["ssa"])
+
+            if backend == "triton":
+                assert "for v1_i in range" not in artifact.primary_source
 
     def test_from_source_generates_rowwise_reduction_for_native_backends(self):
         kernel = _ssa_kernel(
