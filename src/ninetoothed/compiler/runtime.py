@@ -279,7 +279,7 @@ def _is_cacheable_runtime_literal(value) -> bool:
     )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _RuntimeValueContract:
     is_tensor: bool
     identity: int
@@ -306,7 +306,12 @@ class _RuntimeValueContract:
         shape = getattr(value, "shape", None)
 
         if shape is None or not hasattr(value, "dtype"):
-            return cls(False, 0, type(value), value=value)
+            return cls(
+                is_tensor=False,
+                identity=0,
+                value_type=type(value),
+                value=value,
+            )
 
         stride = getattr(value, "stride", None)
         data_ptr = getattr(value, "data_ptr", None)
@@ -326,9 +331,9 @@ class _RuntimeValueContract:
             scalar_value = (type(item), item)
 
         return cls(
-            True,
-            id(value),
-            type(value),
+            is_tensor=True,
+            identity=id(value),
+            value_type=type(value),
             shape=shape,
             stride=stride_value,
             dtype=value.dtype,
@@ -378,7 +383,7 @@ class _RuntimeValueContract:
         return type(item) is self.scalar_value[0] and item == self.scalar_value[1]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _VerifiedRuntimeCall:
     positional: tuple[_RuntimeValueContract, ...]
     keywords: tuple[tuple[str, _RuntimeValueContract], ...]
@@ -447,7 +452,11 @@ class _VerifiedRuntimeCall:
                     positional[1].value_type,
                     *positional[1].tensor_state,
                 )
-        return cls(positional, keywords, two_tensor_state)
+        return cls(
+            positional=positional,
+            keywords=keywords,
+            two_tensor_state=two_tensor_state,
+        )
 
     def call_key(self, args, kwargs):
         if self.two_tensor_state is None or len(args) != 2 or len(kwargs) != 1:
@@ -537,7 +546,7 @@ def _jagged_tensor_state(value):
         return None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _JaggedOwnerContract:
     owner: weakref.ReferenceType
     values_state: tuple
@@ -555,7 +564,11 @@ class _JaggedOwnerContract:
         if values_state is None or offsets_state is None:
             return None
 
-        return cls(reference, values_state, offsets_state)
+        return cls(
+            owner=reference,
+            values_state=values_state,
+            offsets_state=offsets_state,
+        )
 
     def matches(self):
         owner = self.owner()
@@ -574,7 +587,7 @@ class _JaggedOwnerContract:
         return state == (self.values_state, self.offsets_state)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _PreparedBoundValue:
     value: Any = None
     tensor: weakref.ReferenceType | None = None
@@ -646,7 +659,7 @@ class _PreparedBoundValue:
         return flattened, flattened
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _RuntimeBindingPlan:
     values: tuple[_PreparedBoundValue, ...]
     jagged_owners: tuple[_JaggedOwnerContract, ...]
@@ -691,7 +704,7 @@ class _RuntimeBindingPlan:
             owner_ids.add(identity)
             jagged_owners.append(contract)
 
-        return cls(planned, tuple(jagged_owners))
+        return cls(values=planned, jagged_owners=tuple(jagged_owners))
 
     @property
     def owner_refs(self):
@@ -758,7 +771,7 @@ class _RuntimeBindingPlan:
         return tuple(values), tuple(keepalive)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _PreparedRuntimeLaunch:
     guard: _VerifiedRuntimeCall
     binding_plan: _RuntimeBindingPlan | None
@@ -979,10 +992,10 @@ def _runtime_wrapper(
 
         if _empty_launch(abi, public):
             return _PreparedRuntimeLaunch(
-                _VerifiedRuntimeCall.from_call(abi, args, kwargs),
-                None,
-                _runtime_owner_refs(args, kwargs),
-                True,
+                guard=_VerifiedRuntimeCall.from_call(abi, args, kwargs),
+                binding_plan=None,
+                owner_refs=_runtime_owner_refs(args, kwargs),
+                empty=True,
             )
 
         values, _keepalive = _bound_values(abi, bound_public, scalar_mode="value")
@@ -1025,11 +1038,11 @@ def _runtime_wrapper(
         owner_refs = _runtime_owner_refs(args, kwargs, binding_plan)
 
         return _PreparedRuntimeLaunch(
-            _VerifiedRuntimeCall.from_call(abi, args, kwargs),
-            binding_plan,
-            owner_refs,
-            False,
-            invocation_plan,
+            guard=_VerifiedRuntimeCall.from_call(abi, args, kwargs),
+            binding_plan=binding_plan,
+            owner_refs=owner_refs,
+            empty=False,
+            invocation_plan=invocation_plan,
         )
 
     def invoke(prepared, args, kwargs):
