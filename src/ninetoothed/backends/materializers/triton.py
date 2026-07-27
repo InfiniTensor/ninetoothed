@@ -790,7 +790,7 @@ def _runtime_vector_validator(compilation):
         if limit is not None and extent > limit:
             block = 1 << (extent - 1).bit_length()
             raise ValueError(
-                f"triton row-vector reduction extent {extent} requires "
+                f"Triton row-vector reduction extent {extent} requires "
                 f"BLOCK={block}, exceeding the backend tensor numel limit "
                 f"{limit}; hierarchical reduction is not implemented."
             )
@@ -1209,7 +1209,7 @@ def _compile_block(compilation) -> int:
 
         if limit is not None and block > limit:
             raise ValueError(
-                f"triton row-vector reduction extent {total} requires "
+                f"Triton row-vector reduction extent {total} requires "
                 f"BLOCK={block}, exceeding the backend tensor numel limit "
                 f"{limit}; hierarchical reduction is not implemented."
             )
@@ -1231,6 +1231,7 @@ def _constant_reduction_extent(compilation, reduction) -> int:
         import sympy
 
         value = sympy.sympify(expression)
+
         if value.free_symbols:
             raise ValueError
         return int(value)

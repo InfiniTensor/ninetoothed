@@ -475,6 +475,7 @@ def _producer_targets(value, definitions, tensor_specs):
         if tensor is not None:
             if tensor.ndim > 0 and not tensor.constexpr:
                 targets.add(current)
+
             continue
 
         operation = definitions.get(current)

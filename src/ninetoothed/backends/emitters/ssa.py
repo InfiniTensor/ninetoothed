@@ -218,7 +218,7 @@ def _row_reduction_schedule(
     if limit is not None and extent is not None and extent > limit:
         block = 1 << (extent - 1).bit_length()
         raise ValueError(
-            f"{target.backend.value} row-vector reduction extent {extent} "
+            f"Row-vector reduction for {target.backend.value} extent {extent} "
             f"requires BLOCK={block}, exceeding the backend tensor numel "
             f"limit {limit}; hierarchical reduction is not implemented."
         )
