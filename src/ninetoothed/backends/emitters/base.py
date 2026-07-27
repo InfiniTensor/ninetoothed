@@ -45,6 +45,7 @@ class EmitterTarget(ABC):
     vector_value_semantics: bool = False
     tir_value_semantics: bool = False
     native_block_matmul: bool = False
+    max_vector_numel: int | None = None
 
     def symbol(self, name: str) -> str:
         return f"v{name[1:]}" if name.startswith("%") else name

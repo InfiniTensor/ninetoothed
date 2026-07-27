@@ -2,12 +2,18 @@ import pytest
 import torch
 
 import ninetoothed.language as ntl
-from ninetoothed import Symbol, Tensor
-from ninetoothed.compiler import DEFAULT_COMPILER, CompileRequest, make
+from ninetoothed import Symbol, Tensor, float32
+from ninetoothed.compiler import (
+    DEFAULT_COMPILER,
+    CompileRequest,
+    load_built_artifact,
+    make,
+)
 from tests.utils import get_available_devices
 
 WIDTH = Symbol("WIDTH", constexpr=True)
 HEIGHT = Symbol("HEIGHT", constexpr=True)
+TOO_WIDE = (1 << 20) + 1
 
 
 def _row_arrangement(x, out, WIDTH=WIDTH):
@@ -16,6 +22,14 @@ def _row_arrangement(x, out, WIDTH=WIDTH):
 
 def _row_reduced_arrangement(x, out, WIDTH=WIDTH):
     return x.tile((1, WIDTH)), out.tile((1,))
+
+
+def _two_input_reduced_arrangement(x, y, out, WIDTH=WIDTH):
+    return x.tile((1, WIDTH)), y.tile((1, WIDTH)), out.tile((1,))
+
+
+def _fixed_row_reduced_arrangement(x, out):
+    return x.tile((1, 127)), out.tile((1,))
 
 
 def _column_arrangement(x, out, HEIGHT=HEIGHT):
@@ -32,6 +46,19 @@ def _square_arrangement(x, out):
 
 def _separate_reduction_arrangement(x, rows, columns):
     return x.tile((4, 8)), rows.tile((4,)), columns.tile((8,))
+
+
+def _mixed_outer_arrangement(x, y, out_x, out_y):
+    return (
+        x.tile((1, 7)),
+        y.tile((1, 7)),
+        out_x.tile((1,)),
+        out_y.tile((1,)),
+    )
+
+
+def _too_wide_arrangement(x, out):
+    return x.tile((1, TOO_WIDE)), out.tile((1,))
 
 
 def _row_normalize(x, out):
@@ -52,6 +79,10 @@ def _row_min(x, out):
     out = ntl.min(x, axis=1)  # noqa: F841
 
 
+def _row_product_sum(x, y, out):
+    out = ntl.sum(x * y, axis=1)  # noqa: F841
+
+
 def _column_max_broadcast(x, out):
     out = x + ntl.max(x, axis=0)[None, :]  # noqa: F841
 
@@ -67,6 +98,15 @@ def _incompatible_broadcast(x, out):
 def _separate_reduction_outputs(x, rows, columns):
     rows = ntl.sum(x, axis=1)  # noqa: F841
     columns = ntl.max(x, axis=0)  # noqa: F841
+
+
+def _mixed_outer_reductions(x, y, out_x, out_y):
+    out_x = ntl.sum(x, axis=1)  # noqa: F841
+    out_y = ntl.sum(y, axis=1)  # noqa: F841
+
+
+def _too_wide_sum(x, out):
+    out = ntl.sum(x, axis=1)  # noqa: F841
 
 
 def _request():
@@ -88,7 +128,9 @@ def test_reduction_domain_selects_triton_row_vector_schedule():
     assert {domain["operator"] for domain in domains} == {"max", "sum"}
     assert all(domain["axis"] == 1 for domain in domains)
     assert all(domain["parallel_shape"] == ("1",) for domain in domains)
+    assert all(len(domain["program_shapes"]) == 1 for domain in domains)
     assert metadata["schedule"]["reduction"]["mode"] == "row-vector"
+    assert metadata["schedule"]["reduction"]["program_shape"]
     assert tuple(
         candidate["num_warps"]
         for candidate in compilation.launch_plan.tuning_candidates
@@ -126,9 +168,34 @@ def test_reduction_domain_selects_triton_row_vector_schedule():
             )
         )
 
+    with pytest.raises(ValueError, match="separate kernels"):
+        DEFAULT_COMPILER.compile(
+            CompileRequest(
+                arrangement=_mixed_outer_arrangement,
+                application=_mixed_outer_reductions,
+                tensors=(
+                    Tensor(shape=(2, 7)),
+                    Tensor(shape=(4, 7)),
+                    Tensor(shape=(2,)),
+                    Tensor(shape=(4,)),
+                ),
+                backend="triton",
+            )
+        )
+
+    with pytest.raises(ValueError, match="exceeding the backend tensor numel limit"):
+        DEFAULT_COMPILER.compile(
+            CompileRequest(
+                arrangement=_too_wide_arrangement,
+                application=_too_wide_sum,
+                tensors=(Tensor(shape=(1, TOO_WIDE)), Tensor(shape=(1,))),
+                backend="triton",
+            )
+        )
+
 
 @pytest.mark.parametrize("device", get_available_devices())
-def test_triton_row_vector_reduction_runtime(device):
+def test_triton_row_vector_reduction_runtime(device, tmp_path):
     normalize = make(
         _row_arrangement,
         _row_normalize,
@@ -147,6 +214,13 @@ def test_triton_row_vector_reduction_runtime(device):
         _row_reduced_arrangement,
         _row_min,
         (Tensor(2), Tensor(1)),
+        backend="triton",
+        max_num_configs=1,
+    )
+    product_sum = make(
+        _two_input_reduced_arrangement,
+        _row_product_sum,
+        (Tensor(2), Tensor(2), Tensor(1)),
         backend="triton",
         max_num_configs=1,
     )
@@ -199,3 +273,47 @@ def test_triton_row_vector_reduction_runtime(device):
     output = torch.empty((2, 5), device=device)
     middle_sum(x, output)
     torch.testing.assert_close(output, x.sum(dim=1))
+
+    mismatched_output = torch.empty((4,), device=device)
+
+    with pytest.raises(ValueError, match="program domains do not match"):
+        reduce_min(x=torch.randn((2, 7), device=device), out=mismatched_output, WIDTH=7)
+
+    with pytest.raises(ValueError, match="program domains do not match"):
+        product_sum(
+            torch.randn((2, 7), device=device),
+            torch.randn((4, 7), device=device),
+            torch.empty((2,), device=device),
+            WIDTH=7,
+        )
+
+    too_wide = torch.empty((1, TOO_WIDE), device=device)
+    reduced = torch.empty((1,), device=device)
+
+    with pytest.raises(ValueError, match="tensor numel limit"):
+        reduce_min(too_wide, reduced, WIDTH=TOO_WIDE)
+
+    aot_reduce_min = make(
+        _fixed_row_reduced_arrangement,
+        _row_min,
+        (
+            Tensor(shape=(37, 127), dtype=float32),
+            Tensor(shape=(37,), dtype=float32),
+        ),
+        backend="triton",
+        caller=device,
+        kernel_name="row_min_reduction_aot",
+        output_dir=tmp_path,
+        max_num_configs=1,
+    )
+    x = torch.randn((37, 127), device=device)
+    output = torch.empty((37,), device=device)
+    aot_reduce_min(x, output)
+    torch.testing.assert_close(output, x.min(dim=1).values)
+
+    resized_x = torch.randn((38, 127), device=device)
+    resized_output = torch.empty((38,), device=device)
+
+    for launch in (aot_reduce_min, load_built_artifact(aot_reduce_min._built_artifact)):
+        with pytest.raises(TypeError, match="has shape .* expected"):
+            launch(resized_x, resized_output)

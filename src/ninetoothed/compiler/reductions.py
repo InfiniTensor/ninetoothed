@@ -28,6 +28,9 @@ class ReductionDomain:
     result_shape: tuple[str, ...]
     scope: tuple[int, ...]
     store_shapes: tuple[tuple[str, ...], ...] = ()
+    program_shapes: tuple[tuple[str, ...], ...] = ()
+    program_constraints: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = ()
+    program_compatible: bool = True
 
     @property
     def extent(self) -> str:
@@ -51,19 +54,23 @@ class ReductionDomain:
             "result_shape": self.result_shape,
             "scope": self.scope,
             "store_shapes": self.store_shapes,
+            "program_shapes": self.program_shapes,
+            "program_constraints": self.program_constraints,
+            "program_compatible": self.program_compatible,
             "extent": self.extent,
             "parallel_axes": self.parallel_axes,
             "parallel_shape": self.parallel_shape,
         }
 
 
-def analyze_reductions(program: ssa.Program) -> Mapping[str, Any]:
+def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
     """Return reduction domains and a conservative shared schedule contract."""
     value_types = _value_types(program)
     scoped_operations = tuple(_walk_program(program))
     users = _users(scoped_operations)
     definitions = _definitions(scoped_operations)
     forwarded_values = _forwarded_values(program)
+    tensor_specs = {tensor.name: tensor for tensor in tensors}
     domains = []
     rejections = []
 
@@ -78,6 +85,7 @@ def analyze_reductions(program: ssa.Program) -> Mapping[str, Any]:
             users,
             definitions,
             forwarded_values,
+            tensor_specs,
         )
         domains.append(domain)
 
@@ -93,7 +101,15 @@ def analyze_reductions(program: ssa.Program) -> Mapping[str, Any]:
     }
 
 
-def _domain(operation, scope, value_types, users, definitions, forwarded_values):
+def _domain(
+    operation,
+    scope,
+    value_types,
+    users,
+    definitions,
+    forwarded_values,
+    tensor_specs,
+):
     if operation.opcode not in {"reduce.sum", "reduce.max", "reduce.min"}:
         raise ValueError(f"Unsupported SSA reduction `{operation.opcode}`.")
 
@@ -157,16 +173,34 @@ def _domain(operation, scope, value_types, users, definitions, forwarded_values)
         result_shape=result_shape,
         value_types=value_types,
     )
-    store_shapes = _reachable_store_shapes(
+    stores = _reachable_stores(
         result.name,
         users,
         value_types,
         definitions,
         forwarded_values,
     )
+    store_shapes = tuple(sorted({shape for _target, shape in stores}))
+    (
+        program_shapes,
+        program_constraints,
+        program_compatible,
+        program_reason,
+    ) = _program_contract(
+        operand,
+        definitions,
+        stores,
+        tensor_specs,
+    )
 
     if not compatible and rejection is None:
         rejection = consumer_reason
+
+    if program_reason is not None and rejection is None:
+        rejection = program_reason
+
+    if len(program_shapes) > 1 and rejection is None:
+        rejection = "reduction stores do not share one outer program domain"
 
     if scope and rejection is None:
         rejection = "nested-region reductions require scalar fallback"
@@ -181,6 +215,9 @@ def _domain(operation, scope, value_types, users, definitions, forwarded_values)
             result_shape=result_shape,
             scope=scope,
             store_shapes=store_shapes,
+            program_shapes=program_shapes,
+            program_constraints=program_constraints,
+            program_compatible=program_compatible,
         ),
         rejection,
     )
@@ -269,7 +306,7 @@ def _consumer_contract(
     return True, None
 
 
-def _reachable_store_shapes(
+def _reachable_stores(
     result,
     users,
     value_types,
@@ -278,7 +315,7 @@ def _reachable_store_shapes(
 ):
     pending = [result]
     seen = set()
-    store_shapes = set()
+    stores = set()
 
     while pending:
         value = pending.pop()
@@ -291,53 +328,185 @@ def _reachable_store_shapes(
 
         for operation in users.get(value, ()):
             if operation.opcode in {"mem.store", "mem.atomic_add"}:
-                target_type = _effect_target_type(
+                target, target_type = _effect_target(
                     operation,
                     value_types,
                     definitions,
                 )
 
-                if target_type is not None:
-                    store_shapes.add(tuple(str(dim) for dim in target_type.shape))
+                if target is not None and target_type is not None:
+                    stores.add((target, tuple(str(dim) for dim in target_type.shape)))
 
                 continue
 
             pending.extend(item.name for item in operation.results)
 
             for block in operation.regions:
-                store_shapes.update(
-                    _region_store_shapes(block, value_types, definitions)
-                )
+                stores.update(_region_stores(block, value_types, definitions))
 
-    return tuple(sorted(store_shapes))
+    return tuple(sorted(stores))
 
 
-def _region_store_shapes(block, value_types, definitions):
-    store_shapes = set()
+def _region_stores(block, value_types, definitions):
+    stores = set()
 
     for operation in block.operations:
         if operation.opcode in {"mem.store", "mem.atomic_add"}:
-            target_type = _effect_target_type(operation, value_types, definitions)
+            target, target_type = _effect_target(operation, value_types, definitions)
 
-            if target_type is not None:
-                store_shapes.add(tuple(str(dim) for dim in target_type.shape))
+            if target is not None and target_type is not None:
+                stores.add((target, tuple(str(dim) for dim in target_type.shape)))
 
         for region in operation.regions:
-            store_shapes.update(_region_store_shapes(region, value_types, definitions))
+            stores.update(_region_stores(region, value_types, definitions))
 
-    return store_shapes
+    return stores
 
 
-def _effect_target_type(operation, value_types, definitions):
+def _effect_target(operation, value_types, definitions):
     target_index = 1 if operation.opcode == "mem.store" else 0
     target = operation.operands[target_index]
     target_type = value_types.get(target)
     definition = definitions.get(target)
 
     if definition is not None and definition.opcode == "mem.data_ptr":
-        target_type = value_types.get(definition.operands[0])
+        target = definition.operands[0]
+        target_type = value_types.get(target)
 
-    return target_type
+    return target, target_type
+
+
+def _program_contract(
+    operand,
+    definitions,
+    stores,
+    tensor_specs,
+):
+    producer_targets = _producer_targets(operand, definitions, tensor_specs)
+    producer_specs = tuple(tensor_specs[target] for target in producer_targets)
+    store_specs = tuple(tensor_specs.get(target) for target, _shape in stores)
+    legacy_global_domain = (
+        producer_specs
+        and all(tensor.layout is None for tensor in producer_specs)
+        and store_specs
+        and all(tensor is not None and tensor.layout is None for tensor in store_specs)
+    )
+
+    if legacy_global_domain:
+        return ((),), (((), ()),), True, None
+
+    if not producer_specs or any(tensor.layout is None for tensor in producer_specs):
+        return (
+            (),
+            (),
+            True,
+            "reduction operand has no structured Layout IR program domain",
+        )
+
+    producer_shapes = tuple(
+        sorted(
+            {
+                tuple(expression.render() for expression in tensor.layout.view_shape)
+                for tensor in producer_specs
+            }
+        )
+    )
+    shapes = set()
+    constraints = []
+    compatible = True
+    reason = None
+
+    for target, _store_shape in stores:
+        tensor = tensor_specs.get(target)
+
+        if tensor is None or tensor.layout is None:
+            return (
+                (),
+                (),
+                True,
+                "store target has no structured Layout IR program domain",
+            )
+
+        store_program_shape = tuple(
+            expression.render() for expression in tensor.layout.view_shape
+        )
+
+        shapes.add(store_program_shape)
+
+        for producer_shape in producer_shapes:
+            constraints.append((store_program_shape, producer_shape))
+            actual_static = _static_product(store_program_shape)
+            expected_static = _static_product(producer_shape)
+
+            if (
+                actual_static is not None
+                and expected_static is not None
+                and actual_static != expected_static
+            ):
+                compatible = False
+                reason = "reduction operand and store program domains do not match"
+
+    if len(shapes) > 1:
+        compatible = False
+        reason = "reduction stores do not share one outer program domain"
+
+    return (
+        tuple(sorted(shapes)),
+        tuple(sorted(constraints)),
+        compatible,
+        reason,
+    )
+
+
+def _producer_targets(value, definitions, tensor_specs):
+    pending = [value]
+    seen = set()
+    targets = set()
+
+    while pending:
+        current = pending.pop()
+
+        if current in seen:
+            continue
+
+        seen.add(current)
+        tensor = tensor_specs.get(current)
+
+        if tensor is not None:
+            if tensor.ndim > 0 and not tensor.constexpr:
+                targets.add(current)
+            continue
+
+        operation = definitions.get(current)
+
+        if operation is not None:
+            pending.extend(operation.operands)
+
+    return tuple(sorted(targets))
+
+
+def _static_product(shape):
+    values = tuple(_static_integer_expression(expression) for expression in shape)
+
+    if any(value is None for value in values):
+        return None
+
+    result = 1
+
+    for value in values:
+        result *= value
+    return result
+
+
+def _static_integer_expression(expression):
+    try:
+        import sympy
+
+        value = sympy.sympify(expression)
+
+        return None if value.free_symbols else int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_right_aligned(axis, input_shape, result_shape):
@@ -398,7 +567,16 @@ def _schedule_contract(domains, rejections):
     store_domains = {
         store_shape for domain in live_domains for store_shape in domain.store_shapes
     }
-    emittable = len(store_domains) == 1
+    program_domains = {
+        program_shape
+        for domain in live_domains
+        for program_shape in domain.program_shapes
+    }
+    emittable = (
+        len(store_domains) == 1
+        and len(program_domains) <= 1
+        and all(domain.program_compatible for domain in live_domains)
+    )
 
     if live_rejections:
         return {
@@ -413,6 +591,8 @@ def _schedule_contract(domains, rejections):
             domain.input_shape,
             domain.axis,
             domain.result_shape,
+            domain.program_shapes,
+            domain.program_constraints,
         )
         for domain in live_domains
     }
@@ -434,6 +614,8 @@ def _schedule_contract(domains, rejections):
         "extent": domain.extent,
         "parallel_axes": domain.parallel_axes,
         "parallel_shape": domain.parallel_shape,
+        "program_shape": domain.program_shapes[0],
+        "program_constraints": domain.program_constraints,
         "reductions": tuple(item.result for item in live_domains),
     }
 

@@ -119,8 +119,9 @@ def _materialize(compilation):
     launch = getattr(module, artifact.entrypoint)
     kernel = getattr(module, f"{artifact.kernel_name}_kernel", None)
     candidates = tuple(compilation.launch_plan.tuning_candidates)
+    validate_bindings = _runtime_vector_validator(compilation)
     candidate_launches = tuple(
-        _candidate_launch(compilation, launch, kernel, candidate)
+        _candidate_launch(compilation, launch, kernel, candidate, validate_bindings)
         for candidate in candidates
     )
     tuner = None
@@ -137,7 +138,7 @@ def _materialize(compilation):
             candidate_launches,
             tuple((cache_key, candidate["id"]) for candidate in candidates),
             cache_namespace=f"jit_{cache_key}",
-            validator=_runtime_validator(compilation),
+            validator=_runtime_validator(compilation, validate_bindings),
         )
         wrapped = tuner
     elif candidate_launches:
@@ -149,6 +150,7 @@ def _materialize(compilation):
                 compilation.launch_abi,
                 specs=compilation.kernel.tensors,
                 prepare_invocation=_triton_prepare_invocation(launch, kernel),
+                validate_bindings=validate_bindings,
             )
         )
 
@@ -168,7 +170,7 @@ def _materialize(compilation):
     return handle
 
 
-def _candidate_launch(compilation, launch, kernel, candidate):
+def _candidate_launch(compilation, launch, kernel, candidate, validate_bindings):
     from ninetoothed.compiler.runtime import _runtime_wrapper
 
     bindings = {binding.name: binding for binding in compilation.launch_abi.kernel_args}
@@ -188,6 +190,7 @@ def _candidate_launch(compilation, launch, kernel, candidate):
         specs=compilation.kernel.tensors,
         binding_overrides=meta_values,
         prepare_invocation=_triton_prepare_invocation(function, kernel),
+        validate_bindings=validate_bindings,
     )
 
 
@@ -699,16 +702,116 @@ def _triton_specialization_key(compilation, args, kwargs):
     return f"{base}, specialization={tuple(scalar_values)!r}"
 
 
-def _runtime_validator(compilation):
+def _runtime_validator(compilation, validate_bindings):
     from ninetoothed.compiler.runtime import _public_values
 
     def validate(args, kwargs):
-        _public_values(
+        public = _public_values(
             compilation.launch_abi,
             args,
             kwargs,
             specs=compilation.kernel.tensors,
         )
+
+        if validate_bindings is not None:
+            validate_bindings(public)
+
+    return validate
+
+
+def _runtime_vector_validator(compilation):
+    metadata = getattr(compilation.artifact, "metadata", {})
+    limit = metadata.get("vector_numel_limit")
+    schedule = metadata.get("ssa_schedule", {})
+    reduction = schedule.get("reduction", {})
+
+    if reduction.get("mode") != "row-vector":
+        return None
+
+    import sympy
+
+    extent_expression = sympy.sympify(str(reduction["extent"]))
+    program_constraints = tuple(
+        (
+            tuple(sympy.sympify(str(value)) for value in actual),
+            tuple(sympy.sympify(str(value)) for value in expected),
+        )
+        for actual, expected in reduction.get("program_constraints", ())
+    )
+    expressions = (
+        extent_expression,
+        *(
+            expression
+            for constraint in program_constraints
+            for shape in constraint
+            for expression in shape
+        ),
+    )
+    bindings = {binding.name: binding for binding in compilation.launch_abi.kernel_args}
+
+    try:
+        symbols = tuple(
+            (symbol, bindings[str(symbol)])
+            for symbol in sorted(
+                set().union(*(expression.free_symbols for expression in expressions)),
+                key=str,
+            )
+        )
+    except KeyError as exc:
+        raise ValueError(
+            f"Triton reduction extent references unknown symbol `{exc.args[0]}`."
+        ) from exc
+
+    from ninetoothed.compiler.runtime import _binding_value
+
+    last_values = None
+
+    def validate(public):
+        nonlocal last_values
+        values = tuple(_binding_value(binding, public) for _symbol, binding in symbols)
+
+        if values == last_values:
+            return
+
+        substitutions = {
+            symbol: value for (symbol, _binding), value in zip(symbols, values)
+        }
+
+        def resolve(expression):
+            resolved = expression.subs(substitutions)
+
+            if resolved.free_symbols:
+                names = ", ".join(sorted(map(str, resolved.free_symbols)))
+                raise ValueError(f"Unresolved Triton row-vector symbols: {names}.")
+            return int(resolved)
+
+        extent = resolve(extent_expression)
+
+        if limit is not None and extent > limit:
+            block = 1 << (extent - 1).bit_length()
+            raise ValueError(
+                f"triton row-vector reduction extent {extent} requires "
+                f"BLOCK={block}, exceeding the backend tensor numel limit "
+                f"{limit}; hierarchical reduction is not implemented."
+            )
+
+        for actual, expected in program_constraints:
+            actual_total = 1
+            expected_total = 1
+
+            for expression in actual:
+                actual_total *= resolve(expression)
+
+            for expression in expected:
+                expected_total *= resolve(expression)
+
+            if actual_total != expected_total:
+                raise ValueError(
+                    "Triton row-vector reduction operand and output program "
+                    "domains do not match; separate kernels are required."
+                )
+
+        last_values = values
 
     return validate
 
@@ -1088,15 +1191,54 @@ def _triton_scalar_dtype(dtype) -> str:
 
 def _compile_block(compilation) -> int:
     mode = dict(compilation.artifact.metadata.get("program_mode", {}))
+    reduction = dict(
+        compilation.artifact.metadata.get("ssa_schedule", {}).get("reduction", {})
+    )
 
     if mode.get("block") or mode.get("scalar"):
         return 1
 
     if mode.get("vector"):
-        total = _constant_grid_total(compilation)
+        total = (
+            _constant_reduction_extent(compilation, reduction)
+            if reduction.get("mode") == "row-vector"
+            else _constant_grid_total(compilation)
+        )
+        block = 1 << max(0, (total - 1).bit_length())
+        limit = compilation.artifact.metadata.get("vector_numel_limit")
 
-        return 1 << max(0, (total - 1).bit_length())
+        if limit is not None and block > limit:
+            raise ValueError(
+                f"triton row-vector reduction extent {total} requires "
+                f"BLOCK={block}, exceeding the backend tensor numel limit "
+                f"{limit}; hierarchical reduction is not implemented."
+            )
+        return block
     return 256
+
+
+def _constant_reduction_extent(compilation, reduction) -> int:
+    expression = replace_symbols(
+        str(reduction["extent"]),
+        {
+            binding.name: str(binding.value)
+            for binding in compilation.launch_abi.kernel_args
+            if binding.kind in {"meta", "constexpr"} and binding.value is not None
+        },
+    )
+
+    try:
+        import sympy
+
+        value = sympy.sympify(expression)
+        if value.free_symbols:
+            raise ValueError
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Triton AOT row-vector reductions require a statically "
+            "specialized reduction extent."
+        ) from exc
 
 
 def _constant_grid_total(compilation) -> int:

@@ -44,6 +44,7 @@ class Context:
     backend: Target
     compiler_options: Mapping[str, Any]
     kernel_metadata: Mapping[str, Any]
+    tensors: tuple[Any, ...] = ()
     pass_options: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     pipeline_spec: PipelineSpec | None = None
 
@@ -277,7 +278,7 @@ class AnalyzeEffects(Pass):
         reductions = sum(1 for opcode in opcodes if opcode.startswith("reduce."))
         loops = sum(1 for opcode in opcodes if opcode == "scf.for")
         dot_input_dtypes = _linalg_input_dtypes(program)
-        reduction_analysis = analyze_reductions(program)
+        reduction_analysis = analyze_reductions(program, context.tensors)
 
         return _with_metadata(
             program,
@@ -574,6 +575,7 @@ def lower_for_target(
     backend: Target | str | None,
     compiler_options: Mapping[str, Any] | None = None,
     kernel_metadata: Mapping[str, Any] | None = None,
+    tensors: tuple[Any, ...] = (),
     pass_pipeline: Pipeline
     | PipelineSpec
     | Sequence[str]
@@ -598,6 +600,7 @@ def lower_for_target(
             backend=backend_name,
             compiler_options=compiler_options,
             kernel_metadata=kernel_metadata,
+            tensors=tensors,
             pass_options=explicit_pass_options,
         )
 
@@ -641,6 +644,7 @@ def lower_for_target(
         backend=backend_name,
         compiler_options=compiler_options,
         kernel_metadata=kernel_metadata,
+        tensors=tensors,
         pass_options=merged_pass_options,
         pipeline_spec=spec,
     )

@@ -170,6 +170,7 @@ def emit(kernel: Kernel, target: EmitterTarget) -> Artifact:
             "scalar": render_context.scalar_program,
             "vector": render_context.vector_program,
         },
+        "vector_numel_limit": target.max_vector_numel,
     }
 
     return Artifact(
@@ -187,7 +188,10 @@ def emit(kernel: Kernel, target: EmitterTarget) -> Artifact:
     )
 
 
-def _row_reduction_schedule(program: ssa.Program) -> Mapping[str, Any] | None:
+def _row_reduction_schedule(
+    program: ssa.Program,
+    target: _Target,
+) -> Mapping[str, Any] | None:
     schedule = program.metadata.get("schedule", {})
 
     if not isinstance(schedule, Mapping):
@@ -207,7 +211,25 @@ def _row_reduction_schedule(program: ssa.Program) -> Mapping[str, Any] | None:
 
     if reduction.get("mode") != "row-vector":
         return None
+
+    extent = _static_integer(reduction.get("extent"))
+    limit = target.max_vector_numel
+
+    if limit is not None and extent is not None and extent > limit:
+        block = 1 << (extent - 1).bit_length()
+        raise ValueError(
+            f"{target.backend.value} row-vector reduction extent {extent} "
+            f"requires BLOCK={block}, exceeding the backend tensor numel "
+            f"limit {limit}; hierarchical reduction is not implemented."
+        )
     return reduction
+
+
+def _static_integer(value) -> int | None:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _render_source(
@@ -218,7 +240,7 @@ def _render_source(
 ) -> tuple[str, ModuleRenderContext]:
     program = kernel.ssa
     assert program is not None
-    reduction_schedule = _row_reduction_schedule(program)
+    reduction_schedule = _row_reduction_schedule(program, target)
     block = program.blocks[0] if program.blocks else ssa.Block()
     tensor_infos = {tensor.name: _tensor_info(tensor) for tensor in kernel.tensors}
     auxiliary_bindings = _auxiliary_pointer_bindings(kernel.tensors)
@@ -376,7 +398,9 @@ def _render_source(
 
         coordinate_exprs = tuple(coordinate_exprs)
         total = _target_index_expr(target, str(reduction_schedule["extent"]))
-        outer_program_shape = outer_axes if split_outer_inner else ()
+        outer_program_shape = tuple(
+            str(axis) for axis in reduction_schedule.get("program_shape", ())
+        )
         grid_total = _target_index_expr(
             target,
             _product((*outer_program_shape, *parallel_shape)),

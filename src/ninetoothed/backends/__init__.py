@@ -75,6 +75,7 @@ def _prepare_kernel_for_backend(kernel: Kernel, target: Target) -> Kernel:
             backend=target,
             compiler_options=kernel.compiler_options,
             kernel_metadata=kernel.metadata,
+            tensors=kernel.tensors,
             pass_pipeline=kernel.compiler_options.get("ssa_pass_pipeline"),
             pass_options=kernel.compiler_options.get("ssa_pass_options"),
         )
