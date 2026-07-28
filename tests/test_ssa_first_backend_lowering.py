@@ -121,7 +121,7 @@ def _assert_ssa_artifact(artifact, *, route):
     assert artifact.metadata["source_route"] == route
 
 
-def _triton_load_mask(source: str) -> ast.AST | None:
+def _triton_load_mask(source: str, *, tensor: str | None = None) -> ast.AST | None:
     load = next(
         node
         for node in ast.walk(ast.parse(source))
@@ -130,6 +130,16 @@ def _triton_load_mask(source: str) -> ast.AST | None:
         and isinstance(node.func.value, ast.Name)
         and node.func.value.id == "tl"
         and node.func.attr == "load"
+        and (
+            tensor is None
+            or (
+                node.args
+                and any(
+                    isinstance(argument, ast.Name) and argument.id == tensor
+                    for argument in ast.walk(node.args[0])
+                )
+            )
+        )
     )
 
     return next(
@@ -1056,6 +1066,47 @@ def scalar_source_load_application(x, index, y):
         mask = _triton_load_mask(emit_kernel(kernel, "triton").primary_source)
         assert mask is not None
         assert not any(
+            isinstance(node, ast.Name) and node.id == "mask" for node in ast.walk(mask)
+        )
+
+    def test_scalar_index_name_drops_vector_mask(self):
+        kernel = _ssa_kernel(
+            """
+def scalar_index_application(x, index_arg, y):
+    y = x[index_arg]
+""",
+            "ssa_scalar_index",
+            (
+                TensorSpec(ndim=1, shape=("rows",), dtype="float32", name="x"),
+                TensorSpec(ndim=0, shape=(), dtype="int64", name="index_arg"),
+                TensorSpec(ndim=1, shape=("rows",), dtype="float32", name="y"),
+            ),
+        )
+        mask = _triton_load_mask(
+            emit_kernel(kernel, "triton").primary_source, tensor="x"
+        )
+        assert mask is None or not any(
+            isinstance(node, ast.Name) and node.id == "mask" for node in ast.walk(mask)
+        )
+
+    def test_scalarized_vector_index_drops_vector_mask(self):
+        kernel = _ssa_kernel(
+            """
+def scalarized_index_application(x, indices, y):
+    index_value = indices - 1
+    y = sum(x[index_value], axis=0)
+""",
+            "ssa_scalarized_index",
+            (
+                TensorSpec(ndim=1, shape=("rows",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("rows",), dtype="int64", name="indices"),
+                TensorSpec(ndim=0, shape=(), dtype="float32", name="y"),
+            ),
+        )
+        mask = _triton_load_mask(
+            emit_kernel(kernel, "triton").primary_source, tensor="x"
+        )
+        assert mask is None or not any(
             isinstance(node, ast.Name) and node.id == "mask" for node in ast.walk(mask)
         )
 

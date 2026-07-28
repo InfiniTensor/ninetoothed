@@ -2455,13 +2455,19 @@ def _load_base_mask(source_index: str, ctx: _EmitContext) -> str | None:
 
     mask = ctx.mask_expr
 
-    if (
-        mask is not None
-        and ctx.target.index_name not in source_index
-        and "offsets" not in source_index
-    ):
+    if mask is None or not _index_expr_is_vector(source_index, ctx):
         return None
     return mask
+
+
+def _index_expr_is_vector(source_index: str, ctx: _EmitContext) -> bool:
+    symbols = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", source_index))
+
+    return bool(
+        ctx.target.index_name in symbols
+        or "offsets" in symbols
+        or "tl.arange(" in source_index
+    )
 
 
 def _load_source_tensor(name: str, indices: tuple[str, ...], ctx: _EmitContext) -> str:
