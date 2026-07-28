@@ -52,10 +52,48 @@ def to_padded_tensor(input, padding, jagged_dim, block_size=32):
     return output
 
 
+def _padded_from_batches(batches, padding, jagged_dim):
+    batch_jagged_dim = jagged_dim - 1
+    max_length = max(batch.shape[batch_jagged_dim] for batch in batches)
+    output_shape = (len(batches),) + tuple(
+        max_length if dim == batch_jagged_dim else size
+        for dim, size in enumerate(batches[0].shape)
+    )
+    output = torch.full(
+        output_shape,
+        padding,
+        dtype=batches[0].dtype,
+        device=batches[0].device,
+    )
+
+    for batch_index, batch in enumerate(batches):
+        slices = [slice(None)] * batch.ndim
+        slices[batch_jagged_dim] = slice(0, batch.shape[batch_jagged_dim])
+        output[(batch_index, *slices)] = batch
+
+    return output
+
+
 @pytest.mark.parametrize("device", get_available_devices())
 @pytest.mark.parametrize("padding", (-1,))
 @pytest.mark.parametrize("num_batches", (2, 3, 7, 16))
-@pytest.mark.parametrize("jagged_dim", (1, 2))
+@pytest.mark.parametrize(
+    "jagged_dim",
+    (
+        pytest.param(
+            1,
+            marks=pytest.mark.requires_capability(
+                "tests.capabilities.jagged:jagged_dim_1"
+            ),
+        ),
+        pytest.param(
+            2,
+            marks=pytest.mark.requires_capability(
+                "tests.capabilities.jagged:jagged_dim_2"
+            ),
+        ),
+    ),
+)
 @pytest.mark.parametrize("ndim", (3,))
 def test_to_padded_tensor(ndim, jagged_dim, num_batches, padding, device):
     def _random_size(lower_bound=1, upper_bound=1024):
@@ -80,7 +118,7 @@ def test_to_padded_tensor(ndim, jagged_dim, num_batches, padding, device):
 
     output = to_padded_tensor(input, padding=padding, jagged_dim=jagged_dim)
 
-    expected = torch.nested.to_padded_tensor(input, padding)
+    expected = _padded_from_batches(batches, padding, jagged_dim)
 
     assert output.shape == expected.shape and torch.allclose(output, expected)
 
@@ -120,9 +158,32 @@ def copy(dst, src, jagged_dim, block_size=32):
     kernel(dst, src, block_size=block_size)
 
 
+def _expanded_values_from_batches(batches, source, jagged_dim):
+    return torch.cat(
+        tuple(source[index].expand_as(batch) for index, batch in enumerate(batches)),
+        dim=jagged_dim - 1,
+    )
+
+
 @pytest.mark.parametrize("device", get_available_devices())
 @pytest.mark.parametrize("num_batches", (2, 3, 7, 16))
-@pytest.mark.parametrize("jagged_dim", (1, 2))
+@pytest.mark.parametrize(
+    "jagged_dim",
+    (
+        pytest.param(
+            1,
+            marks=pytest.mark.requires_capability(
+                "tests.capabilities.jagged:jagged_dim_1"
+            ),
+        ),
+        pytest.param(
+            2,
+            marks=pytest.mark.requires_capability(
+                "tests.capabilities.jagged:jagged_dim_2"
+            ),
+        ),
+    ),
+)
 @pytest.mark.parametrize("ndim", (3,))
 def test_expand(ndim, jagged_dim, num_batches, device):
     def _random_size(lower_bound=1, upper_bound=1024):
@@ -152,7 +213,8 @@ def test_expand(ndim, jagged_dim, num_batches, device):
 
     copy(dst, src, jagged_dim)
 
-    dst = torch.nested.to_padded_tensor(dst, 0)
-    src = src.expand_as(dst)
+    expected = _expanded_values_from_batches(batches, src, jagged_dim)
 
-    assert dst.shape == src.shape and torch.allclose(dst[dst != 0], src[dst != 0])
+    assert dst.values().shape == expected.shape and torch.allclose(
+        dst.values(), expected
+    )
