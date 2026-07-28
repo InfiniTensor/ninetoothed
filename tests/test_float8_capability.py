@@ -183,13 +183,13 @@ def _parameter_capabilities(parameters):
     capabilities = {}
 
     for parameter in parameters:
-        device, dtype, atol = parameter.values
+        device, dtype, rtol, atol = parameter.values
         references = tuple(
             mark.args[0]
             for mark in parameter.marks
             if mark.name == "requires_capability"
         )
-        capabilities[(device, dtype)] = (atol, references)
+        capabilities[(device, dtype)] = ((rtol, atol), references)
 
     return capabilities
 
@@ -198,17 +198,21 @@ def test_float8_parameters_use_device_specific_capabilities():
     import tests.test_matmul as matmul
 
     capabilities = _parameter_capabilities(
-        matmul._device_dtype_config(("cuda", "mlu"), fp16_atol=0.25)
+        matmul._device_dtype_config(
+            ("cuda", "mlu"),
+            fp16_rtol=0.5,
+            fp16_atol=0.25,
+        )
     )
 
-    assert capabilities[("cuda", torch.float16)] == (0.25, ())
-    assert capabilities[("mlu", torch.float16)] == (0.25, ())
+    assert capabilities[("cuda", torch.float16)] == ((0.5, 0.25), ())
+    assert capabilities[("mlu", torch.float16)] == ((0.5, 0.25), ())
     assert capabilities[("cuda", torch.float8_e5m2)] == (
-        0.125,
+        (1e-5, 0.125),
         ("tests.capabilities.float8:float8_e5m2_cuda",),
     )
     assert capabilities[("mlu", torch.float8_e5m2)] == (
-        0.125,
+        (1e-5, 0.125),
         ("tests.capabilities.float8:float8_e5m2_mlu",),
     )
 
@@ -222,6 +226,6 @@ def test_matmul_and_addmm_use_joint_device_dtype_parameters():
             mark.args[0] for mark in function.pytestmark if mark.name == "parametrize"
         )
 
-        assert "device, dtype, atol" in parameter_names
+        assert "device, dtype, rtol, atol" in parameter_names
         assert "device" not in parameter_names
-        assert "dtype, atol" not in parameter_names
+        assert "dtype, rtol, atol" not in parameter_names

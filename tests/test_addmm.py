@@ -55,13 +55,17 @@ def addmm(input, mat1, mat2, beta=1, alpha=1):
 
 
 @pytest.mark.parametrize(
-    "device, dtype, atol",
-    matmul._device_dtype_config(get_available_devices(), fp16_atol=0.075),
+    "device, dtype, rtol, atol",
+    matmul._device_dtype_config(
+        get_available_devices(),
+        fp16_rtol=1e-5,
+        fp16_atol=0.075,
+    ),
 )
 @pytest.mark.parametrize("k", (512,))
 @pytest.mark.parametrize("n", (512,))
 @pytest.mark.parametrize("m", (512,))
-def test(m, n, k, dtype, device, atol):
+def test(m, n, k, dtype, device, rtol, atol):
     randn_dtype = dtype if dtype != torch.float8_e5m2 else torch.float16
 
     input = torch.randn((m, n), dtype=randn_dtype, device=device)
@@ -87,4 +91,4 @@ def test(m, n, k, dtype, device, atol):
         output = addmm(input, mat1, mat2, beta=beta, alpha=alpha)
         expected = torch.addmm(input, mat1, mat2, beta=beta, alpha=alpha)
 
-    assert torch.allclose(output, expected, atol=atol)
+    assert torch.allclose(output, expected, rtol=rtol, atol=atol)

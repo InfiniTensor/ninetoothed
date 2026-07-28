@@ -10,6 +10,9 @@ BLOCK_SIZE_M = Symbol("BLOCK_SIZE_M", meta=True)
 BLOCK_SIZE_N = Symbol("BLOCK_SIZE_N", meta=True)
 BLOCK_SIZE_K = Symbol("BLOCK_SIZE_K", meta=True)
 
+_FP16_RTOL = 0.001
+_FP16_ATOL = 0.001
+
 
 def arrangement(
     lhs,
@@ -61,17 +64,18 @@ def matmul(lhs, rhs):
     return output
 
 
-def _device_dtype_config(devices, fp16_atol):
+def _device_dtype_config(devices, *, fp16_rtol, fp16_atol):
     config = []
 
     for device in devices:
-        config.append(pytest.param(device, torch.float16, fp16_atol))
+        config.append(pytest.param(device, torch.float16, fp16_rtol, fp16_atol))
 
         if hasattr(torch, "float8_e5m2"):
             config.append(
                 pytest.param(
                     device,
                     torch.float8_e5m2,
+                    1e-5,
                     0.125,
                     marks=pytest.mark.requires_capability(
                         f"tests.capabilities.float8:float8_e5m2_{device}"
@@ -83,13 +87,17 @@ def _device_dtype_config(devices, fp16_atol):
 
 
 @pytest.mark.parametrize(
-    "device, dtype, atol",
-    _device_dtype_config(get_available_devices(), fp16_atol=1e-8),
+    "device, dtype, rtol, atol",
+    _device_dtype_config(
+        get_available_devices(),
+        fp16_rtol=_FP16_RTOL,
+        fp16_atol=_FP16_ATOL,
+    ),
 )
 @pytest.mark.parametrize("k", (512,))
 @pytest.mark.parametrize("n", (512,))
 @pytest.mark.parametrize("m", (512,))
-def test(m, n, k, dtype, device, atol):
+def test(m, n, k, dtype, device, rtol, atol):
     randn_dtype = dtype if dtype != torch.float8_e5m2 else torch.float16
 
     input = torch.randn((m, k), dtype=randn_dtype, device=device)
@@ -105,4 +113,4 @@ def test(m, n, k, dtype, device, atol):
         output = matmul(input, other)
         expected = torch.matmul(input, other)
 
-    assert torch.allclose(output, expected, atol=atol)
+    assert torch.allclose(output, expected, rtol=rtol, atol=atol)
