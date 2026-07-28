@@ -171,7 +171,7 @@ def test_non_int_constexpr(size, device):
 
 
 @pytest.mark.parametrize("device", get_available_devices())
-def test_puzzle_row_sum_ssa_compatibility(device):
+def test_loop_carried_row_sum_with_tensor_dtype(device):
     block_size = ninetoothed.Symbol("block_size", constexpr=True)
 
     def arrangement(x, y, block_size=block_size):

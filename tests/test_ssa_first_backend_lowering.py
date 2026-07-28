@@ -71,10 +71,10 @@ def helper_call_application(x, y, out):
     out = fused_affine_helper(x, y, scale=3.0)  # noqa: F841
 
 
-PUZZLE_BLOCK_SIZE = Symbol("PUZZLE_BLOCK_SIZE", constexpr=True)
+ROW_SUM_BLOCK_SIZE = Symbol("ROW_SUM_BLOCK_SIZE", constexpr=True)
 
 
-def puzzle_row_sum_arrangement(x, y, block_size=PUZZLE_BLOCK_SIZE):
+def row_sum_arrangement(x, y, block_size=ROW_SUM_BLOCK_SIZE):
     x_arranged = x.tile((1, block_size))
     x_arranged = x_arranged.tile((1, -1))
     y_arranged = y.tile((1, 1))
@@ -82,7 +82,7 @@ def puzzle_row_sum_arrangement(x, y, block_size=PUZZLE_BLOCK_SIZE):
     return x_arranged, y_arranged
 
 
-def puzzle_row_sum_application(x, y):
+def row_sum_application(x, y):
     acc = ntl.zeros(y.shape, dtype=y.dtype)
 
     for i in range(x.shape[1]):
@@ -91,7 +91,7 @@ def puzzle_row_sum_application(x, y):
     y = acc  # noqa: F841
 
 
-def puzzle_row_sum_static_dtype_application(x, y):
+def row_sum_static_dtype_application(x, y):
     acc = ntl.zeros(y.shape, dtype=ntl.float32)
 
     for i in range(x.shape[1]):
@@ -927,11 +927,11 @@ def canonical_math_application(x, y, out):
         tensors = (Tensor(2, other=0), Tensor(2))
         artifacts = {
             backend: lower_application(
-                puzzle_row_sum_arrangement,
-                puzzle_row_sum_application,
+                row_sum_arrangement,
+                row_sum_application,
                 tensors,
                 backend=backend,
-                kernel_name=f"puzzle_row_sum_{backend}",
+                kernel_name=f"row_sum_{backend}",
             )
             for backend in ("triton", "cuda", "tilelang")
         }
@@ -1032,11 +1032,11 @@ def nested_dtype_application(x, y):
 
     def test_scalar_tensor_extract_load_drops_vector_mask(self):
         artifact = lower_application(
-            puzzle_row_sum_arrangement,
-            puzzle_row_sum_static_dtype_application,
+            row_sum_arrangement,
+            row_sum_static_dtype_application,
             (Tensor(2, other=0), Tensor(2)),
             backend="triton",
-            kernel_name="puzzle_row_sum_scalar_load",
+            kernel_name="row_sum_scalar_load",
         )
         mask = _triton_load_mask(artifact.primary_source)
         assert mask is not None
