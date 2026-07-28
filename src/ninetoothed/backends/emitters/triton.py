@@ -1,6 +1,7 @@
 """Triton syntax hooks for the common SSA emitter."""
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,7 +26,16 @@ class TritonTarget(EmitterTarget):
         return f"tl.{operator}({operand}, axis={axis})"
 
     def vector_splat(self, shape: str, value: str, dtype: str) -> str:
-        return f"tl.full({shape}, {value}, tl.{common.normalize_dtype(dtype)})"
+        match = re.fullmatch(
+            r"([A-Za-z_][A-Za-z0-9_]*)(?:\.source)?\.dtype", dtype.strip()
+        )
+        dtype_expr = (
+            f"{match.group(1)}.dtype.element_ty"
+            if match is not None
+            else f"tl.{common.normalize_dtype(dtype)}"
+        )
+
+        return f"tl.full({shape}, {value}, {dtype_expr})"
 
     def literal(self, value: Any) -> str:
         if isinstance(value, float) and math.isinf(value):

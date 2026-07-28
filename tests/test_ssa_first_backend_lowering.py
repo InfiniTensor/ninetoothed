@@ -1,3 +1,5 @@
+import ast
+
 import pytest
 
 import ninetoothed.language as ntl
@@ -69,6 +71,35 @@ def helper_call_application(x, y, out):
     out = fused_affine_helper(x, y, scale=3.0)  # noqa: F841
 
 
+PUZZLE_BLOCK_SIZE = Symbol("PUZZLE_BLOCK_SIZE", constexpr=True)
+
+
+def puzzle_row_sum_arrangement(x, y, block_size=PUZZLE_BLOCK_SIZE):
+    x_arranged = x.tile((1, block_size))
+    x_arranged = x_arranged.tile((1, -1))
+    y_arranged = y.tile((1, 1))
+
+    return x_arranged, y_arranged
+
+
+def puzzle_row_sum_application(x, y):
+    acc = ntl.zeros(y.shape, dtype=y.dtype)
+
+    for i in range(x.shape[1]):
+        acc += ntl.sum(x[0, i], axis=-1)
+
+    y = acc  # noqa: F841
+
+
+def puzzle_row_sum_static_dtype_application(x, y):
+    acc = ntl.zeros(y.shape, dtype=ntl.float32)
+
+    for i in range(x.shape[1]):
+        acc += ntl.sum(x[0, i], axis=-1)
+
+    y = acc  # noqa: F841
+
+
 def _ssa_kernel(
     source: str, kernel_name: str, tensors: tuple[TensorSpec, ...]
 ) -> Kernel:
@@ -88,6 +119,22 @@ def _ssa_kernel(
 def _assert_ssa_artifact(artifact, *, route):
     assert artifact.metadata["lowering_ir"] == "ssa.Program"
     assert artifact.metadata["source_route"] == route
+
+
+def _triton_load_mask(source: str) -> ast.AST | None:
+    load = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "tl"
+        and node.func.attr == "load"
+    )
+
+    return next(
+        (keyword.value for keyword in load.keywords if keyword.arg == "mask"), None
+    )
 
 
 class TestSSAFirstBackendLowering:
@@ -865,6 +912,152 @@ def canonical_math_application(x, y, out):
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
+
+    def test_constructor_resolves_tensor_dtype_for_loop_carried_values(self):
+        tensors = (Tensor(2, other=0), Tensor(2))
+        artifacts = {
+            backend: lower_application(
+                puzzle_row_sum_arrangement,
+                puzzle_row_sum_application,
+                tensors,
+                backend=backend,
+                kernel_name=f"puzzle_row_sum_{backend}",
+            )
+            for backend in ("triton", "cuda", "tilelang")
+        }
+
+        triton_source = artifacts["triton"].primary_source
+        assert "y.dtype.element_ty" in triton_source
+        assert "tl.dtype" not in triton_source
+        assert "float vacc_" in artifacts["cuda"].primary_source
+        assert 'T.alloc_var("float32"' in artifacts["tilelang"].primary_source
+
+    def test_constructor_canonicalizes_aliased_and_chained_tensor_dtype(self):
+        kernel = _ssa_kernel(
+            """
+def alias_dtype_application(x, y):
+    alias = y
+    first = zeros(y.shape, dtype=alias.dtype)
+    acc = zeros(y.shape, dtype=first.dtype)
+    for _ in range(1):
+        acc += x
+    y = acc
+""",
+            "ssa_alias_dtype",
+            (
+                TensorSpec(ndim=1, shape=("rows",), name="x"),
+                TensorSpec(ndim=1, shape=("rows",), name="y"),
+            ),
+        )
+        artifact = emit_kernel(kernel, "triton")
+        source = artifact.primary_source
+        assert "y.dtype.element_ty" in source
+        assert "alias.dtype" not in source
+
+    def test_constructor_uses_static_dtype_for_scalar_dtype_source(self):
+        kernel = _ssa_kernel(
+            """
+def scalar_dtype_application(x, y, dtype_arg):
+    acc = zeros(y.shape, dtype=dtype_arg.dtype)
+    for _ in range(1):
+        acc += x
+    y = acc
+""",
+            "ssa_scalar_dtype",
+            (
+                TensorSpec(ndim=1, shape=("rows",), dtype="float16", name="x"),
+                TensorSpec(ndim=1, shape=("rows",), dtype="float16", name="y"),
+                TensorSpec(ndim=0, shape=(), dtype="float16", name="dtype_arg"),
+            ),
+        )
+        artifact = emit_kernel(kernel, "triton")
+        source = artifact.primary_source
+        assert "tl.float16" in source
+        assert "dtype_arg.dtype.element_ty" not in source
+
+    def test_constructor_does_not_propagate_dtype_ref_through_promotion(self):
+        kernel = _ssa_kernel(
+            """
+def promoted_dtype_application(x, y):
+    first = zeros(y.shape, dtype=y.dtype)
+    promoted = first + 0.5
+    acc = zeros(y.shape, dtype=promoted.dtype)
+    for _ in range(1):
+        acc += x
+    y = acc
+""",
+            "ssa_promoted_dtype",
+            (
+                TensorSpec(ndim=1, shape=("rows",), dtype="int32", name="x"),
+                TensorSpec(ndim=1, shape=("rows",), dtype="int32", name="y"),
+            ),
+        )
+        artifact = emit_kernel(kernel, "triton")
+        source = artifact.primary_source
+        assert "tl.float32" in source
+        assert "y.dtype.element_ty" not in source
+
+    def test_constructor_propagates_dtype_ref_into_nested_region(self):
+        kernel = _ssa_kernel(
+            """
+def nested_dtype_application(x, y):
+    first = zeros(y.shape, dtype=y.dtype)
+    acc = zeros(y.shape, dtype=y.dtype)
+    for i in range(1):
+        inner = zeros(y.shape, dtype=first.dtype)
+        for j in range(1):
+            inner += x
+        acc += inner
+    y = acc
+""",
+            "ssa_nested_dtype",
+            (
+                TensorSpec(ndim=1, shape=("rows",), name="x"),
+                TensorSpec(ndim=1, shape=("rows",), name="y"),
+            ),
+        )
+        source = emit_kernel(kernel, "triton").primary_source
+        assert source.count("y.dtype.element_ty") >= 2
+        assert "tl.dtype" not in source
+
+    def test_scalar_tensor_extract_load_drops_vector_mask(self):
+        artifact = lower_application(
+            puzzle_row_sum_arrangement,
+            puzzle_row_sum_static_dtype_application,
+            (Tensor(2, other=0), Tensor(2)),
+            backend="triton",
+            kernel_name="puzzle_row_sum_scalar_load",
+        )
+        mask = _triton_load_mask(artifact.primary_source)
+        assert mask is not None
+        assert not any(
+            isinstance(node, ast.Name) and node.id == "mask" for node in ast.walk(mask)
+        )
+
+    def test_scalar_source_load_drops_vector_mask(self):
+        kernel = _ssa_kernel(
+            """
+def scalar_source_load_application(x, index, y):
+    y = x.source[index]
+""",
+            "ssa_scalar_source_load",
+            (
+                TensorSpec(
+                    ndim=1,
+                    shape=("rows",),
+                    dtype="float32",
+                    name="x",
+                    attrs={"source_shape": ("rows",), "source_strides": ("1",)},
+                ),
+                TensorSpec(ndim=0, shape=(), dtype="int64", name="index"),
+                TensorSpec(ndim=1, shape=("rows",), dtype="float32", name="y"),
+            ),
+        )
+        mask = _triton_load_mask(emit_kernel(kernel, "triton").primary_source)
+        assert mask is not None
+        assert not any(
+            isinstance(node, ast.Name) and node.id == "mask" for node in ast.walk(mask)
+        )
 
     def test_from_source_generates_axis_reduction_for_native_backends(self):
         kernel = _ssa_kernel(

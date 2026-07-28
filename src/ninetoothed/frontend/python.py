@@ -427,6 +427,7 @@ class _ApplicationSSABuilder:
         self.outputs: list[ssa.Value] = []
         self.operations: list[ssa.Operation] = []
         self.env: dict[str, ssa.Value] = {}
+        self.constructor_dtype_refs: dict[str, str] = {}
         self.temp_index = 0
         self.symbol_names = {
             name
@@ -1149,33 +1150,44 @@ class _ApplicationSSABuilder:
             else ()
         )
         dtype = _keyword_text(node, "dtype")
+        result_dtype, dtype_ref = _resolved_constructor_dtype(
+            node, env, self.constructor_dtype_refs
+        )
 
         if name in {"zeros", "empty"}:
-            return self._emit(
+            result = self._emit(
                 operations,
                 "tensor.zeros",
                 attrs={
                     "shape": _unparse(node.args[0]) if node.args else None,
                     "dtype": dtype,
+                    "dtype_ref": dtype_ref,
                 },
-                result_type=ssa.Type(kind="tensor", shape=shape, dtype=dtype),
+                result_type=ssa.Type(kind="tensor", shape=shape, dtype=result_dtype),
+            )
+        else:
+            operands = tuple(
+                self._lower_expr(argument, operations, env)
+                for argument in node.args[1:]
+            )
+            result = self._emit(
+                operations,
+                "tensor.full",
+                operands=tuple(value.name for value in operands),
+                attrs={
+                    "shape": _unparse(node.args[0]) if node.args else None,
+                    "value": (
+                        _literal_value(node.args[1]) if len(node.args) > 1 else None
+                    ),
+                    "dtype": dtype,
+                    "dtype_ref": dtype_ref,
+                },
+                result_type=ssa.Type(kind="tensor", shape=shape, dtype=result_dtype),
             )
 
-        operands = tuple(
-            self._lower_expr(argument, operations, env) for argument in node.args[1:]
-        )
-
-        return self._emit(
-            operations,
-            "tensor.full",
-            operands=tuple(value.name for value in operands),
-            attrs={
-                "shape": _unparse(node.args[0]) if node.args else None,
-                "value": _literal_value(node.args[1]) if len(node.args) > 1 else None,
-                "dtype": dtype,
-            },
-            result_type=ssa.Type(kind="tensor", shape=shape, dtype=dtype),
-        )
+        if dtype_ref is not None:
+            self.constructor_dtype_refs[result.name] = dtype_ref
+        return result
 
     def _lower_memory_call(self, name, node, operands, operations):
         if name == "load":
@@ -1739,6 +1751,32 @@ def _keyword_text(node: ast.Call, name: str) -> str | None:
         if keyword.arg == name:
             return _unparse(keyword.value)
     return None
+
+
+def _resolved_constructor_dtype(
+    node: ast.Call,
+    env: Mapping[str, ssa.Value],
+    constructor_dtype_refs: Mapping[str, str],
+) -> tuple[str | None, str | None]:
+    for keyword in node.keywords:
+        if keyword.arg != "dtype":
+            continue
+
+        value = keyword.value
+
+        if isinstance(value, ast.Attribute) and value.attr == "dtype":
+            owner = value.value
+
+            if isinstance(owner, ast.Attribute) and owner.attr == "source":
+                owner = owner.value
+
+            if isinstance(owner, ast.Name) and owner.id in env:
+                source = env[owner.id]
+                dtype_ref = constructor_dtype_refs.get(source.name, source.name)
+
+                return source.type.dtype or "float32", dtype_ref
+        return _unparse(value), None
+    return None, None
 
 
 def _literal_value(node: ast.AST) -> Any:

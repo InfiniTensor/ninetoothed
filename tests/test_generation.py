@@ -6,6 +6,7 @@ import pytest
 import torch
 
 import ninetoothed
+import ninetoothed.language as ntl
 import tests.test_matmul as matmul
 from ninetoothed import Tensor
 from tests.utils import get_available_devices
@@ -167,3 +168,31 @@ def test_non_int_constexpr(size, device):
     kernel(input, other, output)
 
     assert output.shape == expected.shape and torch.allclose(output, expected)
+
+
+@pytest.mark.parametrize("device", get_available_devices())
+def test_puzzle_row_sum_ssa_compatibility(device):
+    block_size = ninetoothed.Symbol("block_size", constexpr=True)
+
+    def arrangement(x, y, block_size=block_size):
+        x_arranged = x.tile((1, block_size))
+        x_arranged = x_arranged.tile((1, -1))
+        y_arranged = y.tile((1, 1))
+
+        return x_arranged, y_arranged
+
+    def application(x, y):
+        acc = ntl.zeros(y.shape, dtype=y.dtype)
+
+        for i in range(x.shape[1]):
+            acc += ntl.sum(x[0, i], axis=-1)
+
+        y = acc  # noqa: F841
+
+    kernel = ninetoothed.make(arrangement, application, (Tensor(2, other=0), Tensor(2)))
+    x = torch.randn((17, 70), device=device)
+    y = torch.empty((17, 1), device=device)
+
+    kernel(x, y, block_size=64)
+
+    torch.testing.assert_close(y, torch.sum(x, dim=-1, keepdim=True))

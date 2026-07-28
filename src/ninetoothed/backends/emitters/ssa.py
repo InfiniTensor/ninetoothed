@@ -749,7 +749,7 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
         store_index = _materialize_index_expr(store_index, ctx)
 
         if op.attrs.get("source"):
-            mask = _source_bounds_mask(info, rendered, ctx)
+            mask = _source_bounds_mask(info, rendered, base_mask=ctx.mask_expr)
         else:
             mask = _store_mask(
                 ctx.target,
@@ -1631,7 +1631,7 @@ def _load_tensor_at(
     source_index = _materialize_index_expr(source_index, ctx)
     mask = _combined_mask(
         ctx.target,
-        ctx.mask_expr if ctx.target.vector_value_semantics else None,
+        _load_base_mask(source_index, ctx),
         info,
         view_index,
         ctx=ctx,
@@ -2033,14 +2033,14 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
             and ctx.mask_expr is not None
             and ctx.target.needs_block_init(initial_name, value, ctx)
         ):
-            dtype = _normalize_dtype(value.type.dtype or "float32")
+            dtype = _loop_initializer_dtype(initial_name, value, ctx)
             init = ctx.target.vector_splat("(BLOCK,)", init, dtype)
         elif (
             ctx.target.vector_value_semantics
             and ctx.block_program
             and ctx.target.needs_block_init(initial_name, value, ctx)
         ):
-            dtype = _normalize_dtype(value.type.dtype or "float32")
+            dtype = _loop_initializer_dtype(initial_name, value, ctx)
             shape = ctx.target.block_shape(tuple(str(dim) for dim in value.type.shape))
             init = ctx.target.vector_splat(shape, init, dtype)
 
@@ -2108,6 +2108,32 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
     if ctx.target.c_style_syntax:
         ctx.lines.append("}")
     return ctx.memo.get(result_names[0]) if result_names else None
+
+
+def _loop_initializer_dtype(
+    initial_name: str, value: ssa.Value, ctx: _EmitContext
+) -> str:
+    producer = ctx.operations.get(initial_name)
+
+    if producer is not None and producer.opcode in {
+        "tensor.zeros",
+        "tensor.empty",
+        "tensor.full",
+    }:
+        dtype_ref = producer.attrs.get("dtype_ref")
+
+        if isinstance(dtype_ref, str):
+            info = ctx.tensor_infos.get(dtype_ref)
+
+            if info is not None and info.ndim > 0:
+                return f"{dtype_ref}.dtype"
+            return value.type.dtype or "float32"
+
+        dtype = producer.attrs.get("dtype")
+
+        if isinstance(dtype, str) and dtype:
+            return dtype
+    return value.type.dtype or "float32"
 
 
 def _emit_loop_bound(name: str, ctx: _EmitContext) -> str:
@@ -2412,19 +2438,9 @@ def _load_tensor(name: str, view_index: str, ctx: _EmitContext) -> str:
         _source_index_for_value(info, view_index, ctx, level=_dtype_level(name, ctx)),
     )
     source_index = _materialize_index_expr(source_index, ctx)
-    base_mask = ctx.mask_expr if ctx.target.vector_value_semantics else None
-
-    if (
-        ctx.target.vector_value_semantics
-        and base_mask is not None
-        and ctx.target.index_name not in source_index
-        and "offsets" not in source_index
-    ):
-        base_mask = None
-
     mask = _combined_mask(
         ctx.target,
-        base_mask,
+        _load_base_mask(source_index, ctx),
         info,
         view_index,
         ctx=ctx,
@@ -2433,10 +2449,30 @@ def _load_tensor(name: str, view_index: str, ctx: _EmitContext) -> str:
     return _masked_load(name, source_index, mask, info, ctx)
 
 
+def _load_base_mask(source_index: str, ctx: _EmitContext) -> str | None:
+    if not ctx.target.vector_value_semantics:
+        return None
+
+    mask = ctx.mask_expr
+
+    if (
+        mask is not None
+        and ctx.target.index_name not in source_index
+        and "offsets" not in source_index
+    ):
+        return None
+    return mask
+
+
 def _load_source_tensor(name: str, indices: tuple[str, ...], ctx: _EmitContext) -> str:
     info = ctx.tensor_infos.get(name)
     source_index = _target_index_expr(ctx.target, _source_linear_index(info, indices))
-    mask = _source_bounds_mask(info, indices, ctx)
+    base_mask = (
+        _load_base_mask(source_index, ctx)
+        if ctx.target.vector_value_semantics
+        else ctx.mask_expr
+    )
+    mask = _source_bounds_mask(info, indices, base_mask=base_mask)
 
     return _masked_load(name, source_index, mask, info, ctx)
 
@@ -2454,12 +2490,15 @@ def _source_linear_index(info: _TensorInfo | None, indices: tuple[str, ...]) -> 
 
 
 def _source_bounds_mask(
-    info: _TensorInfo | None, indices: tuple[str, ...], ctx: _EmitContext
+    info: _TensorInfo | None,
+    indices: tuple[str, ...],
+    *,
+    base_mask: str | None,
 ) -> str | None:
     checks = []
 
-    if ctx.mask_expr:
-        checks.append(ctx.mask_expr)
+    if base_mask:
+        checks.append(base_mask)
 
     shape = () if info is None else info.source_shape
 
