@@ -18,6 +18,7 @@ class TritonTarget(EmitterTarget):
     suffix: str = "triton.py"
     source_route: str = "ssa-unified-triton-emitter"
     vector_value_semantics: bool = True
+    fp8_dot_fallback: str = "none"
 
     def program_id(self, axis: int = 0) -> str:
         return f"tl.program_id({axis})"
@@ -36,6 +37,26 @@ class TritonTarget(EmitterTarget):
         )
 
         return f"tl.full({shape}, {value}, {dtype_expr})"
+
+    def coerce_block_dot_operands(self, operation, operands, context):
+        if self.fp8_dot_fallback != "float16":
+            return operands
+
+        coerced = []
+        result = common.local_symbol(operation.results[0].name, context)
+
+        for label, value in zip(("lhs", "rhs"), operands):
+            local = f"{result}_fp8_{label}"
+            context.lines.extend(
+                (
+                    f"{local} = {value}",
+                    f"if {local}.dtype == tl.float8e5:",
+                    f"    {local} = {local}.to(tl.float16)",
+                )
+            )
+            coerced.append(local)
+
+        return tuple(coerced)
 
     def literal(self, value: Any) -> str:
         if isinstance(value, float) and math.isinf(value):
@@ -310,7 +331,12 @@ TARGET = TritonTarget()
 
 
 def emit(kernel: Kernel):
-    return common.emit(kernel, TARGET)
+    backend_options = kernel.compiler_options.get("backend_options", {})
+    target = TritonTarget(
+        fp8_dot_fallback=backend_options.get("fp8_dot_fallback", "none")
+    )
+
+    return common.emit(kernel, target)
 
 
 __all__ = ["TARGET", "TritonTarget", "emit"]

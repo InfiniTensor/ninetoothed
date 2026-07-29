@@ -1083,8 +1083,9 @@ def _emit_linalg_dot(
     if ctx.block_program and len(lhs_axes) == 2 and len(rhs_axes) == 2:
         lhs_value = _emit_element(lhs, ctx.target.block_coords(lhs_axes), ctx)
         rhs_value = _emit_element(rhs, ctx.target.block_coords(rhs_axes), ctx)
+        operands = ctx.target.coerce_block_dot_operands(op, (lhs_value, rhs_value), ctx)
 
-        return ctx.target.call("block_dot", (lhs_value, rhs_value))
+        return ctx.target.call("block_dot", operands)
 
     if not lhs_axes or not rhs_axes:
         return ctx.target.call(
