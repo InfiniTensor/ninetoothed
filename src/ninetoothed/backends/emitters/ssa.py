@@ -1339,6 +1339,9 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
     if ctx.bindings and name in ctx.bindings and not coords:
         return ctx.bindings[name]
 
+    if name in ctx.memo and coords == _current_coords(_value_axes(name, ctx), ctx):
+        return ctx.memo[name]
+
     if not name.startswith("%"):
         if name not in ctx.tensor_infos:
             return name
