@@ -78,6 +78,13 @@ def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
         if not operation.opcode.startswith("reduce."):
             continue
 
+        if operation.operands:
+            operand_type = value_types.get(operation.operands[0])
+
+            if operand_type is not None and operand_type.kind == "scalar":
+                _validate_scalar_fallback(operation)
+                continue
+
         domain, rejection = _domain(
             operation,
             scope,
@@ -99,6 +106,25 @@ def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
         "reduction_rejections": tuple(rejections),
         "reduction_schedule": schedule,
     }
+
+
+def _validate_scalar_fallback(operation):
+    if len(operation.operands) != 1 or len(operation.results) != 1:
+        raise ValueError(
+            f"SSA reduction `{operation.opcode}` requires one operand and one result."
+        )
+
+    axis = operation.attrs.get("axis")
+
+    if isinstance(axis, bool) or axis not in {None, -1, 0}:
+        raise ValueError("Scalar fallback reduction axis must be omitted, -1, or 0.")
+
+    result = operation.results[0]
+
+    if result.type.kind != "scalar" or result.type.shape:
+        raise ValueError(
+            f"Scalar fallback reduction result `{result.name}` must be scalar."
+        )
 
 
 def _domain(
