@@ -783,11 +783,15 @@ def _nested_local_suffix(ctx: _EmitContext, label: str) -> str:
 
 
 def _coords_use_reduction_lane(coords: tuple[str, ...], ctx: _EmitContext) -> bool:
-    return bool(
+    return (
         ctx.vector_program
         and ctx.reduction_lane is not None
-        and ctx.reduction_lane in coords
+        and any(ctx.reduction_lane in _expression_symbols(coord) for coord in coords)
     )
+
+
+def _expression_symbols(expression: str) -> set[str]:
+    return set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", expression))
 
 
 def _mask_for_coords(coords: tuple[str, ...], ctx: _EmitContext) -> str | None:
@@ -1773,9 +1777,16 @@ def _load_tensor_at(
         ),
     )
     source_index = _materialize_index_expr(source_index, ctx)
+    base_mask = _load_base_mask(source_index, ctx)
+
+    if ctx.vector_program:
+        base_mask = _mask_for_coords(coords, ctx)
+    elif extract_indices:
+        base_mask = None
+
     mask = _combined_mask(
         ctx.target,
-        _load_base_mask(source_index, ctx),
+        base_mask,
         info,
         view_index,
         ctx=ctx,
@@ -2622,7 +2633,7 @@ def _load_base_mask(source_index: str, ctx: _EmitContext) -> str | None:
 
 
 def _index_expr_is_vector(source_index: str, ctx: _EmitContext) -> bool:
-    symbols = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", source_index))
+    symbols = _expression_symbols(source_index)
 
     return bool(
         ctx.target.index_name in symbols
@@ -2663,7 +2674,6 @@ def _source_bounds_mask(
     base_mask: str | None,
 ) -> str | None:
     checks = []
-    base_mask = _mask_for_coords(indices, ctx)
 
     if base_mask:
         checks.append(base_mask)
