@@ -14,6 +14,7 @@ _ELEMENTWISE_USERS = frozenset(
         "tensor.view",
     }
 )
+_SUPPORTED_REDUCTIONS = frozenset({"reduce.sum", "reduce.max", "reduce.min"})
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -78,6 +79,9 @@ def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
         if not operation.opcode.startswith("reduce."):
             continue
 
+        if operation.opcode not in _SUPPORTED_REDUCTIONS:
+            raise ValueError(f"Unsupported SSA reduction `{operation.opcode}`.")
+
         if operation.operands:
             operand_type = value_types.get(operation.operands[0])
 
@@ -136,9 +140,6 @@ def _domain(
     forwarded_values,
     tensor_specs,
 ):
-    if operation.opcode not in {"reduce.sum", "reduce.max", "reduce.min"}:
-        raise ValueError(f"Unsupported SSA reduction `{operation.opcode}`.")
-
     if len(operation.operands) != 1 or len(operation.results) != 1:
         raise ValueError(
             f"SSA reduction `{operation.opcode}` requires one operand and one result."

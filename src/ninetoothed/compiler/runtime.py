@@ -1192,16 +1192,19 @@ def _validate_tensor_contract(spec, value, expected_device):
             f"expected {source_ndim}."
         )
 
-    try:
-        expected_shape = tuple(int(dim) for dim in spec.attrs["source_shape"])
-    except (KeyError, TypeError, ValueError):
-        expected_shape = None
+    for axis, (actual, expected) in enumerate(
+        zip(shape, spec.attrs.get("source_shape", ()), strict=False)
+    ):
+        try:
+            expected = int(expected)
+        except (TypeError, ValueError):
+            continue
 
-    if expected_shape is not None and tuple(shape) != expected_shape:
-        raise TypeError(
-            f"Kernel argument `{spec.name}` has shape {tuple(shape)}; "
-            f"expected {expected_shape}."
-        )
+        if actual != expected:
+            raise TypeError(
+                f"Kernel argument `{spec.name}` has shape {tuple(shape)}; "
+                f"expected dimension {axis} to be {expected}."
+            )
 
     device = getattr(value, "device", None)
 

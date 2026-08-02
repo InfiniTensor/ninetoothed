@@ -9,6 +9,8 @@ from ninetoothed.compiler import (
     load_built_artifact,
     make,
 )
+from ninetoothed.compiler.reductions import analyze_reductions
+from ninetoothed.ir import ssa
 from tests.utils import get_available_devices
 
 WIDTH = Symbol("WIDTH", constexpr=True)
@@ -230,6 +232,30 @@ def test_reduction_domain_selects_triton_row_vector_schedule():
             )
         )
 
+    scalar = ssa.Type(kind="scalar", dtype="float32")
+    operand = ssa.Value(name="x", type=scalar)
+    result = ssa.Value(name="result", type=scalar)
+    unsupported = ssa.Program(
+        kind="unsupported-reduction",
+        inputs=(operand,),
+        outputs=(result,),
+        blocks=(
+            ssa.Block(
+                operations=(
+                    ssa.Operation(
+                        opcode="reduce.product",
+                        operands=(operand.name,),
+                        results=(result,),
+                        attrs={"axis": 0},
+                    ),
+                )
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Unsupported SSA reduction `reduce.product`"):
+        analyze_reductions(unsupported)
+
 
 @pytest.mark.parametrize("device", get_available_devices())
 def test_triton_row_vector_reduction_runtime(device, tmp_path):
@@ -354,6 +380,38 @@ def test_triton_row_vector_reduction_runtime(device, tmp_path):
     for launch in (aot_reduce_min, load_built_artifact(aot_reduce_min._built_artifact)):
         with pytest.raises(TypeError, match="has shape .* expected"):
             launch(resized_x, resized_output)
+
+    dynamic_tensors = (
+        Tensor(shape=(None, 127), dtype=float32),
+        Tensor(shape=(None,), dtype=float32),
+    )
+    dynamic_jit = make(
+        _fixed_row_reduced_arrangement,
+        _row_min,
+        dynamic_tensors,
+        backend="triton",
+        max_num_configs=1,
+    )
+    dynamic_aot = make(
+        _fixed_row_reduced_arrangement,
+        _row_min,
+        dynamic_tensors,
+        backend="triton",
+        caller=device,
+        kernel_name="dynamic_row_min_reduction_aot",
+        output_dir=tmp_path,
+        max_num_configs=1,
+    )
+    invalid_x = torch.randn((37, 64), device=device)
+    invalid_output = torch.empty((37,), device=device)
+
+    for launch in (
+        dynamic_jit,
+        dynamic_aot,
+        load_built_artifact(dynamic_aot._built_artifact),
+    ):
+        with pytest.raises(TypeError, match="expected dimension 1 to be 127"):
+            launch(invalid_x, invalid_output)
 
 
 @pytest.mark.parametrize("device", get_available_devices())

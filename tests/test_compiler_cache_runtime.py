@@ -79,6 +79,24 @@ def test_runtime_binding_validates_tensor_contract(value, message):
         )
 
 
+def test_runtime_binding_validates_static_dimensions_of_dynamic_shape():
+    spec = TensorSpec(
+        name="x",
+        ndim=2,
+        shape=("rows", "127"),
+        dtype="float32",
+        attrs={"source_ndim": 2, "source_shape": ("rows", "127")},
+    )
+
+    with pytest.raises(TypeError, match="expected dimension 1 to be 127"):
+        _public_values(
+            LaunchABI(public_args=("x",)),
+            (_Tensor((3, 64)),),
+            {},
+            specs=(spec,),
+        )
+
+
 def test_runtime_wrappers_skip_empty_launches():
     abi = LaunchABI(public_args=("out",), outputs=("out",))
     output = SimpleNamespace(numel=lambda: 0)
