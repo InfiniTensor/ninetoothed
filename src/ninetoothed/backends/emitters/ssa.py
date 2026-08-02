@@ -741,6 +741,9 @@ def _render_body(
         layout_contiguous=layout_contiguous,
         vector_program=vector_program,
         reduction_lane="offsets" if reduction_schedule is not None else None,
+        scheduled_reductions=frozenset(
+            str(result) for result in (reduction_schedule or {}).get("reductions", ())
+        ),
     )
 
     for op in operations:
@@ -871,7 +874,11 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
         store_index = _materialize_index_expr(store_index, ctx)
 
         if op.attrs.get("source"):
-            mask = _source_bounds_mask(info, rendered, base_mask=ctx.mask_expr)
+            mask = _source_bounds_mask(
+                info,
+                rendered,
+                base_mask=_mask_for_coords(rendered, ctx),
+            )
         else:
             mask = _store_mask(
                 ctx.target,
@@ -926,7 +933,15 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
     local = _local_symbol(name, ctx)
 
     if op.opcode.startswith("reduce."):
-        if ctx.vector_program:
+        operand_type = ctx.value_types.get(op.operands[0]) if op.operands else None
+
+        if operand_type is not None and operand_type.kind == "scalar":
+            operand = _emit_value(op.operands[0], ctx)
+            ctx.memo[name] = operand
+
+            return operand
+
+        if ctx.vector_program and name in ctx.scheduled_reductions:
             operator = op.opcode[len("reduce.") :]
             operand_axes = _value_axes(op.operands[0], ctx)
             operand = _emit_element(
@@ -2122,7 +2137,10 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
     operand_axes = _value_axes(op.operands[0], ctx) if op.operands else ctx.output_axes
     normalized_axis = None
 
-    if ctx.target.vector_value_semantics and (ctx.vector_program or ctx.block_program):
+    if ctx.target.vector_value_semantics and (
+        (ctx.vector_program and op.results[0].name in ctx.scheduled_reductions)
+        or ctx.block_program
+    ):
         operand = _emit_value(op.operands[0], ctx)
         expr = ctx.target.vector_reduce(operator, operand, 0)
         ctx.lines.append(ctx.target.local_decl(op.results[0].type, local, expr))

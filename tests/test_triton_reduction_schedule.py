@@ -109,6 +109,16 @@ def _too_wide_sum(x, out):
     out = ntl.sum(x, axis=1)  # noqa: F841
 
 
+def _mixed_tensor_scalar_reductions(x, out):
+    row = ntl.sum(x, axis=1)
+    scalar = ntl.sum(x[0, 0], axis=0)
+    out = row + scalar  # noqa: F841
+
+
+def _source_store_sum(x, out):
+    out.source[out.offsets(0)] = ntl.sum(x, axis=1)
+
+
 def _request():
     return CompileRequest(
         arrangement=_row_arrangement,
@@ -138,6 +148,33 @@ def test_reduction_domain_selects_triton_row_vector_schedule():
     assert "tl.max(" in compilation.artifact.primary_source
     assert "tl.sum(" in compilation.artifact.primary_source
     assert "for v" not in compilation.artifact.primary_source
+
+    mixed = DEFAULT_COMPILER.compile(
+        CompileRequest(
+            arrangement=_row_reduced_arrangement,
+            application=_mixed_tensor_scalar_reductions,
+            tensors=(Tensor(2), Tensor(1)),
+            backend="triton",
+            max_num_configs=1,
+        )
+    )
+    assert mixed.artifact.primary_source.count("tl.sum(") == 1
+
+    source_store = DEFAULT_COMPILER.compile(
+        CompileRequest(
+            arrangement=_row_reduced_arrangement,
+            application=_source_store_sum,
+            tensors=(Tensor(2), Tensor(1)),
+            backend="triton",
+            max_num_configs=1,
+        )
+    )
+    store = next(
+        line
+        for line in source_store.artifact.primary_source.splitlines()
+        if "tl.store(out +" in line
+    )
+    assert "offsets" not in store
 
     fallback = DEFAULT_COMPILER.compile(
         CompileRequest(
@@ -317,3 +354,25 @@ def test_triton_row_vector_reduction_runtime(device, tmp_path):
     for launch in (aot_reduce_min, load_built_artifact(aot_reduce_min._built_artifact)):
         with pytest.raises(TypeError, match="has shape .* expected"):
             launch(resized_x, resized_output)
+
+
+@pytest.mark.parametrize("device", get_available_devices())
+def test_row_vector_only_vectorizes_scheduled_reductions_and_masks_source_store(
+    device,
+):
+    x = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device=device)
+
+    for application, expected in (
+        (_mixed_tensor_scalar_reductions, torch.tensor([7.0, 19.0], device=device)),
+        (_source_store_sum, torch.tensor([6.0, 15.0], device=device)),
+    ):
+        kernel = make(
+            _row_reduced_arrangement,
+            application,
+            (Tensor(2), Tensor(1)),
+            backend="triton",
+            max_num_configs=1,
+        )
+        output = torch.empty(2, device=device)
+        kernel(x, output, WIDTH=3)
+        torch.testing.assert_close(output, expected)
