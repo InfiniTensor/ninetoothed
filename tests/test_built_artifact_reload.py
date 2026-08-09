@@ -15,6 +15,8 @@ from ninetoothed.compiler import (
 )
 from tests.utils import get_available_devices
 
+CAPABILITY_REFERENCE = "tests.capabilities.materialization:"
+
 
 def _arrangement(input, other, output):
     return tuple(tensor.tile((64,)) for tensor in (input, other, output))
@@ -25,7 +27,27 @@ def _application(input, other, output):
 
 
 @pytest.mark.parametrize("device", get_available_devices())
-@pytest.mark.parametrize("backend", ("triton", "cuda", "tilelang"))
+@pytest.mark.parametrize(
+    "backend",
+    (
+        pytest.param(
+            "triton",
+            marks=pytest.mark.requires_capability(f"{CAPABILITY_REFERENCE}triton_aot"),
+        ),
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.requires_capability(
+                f"{CAPABILITY_REFERENCE}cuda_toolchain"
+            ),
+        ),
+        pytest.param(
+            "tilelang",
+            marks=pytest.mark.requires_capability(
+                f"{CAPABILITY_REFERENCE}tilelang_cuda"
+            ),
+        ),
+    ),
+)
 def test_aot_built_artifact_can_be_reloaded(backend, device, tmp_path):
     tensors = tuple(Tensor(shape=(257,), dtype=ninetoothed.float32) for _ in range(3))
     compilation = DEFAULT_COMPILER.compile(
@@ -69,6 +91,7 @@ def test_aot_built_artifact_can_be_reloaded(backend, device, tmp_path):
     )
 
 
+@pytest.mark.requires_capability(f"{CAPABILITY_REFERENCE}triton_aot")
 def test_triton_aot_handle_is_reusable_across_cuda_contexts(tmp_path):
     if not torch.cuda.is_available() or torch.cuda.device_count() < 2:
         pytest.skip("Triton multi-context testing requires at least 2 CUDA devices")
@@ -114,7 +137,23 @@ def test_triton_aot_handle_is_reusable_across_cuda_contexts(tmp_path):
 
 
 @pytest.mark.parametrize("device", get_available_devices())
-@pytest.mark.parametrize("mode", ("jit", "aot"))
+@pytest.mark.parametrize(
+    "mode",
+    (
+        pytest.param(
+            "jit",
+            marks=pytest.mark.requires_capability(
+                f"{CAPABILITY_REFERENCE}cuda_toolchain"
+            ),
+        ),
+        pytest.param(
+            "aot",
+            marks=pytest.mark.requires_capability(
+                f"{CAPABILITY_REFERENCE}cuda_toolchain"
+            ),
+        ),
+    ),
+)
 def test_cuda_empty_tensor_is_a_no_op(mode, device, tmp_path):
     tensors = tuple(Tensor(1, dtype=ninetoothed.float32) for _ in range(3))
     compilation = DEFAULT_COMPILER.compile(
