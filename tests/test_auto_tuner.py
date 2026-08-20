@@ -1,9 +1,11 @@
 import time
 import uuid
+from types import SimpleNamespace
 
 import pytest
+import torch
 
-from ninetoothed.auto_tuner import AutoTuner
+from ninetoothed.auto_tuner import AutoTuner, _default_benchmark
 from tests.utils import get_available_devices
 
 
@@ -98,6 +100,167 @@ def test_auto_tuner_reports_every_failed_candidate(_):
         tuner(1)
 
     assert tuner._best_func == {}
+
+
+def _runtime_tensor():
+    return SimpleNamespace(
+        shape=(1,),
+        dtype="float32",
+        device=SimpleNamespace(type="vendor_test"),
+        stride=lambda: (1,),
+    )
+
+
+def _event_runtime(
+    calls,
+    *,
+    elapsed_ms=10.0,
+    elapsed_error=None,
+    synchronize=None,
+    event_synchronize=None,
+):
+    events = []
+
+    class Event:
+        def __init__(self, *, enable_timing):
+            assert enable_timing
+            events.append(self)
+
+        def record(self):
+            calls.append("record")
+
+        def synchronize(self):
+            calls.append("event-synchronize")
+
+            if event_synchronize is not None:
+                event_synchronize()
+
+        def elapsed_time(self, other):
+            assert other in events
+
+            if elapsed_error is not None:
+                raise elapsed_error
+            return elapsed_ms
+
+    attributes = {"Event": Event}
+
+    if synchronize is not None:
+        attributes["synchronize"] = synchronize
+    return SimpleNamespace(**attributes)
+
+
+def test_default_benchmark_uses_device_events(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        torch,
+        "vendor_test",
+        _event_runtime(calls, elapsed_ms=25.0),
+        raising=False,
+    )
+
+    elapsed = _default_benchmark(
+        lambda *_: calls.append("kernel"),
+        (_runtime_tensor(),),
+        {},
+    )
+
+    assert elapsed == 2.5
+    assert calls.count("kernel") == 13
+    assert calls.count("record") == 2
+    assert calls.count("event-synchronize") == 1
+
+
+@pytest.mark.parametrize("event_fallback", (False, True))
+def test_default_benchmark_uses_synchronized_wall_clock(monkeypatch, event_fallback):
+    calls = []
+
+    def synchronize():
+        calls.append("synchronize")
+
+    runtime = SimpleNamespace(synchronize=synchronize)
+
+    if event_fallback:
+        runtime = _event_runtime(
+            calls,
+            elapsed_error=NotImplementedError(),
+            synchronize=synchronize,
+        )
+
+    monkeypatch.setattr(torch, "vendor_test", runtime, raising=False)
+    elapsed = _default_benchmark(
+        lambda *_: calls.append("kernel"),
+        (_runtime_tensor(),),
+        {},
+    )
+
+    assert elapsed >= 0
+    assert calls.count("kernel") == (23 if event_fallback else 13)
+    assert calls.count("synchronize") == (3 if event_fallback else 2)
+
+
+def test_default_benchmark_prefers_accelerator_after_cpu_scalar(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        torch,
+        "vendor_test",
+        _event_runtime(
+            calls,
+            synchronize=lambda: calls.append("accelerator-synchronize"),
+        ),
+        raising=False,
+    )
+
+    elapsed = _default_benchmark(
+        lambda *_: calls.append("kernel"),
+        (torch.tensor(1.0), _runtime_tensor()),
+        {},
+    )
+
+    assert elapsed == 1.0
+    assert calls.count("accelerator-synchronize") == 1
+
+
+@pytest.mark.parametrize("synchronize_with", ("runtime", "event"))
+def test_async_candidate_error_cannot_be_cached_as_winner(
+    monkeypatch, synchronize_with
+):
+    calls = []
+    pending_error = [False]
+
+    def synchronize():
+        if pending_error[0]:
+            pending_error[0] = False
+            raise RuntimeError("Asynchronous launch failed.")
+
+    runtime_options = (
+        {"synchronize": synchronize}
+        if synchronize_with == "runtime"
+        else {"event_synchronize": synchronize}
+    )
+    monkeypatch.setattr(
+        torch,
+        "vendor_test",
+        _event_runtime(calls, **runtime_options),
+        raising=False,
+    )
+    tensor = _runtime_tensor()
+
+    def bad_candidate(*_args):
+        pending_error[0] = True
+
+    def good_candidate(*_args):
+        pass
+
+    tuner = AutoTuner(
+        (bad_candidate, good_candidate),
+        ("bad", "good"),
+        cache_namespace=f"async_failure_{synchronize_with}_{uuid.uuid4().hex}",
+    )
+    tuner(tensor)
+
+    arg_key = tuner._make_arg_key((tensor,), {})
+    assert tuner._best_func[arg_key] is good_candidate
+    assert tuner._candidate_timings["bad"][arg_key] == float("inf")
 
 
 def _foo_delay(*args, **kwargs):

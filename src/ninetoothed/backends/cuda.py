@@ -82,7 +82,7 @@ class CudaOptimizeSchedule(OptimizeSchedule):
         schedule: Mapping[str, Any],
         context: Context,
     ) -> tuple[ScheduleCandidate, ...]:
-        del context
+        platform_cuda = context.resolved_target.platform.metadata.get("cuda", {})
 
         reduction = schedule.get("reduction", {})
 
@@ -112,8 +112,10 @@ class CudaOptimizeSchedule(OptimizeSchedule):
                 for threads in thread_counts
             )
 
-        if schedule.get("granularity") != "blocked-linalg" or not analysis.get(
-            "dot_supports_low_precision_intrinsic", False
+        if (
+            schedule.get("granularity") != "blocked-linalg"
+            or not analysis.get("dot_supports_low_precision_intrinsic", False)
+            or platform_cuda.get("wmma") is False
         ):
             return ()
 

@@ -30,6 +30,7 @@ from ninetoothed.compiler.layout_runtime import (
     memory_spans_overlap,
     tensor_memory_span,
 )
+from ninetoothed.targets import runtime_device_types
 
 _TRITON_AOT_LAUNCHER_SCHEMA = 1
 _TRITON_MODULE_PATTERN = re.compile(
@@ -155,6 +156,7 @@ def _materialize(compilation):
                 launch,
                 compilation.launch_abi,
                 specs=compilation.kernel.tensors,
+                device_types=runtime_device_types(compilation),
                 prepare_invocation=_triton_prepare_invocation(launch, kernel),
                 validate_bindings=validate_bindings,
             )
@@ -200,6 +202,7 @@ def _candidate_launch(compilation, launch, kernel, candidate, validate_bindings)
         function,
         compilation.launch_abi,
         specs=compilation.kernel.tensors,
+        device_types=runtime_device_types(compilation),
         binding_overrides=meta_values,
         prepare_invocation=_triton_prepare_invocation(function, kernel),
         validate_bindings=validate_bindings,
@@ -560,6 +563,7 @@ def _tuned_runtime_launch(
             args,
             kwargs,
             specs=compilation.kernel.tensors,
+            device_types=runtime_device_types(compilation),
         )
 
         if _empty_launch(compilation.launch_abi, public):
@@ -682,6 +686,7 @@ def _runtime_validator(compilation, validate_bindings):
             args,
             kwargs,
             specs=compilation.kernel.tensors,
+            device_types=runtime_device_types(compilation),
         )
 
         if validate_bindings is not None:

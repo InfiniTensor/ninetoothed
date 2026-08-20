@@ -10,6 +10,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
+from ninetoothed.backends.toolchain import cuda_compiler_identity
 from ninetoothed.ir import ir_to_dict
 
 _CACHE_ROOT = Path(
@@ -40,16 +41,18 @@ def compilation_cache_key(compilation) -> str:
 
     return stable_digest(
         {
-            "schema": 2,
+            "schema": 3,
             "source": artifact.sources,
             "ssa": ir_to_dict(compilation.kernel.ssa),
             "launch_plan": ir_to_dict(compilation.launch_plan),
             "backend": artifact.backend.value,
+            "target": _target_metadata(compilation),
             "compiler_options": compilation.kernel.compiler_options,
             "backend_options": request.backend_options,
             "pipeline": request.pipeline,
             "pass_options": request.pass_options,
             "architecture": _architecture(compilation),
+            "toolchain": compilation_toolchain_identity(compilation),
             "versions": _compiler_versions(),
         }
     )
@@ -194,11 +197,16 @@ def _compiler_versions() -> Mapping[str, str]:
 def _architecture(compilation) -> Mapping[str, Any]:
     backend = compilation.artifact.backend.value
     backend_options = dict(compilation.request.backend_options or {})
+    target = _target_metadata(compilation)
     architecture = {
         "machine": platform.machine(),
+        "target": target,
         "cuda_arch": os.environ.get("TORCH_CUDA_ARCH_LIST"),
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
     }
+
+    if target.get("platform") not in {None, "generic"} or target.get("compute_arch"):
+        return architecture
 
     if backend == "cuda":
         target = str(backend_options.get("arch", "native"))
@@ -210,6 +218,29 @@ def _architecture(compilation) -> Mapping[str, Any]:
     if backend in {"cuda", "tilelang", "triton"}:
         architecture.update(_runtime_cuda_architecture())
     return architecture
+
+
+def _target_metadata(compilation) -> Mapping[str, Any]:
+    target = getattr(compilation, "target", None)
+
+    if target is not None and hasattr(target, "as_metadata"):
+        return dict(target.as_metadata())
+
+    artifact = getattr(compilation, "artifact", None)
+    metadata = getattr(artifact, "metadata", {})
+
+    if isinstance(metadata, Mapping):
+        return dict(metadata.get("target", {}))
+    return {}
+
+
+def compilation_toolchain_identity(compilation) -> Mapping[str, Any]:
+    """Return external compiler identity that affects emitted binaries."""
+    backend = compilation.artifact.backend.value
+
+    if backend == "cuda":
+        return {"cuda": cuda_compiler_identity()}
+    return {}
 
 
 def _runtime_cuda_architecture() -> Mapping[str, Any]:
@@ -263,6 +294,7 @@ __all__ = [
     "atomic_write_text",
     "cache_lock",
     "compilation_cache_key",
+    "compilation_toolchain_identity",
     "read_manifest",
     "stable_digest",
     "write_manifest",

@@ -20,6 +20,11 @@ from ninetoothed.frontend.layout import tensor_specs
 from ninetoothed.frontend.python import LoweringError, from_application
 from ninetoothed.ir import IndexExpr, Kernel, LaunchABI, LaunchBinding, LaunchPlan, ssa
 from ninetoothed.naming import is_meta, remove_prefixes
+from ninetoothed.targets import (
+    TargetContext,
+    resolve_target_context,
+    target_backend_options,
+)
 
 from .specialization import (
     is_schedule_tile_parameter,
@@ -35,6 +40,8 @@ class CompileRequest:
     application: Any
     tensors: tuple[Any, ...] = ()
     backend: Target | str | None = None
+    platform: str | None = None
+    compute_arch: str | None = None
     caller: str = "torch"
     kernel_name: str | None = None
     num_warps: int | tuple[int, ...] | None = None
@@ -54,6 +61,33 @@ class Compilation:
     artifact: Artifact
     launch_plan: LaunchPlan
     pass_trace: tuple[str, ...]
+    target: TargetContext | None = None
+
+    def __post_init__(self) -> None:
+        if self.target is None:
+            object.__setattr__(
+                self,
+                "target",
+                resolve_compile_target(
+                    getattr(self.request, "backend", None),
+                    platform=getattr(self.request, "platform", None),
+                    compute_arch=getattr(self.request, "compute_arch", None),
+                ),
+            )
+
+        if self.target.backend != normalize_target(self.artifact.backend):
+            raise ValueError(
+                f"Compilation target backend `{self.target.backend.value}` does not "
+                f"match artifact backend `{self.artifact.backend.value}`."
+            )
+
+        artifact_target = self.artifact.metadata.get("target")
+
+        if artifact_target != self.target.as_metadata():
+            raise ValueError(
+                "Compilation target metadata does not match the target snapshot "
+                "embedded in the artifact."
+            )
 
     @property
     def launch_abi(self) -> LaunchABI:
@@ -85,6 +119,20 @@ def resolve_target(backend: Target | str | None) -> Target:
     return normalize_target(backend)
 
 
+def resolve_compile_target(
+    backend: Target | str | None,
+    *,
+    platform: str | None = None,
+    compute_arch: str | None = None,
+) -> TargetContext:
+    """Resolve a language and concrete platform without querying a runtime."""
+    return resolve_target_context(
+        backend,
+        platform=platform,
+        compute_arch=compute_arch,
+    )
+
+
 def compile_kernel(request: CompileRequest) -> Compilation:
     """Compile a request with the process-wide default compiler."""
     return DEFAULT_COMPILER.compile(request)
@@ -94,6 +142,8 @@ def aot(
     func,
     *,
     backend=None,
+    platform=None,
+    compute_arch=None,
     caller="cuda",
     kernel_name=None,
     output_dir,
@@ -108,6 +158,8 @@ def aot(
         CompileRequest(
             application=func,
             backend=backend,
+            platform=platform,
+            compute_arch=compute_arch,
             caller=caller,
             kernel_name=kernel_name,
             num_warps=num_warps,
@@ -127,6 +179,8 @@ def make(
     tensors,
     *,
     backend=None,
+    platform=None,
+    compute_arch=None,
     caller="torch",
     kernel_name=None,
     output_dir=None,
@@ -146,6 +200,8 @@ def make(
             application=application,
             tensors=tuple(tensors),
             backend=backend,
+            platform=platform,
+            compute_arch=compute_arch,
             caller=caller,
             kernel_name=kernel_name,
             num_warps=num_warps,
@@ -166,6 +222,8 @@ def lower(
     tensors,
     *,
     backend: str | None = None,
+    platform: str | None = None,
+    compute_arch: str | None = None,
     caller: str = "torch",
     kernel_name: str | None = None,
     output_dir: str | Path | None = None,
@@ -184,6 +242,8 @@ def lower(
             application=application,
             tensors=tuple(tensors),
             backend=backend,
+            platform=platform,
+            compute_arch=compute_arch,
             caller=caller,
             kernel_name=kernel_name,
             num_warps=num_warps,
@@ -255,7 +315,13 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
             "source inspection did not produce ssa.Program."
         )
 
-    target = resolve_target(request.backend)
+    target_context = resolve_compile_target(
+        request.backend,
+        platform=request.platform,
+        compute_arch=request.compute_arch,
+    )
+    target = target_context.backend
+    request = _apply_target_compiler_options(request, target_context)
     _validate_tuning_options(target, request)
     specialization_values = dict(request.specialization_values or {})
 
@@ -273,7 +339,12 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
     backend_options = (
         default_registry()
         .get(target)
-        .normalize_options(dict(request.backend_options or {}))
+        .normalize_options(
+            target_backend_options(
+                target_context,
+                dict(request.backend_options or {}),
+            )
+        )
     )
     request = replace(request, backend_options=backend_options)
     kernel = Kernel(
@@ -289,6 +360,7 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
             "ssa_pass_pipeline": request.pipeline,
             "ssa_pass_options": dict(request.pass_options or {}),
             "backend_options": backend_options,
+            "target": target_context.as_metadata(),
         },
         metadata={
             "caller": request.caller,
@@ -298,10 +370,11 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
             "specialization_values": specialization_values,
             "generation_py_fallback": False,
             "meta_defaults": meta_defaults,
+            "target": target_context.as_metadata(),
         },
         ssa=program,
     )
-    artifact = emit(kernel, backend=target)
+    artifact = emit(kernel, backend=target, target_context=target_context)
     scheduled_defaults = scheduled_meta_defaults(
         meta_defaults, artifact.metadata.get("ssa_schedule", {})
     )
@@ -332,6 +405,7 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
 
     return Compilation(
         request=request,
+        target=target_context,
         kernel=kernel,
         artifact=artifact,
         launch_plan=launch_plan,
@@ -655,6 +729,71 @@ def _validate_tuning_options(target: Target, request: CompileRequest) -> None:
             f"Backend auto-tuning is not supported for `{target.value}` yet; "
             "use scalar num_warps/num_stages and max_num_configs=1."
         )
+
+
+def _apply_target_compiler_options(
+    request: CompileRequest,
+    target: TargetContext,
+) -> CompileRequest:
+    compiler_options = target.platform.constraints.get("compiler_options", {})
+    backend_options = compiler_options.get(target.backend.value, {})
+
+    if not backend_options:
+        return request
+
+    unknown = set(backend_options) - {
+        "fixed_num_stages",
+        "max_num_configs",
+        "num_stages",
+        "num_warps",
+    }
+
+    if unknown:
+        names = ", ".join(sorted(str(name) for name in unknown))
+        raise ValueError(
+            f"Platform `{target.platform.name}` has unsupported compiler "
+            f"options for `{target.backend.value}`: {names}."
+        )
+
+    fixed_num_stages = backend_options.get("fixed_num_stages")
+
+    if (
+        fixed_num_stages is not None
+        and request.num_stages is not None
+        and request.num_stages != fixed_num_stages
+    ):
+        raise ValueError(
+            f"Platform `{target.platform.name}` requires "
+            f"num_stages={fixed_num_stages} for `{target.backend.value}`."
+        )
+
+    platform_limit = backend_options.get("max_num_configs")
+    requested_limit = request.max_num_configs
+
+    if platform_limit is not None:
+        platform_limit = int(platform_limit)
+        requested_limit = (
+            platform_limit
+            if requested_limit is None
+            else min(int(requested_limit), platform_limit)
+        )
+
+    return replace(
+        request,
+        num_warps=(
+            backend_options.get("num_warps")
+            if request.num_warps is None
+            else request.num_warps
+        ),
+        num_stages=(
+            fixed_num_stages
+            if fixed_num_stages is not None
+            else backend_options.get("num_stages")
+            if request.num_stages is None
+            else request.num_stages
+        ),
+        max_num_configs=requested_limit,
+    )
 
 
 def _triton_tuning_candidates(

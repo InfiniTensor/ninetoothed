@@ -251,7 +251,7 @@ def _access_templates(tensor) -> tuple[dict[str, Any], ...]:
         "shape": tuple(shape),
         "linear_offset": _text(linear),
         "offsets": tuple(_text(offset) for offset in offsets),
-        "mask": _text(mask),
+        "mask": _mask_text(mask),
     }
     source = view.source
     jagged_dim = getattr(source, "jagged_dim", None)
@@ -295,7 +295,7 @@ def _view_index_attrs(tensor) -> dict[str, str]:
         linear += Symbol(offset) * Symbol(stride)
     return {
         "view_linear_offset": _text(linear),
-        "view_mask": _text(mask),
+        "view_mask": _mask_text(mask),
         "view_offsets": tuple(_text(offset) for offset in offsets),
     }
 
@@ -369,6 +369,12 @@ def _tensor_like(value: Any) -> bool:
 
 def _text(value: Any) -> str:
     return str(value)
+
+
+def _mask_text(value: Any) -> str:
+    text = _text(value)
+
+    return text.removeprefix("True & ")
 
 
 __all__ = [

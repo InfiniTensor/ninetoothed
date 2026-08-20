@@ -1,5 +1,6 @@
 """Triton syntax hooks for the common SSA emitter."""
 
+import keyword
 import math
 import re
 from dataclasses import dataclass, replace
@@ -42,6 +43,13 @@ def _index_symbols(expression):
     return frozenset().union(
         *(_index_symbols(operand) for operand in expression.operands)
     )
+
+
+def _target_metadata(kernel: Kernel) -> dict[str, Any]:
+    target = dict(kernel.compiler_options.get("target", {}))
+    profile = dict(target.get("profile", {}))
+
+    return dict(profile.get("metadata", {}))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -96,6 +104,91 @@ class TritonTarget(EmitterTarget):
 
     def cast(self, dtype, value):
         return f"{value}.to(tl.{common.normalize_dtype(dtype)})"
+
+    def coerce_dot_args(self, operation, args, context):
+        metadata = _target_metadata(context.kernel)
+        coercions = {}
+
+        for source, destination in dict(
+            metadata.get("triton_dot_operand_coercions", {})
+        ).items():
+            if (
+                not isinstance(source, str)
+                or not source.strip()
+                or not isinstance(destination, str)
+                or not destination.strip()
+            ):
+                raise ValueError(
+                    "Triton dot operand coercion metadata requires dtype names."
+                )
+
+            source = common.normalize_dtype(source)
+            destination = common.normalize_dtype(destination)
+
+            if any(
+                not dtype.isidentifier() or keyword.iskeyword(dtype)
+                for dtype in (source, destination)
+            ):
+                raise ValueError(
+                    "Triton dot operand coercion metadata requires valid dtype names."
+                )
+
+            existing = coercions.get(source)
+
+            if existing is not None and existing != destination:
+                raise ValueError(f"Conflicting Triton dot coercion for `{source}`.")
+
+            coercions[source] = destination
+
+        if not coercions:
+            return args
+
+        result = []
+
+        for index, value in enumerate(args):
+            operand = (
+                operation.operands[index] if index < len(operation.operands) else None
+            )
+            type_ = context.value_types.get(operand) if operand is not None else None
+            source_dtype = (
+                common.normalize_dtype(type_.dtype)
+                if type_ is not None and type_.dtype is not None
+                else None
+            )
+            target_dtype = coercions.get(source_dtype)
+
+            if target_dtype is not None:
+                result.append(self.cast(target_dtype, value))
+                continue
+
+            if source_dtype is not None:
+                result.append(value)
+                continue
+
+            if context.temp_counter is None:
+                context.temp_counter = [0]
+
+            occupied = {self.symbol(name) for name in context.reserved_symbols}
+
+            while True:
+                temporary = f"ninetoothed_dot_arg_{context.temp_counter[0]}"
+                context.temp_counter[0] += 1
+
+                if temporary not in occupied:
+                    break
+
+            context.lines.append(f"{temporary} = {value}")
+            runtime_value = temporary
+
+            for runtime_source, runtime_target in reversed(sorted(coercions.items())):
+                runtime_value = (
+                    f"({temporary}.to(tl.{runtime_target}) "
+                    f"if {temporary}.dtype == tl.{runtime_source} else {runtime_value})"
+                )
+
+            result.append(runtime_value)
+
+        return tuple(result)
 
     def where(self, cond, yes, no):
         return f"tl.where({cond}, {yes}, {no})"
@@ -245,6 +338,11 @@ class TritonTarget(EmitterTarget):
         ):
             return context
 
+        uses_grid_stride_layout = (
+            _target_metadata(context.kernel).get("triton_grid_limit") is not None
+        )
+        source_row_axis = "[:, None]" if uses_grid_stride_layout else "[None, :]"
+        source_column_axis = "[None, :]" if uses_grid_stride_layout else "[:, None]"
         value_shape = (
             transfer.source.layout.application_shape
             if transfer.requires_tiling
@@ -282,10 +380,10 @@ class TritonTarget(EmitterTarget):
                     "tl.arange(0, TILE_M)[:, None]",
                     "destination_value_1 = transfer_tile_column * TILE_N + "
                     "tl.arange(0, TILE_N)[None, :]",
-                    "source_value_0 = transfer_tile_row * TILE_M + "
-                    "tl.arange(0, TILE_M)[None, :]",
-                    "source_value_1 = transfer_tile_column * TILE_N + "
-                    "tl.arange(0, TILE_N)[:, None]",
+                    f"source_value_0 = transfer_tile_row * TILE_M + "
+                    f"tl.arange(0, TILE_M){source_row_axis}",
+                    f"source_value_1 = transfer_tile_column * TILE_N + "
+                    f"tl.arange(0, TILE_N){source_column_axis}",
                 )
             )
             grid_total = (
@@ -298,8 +396,8 @@ class TritonTarget(EmitterTarget):
                 (
                     f"destination_value_0 = tl.arange(0, {rows})[:, None]",
                     f"destination_value_1 = tl.arange(0, {columns})[None, :]",
-                    f"source_value_0 = tl.arange(0, {rows})[None, :]",
-                    f"source_value_1 = tl.arange(0, {columns})[:, None]",
+                    f"source_value_0 = tl.arange(0, {rows}){source_row_axis}",
+                    f"source_value_1 = tl.arange(0, {columns}){source_column_axis}",
                 )
             )
             grid_total = common.product(program_shape)
@@ -339,16 +437,19 @@ class TritonTarget(EmitterTarget):
             f"({destination_predicate}) & (destination_value_0 < ({rows})) & "
             f"(destination_value_1 < ({columns}))"
         )
-        lines.extend(
-            (
-                f"transfer_value = {self.load(transfer.source_binding, source_index, mask=source_mask)}",
-                "transfer_value = tl.trans(transfer_value)",
-                self.store(
-                    transfer.destination_binding,
-                    destination_index,
-                    "transfer_value",
-                    mask=destination_mask,
-                ),
+        lines.append(
+            f"transfer_value = {self.load(transfer.source_binding, source_index, mask=source_mask)}"
+        )
+
+        if not uses_grid_stride_layout:
+            lines.append("transfer_value = tl.trans(transfer_value)")
+
+        lines.append(
+            self.store(
+                transfer.destination_binding,
+                destination_index,
+                "transfer_value",
+                mask=destination_mask,
             )
         )
         metadata = {
@@ -380,6 +481,19 @@ class TritonTarget(EmitterTarget):
     def render_module(self, context: ModuleRenderContext) -> str:
         kernel = context.kernel
         body = common.rewrite_index_math(context.body, c_style=False)
+        target_metadata = _target_metadata(kernel)
+        grid_limit = target_metadata.get("triton_grid_limit")
+        block_size = int(target_metadata.get("triton_block_size", 256))
+
+        if block_size < 1 or block_size & (block_size - 1):
+            raise ValueError("Triton block size must be a positive power of two.")
+
+        if grid_limit is not None:
+            grid_limit = int(grid_limit)
+
+            if grid_limit < 1:
+                raise ValueError("Triton grid limit must be positive.")
+
         runtime_params = set(kernel.metadata.get("runtime_shape_params", ()))
         private_meta = tuple(context.private_meta_parameters)
         params = ",\n    ".join(
@@ -405,22 +519,7 @@ class TritonTarget(EmitterTarget):
         private_kernel_args = "\n        ".join(
             f"{name}=_ninetoothed_{name.lower()}," for name, _value in private_meta
         )
-        offsets = (
-            "0"
-            if context.block_program
-            else "tl.program_id(0)"
-            if context.scalar_program
-            else "tl.arange(0, BLOCK)"
-            if context.vector_program
-            else "tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)"
-        )
-        block = (
-            "1"
-            if context.block_program or context.scalar_program
-            else f"triton.next_power_of_2({context.total})"
-            if context.vector_program
-            else "256"
-        )
+
         schedule = kernel.ssa.metadata.get("schedule", {}) if kernel.ssa else {}
         num_warps_value = kernel.compiler_options.get("num_warps") or schedule.get(
             "num_warps"
@@ -438,6 +537,30 @@ class TritonTarget(EmitterTarget):
             if isinstance(num_stages_value, tuple)
             else num_stages_value or 3
         )
+        has_explicit_program_grid = bool(
+            context.vector_program or context.block_program or context.scalar_program
+        )
+        uses_grid_stride_loop = grid_limit is not None and (
+            not has_explicit_program_grid
+            or schedule.get("granularity") == "layout-transfer"
+        )
+        program_id = (
+            "ninetoothed_program_id" if uses_grid_stride_loop else "tl.program_id(0)"
+        )
+
+        if context.block_program:
+            block = "1"
+            offsets = "0"
+        elif context.scalar_program:
+            block = "1"
+            offsets = program_id
+        elif context.vector_program:
+            block = f"triton.next_power_of_2({context.total})"
+            offsets = "tl.arange(0, BLOCK)"
+        else:
+            block = str(block_size)
+            offsets = f"{program_id} * BLOCK + tl.arange(0, BLOCK)"
+
         launch_params = ", ".join(
             (
                 *public_launch_params,
@@ -449,14 +572,60 @@ class TritonTarget(EmitterTarget):
                 f"_ninetoothed_num_stages={num_stages}",
             )
         )
-        active_grid = bool(
-            context.vector_program or context.block_program or context.scalar_program
-        )
+        launch_grid = f"({context.grid_total},)"
+        launch_guard = ""
+
         mask = (
             "True"
             if context.block_program or context.scalar_program
             else f"offsets < ({context.total})"
         )
+
+        if uses_grid_stride_loop:
+            logical_total = (
+                context.grid_total
+                if has_explicit_program_grid
+                else f"triton.cdiv({context.grid_total}, block)"
+            )
+            kernel_grid_total = replace_symbols(
+                context.grid_total,
+                {f"_ninetoothed_{name.lower()}": name for name, _value in private_meta},
+            )
+            kernel_logical_total = (
+                kernel_grid_total
+                if has_explicit_program_grid
+                else f"tl.cdiv({kernel_grid_total}, BLOCK)"
+            )
+            body = body.replace("tl.program_id(0)", program_id)
+
+            kernel_body = (
+                f"for {program_id} in tl.range(tl.program_id(0), "
+                f"{kernel_logical_total}, tl.num_programs(0)):\n"
+                f"    offsets = {offsets}\n"
+                f"    {self.index_name} = offsets\n"
+                f"    mask = {mask}\n"
+                f"{common.indent_block(body, '    ')}"
+            )
+            launch_guard = (
+                f"    if _ninetoothed_num_warps > {grid_limit}:\n"
+                '        raise ValueError("Triton num_warps cannot exceed the grid limit.")\n'
+            )
+            launch_grid = (
+                f"(min({logical_total}, max(1, {grid_limit} // "
+                "_ninetoothed_num_warps)),)"
+            )
+        elif not has_explicit_program_grid:
+            program_count = f"triton.cdiv({context.grid_total}, block)"
+            launch_grid = f"({program_count},)"
+
+        if not uses_grid_stride_loop:
+            kernel_body = (
+                f"offsets = {offsets}\n"
+                f"{self.index_name} = offsets\n"
+                f"mask = {mask}\n"
+                f"{body}"
+            )
+
         result = context.outputs[0] if context.outputs else "None"
 
         return f'''"""Triton lowering generated by NineToothed from ssa.Program.
@@ -475,14 +644,11 @@ from triton.language.extra import libdevice
 def {kernel.kernel_name}_kernel(
     {params},
 ):
-    offsets = {offsets}
-    {self.index_name} = offsets
-    mask = {mask}
-{common.indent_block(body, "    ")}
+{common.indent_block(kernel_body, "    ")}
 
 def launch_{kernel.kernel_name}({launch_params}):
     block = {block}
-    grid = ({context.grid_total},) if {active_grid!r} else (triton.cdiv({context.grid_total}, block),)
+{launch_guard}    grid = {launch_grid}
     {kernel.kernel_name}_kernel[grid](
         {kernel_args},
         {private_kernel_args}

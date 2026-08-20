@@ -146,6 +146,7 @@ def emit(kernel: Kernel, target: EmitterTarget) -> Artifact:
     )
     metadata = {
         "backend": backend.value,
+        "target": dict(kernel.metadata.get("target", {})),
         "kernel_name": kernel.kernel_name,
         "lowering_ir": "ssa.Program",
         "source_route": target.source_route,
@@ -344,6 +345,9 @@ def _render_source(
     variables = public_variables + tuple(
         binding["name"] for binding in auxiliary_bindings
     )
+    reserved_symbols = frozenset(
+        (*variables, *outputs, *shape_params, "BLOCK", "TILE_M", "TILE_N")
+    )
 
     if "index" in {*variables, *outputs, *shape_params}:
         target = replace(target, index_name="__nt_index")
@@ -499,6 +503,7 @@ def _render_source(
         total,
         outer_index_expr,
         inner_index_expr,
+        reserved_symbols=reserved_symbols,
         block_program=vector_block_program,
         native_block_program=native_block_program,
         vector_program=vector_reduction_program,
@@ -526,6 +531,7 @@ def _render_source(
         total,
         outer_index_expr,
         inner_index_expr,
+        reserved_symbols=reserved_symbols,
         block_program=vector_block_program,
         native_block_program=native_block_program,
         vector_program=vector_reduction_program,
@@ -587,6 +593,7 @@ def _with_contiguous_1d_fast_path(
     outer_index_expr: str,
     inner_index_expr: str,
     *,
+    reserved_symbols: frozenset[str],
     block_program: bool,
     native_block_program: bool,
     vector_program: bool,
@@ -661,6 +668,7 @@ def _with_contiguous_1d_fast_path(
         total,
         outer_index_expr,
         inner_index_expr,
+        reserved_symbols=reserved_symbols,
         block_program=block_program,
         native_block_program=native_block_program,
         layout_contiguous=True,
@@ -669,7 +677,10 @@ def _with_contiguous_1d_fast_path(
     predicate = (
         " && ".join(f"({stride} == 1)" for stride in stride_params)
         if target.c_style_syntax
-        else " and ".join(f"({stride} == 1)" for stride in stride_params)
+        else _left_associative_boolean_chain(
+            tuple(f"({stride} == 1)" for stride in stride_params),
+            operator="and",
+        )
     )
 
     if target.c_style_syntax:
@@ -686,6 +697,21 @@ def _with_contiguous_1d_fast_path(
         "else:\n"
         f"{_indent_block(generic_body, '    ')}"
     )
+
+
+def _left_associative_boolean_chain(
+    predicates: tuple[str, ...],
+    *,
+    operator: str,
+) -> str:
+    if not predicates:
+        return "True"
+
+    expression = predicates[0]
+
+    for predicate in predicates[1:]:
+        expression = f"({expression} {operator} {predicate})"
+    return expression
 
 
 def _simplify_unit_stride_expr(expr: str) -> str:
@@ -709,6 +735,7 @@ def _render_body(
     outer_index_expr: str,
     inner_index_expr: str,
     *,
+    reserved_symbols: frozenset[str] = frozenset(),
     block_program: bool = False,
     native_block_program: bool = False,
     layout_contiguous: bool = False,
@@ -793,6 +820,7 @@ def _render_body(
         bindings={},
         temp_counter=[0],
         materialized={},
+        reserved_symbols=reserved_symbols,
         indent="",
         block_program=block_program,
         native_block_program=native_block_program,
@@ -1419,8 +1447,9 @@ def _emit_linalg_dot(
     if ctx.block_program and len(lhs_axes) == 2 and len(rhs_axes) == 2:
         lhs_value = _emit_element(lhs, ctx.target.block_coords(lhs_axes), ctx)
         rhs_value = _emit_element(rhs, ctx.target.block_coords(rhs_axes), ctx)
+        args = ctx.target.coerce_dot_args(op, (lhs_value, rhs_value), ctx)
 
-        return ctx.target.call("block_dot", (lhs_value, rhs_value))
+        return ctx.target.call("block_dot", args)
 
     if not lhs_axes or not rhs_axes:
         return ctx.target.call(

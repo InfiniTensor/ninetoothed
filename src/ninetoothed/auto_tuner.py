@@ -1,5 +1,6 @@
 import math
 import threading
+import time
 
 from ninetoothed.compiler.cache import (
     CACHE_DIR,
@@ -36,7 +37,7 @@ class AutoTuner:
         namespace = cache_namespace or _default_cache_namespace()
         self._cache_dir = _AUTO_TUNING_CACHE_DIR / stable_digest(
             {
-                "schema": 2,
+                "schema": 3,
                 "namespace": namespace,
                 "candidate_ids": self._key_ids,
             }
@@ -96,7 +97,7 @@ class AutoTuner:
             self._selection_timings[arg_key] = timings
             write_manifest(
                 self._cache_path,
-                {"schema": 2, "timings": self._selection_timings},
+                {"schema": 3, "timings": self._selection_timings},
             )
 
         return timings
@@ -144,14 +145,14 @@ class AutoTuner:
 
             write_manifest(
                 cache_path,
-                {"schema": 2, "timings": data, "failures": failures},
+                {"schema": 3, "timings": data, "failures": failures},
             )
 
         return timing
 
     def _get_func_cache_path(self, func):
         func_key = self._func_to_key[func]
-        cache_key = stable_digest({"schema": 2, "candidate_id": func_key})
+        cache_key = stable_digest({"schema": 3, "candidate_id": func_key})
         cache_path = self._cache_dir / f"{cache_key}.json"
 
         return cache_path
@@ -210,23 +211,120 @@ def _default_benchmark(function, args, kwargs):
     for _ in range(3):
         function(*args, **kwargs)
 
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
+    runtime = _device_runtime(torch, args, kwargs)
+    event_factory = getattr(runtime, "Event", None)
+
+    if callable(event_factory):
+        try:
+            start = event_factory(enable_timing=True)
+            end = event_factory(enable_timing=True)
+            start.record()
+        except (NotImplementedError, RuntimeError, TypeError):
+            return _wall_clock_benchmark(
+                function,
+                args,
+                kwargs,
+                runtime,
+                require_synchronization=True,
+            )
+        else:
+            for _ in range(10):
+                function(*args, **kwargs)
+
+            try:
+                end.record()
+            except (NotImplementedError, TypeError):
+                return _wall_clock_benchmark(
+                    function,
+                    args,
+                    kwargs,
+                    runtime,
+                    require_synchronization=True,
+                )
+
+            synchronize = getattr(runtime, "synchronize", None)
+
+            if callable(synchronize):
+                synchronize()
+            else:
+                try:
+                    end.synchronize()
+                except (NotImplementedError, TypeError):
+                    raise RuntimeError(
+                        "Event-only device runtime cannot synchronize a wall-clock "
+                        "fallback."
+                    )
+
+            try:
+                return start.elapsed_time(end) / 10
+            except (NotImplementedError, RuntimeError, TypeError):
+                return _wall_clock_benchmark(
+                    function,
+                    args,
+                    kwargs,
+                    runtime,
+                    require_synchronization=True,
+                )
+
+    return _wall_clock_benchmark(function, args, kwargs, runtime)
+
+
+def _wall_clock_benchmark(
+    function,
+    args,
+    kwargs,
+    runtime,
+    *,
+    require_synchronization=False,
+):
+    synchronize = getattr(runtime, "synchronize", None)
+
+    if require_synchronization and not callable(synchronize):
+        raise RuntimeError(
+            "Device runtime cannot safely synchronize a wall-clock benchmark."
+        )
+
+    if callable(synchronize):
+        synchronize()
+
+    started = time.perf_counter()
 
     for _ in range(10):
         function(*args, **kwargs)
 
-    end.record()
-    end.synchronize()
+    if callable(synchronize):
+        synchronize()
 
-    return start.elapsed_time(end) / 10
+    return (time.perf_counter() - started) * 1000 / 10
+
+
+def _device_runtime(torch, args, kwargs):
+    cpu_runtime = None
+
+    for value in (*args, *kwargs.values()):
+        device = getattr(value, "device", None)
+
+        if device is None:
+            continue
+
+        device_type = getattr(device, "type", str(device).split(":", 1)[0])
+        runtime = getattr(torch, str(device_type).lower(), None)
+
+        if runtime is None:
+            continue
+
+        if str(device_type).lower() == "cpu":
+            cpu_runtime = runtime
+        else:
+            return runtime
+
+    return cpu_runtime
 
 
 def _default_cache_namespace():
     import torch
 
-    return f"cuda_event_torch_{torch.__version__.replace('.', '_')}"
+    return f"device_timer_v3_torch_{torch.__version__.replace('.', '_')}"
 
 
 def _candidate_id(key):

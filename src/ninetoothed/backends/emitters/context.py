@@ -59,6 +59,7 @@ class EmitContext:
     bindings: Mapping[str, str] | None = None
     temp_counter: list[int] | None = None
     materialized: dict[tuple[str, str], str] | None = None
+    reserved_symbols: frozenset[str] = frozenset()
     indent: str = ""
     local_suffix: str = ""
     block_program: bool = False
@@ -102,6 +103,7 @@ class EmitContext:
             "bindings": self.bindings,
             "temp_counter": self.temp_counter,
             "materialized": self.materialized if lines is None else {},
+            "reserved_symbols": self.reserved_symbols,
             "indent": self.indent,
             "local_suffix": self.local_suffix,
             "block_program": self.block_program,

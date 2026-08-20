@@ -3,14 +3,20 @@ from types import SimpleNamespace
 
 import pytest
 
+from ninetoothed.backends.core import Artifact, BuiltArtifact, Target
 from ninetoothed.backends.materializers.cuda import _cuda_wrapper
 from ninetoothed.compiler.cache import (
     compilation_cache_key,
     stable_digest,
     write_source,
 )
-from ninetoothed.compiler.runtime import _public_values, _runtime_wrapper
+from ninetoothed.compiler.runtime import (
+    _public_values,
+    _runtime_wrapper,
+    load_built_artifact,
+)
 from ninetoothed.ir import LaunchABI, TensorSpec
+from ninetoothed.targets import validate_artifact_materialization
 
 
 class _Tensor:
@@ -31,7 +37,7 @@ def _specs():
     )
 
 
-def _compilation(backend, backend_options=None):
+def _compilation(backend, backend_options=None, target=None):
     return SimpleNamespace(
         request=SimpleNamespace(
             backend_options=backend_options or {},
@@ -41,6 +47,7 @@ def _compilation(backend, backend_options=None):
         artifact=SimpleNamespace(
             backend=SimpleNamespace(value=backend),
             sources={"kernel": "source"},
+            metadata={"target": target or {}},
         ),
         kernel=SimpleNamespace(ssa=(), compiler_options={}),
         launch_plan=(),
@@ -110,6 +117,105 @@ def test_runtime_wrappers_skip_empty_launches():
     assert not calls
 
 
+def test_runtime_tensor_validation_accepts_profile_device_types():
+    value = _Tensor((2, 3), device_type="vendor")
+    output = _Tensor((2, 3), device_type="vendor")
+
+    assert _public_values(
+        _abi(),
+        (value, output),
+        {},
+        specs=_specs(),
+        device_types=("vendor",),
+    ) == {"x": value, "out": output}
+
+
+def test_reload_rejects_non_cuda_triton_aot_profile():
+    source = Artifact(
+        backend=Target.TRITON,
+        kernel_name="kernel",
+        language="python/triton",
+        sources={"kernel.py": "source"},
+        metadata={
+            "target": {
+                "backend": "triton",
+                "platform": "vendor-triton",
+                "device_types": ("vendor",),
+                "profile": {"backend_modes": {"triton": ("jit",)}},
+            }
+        },
+    )
+    built = BuiltArtifact(
+        source=source,
+        cache_key="key",
+        source_path="kernel.py",
+        binary_path="kernel.so",
+        manifest_path="kernel.manifest.json",
+        abi={},
+    )
+
+    with pytest.raises(ValueError, match="does not support `aot` materialization"):
+        load_built_artifact(built)
+
+
+def test_legacy_artifact_without_target_metadata_remains_compatible():
+    source = Artifact(
+        backend=Target.TRITON,
+        kernel_name="legacy",
+        language="python/triton",
+        sources={"legacy.py": "source"},
+        metadata={"schema": 2},
+    )
+
+    validate_artifact_materialization(source, mode="jit")
+
+
+@pytest.mark.parametrize(
+    "target, message",
+    (
+        ({}, "non-empty mapping"),
+        ({"platform": "vendor"}, "profile metadata"),
+        (
+            {"platform": "vendor", "profile": {"backend_modes": {}}},
+            "backend modes",
+        ),
+        (
+            {
+                "platform": "vendor",
+                "profile": {"backend_modes": {"cuda": ("jit",)}},
+            },
+            "does not declare backend `triton`",
+        ),
+        (
+            {
+                "platform": "vendor",
+                "profile": {"backend_modes": {"triton": ("jit",)}},
+            },
+            "target backend metadata is missing",
+        ),
+        (
+            {
+                "backend": "cuda",
+                "platform": "vendor",
+                "profile": {"backend_modes": {"triton": ("jit",)}},
+            },
+            "target backend `cuda` does not match artifact backend `triton`",
+        ),
+    ),
+)
+def test_artifact_with_malformed_target_metadata_is_rejected(target, message):
+    source = Artifact(
+        backend=Target.TRITON,
+        kernel_name="malformed",
+        language="python/triton",
+        sources={"malformed.py": "source"},
+        metadata={"target": target},
+    )
+
+    with pytest.raises(ValueError, match=message):
+        validate_artifact_materialization(source, mode="jit")
+
+
 def test_content_digest_is_stable_for_a_b_a_sources():
     a1 = stable_digest({"name": "same", "source": "A"})
     b = stable_digest({"name": "same", "source": "B"})
@@ -152,6 +258,48 @@ def test_explicit_cuda_arch_does_not_query_runtime_device(monkeypatch):
 
     monkeypatch.setattr(cache, "_runtime_cuda_architecture", unexpected_query)
     compilation_cache_key(_compilation("cuda", {"arch": "sm_90"}))
+
+
+def test_platform_profile_is_part_of_compilation_cache_key(monkeypatch):
+    import ninetoothed.compiler.cache as cache
+
+    def unexpected_query():
+        raise AssertionError("A concrete platform must not query CUDA architecture.")
+
+    monkeypatch.setattr(cache, "_runtime_cuda_architecture", unexpected_query)
+    first = compilation_cache_key(
+        _compilation(
+            "triton",
+            target={"platform": "vendor-a", "compute_arch": "arch-a"},
+        )
+    )
+    second = compilation_cache_key(
+        _compilation(
+            "triton",
+            target={"platform": "vendor-b", "compute_arch": "arch-b"},
+        )
+    )
+
+    assert first != second
+
+
+def test_cuda_compiler_identity_is_part_of_compilation_cache_key(monkeypatch):
+    import ninetoothed.compiler.cache as cache
+
+    monkeypatch.setattr(
+        cache,
+        "cuda_compiler_identity",
+        lambda: {"available": True, "path": "/opt/vendor-a/cucc", "version": "A"},
+    )
+    first = compilation_cache_key(_compilation("cuda", {"arch": "native"}))
+    monkeypatch.setattr(
+        cache,
+        "cuda_compiler_identity",
+        lambda: {"available": True, "path": "/opt/vendor-b/cucc", "version": "B"},
+    )
+    second = compilation_cache_key(_compilation("cuda", {"arch": "native"}))
+
+    assert first != second
 
 
 def test_concurrent_source_writes_are_atomic(tmp_path, monkeypatch):
