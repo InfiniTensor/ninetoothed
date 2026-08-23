@@ -43,6 +43,115 @@ _TRITON_LOADER_PATTERN = re.compile(
 )
 
 
+def _active_triton_target():
+    try:
+        from triton.runtime import driver
+
+        return driver.active.get_current_target()
+    except (AttributeError, ImportError):
+        return None
+    except (KeyError, RuntimeError, TypeError, UnicodeDecodeError):
+        return _torch_hip_target(driver.active)
+
+
+def _torch_hip_target(active_driver):
+    """Recover target discovery from vendor HIP runtime ABI mismatches."""
+    try:
+        import torch
+        from triton.backends.compiler import GPUTarget
+
+        try:
+            from triton import knobs
+
+            override_arch = knobs.runtime.override_arch
+        except (AttributeError, ImportError):
+            # Triton 3.1 vendor builds predate ``triton.knobs``.  Those builds
+            # still expose GPUTarget and report the HIP architecture through
+            # PyTorch, so target recovery does not require the newer knob API.
+            override_arch = None
+
+        if torch.version.hip is None or not torch.cuda.is_available():
+            return None
+
+        device = active_driver.get_current_device()
+        properties = torch.cuda.get_device_properties(device)
+        architecture = str(
+            override_arch or properties.gcnArchName
+        ).split(":", 1)[0]
+        warp_size = int(properties.warp_size)
+
+        if not architecture.startswith("gfx") or warp_size <= 0:
+            return None
+
+        target = GPUTarget("hip", architecture, warp_size)
+    except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
+        return None
+
+    def get_current_target(_driver):
+        return target
+
+    # Triton calls target discovery again during JIT compilation.  Cache the
+    # validated PyTorch result on the active driver so those calls use the same
+    # target instead of re-entering the incompatible vendor HIP helper.
+    active_driver.get_current_target = types.MethodType(
+        get_current_target,
+        active_driver,
+    )
+
+    return target
+
+
+def _legalize_triton_num_stages(num_stages):
+    stages = int(num_stages)
+    target = _active_triton_target()
+
+    if target is None:
+        return stages
+
+    backend = str(getattr(target, "backend", "")).lower()
+    warp_size = getattr(target, "warp_size", None)
+
+    # CoreX presents itself through Triton's CUDA target but uses a 64-thread
+    # warp and currently supports one software-pipeline stage.  A capability
+    # check keeps HIP wave64 and conventional CUDA warp32 targets unchanged.
+    if backend == "cuda" and warp_size == 64:
+        return 1
+
+    return stages
+
+
+def _legalized_tuning_candidates(compilation):
+    candidates = tuple(compilation.launch_plan.tuning_candidates)
+    legalized = []
+    configurations = set()
+
+    for candidate in candidates:
+        normalized = dict(candidate)
+        requested_stages = int(normalized.get("num_stages", 3))
+        stages = _legalize_triton_num_stages(requested_stages)
+        normalized["num_stages"] = stages
+
+        if stages != requested_stages:
+            normalized["id"] = f"{normalized.get('id', 'candidate')}_stages-{stages}"
+
+        configuration = (
+            int(normalized.get("num_warps", 4)),
+            stages,
+            tuple(sorted(dict(normalized.get("meta_parameters", {})).items())),
+            tuple(
+                sorted(dict(normalized.get("private_meta_parameters", {})).items())
+            ),
+        )
+
+        if configuration in configurations:
+            continue
+
+        configurations.add(configuration)
+        legalized.append(normalized)
+
+    return tuple(legalized)
+
+
 class TritonMaterializer(Materializer):
     target = Target.TRITON
 
@@ -124,7 +233,7 @@ def _materialize(compilation):
     module = import_python_module(source)
     launch = getattr(module, artifact.entrypoint)
     kernel = getattr(module, f"{artifact.kernel_name}_kernel", None)
-    candidates = tuple(compilation.launch_plan.tuning_candidates)
+    candidates = _legalized_tuning_candidates(compilation)
     validate_bindings = _runtime_binding_validator(compilation)
     candidate_launches = tuple(
         _candidate_launch(compilation, launch, kernel, candidate, validate_bindings)
@@ -150,6 +259,11 @@ def _materialize(compilation):
     elif candidate_launches:
         wrapped = _verified_runtime_launch(candidate_launches[0])
     else:
+        _, num_stages = _compile_schedule(compilation)
+        launch = functools.partial(
+            launch,
+            _ninetoothed_num_stages=num_stages,
+        )
         wrapped = _verified_runtime_launch(
             _runtime_wrapper(
                 launch,
@@ -174,7 +288,157 @@ def _materialize(compilation):
             validate_bindings,
         )
 
+    by_launch = dict(zip(candidate_launches, candidates))
+    handle._launch_prevalidated_noalias = _prevalidated_noalias_runtime_launch(
+        handle,
+        tuner,
+        compilation,
+        candidates_by_launch=by_launch,
+    )
+
     return handle
+
+
+def _prevalidated_noalias_runtime_launch(
+    handle, tuner, compilation, *, candidates_by_launch=None
+):
+    """Build a low-overhead launcher for operator wrappers with static contracts.
+
+    The ordinary public handle remains fully checked.  This private launcher is
+    for wrappers which already validate tensor shape, stride, dtype, device and
+    output non-aliasing before every call.  It retains the normal first launch
+    (including auto-tuning), then reuses the resulting direct invocation plan
+    for later tensors with the same runtime scalar values.
+    """
+    from ninetoothed.compiler.runtime import (
+        _first_output_from_call,
+        _is_cacheable_runtime_literal,
+    )
+
+    candidates_by_launch = dict(candidates_by_launch or {})
+    scalar_sources = tuple(
+        dict.fromkeys(
+            binding.source
+            for binding in compilation.launch_abi.kernel_args
+            if binding.kind in {"scalar", "constexpr", "meta"}
+            and binding.source in compilation.launch_abi.public_args
+        )
+    )
+    plans = {}
+
+    def selected_candidate(args, kwargs):
+        """Return the launch selected by the verified public path.
+
+        Alias-safe calls intentionally bypass ``AutoTuner._best_func``: the
+        public path records the safe candidate on the handle instead.  The
+        private wrapper must honor that decision when arming its direct plan,
+        otherwise every in-place call pays the full runtime preparation cost.
+        """
+        selected = None if tuner is None else tuner._best_func.get(
+            tuner._make_arg_key(args, kwargs)
+        )
+        if selected is not None:
+            return selected
+
+        selected_id = getattr(handle, "_selected_tuning_candidate", None)
+        if isinstance(selected_id, dict):
+            selected_id = selected_id.get("id")
+
+        if selected_id is None:
+            return None
+
+        return next(
+            (
+                function
+                for function, candidate in candidates_by_launch.items()
+                if candidate.get("id") == selected_id
+            ),
+            None,
+        )
+
+    def plan_key(args, kwargs):
+        public = dict(zip(compilation.launch_abi.public_args, args))
+        public.update(kwargs)
+        values = []
+
+        for source in scalar_sources:
+            value = public.get(source)
+
+            # Scalar tensors may change their device value without changing
+            # object metadata; keep them on the fully verified path.
+            if getattr(value, "shape", None) is not None:
+                return None
+
+            if not _is_cacheable_runtime_literal(value):
+                return None
+
+            values.append((source, type(value), value))
+
+        key = tuple(values)
+
+        try:
+            hash(key)
+        except TypeError:
+            return None
+        return key
+
+    def launch(*args, **kwargs):
+        key = plan_key(args, kwargs)
+        invocation = plans.get(key) if key is not None else None
+
+        if invocation is not None:
+            invocation((), args, kwargs)
+            return _first_output_from_call(compilation.launch_abi, args, kwargs)
+
+        result = handle._launch(*args, **kwargs)
+
+        if key is None:
+            return result
+
+        selected = selected_candidate(args, kwargs)
+
+        if selected is None:
+            return result
+
+        try:
+            prepared = selected._ninetoothed_prepare(args, kwargs)
+        except Exception:  # noqa: BLE001
+            return result
+
+        invocation = prepared.invocation_plan
+
+        if invocation is not None and not getattr(
+            invocation, "requires_values", True
+        ):
+            plans[key] = invocation
+
+        return result
+
+    def bind(*args, **kwargs):
+        """Bind an already-armed direct plan to one validated argument set.
+
+        Operator wrappers may use the returned zero-argument callable only
+        while keeping these exact tensor objects alive and revalidating the
+        public contract before rebinding.  Returning the raw direct call keeps
+        repeated in-place operator launches off the Python ABI preparation
+        path without weakening the checked public handle.
+        """
+        key = plan_key(args, kwargs)
+        invocation = plans.get(key) if key is not None else None
+
+        if invocation is None or getattr(invocation, "requires_values", True):
+            return None
+
+        direct_call = getattr(invocation, "call", None)
+
+        if direct_call is not None:
+            return functools.partial(direct_call, args, kwargs)
+
+        return functools.partial(invocation, (), args, kwargs)
+
+    launch._ninetoothed_bind_prevalidated_noalias = bind
+
+    return launch
 
 
 def _candidate_launch(compilation, launch, kernel, candidate, validate_bindings):
@@ -460,6 +724,57 @@ def _runtime_alias_signature(abi, public):
     return tuple(aliases)
 
 
+def _runtime_rebind_signature(args, kwargs):
+    def is_literal(value):
+        return (
+            value is None
+            or type(value) in (bool, int, float, complex, str, bytes)
+            or (isinstance(value, tuple) and all(is_literal(item) for item in value))
+        )
+
+    def value_signature(value):
+        shape = getattr(value, "shape", None)
+
+        if shape is not None and hasattr(value, "dtype"):
+            stride = getattr(value, "stride", None)
+            storage_offset = getattr(value, "storage_offset", None)
+
+            try:
+                return (
+                    "tensor",
+                    type(value),
+                    tuple(shape),
+                    tuple(stride()) if callable(stride) else None,
+                    str(value.dtype),
+                    str(getattr(value, "device", None)),
+                    storage_offset() if callable(storage_offset) else None,
+                )
+            except (AttributeError, RuntimeError, TypeError):
+                return None
+
+        if not is_literal(value):
+            return None
+
+        return ("literal", type(value), value)
+
+    positional = tuple(value_signature(value) for value in args)
+    keywords = tuple((name, value_signature(value)) for name, value in kwargs.items())
+
+    if any(value is None for value in positional) or any(
+        value is None for _name, value in keywords
+    ):
+        return None
+
+    signature = positional, keywords
+
+    try:
+        hash(signature)
+    except TypeError:
+        return None
+
+    return signature
+
+
 def _tuned_runtime_launch(
     tuner,
     candidates_by_launch,
@@ -479,6 +794,7 @@ def _tuned_runtime_launch(
     active_identity = None
     active = None
     prepared_calls = {}
+    rebindable_calls = {}
 
     def evict(identity, token):
         nonlocal active, active_identity
@@ -522,6 +838,29 @@ def _tuned_runtime_launch(
             return remember(identity, selection_key, selected, prepared)
         except TypeError:
             return None
+
+    def remember_rebindable(rebind_key, selected, prepared):
+        invocation = prepared.invocation_plan
+
+        if (
+            rebind_key is None
+            or prepared.empty
+            or invocation is None
+            or getattr(invocation, "requires_values", True)
+        ):
+            return
+
+        template = replace(
+            prepared,
+            binding_plan=None,
+            owner_refs=(),
+            cache_token=None,
+        )
+        _remember_verified_runtime_call(
+            rebindable_calls,
+            rebind_key,
+            (selected, template),
+        )
 
     def launch(*args, **kwargs):
         active_snapshot = active
@@ -571,6 +910,29 @@ def _tuned_runtime_launch(
         key = tuner._make_arg_key(args, kwargs)
         alias_signature = _runtime_alias_signature(compilation.launch_abi, public)
         selection_key = (key, alias_signature)
+        rebind_signature = _runtime_rebind_signature(args, kwargs)
+        rebind_key = (
+            (selection_key, rebind_signature)
+            if rebind_signature is not None
+            else None
+        )
+        rebindable = (
+            rebindable_calls.pop(rebind_key, None)
+            if rebind_key is not None
+            else None
+        )
+
+        if rebindable is not None:
+            if validate_bindings is not None:
+                validate_bindings(public)
+
+            rebindable_calls[rebind_key] = rebindable
+            selected, prepared = rebindable
+            result = selected._ninetoothed_invoke_prepared(prepared, args, kwargs)
+            record(selected)
+
+            return result
+
         selected = next(
             (
                 entry[1]
@@ -600,6 +962,7 @@ def _tuned_runtime_launch(
                     args,
                     kwargs,
                 )
+                remember_rebindable(rebind_key, selected, prepared)
                 remember_best_effort(
                     identity,
                     selection_key,
@@ -621,6 +984,7 @@ def _tuned_runtime_launch(
             except Exception:  # noqa: BLE001
                 return result
 
+            remember_rebindable(rebind_key, selected, prepared)
             remember_best_effort(identity, selection_key, selected, prepared)
 
             return result
@@ -639,6 +1003,7 @@ def _tuned_runtime_launch(
             kwargs,
         )
         record(selected)
+        remember_rebindable(rebind_key, selected, prepared)
         remember_best_effort(identity, selection_key, selected, prepared)
 
         return result
@@ -867,7 +1232,17 @@ def _select_aot_candidate(compilation):
     if launch_plan is None:
         return compilation
 
-    candidates = tuple(launch_plan.tuning_candidates)
+    candidates = _legalized_tuning_candidates(compilation)
+
+    if candidates != tuple(launch_plan.tuning_candidates):
+        compilation = replace(
+            compilation,
+            launch_plan=replace(
+                launch_plan,
+                tuning_candidates=candidates,
+            ),
+        )
+        launch_plan = compilation.launch_plan
 
     if len(candidates) <= 1:
         return compilation
@@ -1335,17 +1710,19 @@ def _private_meta_values(compilation) -> dict[str, int]:
 
 
 def _compile_schedule(compilation) -> tuple[int, int]:
-    schedule = dict(compilation.artifact.metadata.get("ssa_schedule", {}))
+    metadata = getattr(compilation.artifact, "metadata", {}) or {}
+    schedule = dict(metadata.get("ssa_schedule", {}))
     candidates = tuple(compilation.launch_plan.tuning_candidates)
     selected = dict(candidates[0]) if candidates else {}
+    request = getattr(compilation, "request", None)
     warps = (
-        compilation.request.num_warps
+        getattr(request, "num_warps", None)
         or selected.get("num_warps")
         or schedule.get("num_warps")
         or 4
     )
     stages = (
-        compilation.request.num_stages
+        getattr(request, "num_stages", None)
         or selected.get("num_stages")
         or schedule.get("num_stages")
         or 3
@@ -1356,7 +1733,7 @@ def _compile_schedule(compilation) -> tuple[int, int]:
 
     if isinstance(stages, tuple):
         stages = stages[0]
-    return int(warps), int(stages)
+    return int(warps), _legalize_triton_num_stages(stages)
 
 
 def _aot_wrapper(

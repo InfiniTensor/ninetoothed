@@ -1325,6 +1325,50 @@ class _ApplicationSSABuilder:
         return None
 
     def _lower_elementwise_call(self, name, node, operands, operations):
+        if name == "gather":
+            if len(operands) not in {2, 3}:
+                raise _lowering_error(
+                    node, "`gather()` requires an input, indices, and optional axis"
+                )
+
+            input_, indices = operands[:2]
+            axis = _literal_value(node.args[2]) if len(node.args) == 3 else 0
+
+            try:
+                axis = int(axis)
+            except (TypeError, ValueError) as exc:
+                raise _lowering_error(
+                    node, "`gather()` axis must be a compile-time integer"
+                ) from exc
+
+            rank = len(input_.type.shape)
+
+            if axis < 0:
+                axis += rank
+
+            # A rank-one gather is the portable primitive currently required
+            # by vector permutations such as RoPE.  Represent it explicitly in
+            # SSA so backends can lower it to indexed source access even when
+            # their native tensor language does not provide a gather builtin.
+            if rank != 1 or axis != 0:
+                raise _lowering_error(
+                    node, "`gather()` currently supports axis 0 of rank-one inputs"
+                )
+
+            result_kind = "tensor" if indices.type.shape else "scalar"
+            return self._emit(
+                operations,
+                "tensor.gather",
+                operands=(input_.name, indices.name),
+                attrs={"axis": axis},
+                result_type=ssa.Type(
+                    kind=result_kind,
+                    shape=indices.type.shape,
+                    dtype=input_.type.dtype,
+                    attrs=dict(input_.type.attrs),
+                ),
+            )
+
         if name == "where":
             if len(operands) != 3:
                 raise _lowering_error(node, "`where()` requires three operands")

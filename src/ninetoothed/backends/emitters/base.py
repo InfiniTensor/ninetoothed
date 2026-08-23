@@ -49,6 +49,8 @@ class EmitterTarget(ABC):
     tir_value_semantics: bool = False
     native_block_matmul: bool = False
     max_vector_numel: int | None = None
+    max_static_loop_output_numel: int | None = None
+    max_static_application_block_numel: int | None = None
 
     def symbol(self, name: str) -> str:
         return f"v{name[1:]}" if name.startswith("%") else name
@@ -111,6 +113,12 @@ class EmitterTarget(ABC):
 
     def supports_cooperative_reduction(self, schedule: Mapping[str, Any]) -> bool:
         del schedule
+
+        return False
+
+    def supports_application_block(self, axes: tuple[str, ...]) -> bool:
+        """Return whether one program may evaluate a complete application tile."""
+        del axes
 
         return False
 
@@ -205,7 +213,15 @@ class EmitterTarget(ABC):
     def local_decl(self, type_: ssa.Type, name: str, expr: str) -> str: ...
 
     @abstractmethod
-    def loop_header(self, var: str, lower: str, upper: str, step: str) -> str: ...
+    def loop_header(
+        self,
+        var: str,
+        lower: str,
+        upper: str,
+        step: str,
+        *,
+        static: bool = True,
+    ) -> str: ...
 
     @abstractmethod
     def reduce_update(self, operator: str, acc: str, term: str) -> str: ...

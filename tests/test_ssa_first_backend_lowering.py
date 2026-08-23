@@ -57,6 +57,14 @@ def ternary_arrangement(x, y, z, out, BLOCK_SIZE=block_size()):
     return (x[0:BLOCK_SIZE], y[0:BLOCK_SIZE], z[0:BLOCK_SIZE], out[0:BLOCK_SIZE])
 
 
+def static_application_block_arrangement(x, out):
+    x = x.tile((1, 2048))
+    x.dtype = x.dtype.squeeze(0)
+    out = out.tile((1, 2048))
+    out.dtype = out.dtype.squeeze(0)
+    return x, out
+
+
 def dot_reduction_application(x, y, out):
     out = (x * y).sum()  # noqa: F841
 
@@ -148,6 +156,21 @@ def _triton_load_mask(source: str, *, tensor: str | None = None) -> ast.AST | No
 
 
 class TestSSAFirstBackendLowering:
+    def test_triton_uses_one_program_for_legal_static_application_block(self):
+        artifact = lower_application(
+            static_application_block_arrangement,
+            add_application,
+            (Tensor(2), Tensor(2)),
+            backend="triton",
+            kernel_name="ssa_static_application_block",
+        )
+        source = artifact.primary_source
+
+        assert artifact.metadata["program_mode"]["block"] is True
+        assert "offsets = 0" in source
+        assert "tl.arange(0, 2048)" in source
+        assert "grid = (" in source and "if True" in source
+
     def test_cuda_injects_curand_support_only_for_rand_operations(self):
         add_artifact = lower_application(
             arrangement,
@@ -760,6 +783,39 @@ def canonical_math_application(x, y, out):
             assert "<<" in artifact.primary_source
             assert ">>" in artifact.primary_source
             assert "^" in artifact.primary_source
+
+    def test_rank_one_gather_lowers_to_portable_indexed_source_load(self):
+        kernel = _ssa_kernel(
+            """
+def gather_application(x, indices, out):
+    out = gather(x, indices, 0)
+""",
+            "ssa_rank_one_gather",
+            (
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="int32", name="indices"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
+            ),
+        )
+        operations = kernel.ssa.blocks[0].operations
+        assert [operation.opcode for operation in operations] == [
+            "arith.constant",
+            "tensor.gather",
+            "mem.store",
+        ]
+
+        for backend in ("triton", "cuda", "tilelang"):
+            artifact = emit_kernel(kernel, backend)
+            source = artifact.primary_source
+            assert "tl.gather(" not in source
+            assert " = gather(" not in source
+
+            if backend == "triton":
+                assert "tl.load(x +" in source
+            elif backend == "cuda":
+                assert "x[" in source
+            else:
+                assert "x_buf[" in source
 
     def test_from_source_preserves_subscript_store_indices_for_native_backends(self):
         cases = {

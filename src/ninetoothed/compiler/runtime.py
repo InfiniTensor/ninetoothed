@@ -1205,6 +1205,24 @@ def _validate_tensor_contract(spec, value, expected_device):
                 f"expected dimension {axis} to be {expected}."
             )
 
+    expected_strides = spec.attrs.get("source_strides", ())
+    stride = getattr(value, "stride", None)
+    if expected_strides and callable(stride):
+        actual_strides = tuple(stride())
+        for axis, (actual, expected) in enumerate(
+            zip(actual_strides, expected_strides, strict=False)
+        ):
+            try:
+                expected = int(expected)
+            except (TypeError, ValueError):
+                continue
+
+            if actual != expected:
+                raise TypeError(
+                    f"Kernel argument `{spec.name}` has strides {actual_strides}; "
+                    f"expected stride {axis} to be {expected}."
+                )
+
     device = getattr(value, "device", None)
 
     if device is None:

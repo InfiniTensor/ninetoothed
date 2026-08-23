@@ -13,6 +13,22 @@ from ninetoothed.compiler.layout import LayoutTransfer, serialize_layout_transfe
 from ninetoothed.ir import Kernel, ssa
 from ninetoothed.naming import is_meta
 
+MAX_STATIC_UNROLL_TRIP_COUNT = 32
+
+
+def _static_trip_count(lower, upper, step):
+    try:
+        lower_value = int(str(lower).strip())
+        upper_value = int(str(upper).strip())
+        step_value = int(str(step).strip())
+    except (TypeError, ValueError):
+        return None
+
+    if step_value == 0:
+        return None
+
+    return len(range(lower_value, upper_value, step_value))
+
 
 def _legal_pre_tiled_block(shape, *, max_numel):
     static_numel = 1
@@ -52,6 +68,8 @@ class TritonTarget(EmitterTarget):
     source_route: str = "ssa-unified-triton-emitter"
     vector_value_semantics: bool = True
     max_vector_numel: int | None = 1 << 20
+    max_static_loop_output_numel: int | None = 2048
+    max_static_application_block_numel: int | None = 2048
 
     def program_id(self, axis: int = 0) -> str:
         return f"tl.program_id({axis})"
@@ -118,6 +136,7 @@ class TritonTarget(EmitterTarget):
 
         functions = {
             "abs": "tl.abs",
+            "arange": "tl.arange",
             "acos": "tl.acos",
             "asin": "tl.asin",
             "atan": "tl.atan",
@@ -166,8 +185,17 @@ class TritonTarget(EmitterTarget):
 
         return f"{name} = {expr}"
 
-    def loop_header(self, var, lower, upper, step):
-        return f"for {var} in range({lower}, {upper}, {step}):"
+    def loop_header(self, var, lower, upper, step, *, static=True):
+        trip_count = _static_trip_count(lower, upper, step)
+        iterator = (
+            "tl.static_range"
+            if static
+            and trip_count is not None
+            and 0 < trip_count <= MAX_STATIC_UNROLL_TRIP_COUNT
+            else "range"
+        )
+
+        return f"for {var} in {iterator}({lower}, {upper}, {step}):"
 
     def reduce_update(self, operator, acc, term):
         if operator == "sum":
@@ -199,6 +227,36 @@ class TritonTarget(EmitterTarget):
         if len(axes) == 1:
             values += ","
         return f"({values})"
+
+    def supports_application_block(self, axes: tuple[str, ...]) -> bool:
+        """Use one Triton program for a legal, statically tiled application."""
+        if not axes:
+            return False
+
+        numel = 1
+
+        for axis in axes:
+            try:
+                extent = int(str(axis).strip())
+            except (TypeError, ValueError):
+                return False
+
+            # Triton's block tensor dimensions must be powers of two.  Keep
+            # symbolic and irregular domains on the masked linear fallback.
+            if extent <= 0 or extent & (extent - 1):
+                return False
+
+            numel *= extent
+
+        limits = tuple(
+            limit
+            for limit in (
+                self.max_vector_numel,
+                self.max_static_application_block_numel,
+            )
+            if limit is not None
+        )
+        return not limits or numel <= min(limits)
 
     def render_view(self, operation, context) -> str:
         value = common.emit_value(operation.operands[0], context)

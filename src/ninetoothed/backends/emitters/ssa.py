@@ -405,8 +405,13 @@ def _render_source(
     vector_block_program = bool(
         target.vector_value_semantics
         and split_outer_inner
-        and len(value_axes) == 2
-        and has_dot
+        and (
+            (len(value_axes) == 2 and has_dot)
+            or (
+                reduction_schedule is None
+                and target.supports_application_block(value_axes)
+            )
+        )
     )
     vector_scalar_program = bool(
         target.vector_value_semantics and primary_atomic is not None and not value_axes
@@ -666,11 +671,15 @@ def _with_contiguous_1d_fast_path(
         layout_contiguous=True,
         vector_program=vector_program,
     )
-    predicate = (
-        " && ".join(f"({stride} == 1)" for stride in stride_params)
-        if target.c_style_syntax
-        else " and ".join(f"({stride} == 1)" for stride in stride_params)
-    )
+    predicate_terms = tuple(f"({stride} == 1)" for stride in stride_params)
+
+    if target.c_style_syntax:
+        predicate = " && ".join(predicate_terms)
+    else:
+        predicate = predicate_terms[0]
+
+        for term in predicate_terms[1:]:
+            predicate = f"({predicate} and {term})"
 
     if target.c_style_syntax:
         return (
@@ -1088,6 +1097,20 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
         return ctx.memo[name]
 
     if not name.startswith("%"):
+        value_type = ctx.value_types.get(name)
+        output_names = {value.name for value in ctx.program.outputs}
+
+        # Rank-zero application arguments are passed by value in every
+        # backend ABI.  Tensor metadata is still retained for dtype and
+        # specialization, but it must not turn a scalar input into a pointer
+        # load (for example ``tl.load(eps + 0)`` in Triton).
+        if (
+            value_type is not None
+            and value_type.kind == "scalar"
+            and name not in output_names
+        ):
+            return name
+
         if name not in ctx.tensor_infos:
             if _is_bool_scalar_value(name, ctx) and ctx.target.tir_value_semantics:
                 return f"({name} != 0)"
@@ -1305,6 +1328,9 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
 
         return _load_tensor(tensor, index, ctx)
 
+    if opcode == "tensor.gather":
+        return _emit_tensor_gather(op, ctx)
+
     if opcode == "tensor.cast":
         return _cast_value(op, _emit_value(op.operands[0], ctx), ctx)
 
@@ -1447,7 +1473,15 @@ def _emit_linalg_dot(
 
     k_extent = lhs_axes[-1]
     loop_var = f"{local}_k"
-    ctx.lines.append(ctx.target.loop_header(loop_var, "0", k_extent, "1"))
+    ctx.lines.append(
+        ctx.target.loop_header(
+            loop_var,
+            "0",
+            k_extent,
+            "1",
+            static=False,
+        )
+    )
     body_lines: list[str] = []
     body = ctx.child(
         lines=body_lines,
@@ -1579,6 +1613,14 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
         if ctx.block_program:
             return ctx.target.render_view(op, ctx)
         return _emit_element(op.operands[0], _view_base_coords(op, coords, ctx), ctx)
+
+    if op.opcode == "tensor.gather":
+        indices = op.operands[1]
+        index_coords = _broadcast_coords(
+            coords, _value_axes(op.results[0].name, ctx), _value_axes(indices, ctx)
+        )
+        index = _emit_element(indices, index_coords, ctx)
+        return _emit_element(op.operands[0], (index,), ctx)
 
     if op.opcode == "linalg.transpose":
         return _emit_element(op.operands[0], tuple(reversed(coords)), ctx)
@@ -1941,6 +1983,30 @@ def _emit_offset_element(
             extract_indices=extract_indices,
         )
     return _emit_value(op.results[0].name, ctx)
+
+
+def _emit_tensor_gather(op: ssa.Operation, ctx: _EmitContext) -> str:
+    """Lower a rank-one gather to indexed access of the producer expression."""
+    if len(op.operands) < 2:
+        raise ValueError("`tensor.gather` requires an input and indices.")
+
+    input_, indices = op.operands[:2]
+    axes = _value_axes(input_, ctx)
+    axis = int(op.attrs.get("axis", 0) or 0)
+
+    if axis < 0:
+        axis += len(axes)
+
+    if len(axes) != 1 or axis != 0:
+        raise ValueError(
+            "Unified backend emission currently supports rank-one axis-0 gather."
+        )
+
+    index = _emit_value(indices, ctx)
+
+    if input_ in ctx.tensor_infos:
+        return _load_tensor(input_, index, ctx)
+    return _emit_element(input_, (index,), ctx)
 
 
 def _load_tensor_at(
@@ -2356,7 +2422,15 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
         ctx.lines.append(ctx.target.local_decl(result_type, local, init))
         acc_expr = local
 
-    ctx.lines.append(ctx.target.loop_header(loop_var, lower, upper, step))
+    ctx.lines.append(
+        ctx.target.loop_header(
+            loop_var,
+            lower,
+            upper,
+            step,
+            static=False,
+        )
+    )
     inner_lines: list[str] = []
     inner = ctx.child(
         lines=inner_lines,
@@ -2380,6 +2454,31 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
     if ctx.target.c_style_syntax:
         ctx.lines.append("}")
     return acc_expr
+
+
+def _small_static_loop(ctx: _EmitContext) -> bool:
+    limit = ctx.target.max_static_loop_output_numel
+
+    if limit is None or not ctx.block_program:
+        return False
+
+    numel = 1
+
+    for axis in ctx.output_axes:
+        try:
+            extent = int(str(axis).strip())
+        except (TypeError, ValueError):
+            return False
+
+        if extent <= 0:
+            return False
+
+        numel *= extent
+
+        if numel > limit:
+            return False
+
+    return True
 
 
 def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | None:
@@ -2438,7 +2537,15 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
     loop_bindings = dict(ctx.bindings or {})
     loop_bindings[induction] = loop_var
     loop_bindings.update(loop_locals)
-    ctx.lines.append(ctx.target.loop_header(loop_var, lower, upper, step))
+    ctx.lines.append(
+        ctx.target.loop_header(
+            loop_var,
+            lower,
+            upper,
+            step,
+            static=_small_static_loop(ctx),
+        )
+    )
     body_lines: list[str] = []
     body = ctx.child(
         lines=body_lines,
