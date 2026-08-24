@@ -1110,6 +1110,51 @@ def scalarized_index_application(x, indices, y):
             isinstance(node, ast.Name) and node.id == "mask" for node in ast.walk(mask)
         )
 
+    def test_contiguous_fast_path_uses_binary_python_boolean_operations(self):
+        tensors = (Tensor(1), Tensor(1), Tensor(1))
+
+        for backend in ("triton", "tilelang"):
+            artifact = lower_application(
+                binary_arrangement,
+                helper_call_application,
+                tensors,
+                backend=backend,
+                kernel_name=f"ssa_contiguous_fast_path_{backend}",
+            )
+            module = ast.parse(artifact.primary_source)
+            fast_paths = []
+
+            for node in ast.walk(module):
+                if not isinstance(node, ast.If):
+                    continue
+
+                comparison_count = sum(
+                    isinstance(child, ast.Compare) for child in ast.walk(node.test)
+                )
+
+                if comparison_count == len(tensors):
+                    fast_paths.append(node)
+
+            assert len(fast_paths) == 1
+            bool_ops = [
+                node
+                for node in ast.walk(fast_paths[0].test)
+                if isinstance(node, ast.BoolOp)
+            ]
+            assert bool_ops
+            operand_counts = tuple(len(node.values) for node in bool_ops)
+            assert all(count == 2 for count in operand_counts), operand_counts
+
+        cuda_artifact = lower_application(
+            binary_arrangement,
+            helper_call_application,
+            tensors,
+            backend="cuda",
+            kernel_name="ssa_contiguous_fast_path_cuda",
+        )
+        assert " && " in cuda_artifact.primary_source
+        assert " and " not in cuda_artifact.primary_source
+
     def test_from_source_generates_axis_reduction_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef axis_addmv_application(bias, a, x, out):\n    out = bias + sum(a * x, axis=1)\n",

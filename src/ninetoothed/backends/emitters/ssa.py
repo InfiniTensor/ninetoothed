@@ -73,7 +73,7 @@ from ninetoothed.backends.emitters.expressions import (
 from ninetoothed.backends.emitters.expressions import (
     valid_symbol as _valid_symbol,
 )
-from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict, ssa
+from ninetoothed.ir import IndexExpr, Kernel, TensorSpec, ir_to_dict, ssa
 
 _BINARY = {
     "add": "+",
@@ -666,10 +666,11 @@ def _with_contiguous_1d_fast_path(
         layout_contiguous=True,
         vector_program=vector_program,
     )
+    conditions = tuple(f"({stride} == 1)" for stride in stride_params)
     predicate = (
-        " && ".join(f"({stride} == 1)" for stride in stride_params)
+        " && ".join(conditions)
         if target.c_style_syntax
-        else " and ".join(f"({stride} == 1)" for stride in stride_params)
+        else IndexExpr.parse(" and ".join(conditions)).render()
     )
 
     if target.c_style_syntax:
