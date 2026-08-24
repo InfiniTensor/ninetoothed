@@ -1,0 +1,65 @@
+Command:
+python -m pytest tests/ -m benchmark -v -s --tb=short
+
+Raw terminal output from Google Colab T4:
+Run timestamp: 2026-07-12, Google Colab session (exact wall-clock time not recorded).
+
+Note: this terminal log preserves the benchmark run that produced the recorded
+timings.
+
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-8.4.2, pluggy-1.6.0 -- /usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /content/ninetoothed-operator-skill
+configfile: pyproject.toml
+plugins: langsmith-0.9.1, typeguard-4.5.2, anyio-4.14.0
+collected 44 items / 28 deselected / 16 selected
+
+tests/test_relu.py::test_relu_benchmark[1048576]
+relu size=1048576: 0.029ms | 145.0 GB/s
+PASSED
+tests/test_relu.py::test_relu_benchmark[16777216]
+relu size=16777216: 0.276ms | 243.4 GB/s
+PASSED
+tests/test_rms_norm_noncontiguous.py::test_rms_norm_copy_overhead
+contiguous: 0.041ms | non-contiguous: 0.067ms | overhead: 65.6%
+PASSED
+tests/test_softmax.py::test_softmax_benchmark[shape0]
+shape=(1024, 512) | NineToothed: 0.031ms 136.8GB/s | PyTorch: 0.303ms 13.8GB/s
+PASSED
+tests/test_softmax.py::test_softmax_benchmark[shape1]
+shape=(1024, 2048) | NineToothed: 0.074ms 225.6GB/s | PyTorch: 0.081ms 208.0GB/s
+PASSED
+tests/test_softmax.py::test_softmax_benchmark[shape2]
+shape=(4096, 4096) | NineToothed: 0.589ms 227.8GB/s | PyTorch: 0.554ms 242.3GB/s
+PASSED
+tests/test_softmax_perf.py::test_generated_source_dump_trigger PASSED
+tests/test_softmax_perf.py::test_softmax_nt_throughput[shape0]
+shape=(512, 256) | NineToothed: 0.060ms | 17.5 GB/s
+PASSED
+tests/test_softmax_perf.py::test_softmax_nt_throughput[shape1]
+shape=(512, 1024) | NineToothed: 0.028ms | 150.6 GB/s
+PASSED
+tests/test_softmax_perf.py::test_softmax_nt_throughput[shape2]
+shape=(512, 4096) | NineToothed: 0.074ms | 227.8 GB/s
+PASSED
+tests/test_softmax_perf.py::test_softmax_nt_throughput[shape3]
+shape=(2048, 4096) | NineToothed: 0.285ms | 235.5 GB/s
+PASSED
+tests/test_softmax_perf.py::test_softmax_torch_throughput[shape0]
+shape=(512, 256) | PyTorch:     0.025ms | 42.3 GB/s
+PASSED
+tests/test_softmax_perf.py::test_softmax_torch_throughput[shape1]
+shape=(512, 1024) | PyTorch:     0.020ms | 205.1 GB/s
+PASSED
+tests/test_softmax_perf.py::test_softmax_torch_throughput[shape2]
+shape=(512, 4096) | PyTorch:     0.125ms | 134.2 GB/s
+PASSED
+tests/test_softmax_perf.py::test_softmax_torch_throughput[shape3]
+shape=(2048, 4096) | PyTorch:     0.461ms | 145.5 GB/s
+PASSED
+tests/test_softmax_perf.py::test_block_size_padding_waste
+ncols=100: BLOCK_SIZE=128: 0.028ms | BLOCK_SIZE=1024: 0.026ms | speedup: 0.91x
+PASSED
+
+====================== 16 passed, 28 deselected in 11.67s ======================
