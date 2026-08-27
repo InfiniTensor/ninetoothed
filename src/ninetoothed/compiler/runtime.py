@@ -178,6 +178,7 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
     suffix = {
         Target.CUDA: "cu",
         Target.TILELANG: "tilelang.py",
+        Target.BANGC: "mlu",
     }[artifact.backend]
     cache_key = compilation_cache_key(compilation)
     source = write_source(

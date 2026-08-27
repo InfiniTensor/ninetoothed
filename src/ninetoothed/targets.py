@@ -464,11 +464,17 @@ def create_default_platform_registry() -> PlatformRegistry:
         ),
         PlatformProfile(
             name="cambricon-mlu590",
+            aliases=("mlu590",),
             compute_arch="mlu590",
             device_types=("mlu",),
-            backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
+            backend_modes=_backend_modes(
+                (Target.TRITON, Target.BANGC), modes=("jit", "aot")
+            ),
             constraints={"compiler_options": {"triton": {"max_num_configs": 1}}},
-            metadata={"triton_grid_limit": 65535},
+            metadata={
+                "triton_grid_limit": 65535,
+                "bangc": {"arch": "mlu590"},
+            },
         ),
         PlatformProfile(
             name="ascend-910b3",
@@ -621,9 +627,16 @@ def target_backend_options(
     """Bind backend toolchain options to an explicit concrete target."""
     normalized = dict(options)
 
-    if target.backend != Target.CUDA:
-        return normalized
+    if target.backend == Target.CUDA:
+        return _cuda_backend_options(target, normalized)
 
+    if target.backend == Target.BANGC:
+        return _bangc_backend_options(target, normalized)
+
+    return normalized
+
+
+def _cuda_backend_options(target: TargetContext, normalized: Mapping[str, Any]):
     if target.compute_arch is None and target.platform.name == "generic":
         return normalized
 
@@ -689,6 +702,38 @@ def target_backend_options(
     return normalized
 
 
+def _bangc_backend_options(target: TargetContext, normalized: Mapping[str, Any]):
+    from ninetoothed.backends.toolchain import normalize_bangc_arch
+
+    platform_bangc = target.platform.metadata.get("bangc", {})
+
+    if not isinstance(platform_bangc, Mapping) or not platform_bangc:
+        return normalized
+
+    platform_arch = normalize_bangc_arch(platform_bangc.get("arch", "native"))
+    requested_arch = normalize_bangc_arch(normalized.get("arch", "native"))
+
+    if (
+        requested_arch != "native"
+        and platform_arch != "native"
+        and (requested_arch != platform_arch)
+    ):
+        raise ValueError(
+            f"BangC architecture `{requested_arch}` conflicts with target "
+            f"architecture `{platform_arch}`."
+        )
+
+    if platform_arch != "native":
+        normalized["arch"] = platform_arch
+
+    platform_chunk = platform_bangc.get("task_chunk")
+
+    if platform_chunk is not None and "task_chunk" not in normalized:
+        normalized["task_chunk"] = int(platform_chunk)
+
+    return normalized
+
+
 def target_device_types(value: Any) -> tuple[str, ...]:
     """Read accepted device types from a compilation or artifact-like value."""
     context = getattr(value, "target", None)
@@ -709,17 +754,32 @@ def target_device_types(value: Any) -> tuple[str, ...]:
     return device_types or ("cuda",)
 
 
+# Device types each backend binds tensors to, independent of the platform
+# profile: BangC always runs on MLU devices, Triton follows its platform
+# profile, and the remaining backends use CUDA-style streams.  Adding a
+# hardware backend means adding its device tuple here once.
+_BACKEND_DEVICE_TYPES = {
+    Target.BANGC.value: ("mlu",),
+}
+
+
 def runtime_device_types(value: Any) -> tuple[str, ...]:
-    """Use profile device aliases only for the portable Triton JIT path."""
+    """Resolve the device types a materialized backend accepts."""
     context = getattr(value, "target", None)
 
     if isinstance(context, TargetContext):
-        return context.device_types if context.backend == Target.TRITON else ("cuda",)
+        backend = context.backend.value
+    else:
+        artifact = getattr(value, "artifact", value)
+        backend = getattr(getattr(artifact, "backend", None), "value", None)
 
-    artifact = getattr(value, "artifact", value)
-    backend = getattr(getattr(artifact, "backend", None), "value", None)
+    if backend in _BACKEND_DEVICE_TYPES:
+        return _BACKEND_DEVICE_TYPES[backend]
 
-    return target_device_types(value) if backend == Target.TRITON.value else ("cuda",)
+    if backend == Target.TRITON.value:
+        return target_device_types(value)
+
+    return ("cuda",)
 
 
 def validate_artifact_materialization(value: Any, *, mode: str) -> None:

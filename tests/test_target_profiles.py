@@ -240,6 +240,10 @@ def test_environment_target_resolution_remains_optional(monkeypatch):
             backend_modes={"triton": frozenset({"jit"})},
         )
     )
+    # The suite may pin a host-default backend in the environment (see
+    # tests/conftest.py); this check describes the library default with no
+    # explicit backend selection, so clear the pin first.
+    monkeypatch.delenv("NINETOOTHED_BACKEND", raising=False)
     monkeypatch.setenv("NINETOOTHED_PLATFORM", "environment-target")
     monkeypatch.setenv("NINETOOTHED_COMPUTE_ARCH", "arch-v1")
 

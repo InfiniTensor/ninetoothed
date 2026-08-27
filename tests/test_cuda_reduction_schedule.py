@@ -16,6 +16,9 @@ from ninetoothed.compiler import (
 )
 from ninetoothed.compiler.passes import Context
 from tests import test_triton_reduction_schedule as reduction
+from tests.utils import requires_backend
+
+pytestmark = requires_backend("cuda")
 
 
 def _row_sum(x, out):
