@@ -1,16 +1,20 @@
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
 
-from ninetoothed.backends.materializers.cuda import _cuda_wrapper
+from ninetoothed.backends.materializers.cuda import (
+    _cuda_wrapper,
+    _prevalidated_noalias_cuda_launch,
+)
 from ninetoothed.compiler.cache import (
     compilation_cache_key,
     stable_digest,
     write_source,
 )
 from ninetoothed.compiler.runtime import _public_values, _runtime_wrapper
-from ninetoothed.ir import LaunchABI, TensorSpec
+from ninetoothed.ir import LaunchABI, LaunchBinding, TensorSpec
 
 
 class _Tensor:
@@ -108,6 +112,61 @@ def test_runtime_wrappers_skip_empty_launches():
     assert _runtime_wrapper(launch, abi)(output) is output
     assert _cuda_wrapper(launch, abi, ())(output) is output
     assert not calls
+
+
+def test_cuda_prevalidated_binding_caches_pointers_and_tracks_current_stream(
+    monkeypatch,
+):
+    calls = []
+    checked = []
+
+    class Tensor:
+        shape = (4,)
+        dtype = "float32"
+        device = SimpleNamespace(type="cuda", index=2)
+
+        @staticmethod
+        def data_ptr():
+            return 1234
+
+        @staticmethod
+        def numel():
+            return 4
+
+    def function(pointer, stream):
+        calls.append((pointer.value, stream.value))
+        return 0
+
+    output = Tensor()
+    abi = LaunchABI(
+        public_args=("out",),
+        kernel_args=(
+            LaunchBinding(name="out", kind="tensor", source="out"),
+        ),
+        outputs=("out",),
+    )
+    specs = (TensorSpec(name="out", ndim=1, shape=(4,), dtype="float32"),)
+    fake_torch = SimpleNamespace(
+        corex=True,
+        _C=SimpleNamespace(_cuda_getCurrentRawStream=lambda index: 9000 + index),
+        cuda=SimpleNamespace(current_device=lambda: 0),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    launch = _prevalidated_noalias_cuda_launch(
+        function,
+        abi,
+        specs,
+        lambda value: checked.append(value) or value,
+    )
+    assert launch(output) is output
+    assert checked == [output]
+
+    invoke = launch._ninetoothed_bind_prevalidated_noalias(output)
+    assert invoke is not None
+    assert invoke._ninetoothed_external_graph_capture is False
+    assert invoke() is output
+    assert calls == [(1234, 9002)]
 
 
 def test_content_digest_is_stable_for_a_b_a_sources():

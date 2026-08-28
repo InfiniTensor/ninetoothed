@@ -88,8 +88,14 @@ def _materialize(compilation, *, output_dir=None):
     wrapped = _cuda_wrapper(
         function, compilation.launch_abi, compilation.kernel.tensors
     )
-
-    return Handle(compilation, function, wrapped, source, library_path)
+    handle = Handle(compilation, function, wrapped, source, library_path)
+    handle._launch_prevalidated_noalias = _prevalidated_noalias_cuda_launch(
+        function,
+        compilation.launch_abi,
+        compilation.kernel.tensors,
+        wrapped,
+    )
+    return handle
 
 
 def _cuda_wrapper(function, abi, tensor_specs):
@@ -126,6 +132,95 @@ def _cuda_wrapper(function, abi, tensor_specs):
             raise KernelLaunchError(result)
         return _first_output(abi, public)
 
+    return launch
+
+
+def _prevalidated_noalias_cuda_launch(function, abi, tensor_specs, checked_launch):
+    """Return a direct CUDA launcher for wrappers with validated contracts.
+
+    Operator wrappers sometimes reuse the exact same tensor objects for many
+    inference steps.  Their public entry point still performs the full runtime
+    validation once, while ``bind`` caches stable device pointers and scalar
+    conversions.  The bound call only resolves PyTorch's current stream and
+    invokes the generated host launcher.  Resolving the stream on every call
+    preserves PyTorch stream semantics without repeating Python tensor ABI
+    preparation.
+    """
+    from ninetoothed.compiler.runtime import (
+        KernelLaunchError,
+        _bound_values,
+        _empty_launch,
+        _first_output,
+    )
+
+    spec_by_name = {spec.name: spec for spec in tensor_specs}
+
+    def bind(*args, **kwargs):
+        if len(args) > len(abi.public_args):
+            return None
+
+        public = dict(zip(abi.public_args, args))
+        public.update(kwargs)
+        if any(name not in public for name in abi.public_args):
+            return None
+
+        output = _first_output(abi, public)
+        if _empty_launch(abi, public):
+            return lambda: output
+
+        values, keepalive = _bound_values(
+            abi,
+            public,
+            scalar_mode="cuda",
+            specs=spec_by_name,
+            cuda_scalar=_cuda_scalar,
+        )
+
+        import torch
+
+        tensor = next(
+            (
+                public[binding.source]
+                for binding in abi.kernel_args
+                if binding.kind in {"tensor", "jagged_values", "jagged_offsets"}
+                and binding.source in public
+            ),
+            None,
+        )
+        device_index = getattr(getattr(tensor, "device", None), "index", None)
+        if device_index is None:
+            device_index = torch.cuda.current_device()
+
+        raw_stream = getattr(torch._C, "_cuda_getCurrentRawStream", None)
+
+        def current_stream():
+            if raw_stream is not None:
+                return ctypes.c_void_p(raw_stream(device_index))
+            return ctypes.c_void_p(
+                torch.cuda.current_stream(device_index).cuda_stream
+            )
+
+        def invoke():
+            result = function(*values, current_stream())
+            if result != 0:
+                raise KernelLaunchError(result)
+            return output
+
+        # Keep tensor storage and converted ctypes arguments alive for the
+        # complete lifetime of the zero-argument bound invocation.
+        invoke._ninetoothed_bound_values = (args, kwargs, values, keepalive)
+        # CoreX 4.4 reports successful capture for externally launched CUDA
+        # kernels but records an empty graph.  Let wrappers retain direct
+        # launch on this backend instead of replaying the empty graph.
+        invoke._ninetoothed_external_graph_capture = not bool(
+            getattr(torch, "corex", False)
+        )
+        return invoke
+
+    def launch(*args, **kwargs):
+        return checked_launch(*args, **kwargs)
+
+    launch._ninetoothed_bind_prevalidated_noalias = bind
     return launch
 
 

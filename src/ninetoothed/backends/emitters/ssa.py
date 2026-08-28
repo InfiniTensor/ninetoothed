@@ -994,7 +994,6 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
 
     if op.opcode == "mem.store":
         value_name = op.operands[0]
-        value = _emit_value(value_name, ctx)
         tensor = op.operands[1]
         view_index = _store_index(op, ctx)
         info = ctx.tensor_infos.get(tensor)
@@ -1072,7 +1071,23 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
             )
 
         mask = _materialize_bool_expr(mask, ctx)
-        ctx.lines.append(ctx.target.store(tensor, store_index, value, mask=mask))
+
+        if ctx.target.c_style_syntax and mask is not None:
+            # Keep the pure producer slice behind the same bounds predicate as
+            # its store.  Emitting the value first makes every CUDA lane run
+            # masked loads and arithmetic even when only a narrow sub-domain
+            # can commit the result (for example a compressed cache row fused
+            # into a much wider query update).
+            body_lines: list[str] = []
+            body = ctx.child(lines=body_lines, memo=dict(ctx.memo))
+            value = _emit_value(value_name, body)
+            body_lines.append(ctx.target.store(tensor, store_index, value))
+            ctx.lines.append(f"if ({mask}) {{")
+            ctx.lines.extend(_indent_lines(body_lines, ctx.target))
+            ctx.lines.append("}")
+        else:
+            value = _emit_value(value_name, ctx)
+            ctx.lines.append(ctx.target.store(tensor, store_index, value, mask=mask))
 
         return
 
@@ -1344,6 +1359,14 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     if opcode == "select.where":
         args = tuple(_emit_value(operand, ctx) for operand in op.operands)
         args = (_materialize_bool_expr(args[0], ctx) or args[0], args[1], args[2])
+
+        if target.c_style_syntax and op.results:
+            result_type = target.arithmetic_result_type(op, ctx)
+            args = (
+                args[0],
+                target.cast(result_type.dtype, args[1]),
+                target.cast(result_type.dtype, args[2]),
+            )
 
         return target.where(args[0], args[1], args[2])
 
@@ -1667,6 +1690,11 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
             args.append(_emit_element(operand, operand_coords, ctx))
 
         args[0] = _materialize_bool_expr(args[0], ctx) or args[0]
+
+        if ctx.target.c_style_syntax and op.results:
+            result_type = ctx.target.arithmetic_result_type(op, ctx)
+            args[1] = ctx.target.cast(result_type.dtype, args[1])
+            args[2] = ctx.target.cast(result_type.dtype, args[2])
 
         return ctx.target.where(args[0], args[1], args[2])
 

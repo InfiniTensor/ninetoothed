@@ -864,6 +864,39 @@ def gather_application(x, indices, out):
                 assert artifact.metadata["source_route"] == route
                 assert fragments[backend] in artifact.primary_source
 
+    def test_cuda_sinks_masked_store_producers_into_bounds_guard(self):
+        kernel = _ssa_kernel(
+            "\ndef masked_producer_application(x, out):\n    out = x + 1.0\n",
+            "ssa_masked_producer",
+            (
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
+            ),
+        )
+        source = emit_kernel(kernel, "cuda").primary_source
+        guard = source.index("if (")
+        load = source.index("x[index]", guard)
+        store = source.index("out[index]", load)
+
+        assert guard < load < store
+        assert "x[index]" not in source[:guard]
+
+    def test_cuda_casts_mixed_where_branches_to_result_dtype(self):
+        kernel = _ssa_kernel(
+            (
+                "\ndef mixed_where_application(x, out):\n"
+                "    out = where(x > 0, x, x + 0.0)\n"
+            ),
+            "ssa_mixed_where",
+            (
+                TensorSpec(ndim=1, shape=("n",), dtype="float16", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
+            ),
+        )
+        source = emit_kernel(kernel, "cuda").primary_source
+
+        assert source.count("static_cast<float>(") >= 2
+
     def test_from_source_expands_subscript_augassign_for_native_backends(self):
         kernel = _ssa_kernel(
             "\ndef indexed_augassign_application(x, out):\n    i = x.offsets(0)\n    out[i] += x\n",

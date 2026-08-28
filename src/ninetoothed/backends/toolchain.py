@@ -41,7 +41,9 @@ def cuda_compute_capability(arch: str) -> str | None:
 
 def find_nvcc() -> str:
     """Locate NVCC using PATH first and CUDA_HOME second."""
+    configured = os.environ.get("NINETOOTHED_CUDA_COMPILER")
     candidates = (
+        configured,
         shutil.which("nvcc"),
         str(Path(os.environ.get("CUDA_HOME", "/usr/local/cuda")) / "bin" / "nvcc"),
     )
@@ -61,8 +63,34 @@ def cuda_compile_command(
     nvcc: str | None = None,
 ) -> tuple[str, ...]:
     """Construct the shared-library command used by the CUDA materializer."""
+    compiler = nvcc or find_nvcc()
+    # An explicitly supplied ``nvcc`` denotes the standard NVIDIA toolchain
+    # and must not inherit a vendor source-language override from the process.
+    # The override only participates in automatic compiler discovery, which is
+    # the path used by CUDA-compatible vendor materializers such as CoreX.
+    language = (
+        os.environ.get("NINETOOTHED_CUDA_LANGUAGE") if nvcc is None else None
+    )
+
+    if language:
+        cuda_home = os.environ.get("CUDA_HOME", "/usr/local/cuda")
+        offload_arch = "native" if arch == "native" else normalize_cuda_arch(arch)
+        return (
+            compiler,
+            "-x",
+            language,
+            f"--cuda-path={cuda_home}",
+            f"--offload-arch={offload_arch}",
+            "-shared",
+            "-fPIC",
+            "-O3",
+            str(source),
+            "-o",
+            str(output),
+        )
+
     return (
-        nvcc or find_nvcc(),
+        compiler,
         "-shared",
         "-Xcompiler",
         "-fPIC",
