@@ -319,6 +319,20 @@ def _triton_prepare_invocation(function, kernel):
                     return CallRef(*sources[0])
 
                 if len(matches) > 1:
+                    if hasattr(value, "data_ptr") or (
+                        hasattr(value, "shape") and hasattr(value, "dtype")
+                    ):
+                        return None
+
+                    # CPython commonly reuses the same immutable scalar object
+                    # for equal shape, stride, and constexpr values.  It is
+                    # safe to detach such an ambiguous scalar as a literal:
+                    # the structural cache key contains every public/runtime
+                    # scalar value, so a later value change cannot hit this
+                    # invocation plan.
+                    if _is_cacheable_runtime_literal(value):
+                        return Literal(value)
+
                     return None
 
             return (

@@ -948,6 +948,42 @@ def test_triton_prepared_invocation_rejects_ambiguous_call_refs(monkeypatch):
     assert kernel_calls == []
 
 
+def test_triton_prepared_invocation_literalizes_ambiguous_call_refs_for_scalars(
+    monkeypatch,
+):
+    kernel_calls = []
+
+    class FakeKernel:
+        def __getitem__(self, _grid):
+            def launch(*args, **kwargs):
+                kernel_calls.append((args, kwargs))
+
+            return launch
+
+    kernel = FakeKernel()
+    monkeypatch.setitem(globals(), "_prepared_test_kernel", kernel)
+
+    def generated_launch(value, first_size, second_size):
+        _prepared_test_kernel[(1,)](value, first_size, second_size)
+
+    prepare = triton_materializer._triton_prepare_invocation(
+        generated_launch,
+        kernel,
+    )
+    value = _FakeTensor((4,))
+    invocation = prepare(
+        (value, 64, 64),
+        (None, 64, 64),
+        (("positional", 0), ("positional", 1), ("positional", 2)),
+    )
+    replacement = _FakeTensor((4,))
+
+    assert invocation is not None
+    assert invocation.structurally_rebindable
+    invocation((), (replacement, 64, 64), {})
+    assert kernel_calls == [((replacement, 64, 64), {})]
+
+
 def test_triton_direct_winner_reuses_verified_binding_and_restores_aba(monkeypatch):
     public_calls = 0
     binding_calls = 0
