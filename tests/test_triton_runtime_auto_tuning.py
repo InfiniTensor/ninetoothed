@@ -566,13 +566,6 @@ def test_tuned_structural_cache_reuses_selected_plan_with_current_output():
         dict(zip(candidates, ({"id": "first"}, {"id": "second"}))),
         handle,
         compilation,
-        structural_key=lambda args, kwargs, public: runtime._runtime_structural_key(
-            abi,
-            args,
-            kwargs,
-            public,
-            alias_signature=triton_materializer._runtime_alias_signature(abi, public),
-        ),
     )
     value = _FakeTensor((4,), data_ptr=1024)
     output = _FakeTensor((4,), data_ptr=2048)
@@ -585,6 +578,69 @@ def test_tuned_structural_cache_reuses_selected_plan_with_current_output():
     assert len(prepare_calls) == 1
     assert [reference() for reference in invoked] == [output, replacement_output]
     assert handle._selected_tuning_candidate == {"id": "first"}
+
+
+def test_tuned_structural_cache_validates_candidate_binding_overrides():
+    abi = LaunchABI(
+        public_args=("value", "output", "block"),
+        kernel_args=(
+            LaunchBinding(name="value", kind="tensor", source="value"),
+            LaunchBinding(name="output", kind="tensor", source="output"),
+            LaunchBinding(name="block", kind="meta", source="block"),
+        ),
+        outputs=("output",),
+    )
+    prepare_calls = []
+    invoked = []
+    validated_blocks = []
+
+    def validate(bound_public):
+        validated_blocks.append(bound_public["block"])
+
+        if bound_public["block"] != 64:
+            raise ValueError("candidate binding override was not applied")
+
+    def prepare_invocation(_values, _static_values, _call_sources):
+        prepare_calls.append(object())
+        return _RebindableInvocation(invoked)
+
+    candidate = runtime._runtime_wrapper(
+        lambda *_values: None,
+        abi,
+        binding_overrides={"block": 64},
+        prepare_invocation=prepare_invocation,
+        validate_bindings=validate,
+        structural_key=_structural_key_builder(abi),
+    )
+    compilation = SimpleNamespace(
+        launch_abi=abi,
+        kernel=SimpleNamespace(tensors=()),
+    )
+    tuner = _FakeTuner(
+        (candidate,),
+        lambda args, kwargs: triton_materializer._triton_specialization_key(
+            compilation, args, kwargs
+        ),
+    )
+    handle = SimpleNamespace(_selected_tuning_candidate=None)
+    launch = triton_materializer._tuned_runtime_launch(
+        tuner,
+        {candidate: {"id": "only"}},
+        handle,
+        compilation,
+        validate_bindings=validate,
+    )
+    value = _FakeTensor((4,), data_ptr=1024)
+    output = _FakeTensor((4,), data_ptr=2048)
+    replacement_value = _FakeTensor((4,), data_ptr=4096)
+    replacement_output = _FakeTensor((4,), data_ptr=8192)
+
+    assert launch(value, output, 32) is output
+    assert launch(replacement_value, replacement_output, 32) is replacement_output
+
+    assert len(prepare_calls) == 1
+    assert set(validated_blocks) == {64}
+    assert [reference() for reference in invoked] == [output, replacement_output]
 
 
 def test_verified_runtime_launch_rebinds_zero_dimensional_value(monkeypatch):
@@ -855,6 +911,41 @@ def test_triton_prepared_invocation_caches_grid_without_launching(monkeypatch):
 
     with pytest.raises(ValueError, match="positive"):
         prepare(("pointer", 0))
+
+
+def test_triton_prepared_invocation_rejects_ambiguous_call_refs(monkeypatch):
+    kernel_calls = []
+
+    class FakeKernel:
+        def __getitem__(self, _grid):
+            def launch(*args, **kwargs):
+                kernel_calls.append((args, kwargs))
+
+            return launch
+
+    kernel = FakeKernel()
+    monkeypatch.setitem(globals(), "_prepared_test_kernel", kernel)
+
+    def generated_launch(first, second, output):
+        _prepared_test_kernel[(1,)](first, second, output)
+
+    prepare = triton_materializer._triton_prepare_invocation(
+        generated_launch,
+        kernel,
+    )
+    shared = _FakeTensor((4,))
+    output = _FakeTensor((4,))
+
+    assert prepare is not None
+    assert (
+        prepare(
+            (shared, shared, output),
+            (None, None, None),
+            (("positional", 0), ("positional", 1), ("positional", 2)),
+        )
+        is None
+    )
+    assert kernel_calls == []
 
 
 def test_triton_direct_winner_reuses_verified_binding_and_restores_aba(monkeypatch):

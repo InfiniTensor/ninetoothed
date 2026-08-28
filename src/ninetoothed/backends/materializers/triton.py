@@ -181,12 +181,6 @@ def _materialize(compilation):
             handle,
             compilation,
             validate_bindings,
-            structural_key=lambda args, kwargs, public: _triton_structural_key(
-                compilation,
-                args,
-                kwargs,
-                public,
-            ),
         )
 
     return handle
@@ -304,16 +298,34 @@ def _triton_prepare_invocation(function, kernel):
                 self.call(args, kwargs)
 
     def plan_value(value, values, static_values, call_sources):
-        for index, candidate in enumerate(values):
-            if value is candidate:
-                if call_sources is not None and call_sources[index] is not None:
-                    return CallRef(*call_sources[index])
+        matches = tuple(
+            index for index, candidate in enumerate(values) if value is candidate
+        )
 
-                return (
-                    Literal(static_values[index])
-                    if static_values is not None
-                    else ValueRef(index)
-                )
+        if matches:
+            index = matches[0]
+
+            if call_sources is not None:
+                sources = tuple(call_sources[match] for match in matches)
+
+                # A direct invocation may only rebind an aliased captured value
+                # when every occurrence came from the same public argument.  If
+                # one object represented two different call arguments during the
+                # dry launch, choosing the first CallRef would silently collapse
+                # distinct objects on a later structurally equivalent call.
+                if sources[0] is not None and all(
+                    source == sources[0] for source in sources
+                ):
+                    return CallRef(*sources[0])
+
+                if len(matches) > 1:
+                    return None
+
+            return (
+                Literal(static_values[index])
+                if static_values is not None
+                else ValueRef(index)
+            )
 
         if hasattr(value, "data_ptr") or (
             hasattr(value, "shape") and hasattr(value, "dtype")
@@ -491,7 +503,6 @@ def _tuned_runtime_launch(
     handle,
     compilation,
     validate_bindings=None,
-    structural_key=None,
 ):
     from ninetoothed.compiler.runtime import (
         _arm_prepared_runtime_launch,
@@ -574,6 +585,32 @@ def _tuned_runtime_launch(
         except (AttributeError, TypeError):
             return None
 
+    def candidate_structural_key(selected, args, kwargs, public):
+        builder = getattr(selected, "_ninetoothed_structural_key", None)
+
+        if builder is None:
+            return None
+
+        return builder(args, kwargs, public=public)
+
+    def find_structural(selection_key, args, kwargs, public):
+        for key, entry in reversed(tuple(structural_calls.items())):
+            if entry[0] != selection_key:
+                continue
+
+            selected = entry[1]
+            current_key = candidate_structural_key(selected, args, kwargs, public)
+
+            if current_key != key:
+                continue
+
+            structural_calls.pop(key, None)
+            structural_calls[key] = entry
+
+            return entry
+
+        return None
+
     def launch(*args, **kwargs):
         active_snapshot = active
         active_identity_snapshot = active_identity
@@ -613,11 +650,8 @@ def _tuned_runtime_launch(
             specs=compilation.kernel.tensors,
         )
 
-        if structural_key is not None and validate_bindings is not None:
-            validate_bindings(public)
-
         if _empty_launch(compilation.launch_abi, public):
-            if structural_key is None and validate_bindings is not None:
+            if validate_bindings is not None:
                 validate_bindings(public)
 
             return _first_output(compilation.launch_abi, public)
@@ -625,28 +659,16 @@ def _tuned_runtime_launch(
         key = tuner._make_arg_key(args, kwargs)
         alias_signature = _runtime_alias_signature(compilation.launch_abi, public)
         selection_key = (key, alias_signature)
-        structural_cache_key = None
-
-        if structural_key is not None:
-            try:
-                structural_cache_key = structural_key(args, kwargs, public)
-                hash(structural_cache_key)
-            except Exception:  # noqa: BLE001
-                structural_cache_key = None
-
-        structural = structural_calls.pop(structural_cache_key, None)
+        structural = find_structural(selection_key, args, kwargs, public)
 
         if structural is not None:
-            structural_calls[structural_cache_key] = structural
+            record(structural[1])
 
-            if structural[0] == selection_key:
-                record(structural[1])
-
-                return structural[1]._ninetoothed_invoke_prepared(
-                    structural[2],
-                    args,
-                    kwargs,
-                )
+            return structural[1]._ninetoothed_invoke_prepared(
+                structural[2],
+                args,
+                kwargs,
+            )
 
         selected = next(
             (
@@ -683,6 +705,12 @@ def _tuned_runtime_launch(
                     selected,
                     prepared,
                 )
+                structural_cache_key = candidate_structural_key(
+                    selected,
+                    args,
+                    kwargs,
+                    public,
+                )
                 remember_structural_best_effort(
                     structural_cache_key,
                     selection_key,
@@ -705,6 +733,12 @@ def _tuned_runtime_launch(
                 return result
 
             remember_best_effort(identity, selection_key, selected, prepared)
+            structural_cache_key = candidate_structural_key(
+                selected,
+                args,
+                kwargs,
+                public,
+            )
             remember_structural_best_effort(
                 structural_cache_key,
                 selection_key,
@@ -729,6 +763,12 @@ def _tuned_runtime_launch(
         )
         record(selected)
         remember_best_effort(identity, selection_key, selected, prepared)
+        structural_cache_key = candidate_structural_key(
+            selected,
+            args,
+            kwargs,
+            public,
+        )
         remember_structural_best_effort(
             structural_cache_key,
             selection_key,
