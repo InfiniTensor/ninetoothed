@@ -599,6 +599,28 @@ def _tuned_runtime_launch(
         except (AttributeError, TypeError):
             return None
 
+    def promote_structural(identity, entry, args, kwargs):
+        selection_key, selected, prepared = entry
+        rebinder = getattr(selected, "_ninetoothed_rebind_structural", None)
+
+        if rebinder is None:
+            return None
+
+        token = object()
+
+        def collected(_reference):
+            evict(identity, token)
+
+        promoted = rebinder(prepared, args, kwargs, collected, token)
+
+        if promoted is None:
+            return None
+
+        promoted_entry = (selection_key, selected, promoted)
+        _remember_verified_runtime_call(prepared_calls, identity, promoted_entry)
+        activate(identity, promoted_entry)
+        return promoted_entry
+
     def candidate_structural_key(selected, args, kwargs, public):
         builder = getattr(selected, "_ninetoothed_structural_key", None)
 
@@ -676,10 +698,11 @@ def _tuned_runtime_launch(
         structural = find_structural(selection_key, args, kwargs, public)
 
         if structural is not None:
-            record(structural[1])
+            promoted = promote_structural(identity, structural, args, kwargs)
+            selected_entry = promoted or structural
 
-            return structural[1]._ninetoothed_invoke_prepared(
-                structural[2],
+            return selected_entry[1]._ninetoothed_invoke_prepared(
+                selected_entry[2],
                 args,
                 kwargs,
             )

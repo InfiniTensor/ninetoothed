@@ -1101,6 +1101,26 @@ def _verified_runtime_launch(launch):
         _remember_verified_runtime_call(structural_calls, key, detached)
         return detached
 
+    def promote_structural(identity, prepared, args, kwargs):
+        rebinder = getattr(launch, "_ninetoothed_rebind_structural", None)
+
+        if rebinder is None:
+            return None
+
+        token = object()
+
+        def collected(_reference):
+            evict(identity, token)
+
+        promoted = rebinder(prepared, args, kwargs, collected, token)
+
+        if promoted is None:
+            return None
+
+        _remember_verified_runtime_call(prepared_calls, identity, promoted)
+        activate(identity, promoted)
+        return promoted
+
     def remember(identity, prepared):
         token = object()
 
@@ -1168,8 +1188,13 @@ def _verified_runtime_launch(launch):
 
         if structural is not None:
             structural_calls[structural_key] = structural
+            promoted = promote_structural(identity, structural, args, kwargs)
 
-            return launch._ninetoothed_invoke_prepared(structural, args, kwargs)
+            return launch._ninetoothed_invoke_prepared(
+                promoted or structural,
+                args,
+                kwargs,
+            )
 
         prepared = launch._ninetoothed_prepare(args, kwargs)
         cached_prepared = remember(
@@ -1325,6 +1350,34 @@ def _runtime_wrapper(
             return result
         return _first_output_from_call(abi, args, kwargs)
 
+    def rebind_structural(prepared, args, kwargs, callback, token):
+        invocation_plan = prepared.invocation_plan
+
+        if (
+            prepared.empty
+            or invocation_plan is None
+            or getattr(invocation_plan, "requires_values", True)
+            or not getattr(invocation_plan, "structurally_rebindable", False)
+        ):
+            return None
+
+        owner_refs = _runtime_owner_refs(args, kwargs)
+
+        if owner_refs is None:
+            return None
+
+        owners = tuple(reference() for reference in owner_refs)
+
+        if any(owner is None for owner in owners):
+            return None
+
+        return replace(
+            prepared,
+            guard=_VerifiedRuntimeCall.from_call(abi, args, kwargs),
+            owner_refs=tuple(weakref.ref(owner, callback) for owner in owners),
+            cache_token=token,
+        )
+
     def launch(*args, **kwargs):
         public = _public_values(abi, args, kwargs, specs=specs)
         bound_public = dict(public) | overrides
@@ -1354,6 +1407,7 @@ def _runtime_wrapper(
 
     launch._ninetoothed_prepare = prepare
     launch._ninetoothed_invoke_prepared = invoke
+    launch._ninetoothed_rebind_structural = rebind_structural
     launch._ninetoothed_structural_key = (
         build_structural_key
         if structural_key is not None and prepare_invocation is not None

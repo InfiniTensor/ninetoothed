@@ -358,15 +358,39 @@ def test_verified_structural_cache_reuses_plan_with_current_output():
 
     assert launch(value, output=output) is output
     assert launch(replacement_value, output=replacement_output) is replacement_output
+    assert launch(replacement_value, output=replacement_output) is replacement_output
 
     assert len(prepare_calls) == 1
-    assert [reference() for reference in invoked] == [output, replacement_output]
+    assert [reference() for reference in invoked] == [
+        output,
+        replacement_output,
+        replacement_output,
+    ]
 
-    structural = inspect.getclosurevars(launch).nonlocals["structural_calls"]
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    structural = nonlocals["structural_calls"]
     prepared = next(iter(structural.values()))
     assert prepared.binding_plan is None
     assert prepared.owner_refs is None
     assert prepared.cache_token is None
+    assert nonlocals["active_identity"] == runtime._runtime_call_identity(
+        (replacement_value,), {"output": replacement_output}
+    )
+    assert nonlocals["active"].matches(
+        (replacement_value,),
+        {"output": replacement_output},
+        identity_verified=True,
+    )
+    assert nonlocals["active"].owner_refs is not None
+
+    replacement_value_ref = weakref.ref(replacement_value)
+    replacement_output_ref = weakref.ref(replacement_output)
+    del replacement_value, replacement_output
+    gc.collect()
+
+    assert replacement_value_ref() is None
+    assert replacement_output_ref() is None
+    assert inspect.getclosurevars(launch).nonlocals["active"] is None
 
 
 def test_verified_structural_cache_rejects_call_form_changes():
@@ -574,10 +598,27 @@ def test_tuned_structural_cache_reuses_selected_plan_with_current_output():
 
     assert launch(value, output=output) is output
     assert launch(replacement_value, output=replacement_output) is replacement_output
+    assert launch(replacement_value, output=replacement_output) is replacement_output
 
     assert len(prepare_calls) == 1
-    assert [reference() for reference in invoked] == [output, replacement_output]
+    assert [reference() for reference in invoked] == [
+        output,
+        replacement_output,
+        replacement_output,
+    ]
     assert handle._selected_tuning_candidate == {"id": "first"}
+    assert inspect.getclosurevars(launch).nonlocals[
+        "active_identity"
+    ] == runtime._runtime_call_identity(
+        (replacement_value,), {"output": replacement_output}
+    )
+    promoted = inspect.getclosurevars(launch).nonlocals["active"][2]
+    assert promoted.matches(
+        (replacement_value,),
+        {"output": replacement_output},
+        identity_verified=True,
+    )
+    assert promoted.owner_refs is not None
 
 
 def test_tuned_structural_cache_validates_candidate_binding_overrides():
