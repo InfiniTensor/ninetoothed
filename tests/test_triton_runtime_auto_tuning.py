@@ -90,6 +90,44 @@ class _FakeTensor:
         return result
 
 
+class _NonWeakrefTensor:
+    __slots__ = (
+        "shape",
+        "_stride",
+        "dtype",
+        "device",
+        "_data_ptr",
+        "_storage_offset",
+    )
+
+    def __init__(self, shape):
+        self.shape = tuple(shape)
+        self._stride = _contiguous_stride(shape)
+        self.dtype = "float32"
+        self.device = "cuda:0"
+        self._data_ptr = id(self)
+        self._storage_offset = 0
+
+    def stride(self):
+        return self._stride
+
+    def data_ptr(self):
+        return self._data_ptr
+
+    def element_size(self):
+        return 4
+
+    def storage_offset(self):
+        return self._storage_offset
+
+    def numel(self):
+        result = 1
+
+        for size in self.shape:
+            result *= size
+        return result
+
+
 def _contiguous_stride(shape):
     result = []
     stride = 1
@@ -393,6 +431,201 @@ def test_verified_structural_cache_reuses_plan_with_current_output():
     assert inspect.getclosurevars(launch).nonlocals["active"] is None
 
 
+def test_verified_structural_hit_promotes_only_after_persistent_replacement():
+    launch, _abi, prepare_calls, invoked = _rebindable_verified_fixture(
+        with_output=True
+    )
+    value = _FakeTensor((4,), data_ptr=1024)
+    output = _FakeTensor((4,), data_ptr=2048)
+    replacement_value = _FakeTensor((4,), data_ptr=4096)
+    replacement_output = _FakeTensor((4,), data_ptr=8192)
+
+    launch(value, output=output)
+    launch(replacement_value, output=replacement_output)
+
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert nonlocals["active"] is None
+    pending = nonlocals["pending_promotions"]
+    assert len(pending) == 1
+    pending_entry = next(iter(pending.values()))
+    assert pending_entry.identity == runtime._runtime_call_identity(
+        (replacement_value,), {"output": replacement_output}
+    )
+    assert [reference() for reference in pending_entry.owner_refs] == [
+        replacement_value,
+        replacement_output,
+    ]
+
+    launch(replacement_value, output=replacement_output)
+    assert len(prepare_calls) == 1
+    assert len(invoked) == 3
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert nonlocals["active"] is not None
+    assert nonlocals["active_identity"] == runtime._runtime_call_identity(
+        (replacement_value,), {"output": replacement_output}
+    )
+    assert nonlocals["pending_promotions"] == {}
+
+    launch(replacement_value, output=replacement_output)
+    assert len(prepare_calls) == 1
+    assert len(invoked) == 4
+
+
+def test_verified_structural_hit_requires_every_owner_to_persist():
+    launch, _abi, prepare_calls, _invoked = _rebindable_verified_fixture(
+        with_output=True
+    )
+    value = _FakeTensor((4,), data_ptr=1024)
+    output = _FakeTensor((4,), data_ptr=2048)
+    replacement_value = _FakeTensor((4,), data_ptr=4096)
+    first_output = _FakeTensor((4,), data_ptr=8192)
+    second_output = _FakeTensor((4,), data_ptr=16384)
+
+    launch(value, output=output)
+    launch(replacement_value, output=first_output)
+    launch(replacement_value, output=second_output)
+
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert nonlocals["active"] is None
+    assert len(prepare_calls) == 1
+    pending = next(iter(nonlocals["pending_promotions"].values()))
+    assert [reference() for reference in pending.owner_refs] == [
+        replacement_value,
+        second_output,
+    ]
+
+    launch(replacement_value, output=second_output)
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert nonlocals["active"] is not None
+
+
+def test_verified_structural_hit_does_not_promote_fresh_object_after_gc():
+    launch, _abi, _prepare_calls, _invoked = _rebindable_verified_fixture()
+    value = _FakeTensor((4,), data_ptr=1024)
+    launch(value)
+
+    temporary = _FakeTensor((4,), data_ptr=4096)
+    temporary_ref = weakref.ref(temporary)
+    launch(temporary)
+    pending_ref = next(
+        iter(inspect.getclosurevars(launch).nonlocals["pending_promotions"].values())
+    ).owner_refs[0]
+    del temporary
+    gc.collect()
+
+    assert temporary_ref() is None
+    assert pending_ref() is None
+
+    fresh = _FakeTensor((4,), data_ptr=8192)
+    launch(fresh)
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert nonlocals["active"] is None
+    assert nonlocals["pending_promotions"]
+    assert next(iter(nonlocals["pending_promotions"].values())).owner_refs[0]() is fresh
+
+
+def test_verified_structural_pending_owner_check_is_aba_safe():
+    launch, _abi, _prepare_calls, _invoked = _rebindable_verified_fixture()
+    value = _FakeTensor((4,), data_ptr=1024)
+    launch(value)
+    first = _FakeTensor((4,), data_ptr=4096)
+    launch(first)
+
+    pending_ref = next(
+        iter(inspect.getclosurevars(launch).nonlocals["pending_promotions"].values())
+    ).owner_refs[0]
+    first_ref = weakref.ref(first)
+    del first
+    gc.collect()
+
+    replacement = _FakeTensor((4,), data_ptr=8192)
+    assert first_ref() is None
+    assert pending_ref() is None
+    assert not runtime._runtime_owner_refs_match(
+        (pending_ref,),
+        (replacement,),
+        {},
+    )
+
+    launch(replacement)
+    assert inspect.getclosurevars(launch).nonlocals["active"] is None
+
+
+def test_verified_structural_pending_is_bounded_with_structural_lru():
+    launch, _abi, _prepare_calls, _invoked = _rebindable_verified_fixture()
+    evicted_key = None
+
+    for size in range(1, 10):
+        launch(_FakeTensor((size,), data_ptr=1000 + size))
+        launch(_FakeTensor((size,), data_ptr=2000 + size))
+
+        if size == 1:
+            evicted_key = next(
+                iter(inspect.getclosurevars(launch).nonlocals["structural_calls"])
+            )
+
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert len(nonlocals["structural_calls"]) == 8
+    assert len(nonlocals["pending_promotions"]) == 8
+    assert tuple(nonlocals["pending_promotions"]) == tuple(
+        nonlocals["structural_calls"]
+    )
+
+    # Simulate a structural hit racing with LRU eviction: a late pending
+    # insertion for the evicted entry must not create an orphan ninth item.
+    late = _FakeTensor((1,), data_ptr=9999)
+    nonlocals["remember_pending"](
+        runtime._runtime_call_identity((late,), {}),
+        evicted_key,
+        (late,),
+        {},
+    )
+    assert evicted_key not in nonlocals["pending_promotions"]
+    assert len(nonlocals["pending_promotions"]) == 8
+
+
+def test_verified_structural_hit_fails_safe_for_nonweakref_owner():
+    class RebindableNoopInvocation:
+        requires_values = False
+        structurally_rebindable = True
+
+        def __call__(self, _values, _args, _kwargs):
+            return None
+
+    abi = LaunchABI(
+        public_args=("value", "observer"),
+        kernel_args=(LaunchBinding(name="value", kind="tensor", source="value"),),
+        outputs=(),
+    )
+    prepare_calls = []
+
+    def prepare_invocation(_values, _static_values, _call_sources):
+        prepare_calls.append(object())
+
+        return RebindableNoopInvocation()
+
+    wrapped = runtime._runtime_wrapper(
+        lambda *_values: None,
+        abi,
+        prepare_invocation=prepare_invocation,
+        structural_key=_structural_key_builder(abi),
+    )
+    launch = runtime._verified_runtime_launch(wrapped)
+    first = _FakeTensor((4,))
+    first_observer = _NonWeakrefTensor((4,))
+    replacement = _FakeTensor((4,))
+    replacement_observer = _NonWeakrefTensor((4,))
+
+    launch(first, first_observer)
+    launch(replacement, replacement_observer)
+
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert len(prepare_calls) == 1
+    assert len(nonlocals["structural_calls"]) == 1
+    assert nonlocals["active"] is None
+    assert nonlocals["pending_promotions"] == {}
+
+
 def test_verified_structural_cache_rejects_call_form_changes():
     launch, _abi, prepare_calls, _invoked = _rebindable_verified_fixture(
         with_output=True
@@ -597,9 +830,24 @@ def test_tuned_structural_cache_reuses_selected_plan_with_current_output():
     replacement_output = _FakeTensor((4,), data_ptr=8192)
 
     assert launch(value, output=output) is output
-    assert launch(replacement_value, output=replacement_output) is replacement_output
+    handle._selected_tuning_candidate = None
     assert launch(replacement_value, output=replacement_output) is replacement_output
 
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert nonlocals["active"] is None
+    assert handle._selected_tuning_candidate == {"id": "first"}
+    pending_promotions = inspect.getclosurevars(
+        nonlocals["find_structural"]
+    ).nonlocals["pending_promotions"]
+    pending = next(iter(pending_promotions.values()))
+    assert [reference() for reference in pending.owner_refs] == [
+        replacement_value,
+        replacement_output,
+    ]
+
+    assert launch(replacement_value, output=replacement_output) is replacement_output
+
+    nonlocals = inspect.getclosurevars(launch).nonlocals
     assert len(prepare_calls) == 1
     assert [reference() for reference in invoked] == [
         output,
@@ -607,18 +855,17 @@ def test_tuned_structural_cache_reuses_selected_plan_with_current_output():
         replacement_output,
     ]
     assert handle._selected_tuning_candidate == {"id": "first"}
-    assert inspect.getclosurevars(launch).nonlocals[
-        "active_identity"
-    ] == runtime._runtime_call_identity(
+    assert nonlocals["active_identity"] == runtime._runtime_call_identity(
         (replacement_value,), {"output": replacement_output}
     )
-    promoted = inspect.getclosurevars(launch).nonlocals["active"][2]
+    promoted = nonlocals["active"][2]
     assert promoted.matches(
         (replacement_value,),
         {"output": replacement_output},
         identity_verified=True,
     )
     assert promoted.owner_refs is not None
+    assert pending_promotions == {}
 
 
 def test_tuned_structural_cache_validates_candidate_binding_overrides():

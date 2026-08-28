@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import types
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -522,15 +523,22 @@ def _tuned_runtime_launch(
         _arm_prepared_runtime_launch,
         _empty_launch,
         _first_output,
+        _PendingStructuralPromotion,
         _public_values,
+        _remember_structural_runtime_call,
         _remember_verified_runtime_call,
         _runtime_call_identity,
+        _runtime_owner_refs,
+        _runtime_owner_refs_match,
+        _touch_structural_runtime_call,
     )
 
     active_identity = None
     active = None
     prepared_calls = {}
     structural_calls = {}
+    pending_promotions = {}
+    structural_lock = threading.Lock()
 
     def evict(identity, token):
         nonlocal active, active_identity
@@ -548,6 +556,11 @@ def _tuned_runtime_launch(
         active_identity = identity
         active = entry
         record(entry[1])
+
+    def deactivate():
+        nonlocal active, active_identity
+        active = None
+        active_identity = None
 
     def record(selected):
         handle._selected_tuning_candidate = candidates_by_launch[selected]
@@ -585,8 +598,35 @@ def _tuned_runtime_launch(
             return None
 
         entry = (selection_key, selected, detached)
-        _remember_verified_runtime_call(structural_calls, key, entry)
+
+        with structural_lock:
+            _remember_structural_runtime_call(
+                structural_calls,
+                pending_promotions,
+                key,
+                entry,
+            )
         return detached
+
+    def remember_pending(identity, key, args, kwargs):
+        owner_refs = _runtime_owner_refs(args, kwargs)
+
+        with structural_lock:
+            if key not in structural_calls:
+                pending_promotions.pop(key, None)
+
+                return
+
+            if owner_refs is None:
+                pending_promotions.pop(key, None)
+
+                return
+
+            pending_promotions.pop(key, None)
+            pending_promotions[key] = _PendingStructuralPromotion(
+                identity=identity,
+                owner_refs=owner_refs,
+            )
 
     def remember_structural_best_effort(
         key,
@@ -630,7 +670,10 @@ def _tuned_runtime_launch(
         return builder(args, kwargs, public=public)
 
     def find_structural(selection_key, args, kwargs, public):
-        for key, entry in reversed(tuple(structural_calls.items())):
+        with structural_lock:
+            structural_snapshot = tuple(structural_calls.items())
+
+        for key, entry in reversed(structural_snapshot):
             if entry[0] != selection_key:
                 continue
 
@@ -640,10 +683,19 @@ def _tuned_runtime_launch(
             if current_key != key:
                 continue
 
-            structural_calls.pop(key, None)
-            structural_calls[key] = entry
+            with structural_lock:
+                current_entry = _touch_structural_runtime_call(
+                    structural_calls,
+                    pending_promotions,
+                    key,
+                )
 
-            return entry
+                if current_entry is None or current_entry[0] != selection_key:
+                    continue
+
+                pending = pending_promotions.pop(key, None)
+
+            return key, current_entry, pending
 
         return None
 
@@ -698,8 +750,36 @@ def _tuned_runtime_launch(
         structural = find_structural(selection_key, args, kwargs, public)
 
         if structural is not None:
-            promoted = promote_structural(identity, structural, args, kwargs)
-            selected_entry = promoted or structural
+            structural_key, structural_entry, pending = structural
+            deactivate()
+
+            # Keep the first structural hit detached.  Only a second hit
+            # with the exact same weakly-held tensor objects earns an
+            # identity-bound rebind and active fast path.
+            if (
+                pending is not None
+                and pending.identity == identity
+                and _runtime_owner_refs_match(
+                    pending.owner_refs,
+                    args,
+                    kwargs,
+                )
+            ):
+                promoted = promote_structural(
+                    identity,
+                    structural_entry,
+                    args,
+                    kwargs,
+                )
+            else:
+                promoted = None
+
+            if promoted is None:
+                remember_pending(identity, structural_key, args, kwargs)
+
+            selected_entry = promoted or structural_entry
+
+            record(selected_entry[1])
 
             return selected_entry[1]._ninetoothed_invoke_prepared(
                 selected_entry[2],

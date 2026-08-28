@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import weakref
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -827,6 +828,14 @@ class _PreparedRuntimeLaunch:
         )
 
 
+@dataclass(frozen=True, kw_only=True)
+class _PendingStructuralPromotion:
+    """Weakly remember a structural hit until its tensor objects persist."""
+
+    identity: tuple
+    owner_refs: tuple[weakref.ReferenceType, ...]
+
+
 _VERIFIED_RUNTIME_CALL_CACHE_SIZE = 8
 
 
@@ -845,6 +854,53 @@ def _remember_verified_runtime_call(prepared_calls, identity, prepared):
         prepared_calls.pop(next(iter(prepared_calls)))
 
     prepared_calls[identity] = prepared
+
+
+def _remember_structural_runtime_call(structural_calls, pending_calls, key, prepared):
+    """Insert a structural entry and evict its matching pending state with it."""
+    structural_calls.pop(key, None)
+    pending_calls.pop(key, None)
+    structural_calls[key] = prepared
+
+    while len(structural_calls) > _VERIFIED_RUNTIME_CALL_CACHE_SIZE:
+        evicted = next(iter(structural_calls))
+        structural_calls.pop(evicted, None)
+        pending_calls.pop(evicted, None)
+
+
+def _touch_structural_runtime_call(structural_calls, pending_calls, key):
+    """Move a structural entry and any pending state to the LRU tail."""
+    prepared = structural_calls.pop(key, None)
+
+    if prepared is None:
+        pending_calls.pop(key, None)
+
+        return None
+
+    structural_calls[key] = prepared
+
+    pending = pending_calls.pop(key, None)
+
+    if pending is not None:
+        pending_calls[key] = pending
+
+    return prepared
+
+
+def _runtime_owner_refs_match(owner_refs, args, kwargs):
+    """Check weak owner references against the current tensor objects by identity."""
+    if owner_refs is None:
+        return False
+
+    current_refs = _runtime_owner_refs(args, kwargs)
+
+    if current_refs is None or len(current_refs) != len(owner_refs):
+        return False
+
+    return all(
+        previous() is current()
+        for previous, current in zip(owner_refs, current_refs)
+    )
 
 
 def _runtime_literal_key(value):
@@ -1071,6 +1127,8 @@ def _verified_runtime_launch(launch):
     active = None
     prepared_calls = {}
     structural_calls = {}
+    pending_promotions = {}
+    structural_lock = threading.Lock()
     structural_key_builder = getattr(launch, "_ninetoothed_structural_key", None)
 
     def evict(identity, token):
@@ -1089,6 +1147,11 @@ def _verified_runtime_launch(launch):
         active_identity = identity
         active = prepared
 
+    def deactivate():
+        nonlocal active, active_identity
+        active = None
+        active_identity = None
+
     def remember_structural(key, prepared):
         if key is None:
             return None
@@ -1098,8 +1161,34 @@ def _verified_runtime_launch(launch):
         if detached is None:
             return None
 
-        _remember_verified_runtime_call(structural_calls, key, detached)
+        with structural_lock:
+            _remember_structural_runtime_call(
+                structural_calls,
+                pending_promotions,
+                key,
+                detached,
+            )
         return detached
+
+    def remember_pending(identity, key, args, kwargs):
+        owner_refs = _runtime_owner_refs(args, kwargs)
+
+        with structural_lock:
+            if key not in structural_calls:
+                pending_promotions.pop(key, None)
+
+                return
+
+            if owner_refs is None:
+                pending_promotions.pop(key, None)
+
+                return
+
+            pending_promotions.pop(key, None)
+            pending_promotions[key] = _PendingStructuralPromotion(
+                identity=identity,
+                owner_refs=owner_refs,
+            )
 
     def promote_structural(identity, prepared, args, kwargs):
         rebinder = getattr(launch, "_ninetoothed_rebind_structural", None)
@@ -1184,11 +1273,41 @@ def _verified_runtime_launch(launch):
             if structural_key_builder is not None
             else None
         )
-        structural = structural_calls.pop(structural_key, None)
+
+        with structural_lock:
+            structural = _touch_structural_runtime_call(
+                structural_calls,
+                pending_promotions,
+                structural_key,
+            )
+            pending = (
+                pending_promotions.pop(structural_key, None)
+                if structural is not None
+                else None
+            )
 
         if structural is not None:
-            structural_calls[structural_key] = structural
-            promoted = promote_structural(identity, structural, args, kwargs)
+            deactivate()
+
+            # A structural plan is safe to invoke through its detached
+            # CallRefs, but promoting it lets the next call skip the
+            # structural lookup.  Require the same weakly-held tensor
+            # objects on two consecutive structural hits before doing so.
+            if (
+                pending is not None
+                and pending.identity == identity
+                and _runtime_owner_refs_match(
+                    pending.owner_refs,
+                    args,
+                    kwargs,
+                )
+            ):
+                promoted = promote_structural(identity, structural, args, kwargs)
+            else:
+                promoted = None
+
+            if promoted is None:
+                remember_pending(identity, structural_key, args, kwargs)
 
             return launch._ninetoothed_invoke_prepared(
                 promoted or structural,
