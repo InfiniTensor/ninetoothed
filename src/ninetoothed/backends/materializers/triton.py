@@ -157,6 +157,15 @@ def _materialize(compilation):
                 specs=compilation.kernel.tensors,
                 prepare_invocation=_triton_prepare_invocation(launch, kernel),
                 validate_bindings=validate_bindings,
+                structural_key=(
+                    lambda args, kwargs, public, bound_public: _triton_structural_key(
+                        compilation,
+                        args,
+                        kwargs,
+                        public,
+                        bound_public=bound_public,
+                    )
+                ),
             )
         )
 
@@ -172,6 +181,12 @@ def _materialize(compilation):
             handle,
             compilation,
             validate_bindings,
+            structural_key=lambda args, kwargs, public: _triton_structural_key(
+                compilation,
+                args,
+                kwargs,
+                public,
+            ),
         )
 
     return handle
@@ -203,6 +218,15 @@ def _candidate_launch(compilation, launch, kernel, candidate, validate_bindings)
         binding_overrides=meta_values,
         prepare_invocation=_triton_prepare_invocation(function, kernel),
         validate_bindings=validate_bindings,
+        structural_key=(
+            lambda args, kwargs, public, bound_public: _triton_structural_key(
+                compilation,
+                args,
+                kwargs,
+                public,
+                bound_public=bound_public,
+            )
+        ),
     )
 
 
@@ -271,6 +295,7 @@ def _triton_prepare_invocation(function, kernel):
     class InvocationPlan:
         call: object
         requires_values: bool
+        structurally_rebindable: bool = False
 
         def __call__(self, values, args, kwargs):
             if self.requires_values:
@@ -387,7 +412,7 @@ def _triton_prepare_invocation(function, kernel):
             planned_call.kwargs,
         )
 
-        return InvocationPlan(direct_call, False)
+        return InvocationPlan(direct_call, False, structurally_rebindable=True)
 
     return prepare
 
@@ -466,6 +491,7 @@ def _tuned_runtime_launch(
     handle,
     compilation,
     validate_bindings=None,
+    structural_key=None,
 ):
     from ninetoothed.compiler.runtime import (
         _arm_prepared_runtime_launch,
@@ -479,6 +505,7 @@ def _tuned_runtime_launch(
     active_identity = None
     active = None
     prepared_calls = {}
+    structural_calls = {}
 
     def evict(identity, token):
         nonlocal active, active_identity
@@ -523,6 +550,30 @@ def _tuned_runtime_launch(
         except TypeError:
             return None
 
+    def remember_structural(key, selection_key, selected, prepared):
+        if key is None:
+            return None
+
+        detached = prepared.detached_for_structural_cache()
+
+        if detached is None:
+            return None
+
+        entry = (selection_key, selected, detached)
+        _remember_verified_runtime_call(structural_calls, key, entry)
+        return detached
+
+    def remember_structural_best_effort(
+        key,
+        selection_key,
+        selected,
+        prepared,
+    ):
+        try:
+            return remember_structural(key, selection_key, selected, prepared)
+        except (AttributeError, TypeError):
+            return None
+
     def launch(*args, **kwargs):
         active_snapshot = active
         active_identity_snapshot = active_identity
@@ -562,8 +613,11 @@ def _tuned_runtime_launch(
             specs=compilation.kernel.tensors,
         )
 
+        if structural_key is not None and validate_bindings is not None:
+            validate_bindings(public)
+
         if _empty_launch(compilation.launch_abi, public):
-            if validate_bindings is not None:
+            if structural_key is None and validate_bindings is not None:
                 validate_bindings(public)
 
             return _first_output(compilation.launch_abi, public)
@@ -571,6 +625,29 @@ def _tuned_runtime_launch(
         key = tuner._make_arg_key(args, kwargs)
         alias_signature = _runtime_alias_signature(compilation.launch_abi, public)
         selection_key = (key, alias_signature)
+        structural_cache_key = None
+
+        if structural_key is not None:
+            try:
+                structural_cache_key = structural_key(args, kwargs, public)
+                hash(structural_cache_key)
+            except Exception:  # noqa: BLE001
+                structural_cache_key = None
+
+        structural = structural_calls.pop(structural_cache_key, None)
+
+        if structural is not None:
+            structural_calls[structural_cache_key] = structural
+
+            if structural[0] == selection_key:
+                record(structural[1])
+
+                return structural[1]._ninetoothed_invoke_prepared(
+                    structural[2],
+                    args,
+                    kwargs,
+                )
+
         selected = next(
             (
                 entry[1]
@@ -606,6 +683,12 @@ def _tuned_runtime_launch(
                     selected,
                     prepared,
                 )
+                remember_structural_best_effort(
+                    structural_cache_key,
+                    selection_key,
+                    selected,
+                    prepared,
+                )
 
             record(selected)
 
@@ -622,6 +705,12 @@ def _tuned_runtime_launch(
                 return result
 
             remember_best_effort(identity, selection_key, selected, prepared)
+            remember_structural_best_effort(
+                structural_cache_key,
+                selection_key,
+                selected,
+                prepared,
+            )
 
             return result
 
@@ -640,10 +729,29 @@ def _tuned_runtime_launch(
         )
         record(selected)
         remember_best_effort(identity, selection_key, selected, prepared)
+        remember_structural_best_effort(
+            structural_cache_key,
+            selection_key,
+            selected,
+            prepared,
+        )
 
         return result
 
     return launch
+
+
+def _triton_structural_key(compilation, args, kwargs, public, *, bound_public=None):
+    from ninetoothed.compiler.runtime import _runtime_structural_key
+
+    return _runtime_structural_key(
+        compilation.launch_abi,
+        args,
+        kwargs,
+        public,
+        bound_public=bound_public,
+        alias_signature=_runtime_alias_signature(compilation.launch_abi, public),
+    )
 
 
 def _triton_specialization_key(compilation, args, kwargs):
