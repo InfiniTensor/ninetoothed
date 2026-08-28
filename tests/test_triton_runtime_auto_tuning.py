@@ -282,10 +282,10 @@ class _RebindableInvocation:
         self._calls = calls
 
     def __call__(self, _values, args, kwargs):
-        if len(args) > 1:
-            value = args[1]
-        elif "output" in kwargs:
+        if "output" in kwargs:
             value = kwargs["output"]
+        elif len(args) > 1 and getattr(args[1], "shape", None) is not None:
+            value = args[1]
         else:
             value = args[0]
 
