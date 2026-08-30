@@ -70,6 +70,7 @@ class TritonTarget(EmitterTarget):
     max_vector_numel: int | None = 1 << 20
     max_static_loop_output_numel: int | None = 2048
     max_static_application_block_numel: int | None = 2048
+    fp8_dot_fallback: str = "none"
 
     def program_id(self, axis: int = 0) -> str:
         return f"tl.program_id({axis})"
@@ -88,6 +89,42 @@ class TritonTarget(EmitterTarget):
         )
 
         return f"tl.full({shape}, {value}, {dtype_expr})"
+
+    def coerce_block_dot_operands(self, operation, operands, context):
+        if self.fp8_dot_fallback not in {"float16", "bfloat16"}:
+            return operands
+
+        coerced = []
+        result = common.local_symbol(operation.results[0].name, context)
+        target_dtype = f"tl.{self.fp8_dot_fallback}"
+
+        for index, (label, value) in enumerate(zip(("lhs", "rhs"), operands)):
+            operand_type = context.value_types.get(operation.operands[index])
+            operand_dtype = (
+                None
+                if operand_type is None or operand_type.dtype is None
+                else common.normalize_dtype(operand_type.dtype)
+            )
+
+            if operand_dtype is not None and not operand_dtype.startswith("float8_"):
+                coerced.append(value)
+                continue
+
+            local = f"{result}_fp8_{label}"
+            context.lines.append(f"{local} = {value}")
+
+            if operand_dtype is not None:
+                context.lines.append(f"{local} = {local}.to({target_dtype})")
+            else:
+                context.lines.extend(
+                    (
+                        f"if {local}.dtype == tl.float8e5:",
+                        f"    {local} = {local}.to({target_dtype})",
+                    )
+                )
+            coerced.append(local)
+
+        return tuple(coerced)
 
     def literal(self, value: Any) -> str:
         if isinstance(value, float) and math.isinf(value):
@@ -572,7 +609,12 @@ TARGET = TritonTarget()
 
 
 def emit(kernel: Kernel):
-    return common.emit(kernel, TARGET)
+    backend_options = kernel.compiler_options.get("backend_options", {})
+    target = TritonTarget(
+        fp8_dot_fallback=backend_options.get("fp8_dot_fallback", "none")
+    )
+
+    return common.emit(kernel, target)
 
 
 __all__ = ["TARGET", "TritonTarget", "emit"]
