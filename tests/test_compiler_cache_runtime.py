@@ -24,6 +24,15 @@ class _Tensor:
         self.device = SimpleNamespace(type=device_type, index=device_index)
 
 
+class _StridedTensor(_Tensor):
+    def __init__(self, shape, strides, **kwargs):
+        super().__init__(shape, **kwargs)
+        self._strides = tuple(strides)
+
+    def stride(self):
+        return self._strides
+
+
 def _abi():
     return LaunchABI(public_args=("x", "out"), outputs=("out",))
 
@@ -99,6 +108,32 @@ def test_runtime_binding_validates_static_dimensions_of_dynamic_shape():
             {},
             specs=(spec,),
         )
+
+
+def test_runtime_binding_skips_dense_stride_contract_for_jagged_public_values():
+    spec = TensorSpec(
+        name="x",
+        ndim=3,
+        shape=("experts", "tokens", "features"),
+        dtype="float32",
+        jagged_dim=1,
+        attrs={
+            "source_ndim": 3,
+            "source_shape": ("experts", "tokens", "features"),
+            "source_strides": ("0", "row_stride", "1"),
+        },
+    )
+    value = _StridedTensor(
+        (2, 3, 4),
+        (12, 4, 1),
+    )
+
+    _public_values(
+        LaunchABI(public_args=("x",)),
+        (value,),
+        {},
+        specs=(spec,),
+    )
 
 
 def test_runtime_wrappers_skip_empty_launches():

@@ -137,6 +137,7 @@ def _runtime_specs(artifact):
             name=str(value["name"]),
             ndim=int(value.get("ndim", 0)),
             dtype=value.get("dtype"),
+            jagged_dim=value.get("jagged_dim"),
             attrs=dict(value.get("attrs", {})),
         )
         for value in artifact.metadata.get("tensors", ())
@@ -1205,23 +1206,30 @@ def _validate_tensor_contract(spec, value, expected_device):
                 f"expected dimension {axis} to be {expected}."
             )
 
-    expected_strides = spec.attrs.get("source_strides", ())
-    stride = getattr(value, "stride", None)
-    if expected_strides and callable(stride):
-        actual_strides = tuple(stride())
-        for axis, (actual, expected) in enumerate(
-            zip(actual_strides, expected_strides, strict=False)
-        ):
-            try:
-                expected = int(expected)
-            except (TypeError, ValueError):
-                continue
+    # A jagged tensor's public value is a NestedTensor view.  Its stride is
+    # the stride of the flattened values storage, whereas source_strides are
+    # the logical strides used by the generated jagged indexing (including a
+    # zero stride for the jagged dimension).  Comparing those two contracts
+    # rejects valid NestedTensor launches, so static source-stride validation
+    # applies only to dense public tensor arguments.
+    if getattr(spec, "jagged_dim", None) is None:
+        expected_strides = spec.attrs.get("source_strides", ())
+        stride = getattr(value, "stride", None)
+        if expected_strides and callable(stride):
+            actual_strides = tuple(stride())
+            for axis, (actual, expected) in enumerate(
+                zip(actual_strides, expected_strides, strict=False)
+            ):
+                try:
+                    expected = int(expected)
+                except (TypeError, ValueError):
+                    continue
 
-            if actual != expected:
-                raise TypeError(
-                    f"Kernel argument `{spec.name}` has strides {actual_strides}; "
-                    f"expected stride {axis} to be {expected}."
-                )
+                if actual != expected:
+                    raise TypeError(
+                        f"Kernel argument `{spec.name}` has strides {actual_strides}; "
+                        f"expected stride {axis} to be {expected}."
+                    )
 
     device = getattr(value, "device", None)
 
