@@ -672,14 +672,11 @@ def _with_contiguous_1d_fast_path(
         vector_program=vector_program,
     )
     predicate_terms = tuple(f"({stride} == 1)" for stride in stride_params)
-
-    if target.c_style_syntax:
-        predicate = " && ".join(predicate_terms)
-    else:
-        predicate = predicate_terms[0]
-
-        for term in predicate_terms[1:]:
-            predicate = f"({predicate} and {term})"
+    predicate = (
+        " && ".join(predicate_terms)
+        if target.c_style_syntax
+        else _nested_python_conjunction(predicate_terms)
+    )
 
     if target.c_style_syntax:
         return (
@@ -695,6 +692,16 @@ def _with_contiguous_1d_fast_path(
         "else:\n"
         f"{_indent_block(generic_body, '    ')}"
     )
+
+
+def _nested_python_conjunction(terms: tuple[str, ...]) -> str:
+    """Render a binary conjunction accepted by older Triton AST parsers."""
+    predicate = terms[0]
+
+    for term in terms[1:]:
+        predicate = f"({predicate} and {term})"
+
+    return predicate
 
 
 def _simplify_unit_stride_expr(expr: str) -> str:
@@ -1396,7 +1403,12 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
         return _emit_linalg_dot(op, ctx)
 
     if opcode == "linalg.transpose":
-        return _emit_value(op.operands[0], ctx)
+        value = _emit_value(op.operands[0], ctx)
+
+        if target.vector_value_semantics:
+            return target.call("trans", (value,))
+
+        return value
 
     raise ValueError(f"Unsupported SSA opcode `{opcode}` for unified backend emitter.")
 
@@ -1623,6 +1635,9 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
         return _emit_element(op.operands[0], (index,), ctx)
 
     if op.opcode == "linalg.transpose":
+        if ctx.target.vector_value_semantics and ctx.block_program:
+            return ctx.target.call("trans", (_emit_value(op.operands[0], ctx),))
+
         return _emit_element(op.operands[0], tuple(reversed(coords)), ctx)
 
     if op.opcode == "tensor.cast":
@@ -4062,6 +4077,10 @@ def _resolved_cast_dtype(op: ssa.Operation, ctx: _EmitContext) -> str:
 
 def _cast_value(op: ssa.Operation, value: str, ctx: _EmitContext) -> str:
     attr = op.attrs.get("dtype")
+    dtype = _resolved_cast_dtype(op, ctx)
+
+    if op.attrs.get("bitcast", False):
+        return ctx.target.bitcast(dtype, value)
 
     if ctx.target.vector_value_semantics and isinstance(attr, str):
         text = attr.strip().strip("'\"")
@@ -4071,7 +4090,7 @@ def _cast_value(op: ssa.Operation, value: str, ctx: _EmitContext) -> str:
 
             if match and match.group(1) in ctx.tensor_infos:
                 return f"{value}.to({match.group(1)}.dtype.element_ty)"
-    return ctx.target.cast(_resolved_cast_dtype(op, ctx), value)
+    return ctx.target.cast(dtype, value)
 
 
 # Public analysis and traversal hooks used by backend strategies.  Keeping this

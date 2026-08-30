@@ -436,6 +436,31 @@ def _transpose_type(type_: ssa.Type) -> ssa.Type:
     )
 
 
+def _interleave_type(lhs: ssa.Type, rhs: ssa.Type) -> ssa.Type:
+    lhs_shape = tuple(str(dim) for dim in lhs.shape)
+    rhs_shape = tuple(str(dim) for dim in rhs.shape)
+
+    if lhs_shape != rhs_shape:
+        raise LoweringError("Interleave requires operands with identical shapes.")
+
+    if not lhs_shape:
+        shape = ("2",)
+    else:
+        try:
+            last_dim = str(2 * int(lhs_shape[-1]))
+        except ValueError:
+            last_dim = f"2 * ({lhs_shape[-1]})"
+
+        shape = (*lhs_shape[:-1], last_dim)
+
+    return ssa.Type(
+        kind="tensor",
+        shape=shape,
+        dtype=lhs.dtype or rhs.dtype,
+        attrs=dict(lhs.attrs),
+    )
+
+
 __all__ = [
     "_shape_dim_from_type",
     "_subscript_type",

@@ -21,6 +21,7 @@ from ninetoothed.frontend.types import (
     _bool_type,
     _broadcast_type,
     _cast_type,
+    _interleave_type,
     _load_type,
     _math_result_type,
     _matmul_type,
@@ -1016,6 +1017,11 @@ class _ApplicationSSABuilder:
         if method is not None:
             return method
 
+        cast = self._lower_cast_call(node, operations, env)
+
+        if cast is not None:
+            return cast
+
         name = _call_leaf_name(node.func)
         constructor = self._lower_constructor_call(name, node, operations, env)
 
@@ -1040,6 +1046,39 @@ class _ApplicationSSABuilder:
             node,
             f"Unsupported function call `{_unparse(node.func)}`; helper calls must "
             "be statically inlinable",
+        )
+
+    def _lower_cast_call(self, node, operations, env):
+        if _call_leaf_name(node.func) != "cast":
+            return None
+
+        if len(node.args) != 2:
+            raise _lowering_error(node, "`cast()` requires a value and dtype")
+
+        bitcast = False
+
+        for keyword in node.keywords:
+            if keyword.arg != "bitcast":
+                raise _lowering_error(
+                    node, f"Unsupported `cast()` keyword `{keyword.arg}`"
+                )
+
+            bitcast = _literal_value(keyword.value)
+
+            if not isinstance(bitcast, bool):
+                raise _lowering_error(
+                    node, "`cast()` bitcast must be a compile-time boolean"
+                )
+
+        value = self._lower_expr(node.args[0], operations, env)
+        dtype = _unparse(node.args[1])
+
+        return self._emit(
+            operations,
+            "tensor.cast",
+            operands=(value.name,),
+            attrs={"dtype": dtype, "bitcast": bitcast},
+            result_type=_cast_type(value.type, dtype),
         )
 
     def _lower_float_literal_call(self, node, operations):
@@ -1367,6 +1406,17 @@ class _ApplicationSSABuilder:
                     dtype=input_.type.dtype,
                     attrs=dict(input_.type.attrs),
                 ),
+            )
+        if name == "interleave":
+            if len(operands) != 2:
+                raise _lowering_error(node, "`interleave()` requires two operands")
+
+            return self._emit(
+                operations,
+                "call.interleave",
+                operands=tuple(value.name for value in operands),
+                attrs={"callee": _unparse(node.func)},
+                result_type=_interleave_type(operands[0].type, operands[1].type),
             )
 
         if name == "where":

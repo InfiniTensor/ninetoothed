@@ -277,9 +277,9 @@ def _materialize(compilation):
     handle = Handle(compilation, kernel, wrapped, source)
     handle._tuner = tuner
     handle._selected_tuning_candidate = candidates[0] if len(candidates) == 1 else None
+    by_launch = dict(zip(candidate_launches, candidates))
 
     if tuner is not None:
-        by_launch = dict(zip(candidate_launches, candidates))
         handle._launch = _tuned_runtime_launch(
             tuner,
             by_launch,
@@ -427,7 +427,39 @@ def _prevalidated_noalias_runtime_launch(
         invocation = plans.get(key) if key is not None else None
 
         if invocation is None or getattr(invocation, "requires_values", True):
-            return None
+            selected = selected_candidate(args, kwargs)
+
+            if selected is None:
+                return None
+
+            try:
+                prepared = selected._ninetoothed_prepare(args, kwargs)
+                invocation = prepared.invocation_plan
+                resolved = prepared.binding_plan.resolve(flatten_tensors=True)
+            except (AttributeError, RuntimeError, TypeError):
+                return None
+
+            if invocation is None or resolved is None:
+                return None
+
+            values, keepalive = resolved
+            bind_invocation = getattr(invocation, "bind", None)
+            direct = (
+                bind_invocation(values, args, kwargs)
+                if bind_invocation is not None
+                else None
+            )
+
+            if direct is None:
+                return None
+
+            def bound():
+                result = direct()
+                _ = keepalive, prepared
+                return result
+
+            bound._ninetoothed_direct_compiled_launch = True
+            return bound
 
         direct_call = getattr(invocation, "call", None)
 
@@ -468,6 +500,93 @@ def _candidate_launch(compilation, launch, kernel, candidate, validate_bindings)
         prepare_invocation=_triton_prepare_invocation(function, kernel),
         validate_bindings=validate_bindings,
     )
+
+
+def _bind_compiled_triton_kernel(kernel, grid, args, kwargs):
+    """Bind one compiled Triton specialization to stable tensor objects.
+
+    ``JITFunction.run`` repeats argument binding, specialization-key creation,
+    backend option parsing, and cache lookup on every invocation.  Operator
+    wrappers which have already validated and retained the exact tensor
+    objects can safely perform those steps once.  The returned callable still
+    resolves the active stream for every launch, so normal stream semantics
+    are preserved.
+
+    Vendor Triton forks do not all expose the same low-level launcher.  This
+    helper therefore uses feature detection and returns ``None`` whenever the
+    installed runtime cannot provide the required stable ABI.
+    """
+    try:
+        from triton.runtime import driver
+
+        call_kwargs = dict(kwargs)
+        compiled = kernel.run(
+            *args,
+            grid=grid,
+            warmup=True,
+            **call_kwargs,
+        )
+        device = driver.active.get_current_device()
+
+        if hasattr(kernel, "binder"):
+            if kernel.binder is None:
+                kernel.create_binder()
+
+            binder = kernel.binder
+        else:
+            # Triton 3.1 vendor forks keep the specialization cache and binder
+            # together in a per-device tuple.
+            _cache, _target, _backend, binder = kernel.device_caches[device]
+
+        bound_args, _signature, _constexpr, runtime_args, _excess = binder(
+            *args,
+            **call_kwargs,
+        )
+        launch_grid = grid(bound_args) if callable(grid) else grid
+        launch_grid = tuple(launch_grid)
+
+        if not launch_grid or len(launch_grid) > 3:
+            return None
+
+        grid_x, grid_y, grid_z = (*launch_grid, 1, 1)[:3]
+        compiled_kernel_type = getattr(kernel, "CompiledKernel", type(compiled))
+
+        required = (
+            "function",
+            "launch_metadata",
+            "packed_metadata",
+            "run",
+        )
+
+        if compiled is None or any(
+            not hasattr(compiled, attribute) for attribute in required
+        ):
+            return None
+
+        def invoke():
+            stream = driver.active.get_current_stream(device)
+            launch_metadata = compiled.launch_metadata(
+                launch_grid,
+                stream,
+                *runtime_args,
+            )
+
+            return compiled.run(
+                grid_x,
+                grid_y,
+                grid_z,
+                stream,
+                compiled.function,
+                compiled.packed_metadata,
+                launch_metadata,
+                compiled_kernel_type.launch_enter_hook,
+                compiled_kernel_type.launch_exit_hook,
+                *runtime_args,
+            )
+
+        return invoke
+    except (AttributeError, ImportError, KeyError, RuntimeError, TypeError):
+        return None
 
 
 def _triton_prepare_invocation(function, kernel):
@@ -521,6 +640,7 @@ def _triton_prepare_invocation(function, kernel):
         function: object
         args: tuple
         kwargs: tuple
+        grid: object
 
         def invoke(self, values, args, kwargs):
             self.function(
@@ -535,12 +655,29 @@ def _triton_prepare_invocation(function, kernel):
     class InvocationPlan:
         call: object
         requires_values: bool
+        bound_call: object
 
         def __call__(self, values, args, kwargs):
             if self.requires_values:
                 self.call.invoke(values, args, kwargs)
             else:
                 self.call(args, kwargs)
+
+        def bind(self, values, args, kwargs):
+            call = self.bound_call
+            resolved_args = tuple(
+                value.resolve(values, args, kwargs) for value in call.args
+            )
+            resolved_kwargs = {
+                name: value.resolve(values, args, kwargs) for name, value in call.kwargs
+            }
+
+            return _bind_compiled_triton_kernel(
+                kernel,
+                call.grid,
+                resolved_args,
+                resolved_kwargs,
+            )
 
     def plan_value(value, values, static_values, call_sources):
         for index, candidate in enumerate(values):
@@ -596,7 +733,7 @@ def _triton_prepare_invocation(function, kernel):
                 bound_kernel = kernel[grid]
 
                 def capture(*args, **kwargs):
-                    calls.append((bound_kernel, args, kwargs))
+                    calls.append((bound_kernel, grid, args, kwargs))
 
                 return capture
 
@@ -619,7 +756,7 @@ def _triton_prepare_invocation(function, kernel):
         if len(calls) != 1:
             return None
 
-        bound_kernel, args, kwargs = calls[0]
+        bound_kernel, grid, args, kwargs = calls[0]
         planned_args = tuple(
             plan_value(value, values, static_values, call_sources) for value in args
         )
@@ -636,14 +773,19 @@ def _triton_prepare_invocation(function, kernel):
         ):
             return None
 
-        planned_call = BoundCall(bound_kernel, planned_args, planned_kwargs)
+        planned_call = BoundCall(
+            bound_kernel,
+            planned_args,
+            planned_kwargs,
+            grid,
+        )
 
         requires_values = any(
             isinstance(value, ValueRef) for value in planned_args
         ) or any(isinstance(value, ValueRef) for _name, value in planned_kwargs)
 
         if requires_values:
-            return InvocationPlan(planned_call, True)
+            return InvocationPlan(planned_call, True, planned_call)
 
         direct_call = build_direct_invocation(
             planned_call.function,
@@ -651,7 +793,7 @@ def _triton_prepare_invocation(function, kernel):
             planned_call.kwargs,
         )
 
-        return InvocationPlan(direct_call, False)
+        return InvocationPlan(direct_call, False, planned_call)
 
     return prepare
 

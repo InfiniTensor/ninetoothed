@@ -160,6 +160,11 @@ class EmitterTarget(ABC):
     def index_cast(self, value: str) -> str:
         return value
 
+    def bitcast(self, dtype: str, value: str) -> str:
+        raise NotImplementedError(
+            f"Emitter {type(self).__name__} has no bitcast expression."
+        )
+
     def uses_mutable_scalar_slots(self) -> bool:
         return False
 

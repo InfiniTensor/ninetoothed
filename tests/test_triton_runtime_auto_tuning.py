@@ -375,6 +375,58 @@ def test_prevalidated_noalias_arms_alias_safe_selected_candidate_without_tuner_k
     assert calls == [("raw", value), ("prepared", value), ("bound", value)]
 
 
+def test_prevalidated_noalias_binds_compiled_dynamic_invocation_once():
+    abi = LaunchABI(
+        public_args=("value",),
+        kernel_args=(LaunchBinding(name="value", kind="tensor", source="value"),),
+        outputs=("value",),
+    )
+    calls = []
+
+    class DirectInvocation:
+        requires_values = True
+
+        def __call__(self, values, args, _kwargs):
+            calls.append(("prepared", values[0], args[0]))
+            return args[0]
+
+        def bind(self, values, args, _kwargs):
+            calls.append(("bind", values[0], args[0]))
+            return lambda: calls.append(("direct", values[0], args[0]))
+
+    candidate = runtime._runtime_wrapper(
+        lambda value: calls.append(("raw", value)) or value,
+        abi,
+        prepare_invocation=lambda *_: DirectInvocation(),
+    )
+    value = _FakeTensor((4,))
+    handle = SimpleNamespace(
+        _launch=candidate,
+        _selected_tuning_candidate={"id": "single"},
+    )
+    compilation = SimpleNamespace(launch_abi=abi)
+    launch = triton_materializer._prevalidated_noalias_runtime_launch(
+        handle,
+        None,
+        compilation,
+        candidates_by_launch={candidate: {"id": "single"}},
+    )
+
+    assert launch(value) is value
+    bound = launch._ninetoothed_bind_prevalidated_noalias(value)
+
+    assert bound is not None
+    assert bound._ninetoothed_direct_compiled_launch
+    assert bound() is None
+    assert bound() is None
+    assert calls == [
+        ("raw", value),
+        ("bind", value, value),
+        ("direct", value, value),
+        ("direct", value, value),
+    ]
+
+
 def _verified_runtime_fixture(*, with_constexpr=False, outputs=()):
     public_args = ("value", "scale") if with_constexpr else ("value",)
     bindings = [LaunchBinding(name="value", kind="tensor", source="value")]

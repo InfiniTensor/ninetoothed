@@ -115,6 +115,9 @@ class TritonTarget(EmitterTarget):
     def cast(self, dtype, value):
         return f"{value}.to(tl.{common.normalize_dtype(dtype)})"
 
+    def bitcast(self, dtype, value):
+        return f"{value}.to(tl.{common.normalize_dtype(dtype)}, bitcast=True)"
+
     def where(self, cond, yes, no):
         return f"tl.where({cond}, {yes}, {no})"
 
@@ -149,6 +152,7 @@ class TritonTarget(EmitterTarget):
             "exp": "tl.exp",
             "exp2": "tl.exp2",
             "floor": "tl.floor",
+            "interleave": "tl.interleave",
             "log": "tl.log",
             "log1p": "tl.log",
             "log2": "tl.log2",
@@ -165,6 +169,7 @@ class TritonTarget(EmitterTarget):
             "sqrt": "tl.sqrt",
             "tan": "tl.tan",
             "tanh": "tl.tanh",
+            "trans": "tl.trans",
         }
 
         if name == "log1p":
