@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import weakref
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -788,6 +789,29 @@ class _PreparedRuntimeLaunch:
             and (self.empty or self.binding_plan is not None)
         )
 
+    @property
+    def structurally_cacheable(self) -> bool:
+        invocation_plan = self.invocation_plan
+
+        return (
+            not self.empty
+            and self.binding_plan is not None
+            and invocation_plan is not None
+            and not getattr(invocation_plan, "requires_values", True)
+            and getattr(invocation_plan, "structurally_rebindable", False)
+        )
+
+    def detached_for_structural_cache(self):
+        if not self.structurally_cacheable:
+            return None
+
+        return replace(
+            self,
+            binding_plan=None,
+            owner_refs=None,
+            cache_token=None,
+        )
+
     def matches(self, args, kwargs, *, identity_verified=False, call_key=None):
         if not self.guard.matches(
             args,
@@ -802,6 +826,14 @@ class _PreparedRuntimeLaunch:
             or not self.binding_plan.jagged_owners
             or all(contract.matches() for contract in self.binding_plan.jagged_owners)
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class _PendingStructuralPromotion:
+    """Weakly remember a structural hit until its tensor objects persist."""
+
+    identity: tuple
+    owner_refs: tuple[weakref.ReferenceType, ...]
 
 
 _VERIFIED_RUNTIME_CALL_CACHE_SIZE = 8
@@ -822,6 +854,218 @@ def _remember_verified_runtime_call(prepared_calls, identity, prepared):
         prepared_calls.pop(next(iter(prepared_calls)))
 
     prepared_calls[identity] = prepared
+
+
+def _remember_structural_runtime_call(structural_calls, pending_calls, key, prepared):
+    """Insert a structural entry and evict its matching pending state with it."""
+    structural_calls.pop(key, None)
+    pending_calls.pop(key, None)
+    structural_calls[key] = prepared
+
+    while len(structural_calls) > _VERIFIED_RUNTIME_CALL_CACHE_SIZE:
+        evicted = next(iter(structural_calls))
+        structural_calls.pop(evicted, None)
+        pending_calls.pop(evicted, None)
+
+
+def _touch_structural_runtime_call(structural_calls, pending_calls, key):
+    """Move a structural entry and any pending state to the LRU tail."""
+    prepared = structural_calls.pop(key, None)
+
+    if prepared is None:
+        pending_calls.pop(key, None)
+
+        return None
+
+    structural_calls[key] = prepared
+
+    pending = pending_calls.pop(key, None)
+
+    if pending is not None:
+        pending_calls[key] = pending
+
+    return prepared
+
+
+def _runtime_owner_refs_match(owner_refs, args, kwargs):
+    """Check weak owner references against the current tensor objects by identity."""
+    if owner_refs is None:
+        return False
+
+    current_refs = _runtime_owner_refs(args, kwargs)
+
+    if current_refs is None or len(current_refs) != len(owner_refs):
+        return False
+
+    return all(
+        previous() is current() for previous, current in zip(owner_refs, current_refs)
+    )
+
+
+def _runtime_literal_key(value):
+    if not _is_cacheable_runtime_literal(value):
+        return None
+
+    if isinstance(value, tuple):
+        items = tuple(_runtime_literal_key(item) for item in value)
+
+        if any(item is None for item in items):
+            return None
+
+        return ("tuple", items)
+
+    return ("literal", type(value), repr(value))
+
+
+def _runtime_tensor_key(value, *, scalar=False):
+    try:
+        shape = tuple(int(size) for size in value.shape)
+        stride = getattr(value, "stride", None)
+
+        if not callable(stride):
+            return None
+
+        stride = tuple(int(size) for size in stride())
+        data_ptr = getattr(value, "data_ptr", None)
+        storage_offset = getattr(value, "storage_offset", None)
+        element_size = getattr(value, "element_size", None)
+
+        if (
+            not callable(data_ptr)
+            or not callable(storage_offset)
+            or not callable(element_size)
+        ):
+            return None
+
+        if len(shape) != len(stride):
+            return None
+
+        dtype = str(value.dtype).split(".")[-1]
+        device = getattr(value, "device", None)
+
+        if device is None:
+            return None
+
+        state = (
+            type(value),
+            len(shape),
+            shape,
+            stride,
+            dtype,
+            str(device),
+            int(storage_offset()),
+        )
+
+        if scalar:
+            item = value.item()
+            scalar_key = _runtime_literal_key(item)
+
+            if scalar_key is None:
+                return None
+
+            state += (scalar_key,)
+
+        hash(state)
+    except (AttributeError, RuntimeError, TypeError, ValueError, OverflowError):
+        return None
+
+    return ("tensor", state)
+
+
+def _runtime_structural_value_key(value, *, scalar=False):
+    if getattr(value, "shape", None) is not None and hasattr(value, "dtype"):
+        return _runtime_tensor_key(value, scalar=scalar)
+
+    return _runtime_literal_key(value)
+
+
+def _runtime_structural_key(
+    abi,
+    args,
+    kwargs,
+    public,
+    *,
+    bound_public=None,
+    alias_signature=None,
+):
+    """Build a tensor-identity-independent key for a rebindable launch plan."""
+    if bound_public is None:
+        bound_public = public
+
+    try:
+        call_form = (
+            len(args),
+            tuple(abi.public_args[: len(args)]),
+            tuple(kwargs.keys()),
+        )
+        scalar_sources = {
+            binding.source
+            for binding in abi.kernel_args
+            if binding.kind in {"scalar", "constexpr", "meta"}
+        }
+        public_values = tuple(
+            (
+                name,
+                _runtime_structural_value_key(
+                    public[name],
+                    scalar=name in scalar_sources,
+                ),
+            )
+            for name in abi.public_args
+        )
+
+        if any(value is None for _name, value in public_values):
+            return None
+
+        if any(binding.kind.startswith("jagged_") for binding in abi.kernel_args):
+            return None
+
+        runtime_values = []
+
+        for binding in abi.kernel_args:
+            value = _binding_value(binding, bound_public)
+            value_key = _runtime_structural_value_key(
+                value,
+                scalar=binding.kind in {"scalar", "constexpr", "meta"},
+            )
+
+            if value_key is None:
+                return None
+
+            runtime_values.append(
+                (
+                    binding.name,
+                    binding.kind,
+                    binding.source,
+                    binding.dim,
+                    value_key,
+                )
+            )
+
+        alias_key = _runtime_literal_key(alias_signature)
+
+        if alias_key is None:
+            return None
+
+        key = (
+            "runtime-structural-v1",
+            call_form,
+            public_values,
+            tuple(runtime_values),
+            alias_key,
+        )
+        hash(key)
+    except (
+        AttributeError,
+        KeyError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+    ):
+        return None
+
+    return key
 
 
 def _runtime_owner_refs(args, kwargs, binding_plan=None):
@@ -881,6 +1125,11 @@ def _verified_runtime_launch(launch):
     active_identity = None
     active = None
     prepared_calls = {}
+    structural_calls = {}
+    pending_promotions = {}
+    structural_lock = threading.Lock()
+    structural_key_builder = getattr(launch, "_ninetoothed_structural_key", None)
+    structural_observer = getattr(launch, "_ninetoothed_structural_observer", None)
 
     def evict(identity, token):
         nonlocal active, active_identity
@@ -897,6 +1146,70 @@ def _verified_runtime_launch(launch):
         nonlocal active, active_identity
         active_identity = identity
         active = prepared
+
+    def deactivate():
+        nonlocal active, active_identity
+        active = None
+        active_identity = None
+
+    def remember_structural(key, prepared):
+        if key is None:
+            return None
+
+        detached = prepared.detached_for_structural_cache()
+
+        if detached is None:
+            return None
+
+        with structural_lock:
+            _remember_structural_runtime_call(
+                structural_calls,
+                pending_promotions,
+                key,
+                detached,
+            )
+        return detached
+
+    def remember_pending(identity, key, args, kwargs):
+        owner_refs = _runtime_owner_refs(args, kwargs)
+
+        with structural_lock:
+            if key not in structural_calls:
+                pending_promotions.pop(key, None)
+
+                return
+
+            if owner_refs is None:
+                pending_promotions.pop(key, None)
+
+                return
+
+            pending_promotions.pop(key, None)
+            pending_promotions[key] = _PendingStructuralPromotion(
+                identity=identity,
+                owner_refs=owner_refs,
+            )
+
+    def promote_structural(identity, prepared, args, kwargs):
+        rebinder = getattr(launch, "_ninetoothed_rebind_structural", None)
+
+        if rebinder is None:
+            return None
+
+        token = object()
+
+        def collected(_reference):
+            evict(identity, token)
+
+        promoted = rebinder(prepared, args, kwargs, collected, token)
+
+        if promoted is None:
+            return None
+
+        _remember_verified_runtime_call(prepared_calls, identity, promoted)
+        activate(identity, promoted)
+
+        return promoted
 
     def remember(identity, prepared):
         token = object()
@@ -956,6 +1269,58 @@ def _verified_runtime_launch(launch):
 
             return launch._ninetoothed_invoke_prepared(cached, args, kwargs)
 
+        structural_key = None
+
+        if structural_observer is not None:
+            try:
+                structural_key = structural_observer(args, kwargs)
+            except Exception:  # noqa: BLE001
+                structural_key = None
+
+        if structural_key is None and structural_key_builder is not None:
+            structural_key = structural_key_builder(args, kwargs)
+
+        with structural_lock:
+            structural = _touch_structural_runtime_call(
+                structural_calls,
+                pending_promotions,
+                structural_key,
+            )
+            pending = (
+                pending_promotions.pop(structural_key, None)
+                if structural is not None
+                else None
+            )
+
+        if structural is not None:
+            deactivate()
+
+            # A structural plan is safe to invoke through its detached
+            # CallRefs, but promoting it lets the next call skip the
+            # structural lookup.  Require the same weakly-held tensor
+            # objects on two consecutive structural hits before doing so.
+            if (
+                pending is not None
+                and pending.identity == identity
+                and _runtime_owner_refs_match(
+                    pending.owner_refs,
+                    args,
+                    kwargs,
+                )
+            ):
+                promoted = promote_structural(identity, structural, args, kwargs)
+            else:
+                promoted = None
+
+            if promoted is None:
+                remember_pending(identity, structural_key, args, kwargs)
+
+            return launch._ninetoothed_invoke_prepared(
+                promoted or structural,
+                args,
+                kwargs,
+            )
+
         prepared = launch._ninetoothed_prepare(args, kwargs)
         cached_prepared = remember(
             _two_tensor_call_identity(prepared.guard.two_tensor_state)
@@ -963,6 +1328,7 @@ def _verified_runtime_launch(launch):
             else identity,
             prepared,
         )
+        remember_structural(structural_key, prepared)
 
         return launch._ninetoothed_invoke_prepared(
             cached_prepared or prepared,
@@ -982,8 +1348,17 @@ def _runtime_wrapper(
     binding_overrides=None,
     prepare_invocation=None,
     validate_bindings=None,
+    structural_key=None,
+    structural_observer=None,
 ):
     overrides = dict(binding_overrides or {})
+
+    if validate_bindings is not None and not getattr(
+        validate_bindings,
+        "_ninetoothed_observer_safe",
+        False,
+    ):
+        structural_observer = None
 
     def prepare(args, kwargs, *, public=None):
         if public is None:
@@ -1049,6 +1424,43 @@ def _runtime_wrapper(
             invocation_plan=invocation_plan,
         )
 
+    def build_structural_key(args, kwargs, *, public=None):
+        if structural_key is None:
+            return None
+
+        if public is None:
+            public = _public_values(abi, args, kwargs, specs=specs)
+
+        bound_public = dict(public) | overrides
+
+        if validate_bindings is not None:
+            validate_bindings(bound_public)
+
+        if _empty_launch(abi, public):
+            return None
+
+        try:
+            key = structural_key(args, kwargs, public, bound_public)
+            hash(key)
+        except Exception:  # noqa: BLE001
+            return None
+
+        return key
+
+    def build_structural_observer(
+        args,
+        kwargs,
+        *,
+        public=None,
+        alias_signature=None,
+    ):
+        if structural_observer is None:
+            return None
+
+        del public, alias_signature
+
+        return structural_observer(args, kwargs)
+
     def invoke(prepared, args, kwargs):
         if prepared.empty:
             return _first_output_from_call(abi, args, kwargs)
@@ -1085,6 +1497,34 @@ def _runtime_wrapper(
             return result
         return _first_output_from_call(abi, args, kwargs)
 
+    def rebind_structural(prepared, args, kwargs, callback, token):
+        invocation_plan = prepared.invocation_plan
+
+        if (
+            prepared.empty
+            or invocation_plan is None
+            or getattr(invocation_plan, "requires_values", True)
+            or not getattr(invocation_plan, "structurally_rebindable", False)
+        ):
+            return None
+
+        owner_refs = _runtime_owner_refs(args, kwargs)
+
+        if owner_refs is None:
+            return None
+
+        owners = tuple(reference() for reference in owner_refs)
+
+        if any(owner is None for owner in owners):
+            return None
+
+        return replace(
+            prepared,
+            guard=_VerifiedRuntimeCall.from_call(abi, args, kwargs),
+            owner_refs=tuple(weakref.ref(owner, callback) for owner in owners),
+            cache_token=token,
+        )
+
     def launch(*args, **kwargs):
         public = _public_values(abi, args, kwargs, specs=specs)
         bound_public = dict(public) | overrides
@@ -1114,6 +1554,19 @@ def _runtime_wrapper(
 
     launch._ninetoothed_prepare = prepare
     launch._ninetoothed_invoke_prepared = invoke
+    launch._ninetoothed_rebind_structural = rebind_structural
+    launch._ninetoothed_structural_key = (
+        build_structural_key
+        if structural_key is not None and prepare_invocation is not None
+        else None
+    )
+    launch._ninetoothed_structural_observer = (
+        build_structural_observer
+        if structural_observer is not None
+        and structural_key is not None
+        and prepare_invocation is not None
+        else None
+    )
 
     return launch
 

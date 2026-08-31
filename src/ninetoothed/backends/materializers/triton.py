@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import types
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -157,6 +158,18 @@ def _materialize(compilation):
                 specs=compilation.kernel.tensors,
                 prepare_invocation=_triton_prepare_invocation(launch, kernel),
                 validate_bindings=validate_bindings,
+                structural_observer=_triton_structural_observer(
+                    compilation.launch_abi,
+                ),
+                structural_key=(
+                    lambda args, kwargs, public, bound_public: _triton_structural_key(
+                        compilation,
+                        args,
+                        kwargs,
+                        public,
+                        bound_public=bound_public,
+                    )
+                ),
             )
         )
 
@@ -203,6 +216,19 @@ def _candidate_launch(compilation, launch, kernel, candidate, validate_bindings)
         binding_overrides=meta_values,
         prepare_invocation=_triton_prepare_invocation(function, kernel),
         validate_bindings=validate_bindings,
+        structural_observer=_triton_structural_observer(
+            compilation.launch_abi,
+            binding_overrides=meta_values,
+        ),
+        structural_key=(
+            lambda args, kwargs, public, bound_public: _triton_structural_key(
+                compilation,
+                args,
+                kwargs,
+                public,
+                bound_public=bound_public,
+            )
+        ),
     )
 
 
@@ -271,6 +297,7 @@ def _triton_prepare_invocation(function, kernel):
     class InvocationPlan:
         call: object
         requires_values: bool
+        structurally_rebindable: bool = False
 
         def __call__(self, values, args, kwargs):
             if self.requires_values:
@@ -279,16 +306,48 @@ def _triton_prepare_invocation(function, kernel):
                 self.call(args, kwargs)
 
     def plan_value(value, values, static_values, call_sources):
-        for index, candidate in enumerate(values):
-            if value is candidate:
-                if call_sources is not None and call_sources[index] is not None:
-                    return CallRef(*call_sources[index])
+        matches = tuple(
+            index for index, candidate in enumerate(values) if value is candidate
+        )
 
-                return (
-                    Literal(static_values[index])
-                    if static_values is not None
-                    else ValueRef(index)
-                )
+        if matches:
+            index = matches[0]
+
+            if call_sources is not None:
+                sources = tuple(call_sources[match] for match in matches)
+
+                # A direct invocation may only rebind an aliased captured value
+                # when every occurrence came from the same public argument.  If
+                # one object represented two different call arguments during the
+                # dry launch, choosing the first CallRef would silently collapse
+                # distinct objects on a later structurally equivalent call.
+                if sources[0] is not None and all(
+                    source == sources[0] for source in sources
+                ):
+                    return CallRef(*sources[0])
+
+                if len(matches) > 1:
+                    if hasattr(value, "data_ptr") or (
+                        hasattr(value, "shape") and hasattr(value, "dtype")
+                    ):
+                        return None
+
+                    # CPython commonly reuses the same immutable scalar object
+                    # for equal shape, stride, and constexpr values.  It is
+                    # safe to detach such an ambiguous scalar as a literal:
+                    # the structural cache key contains every public/runtime
+                    # scalar value, so a later value change cannot hit this
+                    # invocation plan.
+                    if _is_cacheable_runtime_literal(value):
+                        return Literal(value)
+
+                    return None
+
+            return (
+                Literal(static_values[index])
+                if static_values is not None
+                else ValueRef(index)
+            )
 
         if hasattr(value, "data_ptr") or (
             hasattr(value, "shape") and hasattr(value, "dtype")
@@ -387,7 +446,7 @@ def _triton_prepare_invocation(function, kernel):
             planned_call.kwargs,
         )
 
-        return InvocationPlan(direct_call, False)
+        return InvocationPlan(direct_call, False, structurally_rebindable=True)
 
     return prepare
 
@@ -471,14 +530,22 @@ def _tuned_runtime_launch(
         _arm_prepared_runtime_launch,
         _empty_launch,
         _first_output,
+        _PendingStructuralPromotion,
         _public_values,
+        _remember_structural_runtime_call,
         _remember_verified_runtime_call,
         _runtime_call_identity,
+        _runtime_owner_refs,
+        _runtime_owner_refs_match,
+        _touch_structural_runtime_call,
     )
 
     active_identity = None
     active = None
     prepared_calls = {}
+    structural_calls = {}
+    pending_promotions = {}
+    structural_lock = threading.Lock()
 
     def evict(identity, token):
         nonlocal active, active_identity
@@ -496,6 +563,11 @@ def _tuned_runtime_launch(
         active_identity = identity
         active = entry
         record(entry[1])
+
+    def deactivate():
+        nonlocal active, active_identity
+        active = None
+        active_identity = None
 
     def record(selected):
         handle._selected_tuning_candidate = candidates_by_launch[selected]
@@ -522,6 +594,146 @@ def _tuned_runtime_launch(
             return remember(identity, selection_key, selected, prepared)
         except TypeError:
             return None
+
+    def remember_structural(key, selection_key, selected, prepared):
+        if key is None:
+            return None
+
+        detached = prepared.detached_for_structural_cache()
+
+        if detached is None:
+            return None
+
+        entry = (selection_key, selected, detached)
+
+        with structural_lock:
+            _remember_structural_runtime_call(
+                structural_calls,
+                pending_promotions,
+                key,
+                entry,
+            )
+        return detached
+
+    def remember_pending(identity, key, args, kwargs):
+        owner_refs = _runtime_owner_refs(args, kwargs)
+
+        with structural_lock:
+            if key not in structural_calls:
+                pending_promotions.pop(key, None)
+
+                return
+
+            if owner_refs is None:
+                pending_promotions.pop(key, None)
+
+                return
+
+            pending_promotions.pop(key, None)
+            pending_promotions[key] = _PendingStructuralPromotion(
+                identity=identity,
+                owner_refs=owner_refs,
+            )
+
+    def remember_structural_best_effort(
+        key,
+        selection_key,
+        selected,
+        prepared,
+    ):
+        try:
+            return remember_structural(key, selection_key, selected, prepared)
+        except (AttributeError, TypeError):
+            return None
+
+    def promote_structural(identity, entry, args, kwargs):
+        selection_key, selected, prepared = entry
+        rebinder = getattr(selected, "_ninetoothed_rebind_structural", None)
+
+        if rebinder is None:
+            return None
+
+        token = object()
+
+        def collected(_reference):
+            evict(identity, token)
+
+        promoted = rebinder(prepared, args, kwargs, collected, token)
+
+        if promoted is None:
+            return None
+
+        promoted_entry = (selection_key, selected, promoted)
+        _remember_verified_runtime_call(prepared_calls, identity, promoted_entry)
+        activate(identity, promoted_entry)
+
+        return promoted_entry
+
+    def candidate_structural_key(
+        selected,
+        args,
+        kwargs,
+        public,
+        *,
+        alias_signature=None,
+    ):
+        observer = getattr(selected, "_ninetoothed_structural_observer", None)
+
+        if observer is not None:
+            observed = observer(args, kwargs)
+
+            if observed is not None:
+                return observed
+
+        builder = getattr(selected, "_ninetoothed_structural_key", None)
+
+        if builder is None:
+            return None
+
+        return builder(args, kwargs, public=public)
+
+    def find_structural(
+        selection_key,
+        args,
+        kwargs,
+        public,
+        *,
+        alias_signature=None,
+    ):
+        with structural_lock:
+            structural_snapshot = tuple(structural_calls.items())
+
+        for key, entry in reversed(structural_snapshot):
+            if entry[0] != selection_key:
+                continue
+
+            selected = entry[1]
+            current_key = candidate_structural_key(
+                selected,
+                args,
+                kwargs,
+                public,
+                alias_signature=alias_signature,
+            )
+
+            if current_key != key:
+                continue
+
+            with structural_lock:
+                current_entry = _touch_structural_runtime_call(
+                    structural_calls,
+                    pending_promotions,
+                    key,
+                )
+
+                if current_entry is None or current_entry[0] != selection_key:
+                    continue
+
+                pending = pending_promotions.pop(key, None)
+
+            return key, current_entry, pending
+
+        return None
 
     def launch(*args, **kwargs):
         active_snapshot = active
@@ -571,6 +783,52 @@ def _tuned_runtime_launch(
         key = tuner._make_arg_key(args, kwargs)
         alias_signature = _runtime_alias_signature(compilation.launch_abi, public)
         selection_key = (key, alias_signature)
+        structural = find_structural(
+            selection_key,
+            args,
+            kwargs,
+            public,
+            alias_signature=alias_signature,
+        )
+
+        if structural is not None:
+            structural_key, structural_entry, pending = structural
+            deactivate()
+
+            # Keep the first structural hit detached.  Only a second hit
+            # with the exact same weakly-held tensor objects earns an
+            # identity-bound rebind and active fast path.
+            if (
+                pending is not None
+                and pending.identity == identity
+                and _runtime_owner_refs_match(
+                    pending.owner_refs,
+                    args,
+                    kwargs,
+                )
+            ):
+                promoted = promote_structural(
+                    identity,
+                    structural_entry,
+                    args,
+                    kwargs,
+                )
+            else:
+                promoted = None
+
+            if promoted is None:
+                remember_pending(identity, structural_key, args, kwargs)
+
+            selected_entry = promoted or structural_entry
+
+            record(selected_entry[1])
+
+            return selected_entry[1]._ninetoothed_invoke_prepared(
+                selected_entry[2],
+                args,
+                kwargs,
+            )
+
         selected = next(
             (
                 entry[1]
@@ -606,6 +864,19 @@ def _tuned_runtime_launch(
                     selected,
                     prepared,
                 )
+                structural_cache_key = candidate_structural_key(
+                    selected,
+                    args,
+                    kwargs,
+                    public,
+                    alias_signature=alias_signature,
+                )
+                remember_structural_best_effort(
+                    structural_cache_key,
+                    selection_key,
+                    selected,
+                    prepared,
+                )
 
             record(selected)
 
@@ -622,6 +893,19 @@ def _tuned_runtime_launch(
                 return result
 
             remember_best_effort(identity, selection_key, selected, prepared)
+            structural_cache_key = candidate_structural_key(
+                selected,
+                args,
+                kwargs,
+                public,
+                alias_signature=alias_signature,
+            )
+            remember_structural_best_effort(
+                structural_cache_key,
+                selection_key,
+                selected,
+                prepared,
+            )
 
             return result
 
@@ -640,10 +924,366 @@ def _tuned_runtime_launch(
         )
         record(selected)
         remember_best_effort(identity, selection_key, selected, prepared)
+        structural_cache_key = candidate_structural_key(
+            selected,
+            args,
+            kwargs,
+            public,
+            alias_signature=alias_signature,
+        )
+        remember_structural_best_effort(
+            structural_cache_key,
+            selection_key,
+            selected,
+            prepared,
+        )
 
         return result
 
     return launch
+
+
+def _triton_structural_key(compilation, args, kwargs, public, *, bound_public=None):
+    from ninetoothed.compiler.runtime import _runtime_structural_key
+
+    return _runtime_structural_key(
+        compilation.launch_abi,
+        args,
+        kwargs,
+        public,
+        bound_public=bound_public,
+        alias_signature=_runtime_alias_signature(compilation.launch_abi, public),
+    )
+
+
+def _triton_structural_observer(abi, *, binding_overrides=None, tensor_type=None):
+    """Build a conservative compact key for ordinary Triton launch ABIs.
+
+    Generated Triton launches repeat each public tensor as a pointer, shape,
+    and stride argument.  For an exact tensor type those derived values are
+    already covered by the public tensor contract, so the repeated binding
+    walk in the generic structural key can be omitted.  Any ABI or value that
+    is not proved equivalent falls back to the generic key in the runtime.
+    """
+    from ninetoothed.compiler.runtime import _runtime_literal_key
+
+    try:
+        if tensor_type is None:
+            import torch
+
+            tensor_type = torch.Tensor
+    except ImportError:
+        return None
+
+    public_args = tuple(abi.public_args)
+    public_indexes = {name: index for index, name in enumerate(public_args)}
+    public_count = len(public_args)
+    overrides = dict(binding_overrides or {})
+    bindings = tuple(abi.kernel_args)
+    supported = {"tensor", "scalar", "constexpr", "shape", "stride", "meta"}
+    scalar_kinds = {"scalar", "constexpr", "meta"}
+    dynamic_kinds = {"tensor", "shape", "stride"}
+
+    if (
+        not bindings
+        or len(public_indexes) != public_count
+        or set(abi.outputs).difference(public_indexes)
+        or any(name in public_indexes for name in overrides)
+    ):
+        return None
+
+    for value in overrides.values():
+        if getattr(value, "shape", None) is not None and hasattr(value, "dtype"):
+            return None
+
+    scalar_sources = [False] * public_count
+    dynamic_sources = [False] * public_count
+    required_dims = [-1] * public_count
+    residual = []
+    physical_access = {}
+    output_names = set(abi.outputs)
+
+    for binding in bindings:
+        kind = binding.kind
+        source = binding.source
+
+        if kind not in supported or kind.startswith("jagged_"):
+            return None
+
+        source_index = public_indexes.get(source)
+
+        if kind in dynamic_kinds:
+            if source_index is None:
+                return None
+
+            dynamic_sources[source_index] = True
+
+            if kind in {"shape", "stride"}:
+                if type(binding.dim) is not int or binding.dim < 0:
+                    return None
+
+                required_dims[source_index] = max(
+                    required_dims[source_index], binding.dim
+                )
+        elif kind in scalar_kinds and source_index is not None:
+            scalar_sources[source_index] = True
+        elif kind in {"scalar", "constexpr"}:
+            if source not in overrides:
+                return None
+
+            value_key = _runtime_literal_key(overrides[source])
+
+            if value_key is None:
+                return None
+
+            residual.append((binding.name, kind, source, binding.dim, value_key))
+        elif kind == "meta" and source_index is None:
+            if source in overrides:
+                value = overrides[source]
+            elif binding.value is not None:
+                value = binding.value
+            else:
+                return None
+
+            value_key = _runtime_literal_key(value)
+
+            if value_key is None:
+                return None
+
+            residual.append((binding.name, kind, source, binding.dim, value_key))
+
+        if kind not in {"tensor", "scalar", "constexpr"} or source_index is None:
+            continue
+
+        access = binding.access or (
+            "read"
+            if kind in {"scalar", "constexpr"}
+            else "read_write"
+            if source in output_names
+            else "read"
+        )
+        identity = (source_index, kind)
+        previous = physical_access.get(identity)
+
+        if previous is not None and previous != access:
+            access = "read_write"
+
+        physical_access[identity] = access
+
+    physical = tuple(
+        (source_index, kind, access)
+        for (source_index, kind), access in physical_access.items()
+    )
+    writers = tuple(item for item in physical if item[2] in {"write", "read_write"})
+    readers = tuple(item for item in physical if item[2] in {"read", "read_write"})
+    alias_pairs = tuple(
+        (
+            writer[0],
+            reader[0],
+            (
+                public_args[writer[0]],
+                writer[1],
+                public_args[reader[0]],
+                reader[1],
+            ),
+        )
+        for writer in writers
+        for reader in readers
+    )
+    missing = object()
+
+    def observe_tensor(value, *, scalar):
+        if type(value) is not tensor_type:
+            return None
+
+        try:
+            shape = tuple(value.shape)
+            stride = tuple(value.stride())
+            data_ptr = int(value.data_ptr())
+            storage_offset = int(value.storage_offset())
+            element_size = int(value.element_size())
+            dtype = value.dtype
+            device = value.device
+
+            if len(shape) != len(stride) or device is None or element_size <= 0:
+                return None
+
+            scalar_key = None
+
+            if scalar:
+                if shape:
+                    return None
+
+                scalar_key = _runtime_literal_key(value.item())
+
+                if scalar_key is None:
+                    return None
+
+            state = (
+                type(value),
+                len(shape),
+                shape,
+                stride,
+                dtype,
+                device,
+                storage_offset,
+                data_ptr & 15,
+            )
+            key = ("tensor", state)
+
+            if scalar_key is not None:
+                key = ("tensor", (*state, scalar_key))
+
+            lower = upper = 0
+
+            for size, step in zip(shape, stride):
+                extent = (size - 1) * step
+                lower += min(0, extent)
+                upper += max(0, extent)
+
+            span = (
+                (device, 0, 0)
+                if 0 in shape
+                else (
+                    device,
+                    data_ptr + lower * element_size,
+                    data_ptr + (upper + 1) * element_size,
+                )
+            )
+        except (
+            AttributeError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            OverflowError,
+        ):
+            return None
+
+        return key, shape, stride, span
+
+    def observe(
+        args,
+        kwargs,
+        *,
+        public=None,
+        bound_public=None,
+        alias_signature=None,
+    ):
+        del public, bound_public
+
+        try:
+            argument_count = len(args)
+
+            if argument_count > public_count:
+                return None
+
+            if argument_count == public_count and not kwargs:
+                values = args
+            else:
+                values = [missing] * public_count
+                values[:argument_count] = args
+
+                for name, value in kwargs.items():
+                    index = public_indexes.get(name)
+
+                    if index is None or index < argument_count:
+                        return None
+
+                    values[index] = value
+
+                if any(value is missing for value in values):
+                    return None
+
+            public_values = []
+            tensor_states = [None] * public_count
+
+            for index, value in enumerate(values):
+                is_tensor = type(value) is tensor_type
+
+                if not is_tensor and (
+                    getattr(value, "shape", None) is not None or hasattr(value, "dtype")
+                ):
+                    return None
+
+                if is_tensor:
+                    observed = observe_tensor(
+                        value,
+                        scalar=scalar_sources[index],
+                    )
+
+                    if observed is None:
+                        return None
+
+                    value_key, shape, stride, span = observed
+                    tensor_states[index] = (shape, stride, span)
+
+                    if len(shape) <= required_dims[index]:
+                        return None
+                else:
+                    if dynamic_sources[index]:
+                        return None
+
+                    value_key = _runtime_literal_key(value)
+
+                    if value_key is None:
+                        return None
+
+                public_values.append((public_args[index], value_key))
+
+            if alias_signature is None:
+                aliases = []
+
+                for writer_index, reader_index, pair in alias_pairs:
+                    writer_state = tensor_states[writer_index]
+                    reader_state = tensor_states[reader_index]
+
+                    if writer_state is None or reader_state is None:
+                        continue
+
+                    if values[writer_index] is values[reader_index]:
+                        aliases.append(pair)
+                        continue
+
+                    first_device, first_start, first_end = writer_state[2]
+                    second_device, second_start, second_end = reader_state[2]
+
+                    if first_device != second_device:
+                        continue
+
+                    if first_start == first_end or second_start == second_end:
+                        continue
+
+                    if first_start < second_end and second_start < first_end:
+                        aliases.append(pair)
+
+                alias_key = tuple(aliases)
+            else:
+                alias_key = _runtime_literal_key(alias_signature)
+
+                if alias_key is None:
+                    return None
+
+            key = (
+                "runtime-structural-observer-v2",
+                (argument_count, public_args[:argument_count], tuple(kwargs)),
+                tuple(public_values),
+                tuple(residual),
+                alias_key,
+            )
+            hash(key)
+        except (
+            AttributeError,
+            KeyError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            OverflowError,
+        ):
+            return None
+
+        return key
+
+    return observe
 
 
 def _triton_specialization_key(compilation, args, kwargs):
@@ -709,6 +1349,8 @@ def _runtime_binding_validator(compilation):
     def validate(public):
         for validator in validators:
             validator(public)
+
+    validate._ninetoothed_observer_safe = True
 
     return validate
 
