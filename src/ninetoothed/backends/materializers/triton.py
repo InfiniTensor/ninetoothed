@@ -666,6 +666,7 @@ def _tuned_runtime_launch(
         promoted_entry = (selection_key, selected, promoted)
         _remember_verified_runtime_call(prepared_calls, identity, promoted_entry)
         activate(identity, promoted_entry)
+
         return promoted_entry
 
     def candidate_structural_key(

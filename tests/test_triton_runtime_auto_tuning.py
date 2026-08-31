@@ -373,6 +373,7 @@ def _rebindable_verified_fixture(*, with_output=False, with_constexpr=False, spe
 
     def prepare_invocation(_values, _static_values, _call_sources):
         prepare_calls.append(object())
+
         return _RebindableInvocation(invoked)
 
     wrapped = runtime._runtime_wrapper(
@@ -429,6 +430,7 @@ def _observer_runtime_fixture(*, observer=None, validate_bindings=None):
 
     def prepare_invocation(_values, _static_values, _call_sources):
         prepare_calls.append(object())
+
         return _RebindableInvocation([])
 
     if observer is None:
@@ -445,6 +447,7 @@ def _observer_runtime_fixture(*, observer=None, validate_bindings=None):
         structural_key=_structural_key_builder(abi),
         structural_observer=observer,
     )
+
     return runtime._verified_runtime_launch(wrapped), abi, prepare_calls
 
 
@@ -463,6 +466,7 @@ def _observer_values(*, size=4, stride=1, dtype="float32", device="cuda:0"):
         device=device,
         data_ptr=2048,
     )
+
     return value, output
 
 
@@ -516,6 +520,7 @@ def test_verified_observer_hit_avoids_public_revalidation(monkeypatch):
     def public(*args, **kwargs):
         nonlocal public_calls
         public_calls += 1
+
         return original_public(*args, **kwargs)
 
     original_observer = triton_materializer._triton_structural_observer(
@@ -526,6 +531,7 @@ def test_verified_observer_hit_avoids_public_revalidation(monkeypatch):
     def observed(*args, **kwargs):
         nonlocal observer_calls
         observer_calls += 1
+
         return original_observer(*args, **kwargs)
 
     # Rebuild with the counting observer so the wrapper captures it before
@@ -585,6 +591,7 @@ def test_runtime_custom_validator_disables_observer_and_uses_structural_fallback
 
     def observer(*args, **kwargs):
         observed.append((args, kwargs))
+
         return ("must-not-be-used",)
 
     launch, _abi, prepare_calls = _observer_runtime_fixture(
@@ -941,6 +948,7 @@ def test_verified_structural_cache_requires_rebindable_invocation():
 
     def prepare_invocation(_values, _static_values, _call_sources):
         prepare_calls.append(object())
+
         return _NonRebindableInvocation([])
 
     wrapped = runtime._runtime_wrapper(
@@ -1014,6 +1022,7 @@ def test_tuned_structural_cache_reuses_selected_plan_with_current_output():
     def candidate():
         def prepare_invocation(_values, _static_values, _call_sources):
             prepare_calls.append(object())
+
             return _RebindableInvocation(invoked)
 
         return runtime._runtime_wrapper(
@@ -1103,10 +1112,11 @@ def test_tuned_structural_cache_validates_candidate_binding_overrides():
         validated_blocks.append(bound_public["block"])
 
         if bound_public["block"] != 64:
-            raise ValueError("candidate binding override was not applied")
+            raise ValueError("Candidate binding override was not applied.")
 
     def prepare_invocation(_values, _static_values, _call_sources):
         prepare_calls.append(object())
+
         return _RebindableInvocation(invoked)
 
     candidate = runtime._runtime_wrapper(

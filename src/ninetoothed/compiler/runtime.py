@@ -1208,6 +1208,7 @@ def _verified_runtime_launch(launch):
 
         _remember_verified_runtime_call(prepared_calls, identity, promoted)
         activate(identity, promoted)
+
         return promoted
 
     def remember(identity, prepared):
