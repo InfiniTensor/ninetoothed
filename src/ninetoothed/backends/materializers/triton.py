@@ -158,6 +158,9 @@ def _materialize(compilation):
                 specs=compilation.kernel.tensors,
                 prepare_invocation=_triton_prepare_invocation(launch, kernel),
                 validate_bindings=validate_bindings,
+                structural_observer=_triton_structural_observer(
+                    compilation.launch_abi,
+                ),
                 structural_key=(
                     lambda args, kwargs, public, bound_public: _triton_structural_key(
                         compilation,
@@ -213,6 +216,10 @@ def _candidate_launch(compilation, launch, kernel, candidate, validate_bindings)
         binding_overrides=meta_values,
         prepare_invocation=_triton_prepare_invocation(function, kernel),
         validate_bindings=validate_bindings,
+        structural_observer=_triton_structural_observer(
+            compilation.launch_abi,
+            binding_overrides=meta_values,
+        ),
         structural_key=(
             lambda args, kwargs, public, bound_public: _triton_structural_key(
                 compilation,
@@ -661,7 +668,22 @@ def _tuned_runtime_launch(
         activate(identity, promoted_entry)
         return promoted_entry
 
-    def candidate_structural_key(selected, args, kwargs, public):
+    def candidate_structural_key(
+        selected,
+        args,
+        kwargs,
+        public,
+        *,
+        alias_signature=None,
+    ):
+        observer = getattr(selected, "_ninetoothed_structural_observer", None)
+
+        if observer is not None:
+            observed = observer(args, kwargs)
+
+            if observed is not None:
+                return observed
+
         builder = getattr(selected, "_ninetoothed_structural_key", None)
 
         if builder is None:
@@ -669,7 +691,14 @@ def _tuned_runtime_launch(
 
         return builder(args, kwargs, public=public)
 
-    def find_structural(selection_key, args, kwargs, public):
+    def find_structural(
+        selection_key,
+        args,
+        kwargs,
+        public,
+        *,
+        alias_signature=None,
+    ):
         with structural_lock:
             structural_snapshot = tuple(structural_calls.items())
 
@@ -678,7 +707,13 @@ def _tuned_runtime_launch(
                 continue
 
             selected = entry[1]
-            current_key = candidate_structural_key(selected, args, kwargs, public)
+            current_key = candidate_structural_key(
+                selected,
+                args,
+                kwargs,
+                public,
+                alias_signature=alias_signature,
+            )
 
             if current_key != key:
                 continue
@@ -747,7 +782,13 @@ def _tuned_runtime_launch(
         key = tuner._make_arg_key(args, kwargs)
         alias_signature = _runtime_alias_signature(compilation.launch_abi, public)
         selection_key = (key, alias_signature)
-        structural = find_structural(selection_key, args, kwargs, public)
+        structural = find_structural(
+            selection_key,
+            args,
+            kwargs,
+            public,
+            alias_signature=alias_signature,
+        )
 
         if structural is not None:
             structural_key, structural_entry, pending = structural
@@ -827,6 +868,7 @@ def _tuned_runtime_launch(
                     args,
                     kwargs,
                     public,
+                    alias_signature=alias_signature,
                 )
                 remember_structural_best_effort(
                     structural_cache_key,
@@ -855,6 +897,7 @@ def _tuned_runtime_launch(
                 args,
                 kwargs,
                 public,
+                alias_signature=alias_signature,
             )
             remember_structural_best_effort(
                 structural_cache_key,
@@ -885,6 +928,7 @@ def _tuned_runtime_launch(
             args,
             kwargs,
             public,
+            alias_signature=alias_signature,
         )
         remember_structural_best_effort(
             structural_cache_key,
@@ -909,6 +953,336 @@ def _triton_structural_key(compilation, args, kwargs, public, *, bound_public=No
         bound_public=bound_public,
         alias_signature=_runtime_alias_signature(compilation.launch_abi, public),
     )
+
+
+def _triton_structural_observer(abi, *, binding_overrides=None, tensor_type=None):
+    """Build a conservative compact key for ordinary Triton launch ABIs.
+
+    Generated Triton launches repeat each public tensor as a pointer, shape,
+    and stride argument.  For an exact tensor type those derived values are
+    already covered by the public tensor contract, so the repeated binding
+    walk in the generic structural key can be omitted.  Any ABI or value that
+    is not proved equivalent falls back to the generic key in the runtime.
+    """
+    from ninetoothed.compiler.runtime import _runtime_literal_key
+
+    try:
+        if tensor_type is None:
+            import torch
+
+            tensor_type = torch.Tensor
+    except ImportError:
+        return None
+
+    public_args = tuple(abi.public_args)
+    public_indexes = {name: index for index, name in enumerate(public_args)}
+    public_count = len(public_args)
+    overrides = dict(binding_overrides or {})
+    bindings = tuple(abi.kernel_args)
+    supported = {"tensor", "scalar", "constexpr", "shape", "stride", "meta"}
+    scalar_kinds = {"scalar", "constexpr", "meta"}
+    dynamic_kinds = {"tensor", "shape", "stride"}
+
+    if (
+        not bindings
+        or len(public_indexes) != public_count
+        or set(abi.outputs).difference(public_indexes)
+        or any(name in public_indexes for name in overrides)
+    ):
+        return None
+
+    for value in overrides.values():
+        if getattr(value, "shape", None) is not None and hasattr(value, "dtype"):
+            return None
+
+    scalar_sources = [False] * public_count
+    dynamic_sources = [False] * public_count
+    required_dims = [-1] * public_count
+    residual = []
+    physical_access = {}
+    output_names = set(abi.outputs)
+
+    for binding in bindings:
+        kind = binding.kind
+        source = binding.source
+
+        if kind not in supported or kind.startswith("jagged_"):
+            return None
+
+        source_index = public_indexes.get(source)
+
+        if kind in dynamic_kinds:
+            if source_index is None:
+                return None
+
+            dynamic_sources[source_index] = True
+
+            if kind in {"shape", "stride"}:
+                if type(binding.dim) is not int or binding.dim < 0:
+                    return None
+
+                required_dims[source_index] = max(
+                    required_dims[source_index], binding.dim
+                )
+        elif kind in scalar_kinds and source_index is not None:
+            scalar_sources[source_index] = True
+        elif kind in {"scalar", "constexpr"}:
+            if source not in overrides:
+                return None
+
+            value_key = _runtime_literal_key(overrides[source])
+
+            if value_key is None:
+                return None
+
+            residual.append((binding.name, kind, source, binding.dim, value_key))
+        elif kind == "meta" and source_index is None:
+            if source in overrides:
+                value = overrides[source]
+            elif binding.value is not None:
+                value = binding.value
+            else:
+                return None
+
+            value_key = _runtime_literal_key(value)
+
+            if value_key is None:
+                return None
+
+            residual.append((binding.name, kind, source, binding.dim, value_key))
+
+        if kind not in {"tensor", "scalar", "constexpr"} or source_index is None:
+            continue
+
+        access = binding.access or (
+            "read"
+            if kind in {"scalar", "constexpr"}
+            else "read_write"
+            if source in output_names
+            else "read"
+        )
+        identity = (source_index, kind)
+        previous = physical_access.get(identity)
+
+        if previous is not None and previous != access:
+            access = "read_write"
+
+        physical_access[identity] = access
+
+    physical = tuple(
+        (source_index, kind, access)
+        for (source_index, kind), access in physical_access.items()
+    )
+    writers = tuple(item for item in physical if item[2] in {"write", "read_write"})
+    readers = tuple(item for item in physical if item[2] in {"read", "read_write"})
+    alias_pairs = tuple(
+        (
+            writer[0],
+            reader[0],
+            (
+                public_args[writer[0]],
+                writer[1],
+                public_args[reader[0]],
+                reader[1],
+            ),
+        )
+        for writer in writers
+        for reader in readers
+    )
+    missing = object()
+
+    def observe_tensor(value, *, scalar):
+        if type(value) is not tensor_type:
+            return None
+
+        try:
+            shape = tuple(value.shape)
+            stride = tuple(value.stride())
+            data_ptr = int(value.data_ptr())
+            storage_offset = int(value.storage_offset())
+            element_size = int(value.element_size())
+            dtype = value.dtype
+            device = value.device
+
+            if len(shape) != len(stride) or device is None or element_size <= 0:
+                return None
+
+            scalar_key = None
+
+            if scalar:
+                if shape:
+                    return None
+
+                scalar_key = _runtime_literal_key(value.item())
+
+                if scalar_key is None:
+                    return None
+
+            state = (
+                type(value),
+                len(shape),
+                shape,
+                stride,
+                dtype,
+                device,
+                storage_offset,
+                data_ptr & 15,
+            )
+            key = ("tensor", state)
+
+            if scalar_key is not None:
+                key = ("tensor", (*state, scalar_key))
+
+            lower = upper = 0
+
+            for size, step in zip(shape, stride):
+                extent = (size - 1) * step
+                lower += min(0, extent)
+                upper += max(0, extent)
+
+            span = (
+                (device, 0, 0)
+                if 0 in shape
+                else (
+                    device,
+                    data_ptr + lower * element_size,
+                    data_ptr + (upper + 1) * element_size,
+                )
+            )
+        except (
+            AttributeError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            OverflowError,
+        ):
+            return None
+
+        return key, shape, stride, span
+
+    def observe(
+        args,
+        kwargs,
+        *,
+        public=None,
+        bound_public=None,
+        alias_signature=None,
+    ):
+        del public, bound_public
+
+        try:
+            argument_count = len(args)
+
+            if argument_count > public_count:
+                return None
+
+            if argument_count == public_count and not kwargs:
+                values = args
+            else:
+                values = [missing] * public_count
+                values[:argument_count] = args
+
+                for name, value in kwargs.items():
+                    index = public_indexes.get(name)
+
+                    if index is None or index < argument_count:
+                        return None
+
+                    values[index] = value
+
+                if any(value is missing for value in values):
+                    return None
+
+            public_values = []
+            tensor_states = [None] * public_count
+
+            for index, value in enumerate(values):
+                is_tensor = type(value) is tensor_type
+
+                if not is_tensor and (
+                    getattr(value, "shape", None) is not None or hasattr(value, "dtype")
+                ):
+                    return None
+
+                if is_tensor:
+                    observed = observe_tensor(
+                        value,
+                        scalar=scalar_sources[index],
+                    )
+
+                    if observed is None:
+                        return None
+
+                    value_key, shape, stride, span = observed
+                    tensor_states[index] = (shape, stride, span)
+
+                    if len(shape) <= required_dims[index]:
+                        return None
+                else:
+                    if dynamic_sources[index]:
+                        return None
+
+                    value_key = _runtime_literal_key(value)
+
+                    if value_key is None:
+                        return None
+
+                public_values.append((public_args[index], value_key))
+
+            if alias_signature is None:
+                aliases = []
+
+                for writer_index, reader_index, pair in alias_pairs:
+                    writer_state = tensor_states[writer_index]
+                    reader_state = tensor_states[reader_index]
+
+                    if writer_state is None or reader_state is None:
+                        continue
+
+                    if values[writer_index] is values[reader_index]:
+                        aliases.append(pair)
+                        continue
+
+                    first_device, first_start, first_end = writer_state[2]
+                    second_device, second_start, second_end = reader_state[2]
+
+                    if first_device != second_device:
+                        continue
+
+                    if first_start == first_end or second_start == second_end:
+                        continue
+
+                    if first_start < second_end and second_start < first_end:
+                        aliases.append(pair)
+
+                alias_key = tuple(aliases)
+            else:
+                alias_key = _runtime_literal_key(alias_signature)
+
+                if alias_key is None:
+                    return None
+
+            key = (
+                "runtime-structural-observer-v2",
+                (argument_count, public_args[:argument_count], tuple(kwargs)),
+                tuple(public_values),
+                tuple(residual),
+                alias_key,
+            )
+            hash(key)
+        except (
+            AttributeError,
+            KeyError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            OverflowError,
+        ):
+            return None
+
+        return key
+
+    return observe
 
 
 def _triton_specialization_key(compilation, args, kwargs):
@@ -974,6 +1348,8 @@ def _runtime_binding_validator(compilation):
     def validate(public):
         for validator in validators:
             validator(public)
+
+    validate._ninetoothed_observer_safe = True
 
     return validate
 

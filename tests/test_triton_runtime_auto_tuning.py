@@ -70,8 +70,11 @@ class _FakeTensor:
         self._data_ptr = id(self) if data_ptr is None else data_ptr
         self._storage_offset = 0
 
-    def stride(self):
-        return self._stride
+    def stride(self, dim=None):
+        if dim is None:
+            return self._stride
+
+        return self._stride[dim]
 
     def data_ptr(self):
         return self._data_ptr
@@ -358,9 +361,7 @@ def _rebindable_verified_fixture(*, with_output=False, with_constexpr=False, spe
 
     if with_constexpr:
         public_args.append("scale")
-        bindings.append(
-            LaunchBinding(name="scale", kind="constexpr", source="scale")
-        )
+        bindings.append(LaunchBinding(name="scale", kind="constexpr", source="scale"))
 
     abi = LaunchABI(
         public_args=tuple(public_args),
@@ -383,6 +384,222 @@ def _rebindable_verified_fixture(*, with_output=False, with_constexpr=False, spe
     )
 
     return runtime._verified_runtime_launch(wrapped), abi, prepare_calls, invoked
+
+
+def _observer_runtime_fixture(*, observer=None, validate_bindings=None):
+    abi = LaunchABI(
+        public_args=("value", "output", "scale"),
+        kernel_args=(
+            LaunchBinding(
+                name="value",
+                kind="tensor",
+                source="value",
+                access="read",
+            ),
+            LaunchBinding(name="value_size", kind="shape", source="value", dim=0),
+            LaunchBinding(
+                name="value_stride",
+                kind="stride",
+                source="value",
+                dim=0,
+            ),
+            LaunchBinding(
+                name="output",
+                kind="tensor",
+                source="output",
+                access="write",
+            ),
+            LaunchBinding(
+                name="output_size",
+                kind="shape",
+                source="output",
+                dim=0,
+            ),
+            LaunchBinding(
+                name="output_stride",
+                kind="stride",
+                source="output",
+                dim=0,
+            ),
+            LaunchBinding(name="scale", kind="constexpr", source="scale"),
+        ),
+        outputs=("output",),
+    )
+    prepare_calls = []
+
+    def prepare_invocation(_values, _static_values, _call_sources):
+        prepare_calls.append(object())
+        return _RebindableInvocation([])
+
+    if observer is None:
+        observer = triton_materializer._triton_structural_observer(
+            abi,
+            tensor_type=_FakeTensor,
+        )
+
+    wrapped = runtime._runtime_wrapper(
+        lambda *_values: None,
+        abi,
+        prepare_invocation=prepare_invocation,
+        validate_bindings=validate_bindings,
+        structural_key=_structural_key_builder(abi),
+        structural_observer=observer,
+    )
+    return runtime._verified_runtime_launch(wrapped), abi, prepare_calls
+
+
+def _observer_values(*, size=4, stride=1, dtype="float32", device="cuda:0"):
+    value = _FakeTensor(
+        (size,),
+        stride=(stride,),
+        dtype=dtype,
+        device=device,
+        data_ptr=1024,
+    )
+    output = _FakeTensor(
+        (size,),
+        stride=(stride,),
+        dtype=dtype,
+        device=device,
+        data_ptr=2048,
+    )
+    return value, output
+
+
+def test_triton_observer_key_equivalence_covers_layout_scalar_form_and_alias():
+    observer = triton_materializer._triton_structural_observer(
+        _observer_runtime_fixture()[1],
+        tensor_type=_FakeTensor,
+    )
+    first = _observer_values()
+    second = _observer_values()
+
+    assert observer((*first, 2), {}) == observer((*second, 2), {})
+
+    for changed in (
+        ("shape", _observer_values(size=8)),
+        ("stride", _observer_values(stride=2)),
+        ("dtype", _observer_values(dtype="float16")),
+        ("device", _observer_values(device="cuda:1")),
+    ):
+        assert observer((*first, 2), {}) != observer((*changed[1], 2), {})
+
+    zero_sized = _observer_values(size=0)
+    assert observer((*zero_sized, 2), {}) is not None
+
+    offset_value, offset_output = _observer_values()
+    offset_value._storage_offset = 1
+    assert observer((*first, 2), {}) != observer((offset_value, offset_output, 2), {})
+    assert observer((*first, 2), {}) != observer((*first, 3), {})
+    assert observer(
+        (
+            *first[:1],
+            first[1],
+        ),
+        {"scale": 2},
+    ) != observer((*first, 2), {})
+    assert observer((first[0], first[0], 2), {}) != observer((*first, 2), {})
+
+
+def test_verified_observer_hit_avoids_public_revalidation(monkeypatch):
+    validated = 0
+
+    def validate(_public):
+        nonlocal validated
+        validated += 1
+
+    validate._ninetoothed_observer_safe = True
+    original_public = runtime._public_values
+    public_calls = 0
+    observer_calls = 0
+
+    def public(*args, **kwargs):
+        nonlocal public_calls
+        public_calls += 1
+        return original_public(*args, **kwargs)
+
+    original_observer = triton_materializer._triton_structural_observer(
+        _observer_runtime_fixture()[1],
+        tensor_type=_FakeTensor,
+    )
+
+    def observed(*args, **kwargs):
+        nonlocal observer_calls
+        observer_calls += 1
+        return original_observer(*args, **kwargs)
+
+    # Rebuild with the counting observer so the wrapper captures it before
+    # monkeypatching the public-value helper.
+    launch, _abi, prepare_calls = _observer_runtime_fixture(
+        observer=observed,
+        validate_bindings=validate,
+    )
+    monkeypatch.setattr(runtime, "_public_values", public)
+    first = _observer_values()
+    replacement = _observer_values()
+
+    launch(*first, 2)
+    launch(*replacement, 2)
+
+    assert len(prepare_calls) == 1
+    assert observer_calls == 2
+    assert public_calls == 1
+    assert validated == 1
+
+
+def test_triton_observer_fails_closed_for_unknown_types_and_jagged_bindings():
+    abi = _observer_runtime_fixture()[1]
+    observer = triton_materializer._triton_structural_observer(
+        abi,
+        tensor_type=_FakeTensor,
+    )
+
+    class TensorSubclass(_FakeTensor):
+        pass
+
+    value, output = _observer_values()
+    subclass = TensorSubclass((4,), data_ptr=4096)
+    assert observer((subclass, output, 2), {}) is None
+
+    jagged = LaunchABI(
+        public_args=("value",),
+        kernel_args=(
+            LaunchBinding(name="value", kind="jagged_values", source="value"),
+        ),
+    )
+    assert (
+        triton_materializer._triton_structural_observer(
+            jagged,
+            tensor_type=_FakeTensor,
+        )
+        is None
+    )
+
+
+def test_runtime_custom_validator_disables_observer_and_uses_structural_fallback():
+    validated = []
+    observed = []
+
+    def validate(public):
+        validated.append(public["scale"])
+
+    def observer(*args, **kwargs):
+        observed.append((args, kwargs))
+        return ("must-not-be-used",)
+
+    launch, _abi, prepare_calls = _observer_runtime_fixture(
+        observer=observer,
+        validate_bindings=validate,
+    )
+    first = _observer_values()
+    replacement = _observer_values()
+
+    launch(*first, 2)
+    launch(*replacement, 2)
+
+    assert observed == []
+    assert len(prepare_calls) == 1
+    assert validated
 
 
 def test_verified_structural_cache_reuses_plan_with_current_output():
@@ -836,9 +1053,9 @@ def test_tuned_structural_cache_reuses_selected_plan_with_current_output():
     nonlocals = inspect.getclosurevars(launch).nonlocals
     assert nonlocals["active"] is None
     assert handle._selected_tuning_candidate == {"id": "first"}
-    pending_promotions = inspect.getclosurevars(
-        nonlocals["find_structural"]
-    ).nonlocals["pending_promotions"]
+    pending_promotions = inspect.getclosurevars(nonlocals["find_structural"]).nonlocals[
+        "pending_promotions"
+    ]
     pending = next(iter(pending_promotions.values()))
     assert [reference() for reference in pending.owner_refs] == [
         replacement_value,

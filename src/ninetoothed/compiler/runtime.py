@@ -898,8 +898,7 @@ def _runtime_owner_refs_match(owner_refs, args, kwargs):
         return False
 
     return all(
-        previous() is current()
-        for previous, current in zip(owner_refs, current_refs)
+        previous() is current() for previous, current in zip(owner_refs, current_refs)
     )
 
 
@@ -1130,6 +1129,7 @@ def _verified_runtime_launch(launch):
     pending_promotions = {}
     structural_lock = threading.Lock()
     structural_key_builder = getattr(launch, "_ninetoothed_structural_key", None)
+    structural_observer = getattr(launch, "_ninetoothed_structural_observer", None)
 
     def evict(identity, token):
         nonlocal active, active_identity
@@ -1268,11 +1268,16 @@ def _verified_runtime_launch(launch):
 
             return launch._ninetoothed_invoke_prepared(cached, args, kwargs)
 
-        structural_key = (
-            structural_key_builder(args, kwargs)
-            if structural_key_builder is not None
-            else None
-        )
+        structural_key = None
+
+        if structural_observer is not None:
+            try:
+                structural_key = structural_observer(args, kwargs)
+            except Exception:  # noqa: BLE001
+                structural_key = None
+
+        if structural_key is None and structural_key_builder is not None:
+            structural_key = structural_key_builder(args, kwargs)
 
         with structural_lock:
             structural = _touch_structural_runtime_call(
@@ -1343,8 +1348,16 @@ def _runtime_wrapper(
     prepare_invocation=None,
     validate_bindings=None,
     structural_key=None,
+    structural_observer=None,
 ):
     overrides = dict(binding_overrides or {})
+
+    if validate_bindings is not None and not getattr(
+        validate_bindings,
+        "_ninetoothed_observer_safe",
+        False,
+    ):
+        structural_observer = None
 
     def prepare(args, kwargs, *, public=None):
         if public is None:
@@ -1432,6 +1445,20 @@ def _runtime_wrapper(
             return None
 
         return key
+
+    def build_structural_observer(
+        args,
+        kwargs,
+        *,
+        public=None,
+        alias_signature=None,
+    ):
+        if structural_observer is None:
+            return None
+
+        del public, alias_signature
+
+        return structural_observer(args, kwargs)
 
     def invoke(prepared, args, kwargs):
         if prepared.empty:
@@ -1530,6 +1557,13 @@ def _runtime_wrapper(
     launch._ninetoothed_structural_key = (
         build_structural_key
         if structural_key is not None and prepare_invocation is not None
+        else None
+    )
+    launch._ninetoothed_structural_observer = (
+        build_structural_observer
+        if structural_observer is not None
+        and structural_key is not None
+        and prepare_invocation is not None
         else None
     )
 
