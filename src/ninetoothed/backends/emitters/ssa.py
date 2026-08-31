@@ -405,8 +405,13 @@ def _render_source(
     vector_block_program = bool(
         target.vector_value_semantics
         and split_outer_inner
-        and len(value_axes) == 2
-        and has_dot
+        and (
+            (len(value_axes) == 2 and has_dot)
+            or (
+                reduction_schedule is None
+                and target.supports_application_block(value_axes)
+            )
+        )
     )
     vector_scalar_program = bool(
         target.vector_value_semantics and primary_atomic is not None and not value_axes
@@ -666,10 +671,11 @@ def _with_contiguous_1d_fast_path(
         layout_contiguous=True,
         vector_program=vector_program,
     )
+    predicate_terms = tuple(f"({stride} == 1)" for stride in stride_params)
     predicate = (
-        " && ".join(f"({stride} == 1)" for stride in stride_params)
+        " && ".join(predicate_terms)
         if target.c_style_syntax
-        else " and ".join(f"({stride} == 1)" for stride in stride_params)
+        else _nested_python_conjunction(predicate_terms)
     )
 
     if target.c_style_syntax:
@@ -686,6 +692,16 @@ def _with_contiguous_1d_fast_path(
         "else:\n"
         f"{_indent_block(generic_body, '    ')}"
     )
+
+
+def _nested_python_conjunction(terms: tuple[str, ...]) -> str:
+    """Render a binary conjunction accepted by older Triton AST parsers."""
+    predicate = terms[0]
+
+    for term in terms[1:]:
+        predicate = f"({predicate} and {term})"
+
+    return predicate
 
 
 def _simplify_unit_stride_expr(expr: str) -> str:
@@ -978,7 +994,6 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
 
     if op.opcode == "mem.store":
         value_name = op.operands[0]
-        value = _emit_value(value_name, ctx)
         tensor = op.operands[1]
         view_index = _store_index(op, ctx)
         info = ctx.tensor_infos.get(tensor)
@@ -1056,7 +1071,23 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
             )
 
         mask = _materialize_bool_expr(mask, ctx)
-        ctx.lines.append(ctx.target.store(tensor, store_index, value, mask=mask))
+
+        if ctx.target.c_style_syntax and mask is not None:
+            # Keep the pure producer slice behind the same bounds predicate as
+            # its store.  Emitting the value first makes every CUDA lane run
+            # masked loads and arithmetic even when only a narrow sub-domain
+            # can commit the result (for example a compressed cache row fused
+            # into a much wider query update).
+            body_lines: list[str] = []
+            body = ctx.child(lines=body_lines, memo=dict(ctx.memo))
+            value = _emit_value(value_name, body)
+            body_lines.append(ctx.target.store(tensor, store_index, value))
+            ctx.lines.append(f"if ({mask}) {{")
+            ctx.lines.extend(_indent_lines(body_lines, ctx.target))
+            ctx.lines.append("}")
+        else:
+            value = _emit_value(value_name, ctx)
+            ctx.lines.append(ctx.target.store(tensor, store_index, value, mask=mask))
 
         return
 
@@ -1088,6 +1119,20 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
         return ctx.memo[name]
 
     if not name.startswith("%"):
+        value_type = ctx.value_types.get(name)
+        output_names = {value.name for value in ctx.program.outputs}
+
+        # Rank-zero application arguments are passed by value in every
+        # backend ABI.  Tensor metadata is still retained for dtype and
+        # specialization, but it must not turn a scalar input into a pointer
+        # load (for example ``tl.load(eps + 0)`` in Triton).
+        if (
+            value_type is not None
+            and value_type.kind == "scalar"
+            and name not in output_names
+        ):
+            return name
+
         if name not in ctx.tensor_infos:
             if _is_bool_scalar_value(name, ctx) and ctx.target.tir_value_semantics:
                 return f"({name} != 0)"
@@ -1305,12 +1350,23 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
 
         return _load_tensor(tensor, index, ctx)
 
+    if opcode == "tensor.gather":
+        return _emit_tensor_gather(op, ctx)
+
     if opcode == "tensor.cast":
         return _cast_value(op, _emit_value(op.operands[0], ctx), ctx)
 
     if opcode == "select.where":
         args = tuple(_emit_value(operand, ctx) for operand in op.operands)
         args = (_materialize_bool_expr(args[0], ctx) or args[0], args[1], args[2])
+
+        if target.c_style_syntax and op.results:
+            result_type = target.arithmetic_result_type(op, ctx)
+            args = (
+                args[0],
+                target.cast(result_type.dtype, args[1]),
+                target.cast(result_type.dtype, args[2]),
+            )
 
         return target.where(args[0], args[1], args[2])
 
@@ -1370,7 +1426,12 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
         return _emit_linalg_dot(op, ctx)
 
     if opcode == "linalg.transpose":
-        return _emit_value(op.operands[0], ctx)
+        value = _emit_value(op.operands[0], ctx)
+
+        if target.vector_value_semantics:
+            return target.call("trans", (value,))
+
+        return value
 
     raise ValueError(f"Unsupported SSA opcode `{opcode}` for unified backend emitter.")
 
@@ -1419,8 +1480,9 @@ def _emit_linalg_dot(
     if ctx.block_program and len(lhs_axes) == 2 and len(rhs_axes) == 2:
         lhs_value = _emit_element(lhs, ctx.target.block_coords(lhs_axes), ctx)
         rhs_value = _emit_element(rhs, ctx.target.block_coords(rhs_axes), ctx)
+        operands = ctx.target.coerce_block_dot_operands(op, (lhs_value, rhs_value), ctx)
 
-        return ctx.target.call("block_dot", (lhs_value, rhs_value))
+        return ctx.target.call("block_dot", operands)
 
     if not lhs_axes or not rhs_axes:
         return ctx.target.call(
@@ -1447,7 +1509,15 @@ def _emit_linalg_dot(
 
     k_extent = lhs_axes[-1]
     loop_var = f"{local}_k"
-    ctx.lines.append(ctx.target.loop_header(loop_var, "0", k_extent, "1"))
+    ctx.lines.append(
+        ctx.target.loop_header(
+            loop_var,
+            "0",
+            k_extent,
+            "1",
+            static=False,
+        )
+    )
     body_lines: list[str] = []
     body = ctx.child(
         lines=body_lines,
@@ -1580,7 +1650,18 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
             return ctx.target.render_view(op, ctx)
         return _emit_element(op.operands[0], _view_base_coords(op, coords, ctx), ctx)
 
+    if op.opcode == "tensor.gather":
+        indices = op.operands[1]
+        index_coords = _broadcast_coords(
+            coords, _value_axes(op.results[0].name, ctx), _value_axes(indices, ctx)
+        )
+        index = _emit_element(indices, index_coords, ctx)
+        return _emit_element(op.operands[0], (index,), ctx)
+
     if op.opcode == "linalg.transpose":
+        if ctx.target.vector_value_semantics and ctx.block_program:
+            return ctx.target.call("trans", (_emit_value(op.operands[0], ctx),))
+
         return _emit_element(op.operands[0], tuple(reversed(coords)), ctx)
 
     if op.opcode == "tensor.cast":
@@ -1609,6 +1690,11 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
             args.append(_emit_element(operand, operand_coords, ctx))
 
         args[0] = _materialize_bool_expr(args[0], ctx) or args[0]
+
+        if ctx.target.c_style_syntax and op.results:
+            result_type = ctx.target.arithmetic_result_type(op, ctx)
+            args[1] = ctx.target.cast(result_type.dtype, args[1])
+            args[2] = ctx.target.cast(result_type.dtype, args[2])
 
         return ctx.target.where(args[0], args[1], args[2])
 
@@ -1941,6 +2027,30 @@ def _emit_offset_element(
             extract_indices=extract_indices,
         )
     return _emit_value(op.results[0].name, ctx)
+
+
+def _emit_tensor_gather(op: ssa.Operation, ctx: _EmitContext) -> str:
+    """Lower a rank-one gather to indexed access of the producer expression."""
+    if len(op.operands) < 2:
+        raise ValueError("`tensor.gather` requires an input and indices.")
+
+    input_, indices = op.operands[:2]
+    axes = _value_axes(input_, ctx)
+    axis = int(op.attrs.get("axis", 0) or 0)
+
+    if axis < 0:
+        axis += len(axes)
+
+    if len(axes) != 1 or axis != 0:
+        raise ValueError(
+            "Unified backend emission currently supports rank-one axis-0 gather."
+        )
+
+    index = _emit_value(indices, ctx)
+
+    if input_ in ctx.tensor_infos:
+        return _load_tensor(input_, index, ctx)
+    return _emit_element(input_, (index,), ctx)
 
 
 def _load_tensor_at(
@@ -2356,7 +2466,15 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
         ctx.lines.append(ctx.target.local_decl(result_type, local, init))
         acc_expr = local
 
-    ctx.lines.append(ctx.target.loop_header(loop_var, lower, upper, step))
+    ctx.lines.append(
+        ctx.target.loop_header(
+            loop_var,
+            lower,
+            upper,
+            step,
+            static=False,
+        )
+    )
     inner_lines: list[str] = []
     inner = ctx.child(
         lines=inner_lines,
@@ -2380,6 +2498,31 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
     if ctx.target.c_style_syntax:
         ctx.lines.append("}")
     return acc_expr
+
+
+def _small_static_loop(ctx: _EmitContext) -> bool:
+    limit = ctx.target.max_static_loop_output_numel
+
+    if limit is None or not ctx.block_program:
+        return False
+
+    numel = 1
+
+    for axis in ctx.output_axes:
+        try:
+            extent = int(str(axis).strip())
+        except (TypeError, ValueError):
+            return False
+
+        if extent <= 0:
+            return False
+
+        numel *= extent
+
+        if numel > limit:
+            return False
+
+    return True
 
 
 def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | None:
@@ -2438,7 +2581,15 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
     loop_bindings = dict(ctx.bindings or {})
     loop_bindings[induction] = loop_var
     loop_bindings.update(loop_locals)
-    ctx.lines.append(ctx.target.loop_header(loop_var, lower, upper, step))
+    ctx.lines.append(
+        ctx.target.loop_header(
+            loop_var,
+            lower,
+            upper,
+            step,
+            static=_small_static_loop(ctx),
+        )
+    )
     body_lines: list[str] = []
     body = ctx.child(
         lines=body_lines,
@@ -3955,6 +4106,10 @@ def _resolved_cast_dtype(op: ssa.Operation, ctx: _EmitContext) -> str:
 
 def _cast_value(op: ssa.Operation, value: str, ctx: _EmitContext) -> str:
     attr = op.attrs.get("dtype")
+    dtype = _resolved_cast_dtype(op, ctx)
+
+    if op.attrs.get("bitcast", False):
+        return ctx.target.bitcast(dtype, value)
 
     if ctx.target.vector_value_semantics and isinstance(attr, str):
         text = attr.strip().strip("'\"")
@@ -3964,7 +4119,7 @@ def _cast_value(op: ssa.Operation, value: str, ctx: _EmitContext) -> str:
 
             if match and match.group(1) in ctx.tensor_infos:
                 return f"{value}.to({match.group(1)}.dtype.element_ty)"
-    return ctx.target.cast(_resolved_cast_dtype(op, ctx), value)
+    return ctx.target.cast(dtype, value)
 
 
 # Public analysis and traversal hooks used by backend strategies.  Keeping this

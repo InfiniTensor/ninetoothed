@@ -17,6 +17,9 @@ class Tensor:
     :param jagged_dim: The jagged dimension of the tensor.
     :param other: The values for out-of-bounds positions.
     :param shape_options: The options for configuring shape symbols.
+    :param strides: Optional statically known source strides.  When provided,
+        generated kernels may specialize indexing for that layout and runtime
+        launch validation checks that callers still satisfy the contract.
     :param name: The name of the tensor.
     :param source: For internal use only.
     :param target_dims: For internal use only.
@@ -32,6 +35,7 @@ class Tensor:
         jagged_dim=None,
         other=None,
         shape_options=None,
+        strides=None,
         constexpr=None,
         value=None,
         name=None,
@@ -74,6 +78,15 @@ class Tensor:
             size if size is not None else Symbol(self.size_string(i), **size_options)
             for i, (size, size_options) in enumerate(zip(shape, shape_options))
         )
+
+        if strides is not None:
+            strides = tuple(strides)
+            if len(strides) != ndim:
+                raise ValueError(
+                    f"Expected {ndim} strides for a rank-{ndim} tensor, "
+                    f"but got {len(strides)}."
+                )
+        self.strides = strides
 
         self.other = other
 
@@ -625,6 +638,9 @@ class Tensor:
         return naming.auto_generate(f"{self.name}_size_{dim}")
 
     def stride_string(self, dim):
+        if self.strides is not None:
+            return self.strides[dim]
+
         if self.jagged_dim is not None and dim == 0:
             return 0
 

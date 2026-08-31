@@ -169,7 +169,8 @@ class CudaTarget(EmitterTarget):
             return f"auto {name} = {expr};"
         return f"{self.type_name(type_.dtype, type_.kind)} {name} = {expr};"
 
-    def loop_header(self, var, lower, upper, step):
+    def loop_header(self, var, lower, upper, step, *, static=True):
+        del static
         return f"for (int64_t {var} = {lower}; {var} < {upper}; {var} += {step}) {{"
 
     def reduce_update(self, operator, acc, term):

@@ -5,6 +5,7 @@ by operator family before emitting code; it delegates to the unified SSA
 emitter, whose dispatch unit is a single SSA operation.
 """
 
+import importlib.metadata
 from typing import TYPE_CHECKING, Any, Mapping
 
 from ninetoothed.backends.core import (
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
 
 class TritonBackend(Backend):
     name = Target.TRITON
+    supported_options = frozenset({"fp8_dot_fallback"})
     capability = Capability(
         name=name,
         emits_source=True,
@@ -38,6 +40,40 @@ class TritonBackend(Backend):
             "No source passthrough or kernel-specialized fallback is used.",
         ),
     )
+
+    def normalize_options(self, options: Mapping[str, Any]) -> Mapping[str, Any]:
+        normalized = dict(super().normalize_options(options))
+        fallback = normalized.get("fp8_dot_fallback", "auto")
+
+        if not isinstance(fallback, str):
+            raise TypeError(
+                "The Triton `fp8_dot_fallback` backend option must be a string."
+            )
+
+        fallback = fallback.strip().lower()
+
+        if fallback not in {"auto", "none", "float16", "bfloat16"}:
+            raise ValueError(
+                "The Triton `fp8_dot_fallback` backend option must be `auto`, "
+                "`none`, `float16`, or `bfloat16`."
+            )
+
+        if fallback == "auto":
+            try:
+                triton_version = importlib.metadata.version("triton").lower()
+            except importlib.metadata.PackageNotFoundError:
+                fallback = "none"
+            else:
+                if "+corex." in triton_version:
+                    fallback = "bfloat16"
+                elif ".dtk" in triton_version or "+das." in triton_version:
+                    fallback = "float16"
+                else:
+                    fallback = "none"
+
+        normalized["fp8_dot_fallback"] = fallback
+
+        return normalized
 
     def emit(self, kernel: Kernel) -> Artifact:
         return emit(kernel)

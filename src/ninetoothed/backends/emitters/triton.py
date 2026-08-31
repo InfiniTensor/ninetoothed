@@ -13,6 +13,22 @@ from ninetoothed.compiler.layout import LayoutTransfer, serialize_layout_transfe
 from ninetoothed.ir import Kernel, ssa
 from ninetoothed.naming import is_meta
 
+MAX_STATIC_UNROLL_TRIP_COUNT = 32
+
+
+def _static_trip_count(lower, upper, step):
+    try:
+        lower_value = int(str(lower).strip())
+        upper_value = int(str(upper).strip())
+        step_value = int(str(step).strip())
+    except (TypeError, ValueError):
+        return None
+
+    if step_value == 0:
+        return None
+
+    return len(range(lower_value, upper_value, step_value))
+
 
 def _legal_pre_tiled_block(shape, *, max_numel):
     static_numel = 1
@@ -52,6 +68,9 @@ class TritonTarget(EmitterTarget):
     source_route: str = "ssa-unified-triton-emitter"
     vector_value_semantics: bool = True
     max_vector_numel: int | None = 1 << 20
+    max_static_loop_output_numel: int | None = 2048
+    max_static_application_block_numel: int | None = 2048
+    fp8_dot_fallback: str = "none"
 
     def program_id(self, axis: int = 0) -> str:
         return f"tl.program_id({axis})"
@@ -70,6 +89,42 @@ class TritonTarget(EmitterTarget):
         )
 
         return f"tl.full({shape}, {value}, {dtype_expr})"
+
+    def coerce_block_dot_operands(self, operation, operands, context):
+        if self.fp8_dot_fallback not in {"float16", "bfloat16"}:
+            return operands
+
+        coerced = []
+        result = common.local_symbol(operation.results[0].name, context)
+        target_dtype = f"tl.{self.fp8_dot_fallback}"
+
+        for index, (label, value) in enumerate(zip(("lhs", "rhs"), operands)):
+            operand_type = context.value_types.get(operation.operands[index])
+            operand_dtype = (
+                None
+                if operand_type is None or operand_type.dtype is None
+                else common.normalize_dtype(operand_type.dtype)
+            )
+
+            if operand_dtype is not None and not operand_dtype.startswith("float8_"):
+                coerced.append(value)
+                continue
+
+            local = f"{result}_fp8_{label}"
+            context.lines.append(f"{local} = {value}")
+
+            if operand_dtype is not None:
+                context.lines.append(f"{local} = {local}.to({target_dtype})")
+            else:
+                context.lines.extend(
+                    (
+                        f"if {local}.dtype == tl.float8e5:",
+                        f"    {local} = {local}.to({target_dtype})",
+                    )
+                )
+            coerced.append(local)
+
+        return tuple(coerced)
 
     def literal(self, value: Any) -> str:
         if isinstance(value, float) and math.isinf(value):
@@ -97,6 +152,9 @@ class TritonTarget(EmitterTarget):
     def cast(self, dtype, value):
         return f"{value}.to(tl.{common.normalize_dtype(dtype)})"
 
+    def bitcast(self, dtype, value):
+        return f"{value}.to(tl.{common.normalize_dtype(dtype)}, bitcast=True)"
+
     def where(self, cond, yes, no):
         return f"tl.where({cond}, {yes}, {no})"
 
@@ -118,6 +176,7 @@ class TritonTarget(EmitterTarget):
 
         functions = {
             "abs": "tl.abs",
+            "arange": "tl.arange",
             "acos": "tl.acos",
             "asin": "tl.asin",
             "atan": "tl.atan",
@@ -130,6 +189,7 @@ class TritonTarget(EmitterTarget):
             "exp": "tl.exp",
             "exp2": "tl.exp2",
             "floor": "tl.floor",
+            "interleave": "tl.interleave",
             "log": "tl.log",
             "log1p": "tl.log",
             "log2": "tl.log2",
@@ -146,6 +206,7 @@ class TritonTarget(EmitterTarget):
             "sqrt": "tl.sqrt",
             "tan": "tl.tan",
             "tanh": "tl.tanh",
+            "trans": "tl.trans",
         }
 
         if name == "log1p":
@@ -166,8 +227,17 @@ class TritonTarget(EmitterTarget):
 
         return f"{name} = {expr}"
 
-    def loop_header(self, var, lower, upper, step):
-        return f"for {var} in range({lower}, {upper}, {step}):"
+    def loop_header(self, var, lower, upper, step, *, static=True):
+        trip_count = _static_trip_count(lower, upper, step)
+        iterator = (
+            "tl.static_range"
+            if static
+            and trip_count is not None
+            and 0 < trip_count <= MAX_STATIC_UNROLL_TRIP_COUNT
+            else "range"
+        )
+
+        return f"for {var} in {iterator}({lower}, {upper}, {step}):"
 
     def reduce_update(self, operator, acc, term):
         if operator == "sum":
@@ -199,6 +269,36 @@ class TritonTarget(EmitterTarget):
         if len(axes) == 1:
             values += ","
         return f"({values})"
+
+    def supports_application_block(self, axes: tuple[str, ...]) -> bool:
+        """Use one Triton program for a legal, statically tiled application."""
+        if not axes:
+            return False
+
+        numel = 1
+
+        for axis in axes:
+            try:
+                extent = int(str(axis).strip())
+            except (TypeError, ValueError):
+                return False
+
+            # Triton's block tensor dimensions must be powers of two.  Keep
+            # symbolic and irregular domains on the masked linear fallback.
+            if extent <= 0 or extent & (extent - 1):
+                return False
+
+            numel *= extent
+
+        limits = tuple(
+            limit
+            for limit in (
+                self.max_vector_numel,
+                self.max_static_application_block_numel,
+            )
+            if limit is not None
+        )
+        return not limits or numel <= min(limits)
 
     def render_view(self, operation, context) -> str:
         value = common.emit_value(operation.operands[0], context)
@@ -509,7 +609,12 @@ TARGET = TritonTarget()
 
 
 def emit(kernel: Kernel):
-    return common.emit(kernel, TARGET)
+    backend_options = kernel.compiler_options.get("backend_options", {})
+    target = TritonTarget(
+        fp8_dot_fallback=backend_options.get("fp8_dot_fallback", "none")
+    )
+
+    return common.emit(kernel, target)
 
 
 __all__ = ["TARGET", "TritonTarget", "emit"]

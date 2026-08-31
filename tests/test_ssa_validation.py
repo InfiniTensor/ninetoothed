@@ -98,6 +98,24 @@ def application(x, out):
     assert cast.results[0].type.dtype == "float16"
 
 
+def test_function_cast_preserves_bitcast_semantics():
+    program = from_source(
+        """
+def application(x, out):
+    out = cast(x, float32, bitcast=True)
+""",
+        (_tensor("x", ("n",), "int32"), _tensor("out", ("n",))),
+    )
+    cast = next(
+        operation
+        for operation in program.blocks[0].operations
+        if operation.opcode == "tensor.cast"
+    )
+
+    assert cast.attrs["bitcast"] is True
+    assert cast.results[0].type.dtype == "float32"
+
+
 def test_batched_matmul_type_preserves_broadcast_batch_domain():
     program = from_source(
         """

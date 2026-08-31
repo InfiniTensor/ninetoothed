@@ -6,6 +6,7 @@ It deliberately has no dependency on a backend source generator.
 
 import ast
 import copy
+import re
 from typing import Any
 
 import ninetoothed.naming as naming
@@ -246,13 +247,24 @@ def _access_templates(tensor) -> tuple[dict[str, Any], ...]:
     for offset, stride in zip(offsets, source_strides):
         linear += Symbol(offset) * Symbol(stride)
 
+    static_ranges = _static_access_ranges(view.shape, shapes, level)
+    statically_in_bounds = _statically_in_bounds(
+        offsets,
+        source_shape,
+        static_ranges,
+    )
+    simplified_mask = _simplify_static_predicate(mask, static_ranges)
     template = {
         "level": level,
         "shape": tuple(shape),
         "linear_offset": _text(linear),
         "offsets": tuple(_text(offset) for offset in offsets),
-        "mask": _text(mask),
+        "mask": "True" if statically_in_bounds else simplified_mask,
     }
+
+    if statically_in_bounds:
+        template["statically_in_bounds"] = True
+
     source = view.source
     jagged_dim = getattr(source, "jagged_dim", None)
 
@@ -267,7 +279,7 @@ def _access_templates(tensor) -> tuple[dict[str, Any], ...]:
     return (template,)
 
 
-def _view_index_attrs(tensor) -> dict[str, str]:
+def _view_index_attrs(tensor) -> dict[str, Any]:
     if int(getattr(tensor, "ndim", 0)) == 0:
         return {}
 
@@ -293,11 +305,293 @@ def _view_index_attrs(tensor) -> dict[str, str]:
 
     for offset, stride in zip(offsets, source_strides):
         linear += Symbol(offset) * Symbol(stride)
-    return {
+    view_ranges = _static_view_ranges(view.shape)
+    statically_in_bounds = _statically_in_bounds(
+        offsets,
+        source_shape,
+        view_ranges,
+    )
+    simplified_mask = _simplify_static_predicate(mask, view_ranges)
+    attrs = {
         "view_linear_offset": _text(linear),
-        "view_mask": _text(mask),
+        "view_mask": "True" if statically_in_bounds else simplified_mask,
         "view_offsets": tuple(_text(offset) for offset in offsets),
     }
+
+    if statically_in_bounds:
+        attrs["view_statically_in_bounds"] = True
+
+    return attrs
+
+
+def _static_access_ranges(view_shape, dtype_shapes, level):
+    ranges = _static_view_ranges(view_shape, name="outer_index")
+
+    if ranges is None:
+        return None
+
+    for prior_level, prior_shape in enumerate(dtype_shapes[:level]):
+        extents = _static_extents(prior_shape)
+
+        if extents is None:
+            return None
+
+        ranges.update(
+            {
+                f"extract_{prior_level}_{dim}": (0, extent - 1)
+                for dim, extent in enumerate(extents)
+            }
+        )
+
+    value_extents = _static_extents(dtype_shapes[level])
+
+    if value_extents is None:
+        return None
+
+    ranges.update(
+        {
+            f"value_{dim}": (0, extent - 1)
+            for dim, extent in enumerate(value_extents)
+        }
+    )
+
+    return ranges
+
+
+def _static_view_ranges(shape, *, name="index"):
+    extents = _static_extents(shape)
+
+    if extents is None:
+        return None
+
+    total = 1
+
+    for extent in extents:
+        total *= extent
+
+    return {name: (0, total - 1)}
+
+
+def _static_extents(shape):
+    extents = []
+
+    for value in shape:
+        text = _text(value).strip()
+
+        if not re.fullmatch(r"[0-9]+", text):
+            return None
+
+        extent = int(text)
+
+        if extent <= 0:
+            return None
+
+        extents.append(extent)
+
+    return tuple(extents)
+
+
+def _statically_in_bounds(offsets, source_shape, ranges):
+    source_extents = _static_extents(source_shape)
+
+    if ranges is None or source_extents is None:
+        return False
+
+    if len(offsets) != len(source_extents):
+        return False
+
+    for offset, extent in zip(offsets, source_extents):
+        interval = _static_interval(_text(offset), ranges)
+
+        if interval is None or interval[0] < 0 or interval[1] >= extent:
+            return False
+
+    return True
+
+
+def _simplify_static_predicate(expression, ranges):
+    text = _text(expression)
+
+    if ranges is None:
+        return text
+
+    try:
+        root = ast.parse(text, mode="eval").body
+    except (SyntaxError, TypeError, ValueError):
+        return text
+
+    def is_true(node):
+        return isinstance(node, ast.Constant) and node.value is True
+
+    def comparison_is_true(lhs, operator, rhs):
+        if isinstance(operator, ast.Lt):
+            return lhs[1] < rhs[0]
+
+        if isinstance(operator, ast.LtE):
+            return lhs[1] <= rhs[0]
+
+        if isinstance(operator, ast.Gt):
+            return lhs[0] > rhs[1]
+
+        if isinstance(operator, ast.GtE):
+            return lhs[0] >= rhs[1]
+
+        if isinstance(operator, ast.Eq):
+            return lhs[0] == lhs[1] == rhs[0] == rhs[1]
+
+        if isinstance(operator, ast.NotEq):
+            return lhs[1] < rhs[0] or rhs[1] < lhs[0]
+
+        return False
+
+    def simplify(node):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitAnd):
+            lhs = simplify(node.left)
+            rhs = simplify(node.right)
+
+            if is_true(lhs):
+                return rhs
+
+            if is_true(rhs):
+                return lhs
+
+            return ast.copy_location(ast.BinOp(left=lhs, op=node.op, right=rhs), node)
+
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+            values = [
+                value
+                for value in map(simplify, node.values)
+                if not is_true(value)
+            ]
+
+            if not values:
+                return ast.copy_location(ast.Constant(value=True), node)
+
+            if len(values) == 1:
+                return values[0]
+
+            return ast.copy_location(ast.BoolOp(op=node.op, values=values), node)
+
+        if isinstance(node, ast.Compare):
+            operands = (node.left, *node.comparators)
+            intervals = tuple(
+                _static_interval(ast.unparse(operand), ranges) for operand in operands
+            )
+
+            if all(interval is not None for interval in intervals) and all(
+                comparison_is_true(lhs, operator, rhs)
+                for lhs, operator, rhs in zip(intervals, node.ops, intervals[1:])
+            ):
+                return ast.copy_location(ast.Constant(value=True), node)
+
+        return node
+
+    return ast.unparse(simplify(root))
+
+
+def _static_interval(expression, ranges):
+    try:
+        node = ast.parse(expression, mode="eval").body
+    except (SyntaxError, TypeError, ValueError):
+        return None
+
+    def evaluate(current):
+        if isinstance(current, ast.Constant) and type(current.value) is int:
+            return current.value, current.value
+
+        if isinstance(current, ast.Name):
+            return ranges.get(current.id)
+
+        if isinstance(current, ast.UnaryOp):
+            operand = evaluate(current.operand)
+
+            if operand is None:
+                return None
+
+            if isinstance(current.op, ast.USub):
+                return -operand[1], -operand[0]
+
+            if isinstance(current.op, ast.UAdd):
+                return operand
+
+            return None
+
+        if isinstance(current, ast.BinOp):
+            lhs = evaluate(current.left)
+            rhs = evaluate(current.right)
+
+            if lhs is None or rhs is None:
+                return None
+
+            if isinstance(current.op, ast.Add):
+                return lhs[0] + rhs[0], lhs[1] + rhs[1]
+
+            if isinstance(current.op, ast.Sub):
+                return lhs[0] - rhs[1], lhs[1] - rhs[0]
+
+            if isinstance(current.op, ast.Mult):
+                products = (
+                    lhs[0] * rhs[0],
+                    lhs[0] * rhs[1],
+                    lhs[1] * rhs[0],
+                    lhs[1] * rhs[1],
+                )
+
+                return min(products), max(products)
+
+            if isinstance(current.op, ast.FloorDiv):
+                if rhs[0] != rhs[1] or rhs[0] <= 0:
+                    return None
+
+                divisor = rhs[0]
+
+                return lhs[0] // divisor, lhs[1] // divisor
+
+            if isinstance(current.op, ast.Mod):
+                if rhs[0] != rhs[1] or rhs[0] <= 0:
+                    return None
+
+                divisor = rhs[0]
+
+                if lhs[0] == lhs[1]:
+                    value = lhs[0] % divisor
+
+                    return value, value
+
+                if 0 <= lhs[0] and lhs[1] < divisor:
+                    return lhs
+
+                return 0, divisor - 1
+
+            return None
+
+        if isinstance(current, ast.Call) and isinstance(current.func, ast.Name):
+            if current.func.id == "Mod" and len(current.args) == 2:
+                return evaluate(
+                    ast.BinOp(
+                        left=current.args[0],
+                        op=ast.Mod(),
+                        right=current.args[1],
+                    )
+                )
+
+            if current.func.id == "floor" and len(current.args) == 1:
+                argument = current.args[0]
+
+                if isinstance(argument, ast.BinOp) and isinstance(argument.op, ast.Div):
+                    return evaluate(
+                        ast.BinOp(
+                            left=argument.left,
+                            op=ast.FloorDiv(),
+                            right=argument.right,
+                        )
+                    )
+
+                return evaluate(argument)
+
+        return None
+
+    return evaluate(node)
 
 
 def _tensor_layout(attrs: dict[str, Any]) -> TensorLayout:

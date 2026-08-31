@@ -138,7 +138,8 @@ class TileLangTarget(EmitterTarget):
 
         return f"{name} = {expr}"
 
-    def loop_header(self, var, lower, upper, step):
+    def loop_header(self, var, lower, upper, step, *, static=True):
+        del static
         serial = (
             f"T.serial({upper})"
             if lower == "0" and step == "1"

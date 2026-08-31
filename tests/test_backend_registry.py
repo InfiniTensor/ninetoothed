@@ -103,7 +103,8 @@ class TestRegistry:
                 "triton",
             )
 
-    def test_cuda_arch_is_materialized_in_nvcc_command(self):
+    def test_cuda_arch_is_materialized_in_nvcc_command(self, monkeypatch):
+        monkeypatch.setenv("NINETOOTHED_CUDA_LANGUAGE", "ivcore")
         command = cuda_compile_command(
             "kernel.cu",
             "kernel.so",
@@ -111,6 +112,7 @@ class TestRegistry:
             nvcc="/opt/cuda/bin/nvcc",
         )
         assert "-arch=sm_90" in command
+        assert "ivcore" not in command
 
     def test_default_registry_reports_three_backends(self):
         names = {capability.name for capability in backend_capabilities()}

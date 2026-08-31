@@ -28,6 +28,75 @@ def _application(input, other, output):
     output = input + other  # noqa: F841
 
 
+@pytest.mark.parametrize(
+    "target,requested,expected",
+    (
+        (SimpleNamespace(backend="cuda", arch=71, warp_size=64), 3, 1),
+        (SimpleNamespace(backend="cuda", arch=90, warp_size=32), 3, 3),
+        (SimpleNamespace(backend="hip", arch="gfx936", warp_size=64), 3, 3),
+        (None, 2, 2),
+    ),
+)
+def test_triton_num_stages_are_legalized_by_target_capability(
+    monkeypatch,
+    target,
+    requested,
+    expected,
+):
+    monkeypatch.setattr(
+        triton_materializer,
+        "_active_triton_target",
+        lambda: target,
+    )
+
+    assert triton_materializer._legalize_triton_num_stages(requested) == expected
+
+
+def test_triton_target_falls_back_to_torch_for_vendor_hip_abi(monkeypatch):
+    active = SimpleNamespace(
+        get_current_device=lambda: 0,
+    )
+    monkeypatch.setattr(torch.version, "hip", "6.3")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda _device: SimpleNamespace(
+            gcnArchName="gfx936:sramecc+:xnack-",
+            warp_size=64,
+        ),
+    )
+
+    target = triton_materializer._torch_hip_target(active)
+
+    assert target.backend == "hip"
+    assert target.arch == "gfx936"
+    assert target.warp_size == 64
+    assert active.get_current_target() == target
+
+
+def test_corex_stage_legalization_deduplicates_runtime_candidates(monkeypatch):
+    monkeypatch.setattr(
+        triton_materializer,
+        "_active_triton_target",
+        lambda: SimpleNamespace(backend="cuda", arch=71, warp_size=64),
+    )
+    compilation = SimpleNamespace(
+        launch_plan=SimpleNamespace(
+            tuning_candidates=(
+                {"id": "stages-2", "num_warps": 4, "num_stages": 2},
+                {"id": "stages-3", "num_warps": 4, "num_stages": 3},
+                {"id": "warps-8", "num_warps": 8, "num_stages": 3},
+            )
+        )
+    )
+
+    assert triton_materializer._legalized_tuning_candidates(compilation) == (
+        {"id": "stages-2_stages-1", "num_warps": 4, "num_stages": 1},
+        {"id": "warps-8_stages-1", "num_warps": 8, "num_stages": 1},
+    )
+
+
 def _control_dependent_inplace_arrangement(output):
     return (output.tile((1,)),)
 
@@ -251,6 +320,111 @@ def test_triton_single_and_plain_materialization_use_verified_launch(
     assert len(raw_calls) == 2
     assert public_calls == 1
     assert len(inspect.getclosurevars(handle._launch).nonlocals["prepared_calls"]) == 1
+
+
+def test_prevalidated_noalias_arms_alias_safe_selected_candidate_without_tuner_key():
+    abi = LaunchABI(
+        public_args=("value",),
+        kernel_args=(LaunchBinding(name="value", kind="tensor", source="value"),),
+        outputs=("value",),
+    )
+    calls = []
+    preparations = []
+
+    class RebindableInvocation:
+        requires_values = False
+
+        def __init__(self):
+            self.call = lambda args, _kwargs: calls.append(("bound", args[0]))
+
+        def __call__(self, _values, args, _kwargs):
+            calls.append(("prepared", args[0]))
+            return args[0]
+
+    def prepare_invocation(_values, _static_values, _call_sources):
+        preparations.append(True)
+        return RebindableInvocation()
+
+    candidate = runtime._runtime_wrapper(
+        lambda value: calls.append(("raw", value)) or value,
+        abi,
+        prepare_invocation=prepare_invocation,
+    )
+    value = _FakeTensor((4,))
+    handle = SimpleNamespace(
+        _launch=candidate,
+        _selected_tuning_candidate={"id": "single"},
+    )
+    compilation = SimpleNamespace(launch_abi=abi)
+    launch = triton_materializer._prevalidated_noalias_runtime_launch(
+        handle,
+        None,
+        compilation,
+        candidates_by_launch={candidate: {"id": "single"}},
+    )
+
+    assert launch(value) is value
+    assert launch(value) is value
+    assert preparations == [True]
+    assert calls == [("raw", value), ("prepared", value)]
+
+    bound = launch._ninetoothed_bind_prevalidated_noalias(value)
+
+    assert bound is not None
+    assert bound() is None
+    assert calls == [("raw", value), ("prepared", value), ("bound", value)]
+
+
+def test_prevalidated_noalias_binds_compiled_dynamic_invocation_once():
+    abi = LaunchABI(
+        public_args=("value",),
+        kernel_args=(LaunchBinding(name="value", kind="tensor", source="value"),),
+        outputs=("value",),
+    )
+    calls = []
+
+    class DirectInvocation:
+        requires_values = True
+
+        def __call__(self, values, args, _kwargs):
+            calls.append(("prepared", values[0], args[0]))
+            return args[0]
+
+        def bind(self, values, args, _kwargs):
+            calls.append(("bind", values[0], args[0]))
+            return lambda: calls.append(("direct", values[0], args[0]))
+
+    candidate = runtime._runtime_wrapper(
+        lambda value: calls.append(("raw", value)) or value,
+        abi,
+        prepare_invocation=lambda *_: DirectInvocation(),
+    )
+    value = _FakeTensor((4,))
+    handle = SimpleNamespace(
+        _launch=candidate,
+        _selected_tuning_candidate={"id": "single"},
+    )
+    compilation = SimpleNamespace(launch_abi=abi)
+    launch = triton_materializer._prevalidated_noalias_runtime_launch(
+        handle,
+        None,
+        compilation,
+        candidates_by_launch={candidate: {"id": "single"}},
+    )
+
+    assert launch(value) is value
+    bound = launch._ninetoothed_bind_prevalidated_noalias(value)
+
+    assert bound is not None
+    assert bound._ninetoothed_direct_compiled_launch
+    assert bound() is None
+    assert bound() is None
+    assert calls == [
+        ("raw", value),
+        ("bind", value, value),
+        ("direct", value, value),
+        ("direct", value, value),
+    ]
 
 
 def _verified_runtime_fixture(*, with_constexpr=False, outputs=()):
@@ -581,6 +755,71 @@ def test_triton_direct_winner_reuses_verified_binding_and_restores_aba(monkeypat
     assert tuner.calls == 2
     assert public_calls == 0
     assert binding_calls == 0
+
+
+def test_triton_direct_winner_rebinds_new_tensor_without_preparing_again():
+    abi = LaunchABI(
+        public_args=("value",),
+        kernel_args=(LaunchBinding(name="value", kind="tensor", source="value"),),
+    )
+    calls = []
+    preparations = []
+
+    class RebindableInvocation:
+        requires_values = False
+
+        def __init__(self, name):
+            self.name = name
+
+        def __call__(self, _values, args, kwargs):
+            value = args[0] if args else kwargs["value"]
+            calls.append((self.name, value))
+
+            return value
+
+    def candidate(name):
+        def prepare_invocation(_values, _static_values, _call_sources):
+            preparations.append(name)
+
+            return RebindableInvocation(name)
+
+        return runtime._runtime_wrapper(
+            lambda value: calls.append((name, value)) or value,
+            abi,
+            prepare_invocation=prepare_invocation,
+        )
+
+    candidates = (candidate("first"), candidate("second"))
+    tuner = _FakeTuner(candidates, lambda args, kwargs: "shared-key")
+    handle = SimpleNamespace(_selected_tuning_candidate=None)
+    launch = triton_materializer._tuned_runtime_launch(
+        tuner,
+        dict(zip(candidates, ({"id": "first"}, {"id": "second"}))),
+        handle,
+        SimpleNamespace(launch_abi=abi, kernel=SimpleNamespace(tensors=())),
+    )
+    first = _FakeTensor((4,))
+
+    assert launch(first) is first
+    assert tuner.calls == 1
+    assert preparations == ["first"]
+
+    calls.clear()
+    first_reference = weakref.ref(first)
+    del first
+    gc.collect()
+
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert first_reference() is None
+    assert nonlocals["prepared_calls"] == {}
+    assert len(nonlocals["rebindable_calls"]) == 1
+
+    second = _FakeTensor((4,))
+    assert launch(second) is second
+    assert calls == [("first", second)]
+    assert tuner.calls == 1
+    assert preparations == ["first"]
+    assert handle._selected_tuning_candidate == {"id": "first"}
 
 
 def test_triton_alias_selection_does_not_pollute_non_alias_tuning():
