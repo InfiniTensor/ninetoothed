@@ -1,0 +1,42 @@
+name: swiglu
+family: elementwise_binary
+pattern: 1d_tile_gated_activation
+
+description: SwiGLU 门控激活 c = a * (b * sigmoid(b))
+
+formula: "c = a * (b * sigmoid(b))"
+
+inputs:
+  - name: a
+    ndim: "any (flatten to 1D)"
+    dtype: float16
+  - name: b
+    ndim: "any (flatten to 1D)"
+    dtype: float16
+
+outputs:
+  - name: c
+    ndim: "same as a"
+    dtype: float16
+
+template: examples/swiglu/kernel.py
+torch_wrapper: examples/swiglu/torch_impl.py
+
+tile_strategy:
+  type: 1d
+  block_size: 1024
+  symbol: "Symbol('BLOCK_SIZE', constexpr=True)"
+  precision_ops:
+    - "ntl.sigmoid(ntl.cast(b, ntl.float32))"
+
+reference: "lambda a, b: a * (b * torch.sigmoid(b.float()).half())"
+
+acceptance:
+  correctness:
+    shapes: [[4096, 4096]]
+    atol: 0.001
+    rtol: 0.001
+  benchmark:
+    shapes: [[4096, 4096]]
+    warmup: 10
+    trials: 50

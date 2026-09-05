@@ -1,0 +1,147 @@
+# NineToothed Kernel Developer Agent
+# Agent interface metadata for orchestrating AI agents with this Skill.
+
+agent:
+  name: nt-devskill-agent
+  description: >
+    An AI agent that writes, tests, and optimizes NineToothed GPU kernels.
+    Follows the write->test->fix iterative loop defined in SKILL.md Step 2.5.
+
+capabilities:
+  - Write new NineToothed operators (kernel.py + torch_impl.py)
+  - Optimize existing kernels (tile size, autotuning, fusion)
+  - Debug compilation and runtime errors
+  - Run validation and benchmark scripts
+
+required_tools:
+  - tool: bash
+    purpose: Run python scripts, validate, benchmark
+  - tool: file_edit
+    purpose: Create and modify kernel.py, torch_impl.py, __init__.py
+  - tool: file_read
+    purpose: Read examples, references, specs, error logs
+
+skill_directory: skills/competition/nt-devskill  # READ-ONLY reference, never write new operators here
+
+startup_checks:
+  - command: python scripts/doctor.py
+    description: Verify environment (Python, PyTorch, GPU, ninetoothed)
+    on_failure: abort
+
+workflow:
+  steps:
+    - name: analyze_project
+      description: >
+        Analyze user project directory structure AND confirm testing environment.
+        Ask user: local GPU, MCP remote server, SSH remote, or no GPU?
+        Auto-detect available tools (torch.cuda, MCP tools, SSH).
+        Determine the test execution strategy for all subsequent steps.
+      action: >
+        1. Ask user about test environment (A/B/C/D options)
+        2. Auto-detect: torch.cuda.is_available(), MCP tool availability
+        3. Record test strategy: local / MCP upload+run_test / SSH / compile-only
+      mandatory: true
+
+    - name: classify
+      description: Route operator to family using TAXONOMY.md
+      reference: references/TAXONOMY.md
+
+    - name: scaffold
+      description: Generate kernel.py + torch_impl.py into USER PROJECT directory (not Skill directory)
+      reference: examples/  # read-only templates
+
+    - name: test
+      description: Run validation immediately (MANDATORY)
+      command: python scripts/validate.py --op <name>
+      max_retries: 3
+
+    - name: benchmark
+      description: Measure baseline performance with E2E + GPU-only timing
+      command: python scripts/benchmark.py --op <name>
+      mandatory_after_test: true
+
+    - name: diagnose
+      description: Run overhead breakdown to identify bottleneck type
+      command: python scripts/diag_overhead.py --op <name>
+      mandatory_after_test: true
+
+    - name: tile_sweep
+      description: Sweep tile sizes to find optimal configuration
+      command: python scripts/diag_tile_sweep.py --op <name>
+      trigger: "speedup < 1.0x or BW < 50 GB/s from diagnose step"
+
+    - name: optimize
+      description: Apply optimization based on diagnostic data (OC-1 through OC-6)
+      trigger: "after diagnose + tile_sweep, pick matching Optimization Card"
+      max_rounds: 3
+
+    - name: verify_optimization
+      description: Re-run correctness + diagnostics to confirm improvement
+      command: python scripts/validate.py --op <name> && python scripts/diag_overhead.py --op <name>
+      trigger: "after each optimization change"
+
+  constraints:
+    - NEVER silently skip testing — if local GPU unavailable, MUST try remote MCP tools (upload_code + run_test) before declaring UNVERIFIED
+    - NEVER stop at "it works" — MUST enter performance optimization after correctness PASS
+    - NEVER optimize without measurement — every change must be backed by diagnostic data
+    - NEVER bypass NineToothed with pure PyTorch — wrapper MUST call kernel(); if NineToothed cannot implement the operator, MUST produce a LIMITATION REPORT (not silently degrade)
+    - NEVER write new operator files into the Skill's examples/ directory
+    - ALWAYS write new operators into the user's project directory (determined in analyze_project step)
+    - NEVER generate multiple operators before testing each one
+    - NEVER use BLOCK_SIZE > 128 for non-dot 2D tiles on MetaX
+    - ALWAYS use [:, None] broadcasting with .offsets() in 2D+ kernels
+    - ALWAYS use from-import pattern (not import-as-module) for cross-kernel reuse
+
+validation_ladder:
+  order:
+    - level: 1
+      operators: [add, silu, swiglu]
+      max_time: 30s
+    - level: 2
+      operators: [softmax, fused_rms_norm]
+      max_time: 60s
+    - level: 3
+      operators: [matmul, bmm, addmm]
+      max_time: 120s
+    - level: 4
+      operators: [conv2d, max_pool2d]
+      max_time: 180s
+    - level: 5
+      operators: [scaled_dot_product_attention, rotary_position_embedding]
+      max_time: 180s
+
+error_recovery:
+  - pattern: "illegal memory access"
+    action: Check Tensor(other=...) and ntl.where masks. See FIX_CARDS FC-01.
+  - pattern: "cannot squeeze dim"
+    action: Verify dtype.squeeze() dimension count. See FIX_CARDS FC-02.
+  - pattern: "private memory"
+    action: Reduce tile size. See OPTIMIZATION_GUIDE MetaX section.
+  - pattern: "import error"
+    action: Use from-import pattern. See FIX_CARDS FC-09.
+
+test_fallback:
+  description: >
+    When testing cannot run locally, MUST follow this cascade before declaring failure.
+    NEVER silently skip testing.
+  levels:
+    - level: A
+      name: local_execution
+      command: python scripts/validate.py --op <name>
+      on_failure: proceed to Level B
+
+    - level: B
+      name: remote_execution
+      action: upload_code + run_test via MCP tools
+      on_failure: proceed to Level C
+
+    - level: C
+      name: compile_check
+      command: python -c "from <module>.kernel import kernel; print('OK')"
+      on_failure: proceed to Level D
+
+    - level: D
+      name: explicit_report
+      action: >
+        Report to user with UNVERIFIED badge, list all attempted levels and their results,
+        provide the command the user should run manually to verify.
