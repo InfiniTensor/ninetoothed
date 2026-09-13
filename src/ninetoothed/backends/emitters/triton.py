@@ -168,10 +168,10 @@ class TritonTarget(EmitterTarget):
             if context.temp_counter is None:
                 context.temp_counter = [0]
 
-            occupied = {self.symbol(name) for name in context.reserved_symbols}
+            occupied = {self.symbol(name) for name in context.parameter_names}
 
             while True:
-                temporary = f"ninetoothed_dot_arg_{context.temp_counter[0]}"
+                temporary = f"__nt_dot_arg_{context.temp_counter[0]}"
                 context.temp_counter[0] += 1
 
                 if temporary not in occupied:

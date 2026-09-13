@@ -345,9 +345,7 @@ def _render_source(
     variables = public_variables + tuple(
         binding["name"] for binding in auxiliary_bindings
     )
-    reserved_symbols = frozenset(
-        (*variables, *outputs, *shape_params, "BLOCK", "TILE_M", "TILE_N")
-    )
+    parameter_names = frozenset((*variables, *outputs, *shape_params))
 
     if "index" in {*variables, *outputs, *shape_params}:
         target = replace(target, index_name="__nt_index")
@@ -503,7 +501,7 @@ def _render_source(
         total,
         outer_index_expr,
         inner_index_expr,
-        reserved_symbols=reserved_symbols,
+        parameter_names=parameter_names,
         block_program=vector_block_program,
         native_block_program=native_block_program,
         vector_program=vector_reduction_program,
@@ -531,7 +529,7 @@ def _render_source(
         total,
         outer_index_expr,
         inner_index_expr,
-        reserved_symbols=reserved_symbols,
+        parameter_names=parameter_names,
         block_program=vector_block_program,
         native_block_program=native_block_program,
         vector_program=vector_reduction_program,
@@ -593,7 +591,7 @@ def _with_contiguous_1d_fast_path(
     outer_index_expr: str,
     inner_index_expr: str,
     *,
-    reserved_symbols: frozenset[str],
+    parameter_names: frozenset[str],
     block_program: bool,
     native_block_program: bool,
     vector_program: bool,
@@ -668,7 +666,7 @@ def _with_contiguous_1d_fast_path(
         total,
         outer_index_expr,
         inner_index_expr,
-        reserved_symbols=reserved_symbols,
+        parameter_names=parameter_names,
         block_program=block_program,
         native_block_program=native_block_program,
         layout_contiguous=True,
@@ -735,7 +733,7 @@ def _render_body(
     outer_index_expr: str,
     inner_index_expr: str,
     *,
-    reserved_symbols: frozenset[str] = frozenset(),
+    parameter_names: frozenset[str] = frozenset(),
     block_program: bool = False,
     native_block_program: bool = False,
     layout_contiguous: bool = False,
@@ -820,7 +818,7 @@ def _render_body(
         bindings={},
         temp_counter=[0],
         materialized={},
-        reserved_symbols=reserved_symbols,
+        parameter_names=parameter_names,
         indent="",
         block_program=block_program,
         native_block_program=native_block_program,

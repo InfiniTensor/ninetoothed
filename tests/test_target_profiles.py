@@ -550,7 +550,7 @@ def test_dot_operand_coercion_is_driven_by_profile_metadata(compiler_registry):
     runtime_source = coerced_runtime_dtype.artifact.primary_source
     assert "ninetoothed_dot_arg_0 = " not in runtime_source
     assert "ninetoothed_dot_arg_1 = " not in runtime_source
-    assert "ninetoothed_dot_arg_2 = " in runtime_source
+    assert "__nt_dot_arg_0 = " in runtime_source
     assert any(".to(tl.float16)" not in line for line in baseline_dot_lines)
     assert coerced_bfloat16_dot_lines
     assert all(".to(tl.float16)" not in line for line in coerced_bfloat16_dot_lines)
