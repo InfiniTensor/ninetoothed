@@ -34,9 +34,17 @@ def test_default_profiles_expose_normalized_independent_contracts():
         assert profile.name == profile.name.strip().lower().replace("_", "-")
         assert "family" not in profile.as_metadata()
         assert registry.get(profile.name) is profile
+        assert not profile.aliases
 
-        for alias in profile.aliases:
-            assert registry.get(alias) is profile
+        if profile.name != "generic":
+            assert profile.name == (
+                f"{profile.accelerator_vendor}-{profile.accelerator_name}"
+            )
+
+        assert profile.as_metadata()["accelerator_vendor"] == (
+            profile.accelerator_vendor
+        )
+        assert profile.as_metadata()["accelerator_name"] == profile.accelerator_name
 
         for backend, modes in profile.backend_modes.items():
             target = TargetContext(backend=backend, platform=profile)
@@ -49,6 +57,8 @@ def test_target_context_normalizes_aliases_and_optional_compute_architecture():
     profile = PlatformProfile(
         name="accelerator-v1",
         aliases=("current",),
+        accelerator_vendor="Vendor Name",
+        accelerator_name="Card_Name",
         compute_arch="arch-v1",
         device_types=("vendor",),
         backend_modes={"triton": frozenset({"jit"})},
@@ -58,6 +68,8 @@ def test_target_context_normalizes_aliases_and_optional_compute_architecture():
 
     assert target.backend == Target.TRITON
     assert target.platform is profile
+    assert target.platform.accelerator_vendor == "vendor-name"
+    assert target.platform.accelerator_name == "card-name"
     assert target.compute_arch == "arch-v1"
     assert target.device_types == ("vendor",)
 

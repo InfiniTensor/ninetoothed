@@ -15,10 +15,18 @@ class UnsupportedTargetCapabilityError(ValueError):
 
 @dataclass(frozen=True, kw_only=True)
 class PlatformProfile:
-    """One concrete platform profile without imposing a family hierarchy."""
+    """Separate a profile selector from accelerator identity and runtime type.
+
+    Vendor and model use normalized SMI/PyTorch product names without memory
+    capacity or board packaging. Compute architecture identifies related
+    hardware within a vendor; it does not imply interchangeable capabilities.
+    New profiles can explicitly reuse verified settings with dataclasses.replace.
+    """
 
     name: str
     aliases: tuple[str, ...] = ()
+    accelerator_vendor: str | None = None
+    accelerator_name: str | None = None
     compute_arch: str | None = None
     device_types: tuple[str, ...] = ("cuda",)
     backend_modes: Mapping[str, frozenset[str]] = field(default_factory=dict)
@@ -36,6 +44,16 @@ class PlatformProfile:
     def __post_init__(self) -> None:
         name = platform_id_for(self.name)
         aliases = tuple(platform_id_for(alias) for alias in self.aliases)
+        accelerator_vendor = (
+            None
+            if self.accelerator_vendor is None
+            else platform_id_for(self.accelerator_vendor.strip().replace(" ", "-"))
+        )
+        accelerator_name = (
+            None
+            if self.accelerator_name is None
+            else platform_id_for(self.accelerator_name.strip().replace(" ", "-"))
+        )
         device_types = tuple(
             dict.fromkeys(
                 str(device_type).strip().lower() for device_type in self.device_types
@@ -113,6 +131,8 @@ class PlatformProfile:
 
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "aliases", aliases)
+        object.__setattr__(self, "accelerator_vendor", accelerator_vendor)
+        object.__setattr__(self, "accelerator_name", accelerator_name)
         object.__setattr__(self, "device_types", device_types)
         object.__setattr__(
             self,
@@ -161,6 +181,8 @@ class PlatformProfile:
         """Return the stable, serializable portion of this profile."""
         return {
             "name": self.name,
+            "accelerator_vendor": self.accelerator_vendor,
+            "accelerator_name": self.accelerator_name,
             "compute_arch": self.compute_arch,
             "device_types": self.device_types,
             "backend_modes": {
@@ -448,7 +470,8 @@ def create_default_platform_registry() -> PlatformRegistry:
         ),
         PlatformProfile(
             name="nvidia-a100",
-            aliases=("a100",),
+            accelerator_vendor="nvidia",
+            accelerator_name="a100",
             compute_arch="sm_80",
             device_types=("cuda",),
             backend_modes=_backend_modes(tuple(Target)),
@@ -456,7 +479,8 @@ def create_default_platform_registry() -> PlatformRegistry:
         ),
         PlatformProfile(
             name="nvidia-h100",
-            aliases=("h100",),
+            accelerator_vendor="nvidia",
+            accelerator_name="h100",
             compute_arch="sm_90",
             device_types=("cuda",),
             backend_modes=_backend_modes(tuple(Target)),
@@ -464,6 +488,8 @@ def create_default_platform_registry() -> PlatformRegistry:
         ),
         PlatformProfile(
             name="cambricon-mlu590",
+            accelerator_vendor="cambricon",
+            accelerator_name="mlu590",
             compute_arch="mlu590",
             device_types=("mlu",),
             backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
@@ -472,6 +498,8 @@ def create_default_platform_registry() -> PlatformRegistry:
         ),
         PlatformProfile(
             name="ascend-910b3",
+            accelerator_vendor="ascend",
+            accelerator_name="910b3",
             compute_arch="ascend910b3",
             device_types=("npu",),
             backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
@@ -484,6 +512,8 @@ def create_default_platform_registry() -> PlatformRegistry:
         ),
         PlatformProfile(
             name="ascend-910b4",
+            accelerator_vendor="ascend",
+            accelerator_name="910b4",
             compute_arch="ascend910b4",
             device_types=("npu",),
             backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
@@ -492,13 +522,17 @@ def create_default_platform_registry() -> PlatformRegistry:
             metadata={"triton_block_size": 512},
         ),
         PlatformProfile(
-            name="tianshu-t150",
+            name="iluvatar-bi-v150",
+            accelerator_vendor="iluvatar",
+            accelerator_name="bi-v150",
             compute_arch="ivcore11",
             device_types=("cuda",),
             backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
         ),
         PlatformProfile(
-            name="tianshu-t200",
+            name="iluvatar-tg-v200",
+            accelerator_vendor="iluvatar",
+            accelerator_name="tg-v200",
             compute_arch="ivcore20",
             device_types=("cuda",),
             backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
@@ -506,7 +540,9 @@ def create_default_platform_registry() -> PlatformRegistry:
             metadata={"triton_dot_operand_coercions": {"float32": "float16"}},
         ),
         PlatformProfile(
-            name="muxi-c550",
+            name="metax-c550",
+            accelerator_vendor="metax",
+            accelerator_name="c550",
             compute_arch="c550",
             device_types=("cuda",),
             backend_modes={
@@ -532,13 +568,17 @@ def create_default_platform_registry() -> PlatformRegistry:
             },
         ),
         PlatformProfile(
-            name="muxi-x203",
+            name="metax-x203",
+            accelerator_vendor="metax",
+            accelerator_name="x203",
             compute_arch="hpcc-80",
             device_types=("cuda",),
             backend_modes={},
         ),
         PlatformProfile(
-            name="moore-s5000",
+            name="moore-threads-mtt-s5000",
+            accelerator_vendor="moore-threads",
+            accelerator_name="mtt-s5000",
             compute_arch="musa-31",
             device_types=("musa",),
             backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
@@ -548,6 +588,8 @@ def create_default_platform_registry() -> PlatformRegistry:
         ),
         PlatformProfile(
             name="hygon-bw1000",
+            accelerator_vendor="hygon",
+            accelerator_name="bw1000",
             compute_arch="gfx936",
             device_types=("cuda",),
             backend_modes={
@@ -562,7 +604,9 @@ def create_default_platform_registry() -> PlatformRegistry:
             },
         ),
         PlatformProfile(
-            name="kunlun-p800",
+            name="kunlunxin-p800",
+            accelerator_vendor="kunlunxin",
+            accelerator_name="p800",
             compute_arch="xpu3",
             device_types=("xpu",),
             backend_modes={},
