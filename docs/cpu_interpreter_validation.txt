@@ -1,0 +1,37 @@
+CPU interpreter submission validation — 2026-09-14
+
+Scope: focused submission tree; no GPU execution in this validation.
+Executable source reference: ed332733db28dbf16de06f166b16766760148958
+Matching src/tests/scripts/requirements files: 137
+Normalized source-map SHA256: bff9e7b64ff7f908e05ab75a68a8cf93865801ecc71c4df350517fc015b006a4
+Source hashes matched before and after validation.
+Project/runtime dependency metadata matches the reference revision.
+Python: 3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]
+Packages: {"numpy": "2.5.2", "pytest": "9.1.1", "ruff": "0.16.6", "sympy": "1.14.0"}
+Torch installed: no; Triton installed: no; CUDA_VISIBLE_DEVICES: empty.
+
+pytest output:
+460 passed, 15 deselected in 98.51s (0:01:38)
+JUnit: tests=460 failures=0 errors=0 skipped=0; 15 GPU cases deselected.
+Reproduction: see cpu_interpreter_acceptance.md, CPU reproduction command.
+
+ruff-check: exit 0
+ruff-format: exit 0
+style: exit 0
+cpu: exit 0
+sphinx: exit 0
+wheel-build: exit 0
+wheel-venv: exit 0
+wheel-deps: exit 0
+wheel-install: exit 0
+installed-probe: exit 0
+installed-demo: exit 0
+installed-replay: exit 0
+Wheel SHA256: b213d36a567beff1ed00b7117eb18ec9026676bdc7c8647be5f141b8c37cdbda
+Wheel Python sources matched against review tree: 67
+The ordinary wheel was installed with --no-deps into a separate CPU environment.
+The demo and exported replay both passed using python -I outside the source tree.
+
+A100 evidence is archived separately at computation revision ed33273:
+835 passed, 2 multi-GPU skips, 570.53 s. This was not rerun here.
+The executable source and tests are unchanged; archival-only discovery/style settings were removed.

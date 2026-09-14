@@ -16,13 +16,14 @@ pipelines, and deterministic target schedule selection.
 """
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from ninetoothed.backends.core import Target, normalize_target
 from ninetoothed.compiler.layout import LayoutTransfer, analyze_layout_transfer
 from ninetoothed.compiler.reductions import analyze_reductions
 from ninetoothed.ir import ssa
+from ninetoothed.ir.provenance import ProvenancePass, record_pass, seed_origins
 
 HARDWARE_INDEPENDENT = "hardware_independent"
 BACKEND_SPECIFIC = "backend_specific"
@@ -209,11 +210,12 @@ class Pipeline:
         self.spec = spec
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
-        current = ssa.verify_program(program)
+        current = seed_origins(ssa.verify_program(program))
         current = _with_metadata(current, pipeline_selection=self._pipeline_metadata())
 
         for pass_ in self.passes:
-            current = pass_.run(current, context)
+            before = current
+            current = record_pass(before, pass_.run(before, context), pass_.name)
             ssa.verify_program(current)
             current = _with_metadata(
                 current,
@@ -310,6 +312,7 @@ class DecomposeLinalg(Pass):
     phase = "canonicalization"
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
+        program = seed_origins(program)
         optimization = dict(program.metadata.get("optimization", {}))
 
         if optimization.get("preserve_linalg"):
@@ -321,18 +324,23 @@ class DecomposeLinalg(Pass):
             )
 
         value_types = _program_value_types(program)
+        provenance = ProvenancePass(program, self.name)
+        existing_names = set(value_types)
         blocks = tuple(
-            _decompose_linalg_block(block, value_types) for block in program.blocks
+            _decompose_linalg_block(block, value_types, provenance, existing_names)
+            for block in program.blocks
         )
 
-        return _replace_program(
-            program,
-            blocks=blocks,
-            metadata=dict(program.metadata)
-            | {
-                "linalg_decomposed": True,
-                "coarse_operator_nodes": False,
-            },
+        return provenance.finish(
+            _replace_program(
+                program,
+                blocks=blocks,
+                metadata=dict(program.metadata)
+                | {
+                    "linalg_decomposed": True,
+                    "coarse_operator_nodes": False,
+                },
+            )
         )
 
 
@@ -953,6 +961,8 @@ def _map_operation(operation: ssa.Operation, fn) -> ssa.Operation:
 def _decompose_linalg_block(
     block: ssa.Block,
     parent_value_types: Mapping[str, ssa.Type],
+    provenance: ProvenancePass,
+    existing_names: set[str],
 ) -> ssa.Block:
     value_types = dict(parent_value_types)
     value_types.update({arg.name: arg.type for arg in block.args})
@@ -960,9 +970,6 @@ def _decompose_linalg_block(
     for operation in block.operations:
         value_types.update({result.name: result.type for result in operation.results})
 
-    existing_names = {
-        value.name for operation in block.operations for value in operation.results
-    } | {arg.name for arg in block.args}
     temp_index = _next_temp_index(existing_names)
     transposes = {
         operation.results[0].name: operation
@@ -1034,36 +1041,45 @@ def _decompose_linalg_block(
                 ),
             )
             operations.extend(
-                (
-                    ssa.Operation(
-                        opcode="index.offset",
-                        operands=(output,),
-                        results=(col,),
-                        attrs={"dim": 0, "decomposition": "transpose"},
+                provenance.derive(
+                    (
+                        ssa.Operation(
+                            opcode="index.offset",
+                            operands=(output,),
+                            results=(col,),
+                            attrs={"dim": 0, "decomposition": "transpose"},
+                        ),
+                        ssa.Operation(
+                            opcode="index.offset",
+                            operands=(output,),
+                            results=(row,),
+                            attrs={"dim": 1, "decomposition": "transpose"},
+                        ),
+                        ssa.Operation(
+                            opcode="tensor.extract",
+                            operands=(source, row.name, col.name),
+                            results=(value,),
+                            attrs={"decomposition": "transpose", "source": True},
+                        ),
+                        ssa.Operation(
+                            opcode="mem.store",
+                            operands=(value.name, output),
+                            attrs=dict(operation.attrs)
+                            | {
+                                "target": operation.attrs.get("target", output),
+                                "decomposition": "transpose",
+                            },
+                        ),
                     ),
-                    ssa.Operation(
-                        opcode="index.offset",
-                        operands=(output,),
-                        results=(row,),
-                        attrs={"dim": 1, "decomposition": "transpose"},
-                    ),
-                    ssa.Operation(
-                        opcode="tensor.extract",
-                        operands=(source, row.name, col.name),
-                        results=(value,),
-                        attrs={"decomposition": "transpose", "source": True},
-                    ),
-                    ssa.Operation(
-                        opcode="mem.store",
-                        operands=(value.name, output),
-                        attrs=dict(operation.attrs)
-                        | {
-                            "target": operation.attrs.get("target", output),
-                            "decomposition": "transpose",
-                        },
-                    ),
+                    (transpose, operation),
+                    relation="split",
                 )
             )
+            # The generated extract is one scalar lane of the original tile.
+
+            if transpose.results[0].type.kind == "tensor":
+                provenance.map_result(transpose, operations[-2], projection="lane")
+
             continue
 
         if (
@@ -1073,29 +1089,55 @@ def _decompose_linalg_block(
         ):
             matmul = matmuls[operation.operands[0]]
             operations.extend(
-                _decompose_matmul_store(
-                    matmul,
-                    operation,
-                    value_types,
-                    existing_names,
-                    temp_index,
-                )[0]
+                provenance.derive(
+                    _decompose_matmul_store(
+                        matmul,
+                        operation,
+                        value_types,
+                        existing_names,
+                        temp_index,
+                    )[0],
+                    (matmul, operation),
+                    relation="split",
+                    recursive=True,
+                )
             )
+            # Complete outputs use lane equality. Inner checkpoints instead use
+            # independent formulas over the original matmul's captured inputs.
+
+            if (
+                matmul.results[0].type.kind == "tensor"
+                and matmul.results[0].type.dtype == operations[-2].results[0].type.dtype
+            ):
+                provenance.map_result(matmul, operations[-2], projection="lane")
+
+                for target, projection in zip(
+                    operations[-2].regions[0].operations[:4],
+                    ("matmul_lhs", "matmul_rhs", "matmul_term", "matmul_prefix"),
+                ):
+                    provenance.map_result(matmul, target, projection=projection)
+
             temp_index = _next_temp_index(existing_names)
             continue
 
         regions = tuple(
-            _decompose_linalg_block(region, value_types) for region in operation.regions
+            _decompose_linalg_block(region, value_types, provenance, existing_names)
+            for region in operation.regions
         )
-        operations.append(
-            ssa.Operation(
-                opcode=operation.opcode,
-                operands=operation.operands,
-                results=operation.results,
-                attrs=operation.attrs,
-                regions=regions,
+
+        if all(
+            mapped is original for mapped, original in zip(regions, operation.regions)
+        ):
+            operations.append(operation)
+        else:
+            operations.extend(
+                provenance.derive((replace(operation, regions=regions),), (operation,))
             )
-        )
+
+    if len(operations) == len(block.operations) and all(
+        mapped is original for mapped, original in zip(operations, block.operations)
+    ):
+        return block
     return ssa.Block(name=block.name, args=block.args, operations=tuple(operations))
 
 
@@ -1132,9 +1174,30 @@ def _decompose_matmul_store(
     product, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
     acc_next, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
     acc_result, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
+    # Fixed/compound K extents are not SSA symbols. Obtain the real arranged
+    # operand extent instead of introducing an undefined fallback name `k`.
+    lhs_type = value_types.get(lhs)
+    k_extent = None if lhs_type is None else _shape_dim(lhs_type.shape, -1)
+    bound_operations = ()
+    k_operand = k
+
+    if k_extent is not None and not str(k_extent).isidentifier():
+        bound, temp_index = _fresh_value(
+            existing_names, temp_index, ssa.Type(kind="index", dtype="int64")
+        )
+        bound_operations = (
+            ssa.Operation(
+                opcode="shape.dim",
+                operands=(lhs,),
+                results=(bound,),
+                attrs={"dim": -1},
+            ),
+        )
+        k_operand = bound.name
+
     loop = ssa.Operation(
         opcode="scf.for",
-        operands=(zero.name, k, one.name, acc_init.name),
+        operands=(zero.name, k_operand, one.name, acc_init.name),
         results=(acc_result,),
         attrs={
             "induction": kk.name,
@@ -1148,7 +1211,7 @@ def _decompose_matmul_store(
             "decomposition": "matmul",
             "m": m,
             "n": n,
-            "k": k,
+            "k": str(k_extent) if k_extent is not None else k,
         },
         regions=(
             ssa.Block(
@@ -1191,13 +1254,21 @@ def _decompose_matmul_store(
                 opcode="index.offset",
                 operands=(output,),
                 results=(row,),
-                attrs={"dim": 0, "decomposition": "matmul"},
+                attrs={
+                    "dim": 0,
+                    "decomposition": "matmul",
+                    "coordinate_space": "value",
+                },
             ),
             ssa.Operation(
                 opcode="index.offset",
                 operands=(output,),
                 results=(col,),
-                attrs={"dim": 1, "decomposition": "matmul"},
+                attrs={
+                    "dim": 1,
+                    "decomposition": "matmul",
+                    "coordinate_space": "value",
+                },
             ),
             ssa.Operation(
                 opcode="arith.constant",
@@ -1214,6 +1285,7 @@ def _decompose_matmul_store(
                 results=(acc_init,),
                 attrs={"value": 0.0, "decomposition": "matmul"},
             ),
+            *bound_operations,
             loop,
             ssa.Operation(
                 opcode="mem.store",
@@ -1222,6 +1294,7 @@ def _decompose_matmul_store(
                 | {
                     "target": store.attrs.get("target", output),
                     "decomposition": "matmul",
+                    "matmul_operands": (lhs, rhs),
                 },
             ),
         ),

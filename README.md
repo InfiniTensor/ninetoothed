@@ -19,6 +19,14 @@ pip install ninetoothed
 
 After successfully running the above command, `ninetoothed` will be installed. However, to fully utilize its capabilities, you also need to install a deep learning framework supported by `ninetoothed`. For trial purposes, we recommend installing `torch`.
 
+For the NumPy CPU interpreter and step debugger without Torch or Triton, follow
+the [CPU wheel installation instructions](docs/source/installation.rst#cpu-interpreter-without-gpu-packages).
+This explicit dependency override installs a normal wheel from this checkout;
+the default GPU installation above is unchanged. See the
+[CPU interpreter guide](docs/source/cpu_interpreter.rst) for supported operations.
+The [validation summary](docs/cpu_interpreter_acceptance.md) records the tested
+scope, reproduction commands, implementation tradeoffs and fixed evidence links.
+
 ## Usage
 
 Thanks to tensor-oriented meta-programming, NineToothed can be written using the **arrange-and-apply** paradigm, which involves separately defining `arrangement`, `application`, and `tensors`, and then integrating them using `ninetoothed.make` to generate the kernel.

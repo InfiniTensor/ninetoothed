@@ -1,6 +1,5 @@
 """Unified NineToothed SSA compiler driver."""
 
-import copy
 import inspect
 import itertools
 import math
@@ -16,8 +15,7 @@ from ninetoothed.backends.core import (
     Target,
     normalize_target,
 )
-from ninetoothed.frontend.layout import tensor_specs
-from ninetoothed.frontend.python import LoweringError, from_application
+from ninetoothed.frontend.preparation import prepare_application
 from ninetoothed.ir import IndexExpr, Kernel, LaunchABI, LaunchBinding, LaunchPlan, ssa
 from ninetoothed.naming import is_meta, remove_prefixes
 
@@ -207,53 +205,21 @@ def lower(
 def _compile_kernel(request: CompileRequest) -> Compilation:
     """Compile an application through SSA and a selected backend, without fallback."""
     application = request.application
-    params = tuple(inspect.signature(application).parameters)
-
-    if request.arrangement is None:
-        annotations = inspect.get_annotations(application, eval_str=False)
-
-        try:
-            arranged = tuple(copy.deepcopy(annotations[name]) for name in params)
-        except KeyError as exc:
-            raise LoweringError(
-                f"Cannot lower `{application.__name__}`: parameter `{exc.args[0]}` "
-                "does not have a Tensor annotation."
-            ) from exc
-    else:
-        symbolic_tensors = copy.deepcopy(request.tensors)
-        arranged_value = request.arrangement(*symbolic_tensors)
-        arranged = (
-            arranged_value if isinstance(arranged_value, tuple) else (arranged_value,)
-        )
-
-    if len(arranged) != len(params):
-        raise LoweringError(
-            f"Cannot lower `{application.__name__}`: arrangement returned "
-            f"{len(arranged)} values for {len(params)} parameters."
-        )
-
-    for name, tensor in zip(params, arranged):
-        dtype = (request.tensor_dtypes or {}).get(name)
-
-        if dtype is not None:
-            getattr(tensor, "source", tensor).dtype = dtype
-
-    specs = tensor_specs(params, arranged)
     kernel_name = request.kernel_name or application.__name__
+    prepared = prepare_application(
+        application,
+        arrangement=request.arrangement,
+        tensors=request.tensors,
+        tensor_dtypes=request.tensor_dtypes,
+        kernel_name=kernel_name,
+    )
+    params, arranged, specs, program = (
+        prepared.parameters,
+        prepared.arranged,
+        prepared.tensors,
+        prepared.program,
+    )
     meta_defaults = _meta_defaults(arranged)
-
-    try:
-        program = from_application(application, specs, kind=kernel_name, strict=True)
-    except LoweringError as exc:
-        raise LoweringError(
-            f"Cannot lower `{application.__name__}` through the SSA backend path: {exc}."
-        ) from exc
-
-    if program is None:
-        raise LoweringError(
-            f"Cannot lower `{application.__name__}` through the SSA backend path: "
-            "source inspection did not produce ssa.Program."
-        )
 
     target = resolve_target(request.backend)
     _validate_tuning_options(target, request)

@@ -122,8 +122,9 @@ def test_squeezing_the_innermost_level(num_rows, num_cols, num_indices, device):
     kernel = ninetoothed.make(arrangement, application, tensors)
 
     input = torch.randn((num_indices, num_cols), device=device)
-    indices = torch.randint(0, num_rows, (num_indices,), device=device)
-    output = torch.empty((num_rows, num_cols), device=device)
+    # Use distinct target rows and defined values for rows that remain untouched.
+    indices = torch.randperm(num_rows, device=device)[:num_indices]
+    output = torch.full((num_rows, num_cols), -123.0, device=device)
     expected = output.clone()
 
     kernel(input, indices, output)

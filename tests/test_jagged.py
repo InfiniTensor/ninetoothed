@@ -9,6 +9,23 @@ from ninetoothed import Symbol, Tensor
 from tests.utils import get_available_devices
 
 
+def _nested_tensor_from_batches(batches, jagged_dim):
+    # Explicit packing supports both jagged dimensions on PyTorch 2.5.
+    packed_dim = jagged_dim - 1
+    offsets = [0]
+
+    for batch in batches:
+        offsets.append(offsets[-1] + batch.shape[packed_dim])
+
+    values = torch.cat(batches, dim=packed_dim)
+
+    return torch.nested.nested_tensor_from_jagged(
+        values,
+        torch.tensor(offsets, dtype=torch.int64, device=values.device),
+        jagged_dim=jagged_dim,
+    )
+
+
 class ToPaddedTensor:
     BLOCK_SIZE = Symbol("block_size", constexpr=True)
 
@@ -76,11 +93,18 @@ def test_to_padded_tensor(ndim, jagged_dim, num_batches, padding, device):
         for _ in range(num_batches)
     )
 
-    input = torch.nested.nested_tensor(batches, layout=torch.jagged)
+    input = _nested_tensor_from_batches(batches, jagged_dim)
+    expected_shape = (num_batches,) + tuple(
+        max(batch.shape[dim] for batch in batches) for dim in range(ndim - 1)
+    )
+    expected = torch.full(
+        expected_shape, padding, dtype=batches[0].dtype, device=device
+    )
+
+    for index, batch in enumerate(batches):
+        expected[(index,) + tuple(slice(0, size) for size in batch.shape)] = batch
 
     output = to_padded_tensor(input, padding=padding, jagged_dim=jagged_dim)
-
-    expected = torch.nested.to_padded_tensor(input, padding)
 
     assert output.shape == expected.shape and torch.allclose(output, expected)
 
@@ -143,16 +167,21 @@ def test_expand(ndim, jagged_dim, num_batches, device):
         for _ in range(num_batches)
     )
 
-    dst = torch.nested.nested_tensor(batches, layout=torch.jagged)
+    dst = _nested_tensor_from_batches(batches, jagged_dim)
     src = torch.randn(
         tuple(size if dim != jagged_dim else 1 for dim, size in enumerate(dst.shape)),
         dtype=dst.dtype,
         device=dst.device,
     )
 
+    expected = torch.cat(
+        tuple(src[index].expand(batch.shape) for index, batch in enumerate(batches)),
+        dim=jagged_dim - 1,
+    )
+    expected_offsets = dst.offsets().clone()
+
     copy(dst, src, jagged_dim)
 
-    dst = torch.nested.to_padded_tensor(dst, 0)
-    src = src.expand_as(dst)
-
-    assert dst.shape == src.shape and torch.allclose(dst[dst != 0], src[dst != 0])
+    actual = dst.values()
+    assert actual.shape == expected.shape and torch.allclose(actual, expected)
+    assert torch.equal(dst.offsets(), expected_offsets)

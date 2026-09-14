@@ -51,6 +51,7 @@ class TritonTarget(EmitterTarget):
     suffix: str = "triton.py"
     source_route: str = "ssa-unified-triton-emitter"
     vector_value_semantics: bool = True
+    signed_division_rounds_to_zero: bool = True
     max_vector_numel: int | None = 1 << 20
 
     def program_id(self, axis: int = 0) -> str:
