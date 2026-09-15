@@ -19,6 +19,7 @@ from ninetoothed.backends.toolchain import find_nvcc
 from ninetoothed.compiler.cache import (
     TRITON_CACHE_DIR,
     artifact_directory,
+    atomic_write_bytes,
     cache_lock,
     compilation_cache_key,
     read_manifest,
@@ -32,7 +33,7 @@ from ninetoothed.compiler.layout_runtime import (
 )
 from ninetoothed.targets import runtime_device_types
 
-_TRITON_AOT_LAUNCHER_SCHEMA = 1
+_TRITON_AOT_LAUNCHER_SCHEMA = 2
 _TRITON_MODULE_PATTERN = re.compile(
     r"^CUmodule ([A-Za-z_][A-Za-z0-9_]*)_mod = NULL;$", re.MULTILINE
 )
@@ -898,7 +899,11 @@ def _ensure_aot_library(compilation, source: Path, library: Path) -> None:
     manifest = read_manifest(library.with_suffix(".manifest.json"))
     schema = None if manifest is None else manifest.get("triton_aot_launcher_schema")
 
-    if not library.is_file() or schema != _TRITON_AOT_LAUNCHER_SCHEMA:
+    if (
+        not library.is_file()
+        or schema != _TRITON_AOT_LAUNCHER_SCHEMA
+        or _cpp_source_bundle(library) is None
+    ):
         _compile_aot_library(compilation, source, library)
 
 
@@ -1022,6 +1027,67 @@ def _compile_aot_library(compilation, source: Path, library: Path) -> None:
             check=True,
         )
         os.replace(output, library)
+        _write_cpp_sources(compilation, sources, linked, context_guard, library)
+
+
+def _write_cpp_sources(compilation, sources, linked, context_guard, library):
+    name = compilation.artifact.kernel_name
+    enter = f"{name}_triton_enter"
+    leave = f"{name}_triton_leave"
+    files = {
+        f"{name}.triton.{path.stem}.cpp": (
+            '#include <cstdlib>\n#include <cuda.h>\nextern "C" {\n'
+            + path.read_text(encoding="utf-8")
+            + "\n}\n"
+        )
+        for path in (*sources, linked.with_suffix(".c"))
+    }
+    guard = context_guard.read_text(encoding="utf-8")
+    guard = guard.replace("ninetoothed_triton_enter", enter)
+    guard = guard.replace("ninetoothed_triton_leave", leave)
+    files[f"{name}.triton.launch.cpp"] = guard
+    write_manifest(library.with_suffix(".sources.json"), files)
+
+
+def _cpp_source_bundle(library):
+    sources = read_manifest(library.with_suffix(".sources.json"))
+
+    if not sources or not all(
+        Path(name).name == name and isinstance(source, str)
+        for name, source in sources.items()
+    ):
+        return None
+
+    if not all(
+        any(name.endswith(suffix) for name in sources)
+        for suffix in (".triton.launch.cpp", ".triton.linked.cpp")
+    ):
+        return None
+    return sources
+
+
+def publish_cpp_sources(compilation, output_dir):
+    """Publish standalone sources for a concrete Triton build variant."""
+    from ninetoothed.backends.materializers.cpp import wrapper_source, write_header
+
+    name = compilation.artifact.kernel_name
+    library = (
+        artifact_directory(compilation_cache_key(compilation)) / f"{name}.triton.so"
+    )
+    output_dir = Path(output_dir)
+    sources = _cpp_source_bundle(library)
+
+    if sources is None:
+        raise RuntimeError("Triton AOT artifact is missing its C++ sources.")
+
+    sources = dict(sources)
+    sources[f"{name}.triton.launch.cpp"] += wrapper_source(
+        compilation, f"{name}_triton_enter", f"{name}_triton_leave"
+    )
+    write_header(output_dir)
+
+    for filename, source in sources.items():
+        atomic_write_bytes(output_dir / filename, source.encode("utf-8"))
 
 
 def _triton_aot_kernel_names(sources: tuple[Path, ...]) -> tuple[str, ...]:
