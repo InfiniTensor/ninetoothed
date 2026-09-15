@@ -12,6 +12,11 @@ from ninetoothed.backends.core import (
     normalize_target,
 )
 from ninetoothed.ir import Kernel
+from ninetoothed.targets import (
+    TargetContext,
+    resolve_target_context,
+    target_backend_options,
+)
 
 
 def create_default_registry() -> Registry:
@@ -41,11 +46,24 @@ def default_registry() -> Registry:
 def emit(
     kernel: Kernel,
     backend: Target | str | None = None,
+    *,
+    target_context: TargetContext | None = None,
 ) -> Artifact:
     target = normalize_target(backend)
+    target_context = target_context or resolve_target_context(target)
+
+    if target_context.backend != target:
+        raise ValueError(
+            f"Target context backend `{target_context.backend.value}` does not match "
+            f"emitter backend `{target.value}`."
+        )
+
     backend_impl = default_registry().get(target)
     backend_options = backend_impl.normalize_options(
-        dict(kernel.compiler_options.get("backend_options", {}))
+        target_backend_options(
+            target_context,
+            dict(kernel.compiler_options.get("backend_options", {})),
+        )
     )
 
     if backend_options != kernel.compiler_options.get("backend_options", {}):
@@ -55,30 +73,49 @@ def emit(
             | {"backend_options": backend_options},
         )
 
-    kernel = _prepare_kernel_for_backend(kernel, target)
+    target_metadata = target_context.as_metadata()
+    kernel = replace(
+        kernel,
+        compiler_options=dict(kernel.compiler_options) | {"target": target_metadata},
+        metadata=dict(kernel.metadata) | {"target": target_metadata},
+    )
+    kernel = _prepare_kernel_for_backend(kernel, target, target_context)
     kernel = backend_impl.prepare_for_emission(kernel)
 
     return backend_impl.emit(kernel)
 
 
-def _prepare_kernel_for_backend(kernel: Kernel, target: Target) -> Kernel:
-    from ninetoothed.compiler.passes import lower_for_target
+def _prepare_kernel_for_backend(
+    kernel: Kernel,
+    target: Target,
+    target_context: TargetContext,
+) -> Kernel:
+    from ninetoothed.compiler.passes import lower_for_target, validate_for_target
 
     ssa = kernel.ssa
 
     if ssa is None:
         return kernel
 
-    if ssa.metadata.get("target_backend") != target.value:
+    if ssa.metadata.get("target") != target_context.as_metadata():
         ssa = lower_for_target(
             ssa,
             backend=target,
+            target_context=target_context,
             compiler_options=kernel.compiler_options,
             kernel_metadata=kernel.metadata,
             tensors=kernel.tensors,
             pass_pipeline=kernel.compiler_options.get("ssa_pass_pipeline"),
             pass_options=kernel.compiler_options.get("ssa_pass_options"),
         )
+
+    ssa = validate_for_target(
+        ssa,
+        backend=target,
+        target_context=target_context,
+        compiler_options=kernel.compiler_options,
+        kernel_metadata=kernel.metadata,
+    )
 
     return type(kernel)(
         kernel_name=kernel.kernel_name,
@@ -94,6 +131,8 @@ def _prepare_kernel_for_backend(kernel: Kernel, target: Target) -> Kernel:
         | {
             "ssa_pipeline": tuple(ssa.metadata.get("pass_trace", ())),
             "ssa_target_backend": ssa.metadata.get("target_backend"),
+            "ssa_target_platform": ssa.metadata.get("target_platform"),
+            "ssa_target_compute_arch": ssa.metadata.get("target_compute_arch"),
         },
         ssa=ssa,
     )

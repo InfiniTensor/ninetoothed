@@ -12,6 +12,8 @@ def aot(
     num_stages=None,
     *,
     backend=None,
+    platform=None,
+    compute_arch=None,
     pipeline=None,
     pass_options=None,
     **backend_options,
@@ -20,6 +22,8 @@ def aot(
     return _compiler_aot(
         func,
         backend=backend,
+        platform=platform,
+        compute_arch=compute_arch,
         caller=caller,
         kernel_name=kernel_name,
         output_dir=output_dir,

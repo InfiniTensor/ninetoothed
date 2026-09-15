@@ -94,6 +94,11 @@ class EmitterTarget(ABC):
 
         return args
 
+    def coerce_dot_args(self, operation, args, context):
+        del operation, context
+
+        return args
+
     def emit_dot_operand(self, name, coords, context):
         del name, coords, context
 

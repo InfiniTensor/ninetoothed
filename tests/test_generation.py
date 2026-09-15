@@ -122,16 +122,15 @@ def test_squeezing_the_innermost_level(num_rows, num_cols, num_indices, device):
     kernel = ninetoothed.make(arrangement, application, tensors)
 
     input = torch.randn((num_indices, num_cols), device=device)
-    indices = torch.randint(0, num_rows, (num_indices,), device=device)
-    output = torch.empty((num_rows, num_cols), device=device)
+    indices = torch.randperm(num_rows, device=device)[:num_indices]
+    output = torch.full((num_rows, num_cols), -12345.0, device=device)
     expected = output.clone()
+    expected[indices] = input
 
     kernel(input, indices, output)
 
-    for i in range(num_indices):
-        expected[indices[i], :] = input[i, :]
-
-    assert output.shape == expected.shape and torch.allclose(output, expected)
+    assert output.shape == (num_rows, num_cols)
+    torch.testing.assert_close(output, expected)
 
 
 @pytest.mark.parametrize("device", get_available_devices())
