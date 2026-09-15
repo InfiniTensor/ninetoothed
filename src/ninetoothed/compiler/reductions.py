@@ -279,11 +279,19 @@ def _consumer_contract(
             if operation.opcode == "mem.store":
                 stored_type = value_types.get(value)
                 target_type = value_types.get(operation.operands[1])
+                target_shape = (
+                    tuple(operation.attrs["target_shape"])
+                    if not operation.attrs.get("source")
+                    and "target_shape" in operation.attrs
+                    else target_type.shape
+                    if target_type is not None
+                    else None
+                )
 
                 if (
                     stored_type is not None
-                    and target_type is not None
-                    and stored_type.shape != target_type.shape
+                    and target_shape is not None
+                    and stored_type.shape != target_shape
                 ):
                     return False, (
                         "store target does not match the reduction value domain"

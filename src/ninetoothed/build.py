@@ -136,6 +136,7 @@ def build(
     kernel_name=None,
     meta_parameters=None,
     lazy=False,
+    export_cpp=None,
     pipeline=None,
     pass_options=None,
     **backend_options,
@@ -158,6 +159,7 @@ def build(
                 output_dir=output_dir,
                 pipeline=pipeline,
                 pass_options=pass_options,
+                export_cpp=export_cpp,
                 **backend_options,
             )
         )
@@ -168,6 +170,7 @@ def build(
     )
     base_name = kernel_name or _callable_name(premake)
     grouped = {}
+    cpp_variants = []
 
     for index, (args, kwargs, compiler_options) in enumerate(configs):
         arrangement, application, tensors = premake(*args, **kwargs)
@@ -199,6 +202,12 @@ def build(
             output_dir=output_dir,
             mode="aot",
         )
+
+        if handle._backend == "triton":
+            cpp_variants.append(
+                (key, handle._compilation, f"launch_{variant_name}_variant")
+            )
+
         group = grouped.setdefault(key, {"handles": [], "keys": []})
         group["handles"].append(handle)
         group["keys"].append(
@@ -233,6 +242,28 @@ def build(
         )
         for key, group in grouped.items()
     )
+
+    if export_cpp is not False:
+        from ninetoothed.backends.materializers.cpp import (
+            supports_cpp_export,
+            write_dispatcher,
+        )
+        from ninetoothed.backends.materializers.triton import publish_cpp_sources
+
+        supported = len(cpp_variants) == len(configs) and supports_cpp_export(
+            cpp_variants
+        )
+
+        if export_cpp and not supported:
+            raise ValueError(
+                "C++ export requires Triton kernels with a supported tensor ABI and configuration keys."
+            )
+
+        if supported:
+            for _, compilation, _ in cpp_variants:
+                publish_cpp_sources(compilation, output_dir)
+
+            write_dispatcher(base_name, runtime_names, cpp_variants, output_dir)
 
     return _BuildHandle(variants, len(runtime_names))
 
