@@ -433,17 +433,17 @@
 
 
 <span class="n">configs</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span>
-    <span class="p">((),</span> <span class="p">{</span><span class="s2">&quot;block_size&quot;</span><span class="p">:</span> <span class="n">block_size</span><span class="p">},</span> <span class="p">{})</span> <span class="k">for</span> <span class="n">block_size</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">512</span><span class="p">,</span> <span class="mi">1024</span><span class="p">,</span> <span class="mi">2048</span><span class="p">)</span>
+    <span class="p">((),</span> <span class="p">{</span><span class="s2">"block_size"</span><span class="p">:</span> <span class="n">block_size</span><span class="p">},</span> <span class="p">{})</span> <span class="k">for</span> <span class="n">block_size</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">512</span><span class="p">,</span> <span class="mi">1024</span><span class="p">,</span> <span class="mi">2048</span><span class="p">)</span>
 <span class="p">)</span>
 
-<span class="n">output_dir</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="s2">&quot;./add_build&quot;</span><span class="p">)</span>
+<span class="n">output_dir</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="s2">"./add_build"</span><span class="p">)</span>
 <span class="n">output_dir</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 
 <span class="n">kernel</span> <span class="o">=</span> <span class="n">ninetoothed</span><span class="o">.</span><span class="n">build</span><span class="p">(</span>
     <span class="n">premake</span><span class="p">,</span>
     <span class="n">configs</span><span class="p">,</span>
-    <span class="n">meta_parameters</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;block_size&quot;</span><span class="p">,),</span>
-    <span class="n">kernel_name</span><span class="o">=</span><span class="s2">&quot;add&quot;</span><span class="p">,</span>
+    <span class="n">meta_parameters</span><span class="o">=</span><span class="p">(</span><span class="s2">"block_size"</span><span class="p">,),</span>
+    <span class="n">kernel_name</span><span class="o">=</span><span class="s2">"add"</span><span class="p">,</span>
     <span class="n">output_dir</span><span class="o">=</span><span class="n">output_dir</span><span class="p">,</span>
     <span class="n">lazy</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
 <span class="p">)</span>
@@ -459,9 +459,9 @@
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 
 
-<span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+<span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">"__main__"</span><span class="p">:</span>
     <span class="n">dtype</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">float16</span>
-    <span class="n">device</span> <span class="o">=</span> <span class="s2">&quot;cuda&quot;</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="s2">"cuda"</span>
 
     <span class="n">x</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">((</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">y</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">((</span><span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">6</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
@@ -489,7 +489,7 @@
 </ul>
 <p>In the example above, each config tells <code class="docutils literal notranslate"><span class="pre">premake</span></code> which block size to bake in:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">configs</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span>
-    <span class="p">((),</span> <span class="p">{</span><span class="s2">&quot;block_size&quot;</span><span class="p">:</span> <span class="n">block_size</span><span class="p">},</span> <span class="p">{})</span> <span class="k">for</span> <span class="n">block_size</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">512</span><span class="p">,</span> <span class="mi">1024</span><span class="p">,</span> <span class="mi">2048</span><span class="p">)</span>
+    <span class="p">((),</span> <span class="p">{</span><span class="s2">"block_size"</span><span class="p">:</span> <span class="n">block_size</span><span class="p">},</span> <span class="p">{})</span> <span class="k">for</span> <span class="n">block_size</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">512</span><span class="p">,</span> <span class="mi">1024</span><span class="p">,</span> <span class="mi">2048</span><span class="p">)</span>
 <span class="p">)</span>
 </pre></div>
 </div>
@@ -561,15 +561,15 @@
     <span class="p">(</span>
         <span class="p">(),</span>
         <span class="p">{</span>
-            <span class="s2">&quot;m&quot;</span><span class="p">:</span> <span class="n">m</span><span class="p">,</span>
-            <span class="s2">&quot;n&quot;</span><span class="p">:</span> <span class="n">n</span><span class="p">,</span>
-            <span class="s2">&quot;k&quot;</span><span class="p">:</span> <span class="n">k</span><span class="p">,</span>
-            <span class="s2">&quot;dtype&quot;</span><span class="p">:</span> <span class="n">dtype</span><span class="p">,</span>
-            <span class="s2">&quot;block_size_m&quot;</span><span class="p">:</span> <span class="n">block_size_m</span><span class="p">,</span>
-            <span class="s2">&quot;block_size_n&quot;</span><span class="p">:</span> <span class="n">block_size_n</span><span class="p">,</span>
-            <span class="s2">&quot;block_size_k&quot;</span><span class="p">:</span> <span class="n">block_size_k</span><span class="p">,</span>
+            <span class="s2">"m"</span><span class="p">:</span> <span class="n">m</span><span class="p">,</span>
+            <span class="s2">"n"</span><span class="p">:</span> <span class="n">n</span><span class="p">,</span>
+            <span class="s2">"k"</span><span class="p">:</span> <span class="n">k</span><span class="p">,</span>
+            <span class="s2">"dtype"</span><span class="p">:</span> <span class="n">dtype</span><span class="p">,</span>
+            <span class="s2">"block_size_m"</span><span class="p">:</span> <span class="n">block_size_m</span><span class="p">,</span>
+            <span class="s2">"block_size_n"</span><span class="p">:</span> <span class="n">block_size_n</span><span class="p">,</span>
+            <span class="s2">"block_size_k"</span><span class="p">:</span> <span class="n">block_size_k</span><span class="p">,</span>
         <span class="p">},</span>
-        <span class="p">{</span><span class="s2">&quot;num_warps&quot;</span><span class="p">:</span> <span class="n">num_warps</span><span class="p">,</span> <span class="s2">&quot;num_stages&quot;</span><span class="p">:</span> <span class="n">num_stages</span><span class="p">},</span>
+        <span class="p">{</span><span class="s2">"num_warps"</span><span class="p">:</span> <span class="n">num_warps</span><span class="p">,</span> <span class="s2">"num_stages"</span><span class="p">:</span> <span class="n">num_stages</span><span class="p">},</span>
     <span class="p">)</span>
     <span class="k">for</span> <span class="n">m</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">k</span> <span class="ow">in</span> <span class="p">((</span><span class="mi">512</span><span class="p">,</span> <span class="mi">512</span><span class="p">,</span> <span class="mi">512</span><span class="p">),)</span>
     <span class="k">for</span> <span class="n">dtype</span> <span class="ow">in</span> <span class="p">(</span><span class="n">ninetoothed</span><span class="o">.</span><span class="n">float16</span><span class="p">,</span> <span class="n">ninetoothed</span><span class="o">.</span><span class="n">bfloat16</span><span class="p">)</span>
@@ -580,14 +580,14 @@
     <span class="k">for</span> <span class="n">num_stages</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">3</span><span class="p">,)</span>
 <span class="p">)</span>
 
-<span class="n">output_dir</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="s2">&quot;./mm_build&quot;</span><span class="p">)</span>
+<span class="n">output_dir</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="s2">"./mm_build"</span><span class="p">)</span>
 <span class="n">output_dir</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 
 <span class="n">kernel</span> <span class="o">=</span> <span class="n">ninetoothed</span><span class="o">.</span><span class="n">build</span><span class="p">(</span>
     <span class="n">premake</span><span class="p">,</span>
     <span class="n">configs</span><span class="p">,</span>
-    <span class="n">meta_parameters</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;block_size_m&quot;</span><span class="p">,</span> <span class="s2">&quot;block_size_n&quot;</span><span class="p">,</span> <span class="s2">&quot;block_size_k&quot;</span><span class="p">),</span>
-    <span class="n">kernel_name</span><span class="o">=</span><span class="s2">&quot;mm&quot;</span><span class="p">,</span>
+    <span class="n">meta_parameters</span><span class="o">=</span><span class="p">(</span><span class="s2">"block_size_m"</span><span class="p">,</span> <span class="s2">"block_size_n"</span><span class="p">,</span> <span class="s2">"block_size_k"</span><span class="p">),</span>
+    <span class="n">kernel_name</span><span class="o">=</span><span class="s2">"mm"</span><span class="p">,</span>
     <span class="n">output_dir</span><span class="o">=</span><span class="n">output_dir</span><span class="p">,</span>
     <span class="n">lazy</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
 <span class="p">)</span>
@@ -610,7 +610,7 @@
 <p>Auto-tuning needs concrete tensor shapes, but the tensor specs returned by <code class="docutils literal notranslate"><span class="pre">premake</span></code> may have symbolic dimensions. For each symbolic dimension, <code class="docutils literal notranslate"><span class="pre">ninetoothed.build</span></code> defaults to a preset size when materializing warm-up tensors.</p>
 <p>For kernels with large fixed dimensions (such as a matmul with <code class="docutils literal notranslate"><span class="pre">K</span></code> or <code class="docutils literal notranslate"><span class="pre">N</span></code> in the hundreds of thousands), you can cap a particular symbolic dimension’s warm-up size by setting <code class="docutils literal notranslate"><span class="pre">upper_bound</span></code> in <code class="docutils literal notranslate"><span class="pre">shape_options</span></code>:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">premake</span><span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="p">):</span>
-    <span class="n">shape_options</span> <span class="o">=</span> <span class="p">({</span><span class="s2">&quot;upper_bound&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">},</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+    <span class="n">shape_options</span> <span class="o">=</span> <span class="p">({</span><span class="s2">"upper_bound"</span><span class="p">:</span> <span class="mi">4</span><span class="p">},</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
     <span class="n">tensors</span> <span class="o">=</span> <span class="p">(</span>
         <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">k</span><span class="p">),</span> <span class="n">shape_options</span><span class="o">=</span><span class="n">shape_options</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">),</span>
         <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">n</span><span class="p">),</span> <span class="n">shape_options</span><span class="o">=</span><span class="n">shape_options</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">),</span>

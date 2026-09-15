@@ -406,10 +406,10 @@
 <p>The concept of <strong>symbols</strong> is similar to what is described in the <a class="reference external" href="https://docs.sympy.org/latest/tutorials/intro-tutorial/intro.html">SymPy tutorial</a>. Symbols do not store actual numerical values; instead, they represent symbolic names or symbolic expressions. This allows for performing symbolic mathematical operations.</p>
 <p>In NineToothed, you can create a symbol using the <code class="docutils literal notranslate"><span class="pre">Symbol</span></code> class. For example, in the code below, we first create two symbols named <code class="docutils literal notranslate"><span class="pre">BLOCK_SIZE_M</span></code> and <code class="docutils literal notranslate"><span class="pre">BLOCK_SIZE_N</span></code>, and then perform a multiplication operation on them:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span><span class="w"> </span><span class="nn">ninetoothed</span><span class="w"> </span><span class="kn">import</span> <span class="n">Symbol</span>
-<span class="gp">&gt;&gt;&gt; </span><span class="n">BLOCK_SIZE_M</span> <span class="o">=</span> <span class="n">Symbol</span><span class="p">(</span><span class="s2">&quot;BLOCK_SIZE_M&quot;</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">BLOCK_SIZE_M</span> <span class="o">=</span> <span class="n">Symbol</span><span class="p">(</span><span class="s2">"BLOCK_SIZE_M"</span><span class="p">)</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="n">BLOCK_SIZE_M</span>
 <span class="go">BLOCK_SIZE_M</span>
-<span class="gp">&gt;&gt;&gt; </span><span class="n">BLOCK_SIZE_N</span> <span class="o">=</span> <span class="n">Symbol</span><span class="p">(</span><span class="s2">&quot;BLOCK_SIZE_N&quot;</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">BLOCK_SIZE_N</span> <span class="o">=</span> <span class="n">Symbol</span><span class="p">(</span><span class="s2">"BLOCK_SIZE_N"</span><span class="p">)</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="n">BLOCK_SIZE_N</span>
 <span class="go">BLOCK_SIZE_N</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="n">BLOCK_SIZE_M</span> <span class="o">*</span> <span class="n">BLOCK_SIZE_N</span>
@@ -484,7 +484,7 @@
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 
 <span class="n">dtype</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">float16</span>
-<span class="n">device</span> <span class="o">=</span> <span class="s2">&quot;cuda&quot;</span>
+<span class="n">device</span> <span class="o">=</span> <span class="s2">"cuda"</span>
 
 <span class="n">x</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">((</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
 <span class="n">y</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">((</span><span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">6</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
@@ -573,7 +573,7 @@
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 
 <span class="n">dtype</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">float16</span>
-<span class="n">device</span> <span class="o">=</span> <span class="s2">&quot;cuda&quot;</span>
+<span class="n">device</span> <span class="o">=</span> <span class="s2">"cuda"</span>
 
 <span class="nb">input</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(((</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">)),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
 <span class="n">other</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(((</span><span class="mi">5</span><span class="p">,</span> <span class="mi">6</span><span class="p">),</span> <span class="p">(</span><span class="mi">7</span><span class="p">,</span> <span class="mi">8</span><span class="p">)),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>

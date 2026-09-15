@@ -464,18 +464,18 @@
 </div>
 <p>To save the visualization to a file, provide the <code class="docutils literal notranslate"><span class="pre">save_path</span></code>. Then, <code class="docutils literal notranslate"><span class="pre">visualize</span></code> will save the generated image at the specified location.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">x</span> <span class="o">=</span> <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">8</span><span class="p">))</span>
-<span class="n">visualize</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">&quot;x.png&quot;</span><span class="p">)</span>
+<span class="n">visualize</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">"x.png"</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>This method can also be used to temporarily visualize multiple tensors. You just need to pass the corresponding tensors and save paths to <code class="docutils literal notranslate"><span class="pre">visualize</span></code>.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">x</span> <span class="o">=</span> <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">8</span><span class="p">))</span>
-<span class="n">visualize</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">&quot;x.png&quot;</span><span class="p">)</span>
+<span class="n">visualize</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">"x.png"</span><span class="p">)</span>
 
 <span class="n">y</span> <span class="o">=</span> <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="mi">8</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span>
-<span class="n">visualize</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">&quot;y.png&quot;</span><span class="p">)</span>
+<span class="n">visualize</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">"y.png"</span><span class="p">)</span>
 
 <span class="n">z</span> <span class="o">=</span> <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span>
-<span class="n">visualize</span><span class="p">(</span><span class="n">z</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">&quot;z.png&quot;</span><span class="p">)</span>
+<span class="n">visualize</span><span class="p">(</span><span class="n">z</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">"z.png"</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -483,7 +483,7 @@
 <h3>Specifying Colors<a class="headerlink" href="#specifying-colors" title="Link to this heading">#</a></h3>
 <p>When using the above method, tensors are assigned default colors. To customize colors, we can use the <code class="docutils literal notranslate"><span class="pre">color</span></code> parameter, following <a class="reference external" href="https://matplotlib.org/stable/users/explain/colors/colors.html">Matplotlib’s color formats</a>.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">x</span> <span class="o">=</span> <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">8</span><span class="p">))</span>
-<span class="n">visualize</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s2">&quot;orange&quot;</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">&quot;x.png&quot;</span><span class="p">)</span>
+<span class="n">visualize</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s2">"orange"</span><span class="p">,</span> <span class="n">save_path</span><span class="o">=</span><span class="s2">"x.png"</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
