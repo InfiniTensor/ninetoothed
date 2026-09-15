@@ -3,6 +3,8 @@
 import re
 from collections.abc import Mapping
 
+from ninetoothed.dtype import normalize_dtype as _normalize_dtype
+
 
 def default_strides(shape: tuple[str, ...]) -> tuple[str, ...]:
     strides: list[str] = []
@@ -212,21 +214,7 @@ def symbols_in_text(value: str) -> tuple[str, ...]:
 
 
 def normalize_dtype(dtype: str | None) -> str:
-    if dtype is not None:
-        dtype = dtype.strip().strip("'\"")
-
-        if "." in dtype:
-            dtype = dtype.split(".")[-1]
-
-    mapping = {
-        "fp16": "float16",
-        "fp32": "float32",
-        "fp64": "float64",
-        "bf16": "bfloat16",
-        "float": "float32",
-    }
-
-    return mapping.get(dtype or "float32", dtype or "float32")
+    return _normalize_dtype(dtype) or "float32"
 
 
 __all__ = [

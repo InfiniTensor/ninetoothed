@@ -3,6 +3,7 @@
 import ast
 from typing import Any
 
+from ninetoothed.dtype import normalize_dtype
 from ninetoothed.frontend.errors import LoweringError
 from ninetoothed.ir import ssa
 
@@ -348,17 +349,8 @@ def _math_result_type(name: str, operands: tuple[ssa.Value, ...]) -> ssa.Type:
 
 
 def _promote_dtype(lhs: str | None, rhs: str | None) -> str | None:
-    normalized = {
-        "fp16": "float16",
-        "fp32": "float32",
-        "fp64": "float64",
-        "bf16": "bfloat16",
-        "float": "float32",
-    }
-    lhs = None if lhs is None else lhs.rsplit(".", 1)[-1]
-    rhs = None if rhs is None else rhs.rsplit(".", 1)[-1]
-    lhs = normalized.get(lhs or "", lhs)
-    rhs = normalized.get(rhs or "", rhs)
+    lhs = normalize_dtype(lhs)
+    rhs = normalize_dtype(rhs)
 
     if lhs is None:
         return rhs
@@ -394,17 +386,10 @@ def _promote_dtype(lhs: str | None, rhs: str | None) -> str | None:
 
 
 def _cast_type(type_: ssa.Type, dtype: str) -> ssa.Type:
-    normalized = dtype.rsplit(".", 1)[-1]
+    normalized = normalize_dtype(dtype)
 
     if normalized == "dtype":
-        normalized = type_.dtype
-
-    normalized = {
-        "fp16": "float16",
-        "fp32": "float32",
-        "fp64": "float64",
-        "bf16": "bfloat16",
-    }.get(normalized, normalized)
+        normalized = normalize_dtype(type_.dtype)
 
     return ssa.Type(
         kind=type_.kind,

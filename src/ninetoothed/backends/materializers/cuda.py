@@ -17,6 +17,7 @@ from ninetoothed.compiler.cache import (
     write_manifest,
     write_source,
 )
+from ninetoothed.dtype import normalize_dtype
 
 
 class CudaMaterializer(Materializer):
@@ -130,13 +131,7 @@ def _cuda_wrapper(function, abi, tensor_specs):
 
 
 def _cuda_scalar(value, dtype):
-    dtype = str(dtype).split(".")[-1]
-    dtype = {
-        "fp16": "float16",
-        "fp32": "float32",
-        "fp64": "float64",
-        "bf16": "bfloat16",
-    }.get(dtype, dtype)
+    dtype = normalize_dtype(str(dtype))
 
     if dtype in {"float16", "bfloat16", "float8_e4m3fn", "float8_e5m2"}:
         import torch
