@@ -1,3 +1,18 @@
+Report lifecycle regression validation (2026-09-16, evening)
+===========================================================
+Scope: GPU report CLI only; interpreter/compiler/kernel sources unchanged.
+CPU environment has neither Torch nor Triton.
+Command: python scripts/run_cpu_tests.py --junitxml <new-report-path>
+502 passed, 15 deselected in 43.91s
+Final formatted report tests: 9 passed in 0.37s (included in the 502).
+The script AST is unchanged by the final blank-line formatting pass.
+Ruff, format and project contribution-style checks passed.
+Final RTX 4090 D: 15/15 real GPU differential cases PASS; 9 report tests passed in 0.35s.
+Raw final source hashes matched the local candidate.
+Evidence: https://github.com/a962695448-rgb/ninetoothed/tree/c6d9dd6bfaa3d7fe1b6dd06aedde427549c9f556/docs/validation/report-lifecycle-20260916
+Report: docs/cpu_interpreter_report_validation.md
+Historical wheel and full GPU collection results below retain their source scopes.
+
 CPU interpreter upstream integration validation (2026-09-16)
 ==========================================================
 Upstream: 22e74c3afe47e12ee29d7d0bcfaf1de8286f4560

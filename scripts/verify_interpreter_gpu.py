@@ -15,15 +15,19 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--device", type=int, default=0)
-    parser.add_argument(
-        "--report",
-        type=Path,
-        default=ROOT / "results" / "interpreter_gpu_validation.json",
-    )
-    args = parser.parse_args()
+def checkpoint(report, stream, started):
+    passed = [case for case in report["cases"] if case["status"] == "PASS"]
+    report["passed_cases"] = len(passed)
+    report["passed_programs"] = sorted({case["program"] for case in passed})
+    report["passed_categories"] = sorted({case["category"] for case in passed})
+    report["elapsed_validation_seconds"] = round(time.perf_counter() - started, 3)
+    stream.seek(0)
+    stream.write(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+    stream.truncate()
+    stream.flush()
+
+
+def validate(device, stream):
     report = {
         "status": "UNVERIFIED",
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -42,6 +46,7 @@ def main():
     }
     started = time.perf_counter()
     exit_code = 2
+    checkpoint(report, stream, started)
 
     try:
         import numpy
@@ -54,22 +59,27 @@ def main():
             run_gpu_case,
         )
 
-        torch, triton = require_gpu(args.device)
+        report["total_cases"] = len(GPU_CASES)
+        torch, triton = require_gpu(device)
         report.update(
+            status="RUNNING",
             numpy_version=numpy.__version__,
             sympy_version=sympy.__version__,
             torch_version=torch.__version__,
             triton_version=triton.__version__,
             torch_cuda_version=torch.version.cuda,
-            gpu_name=torch.cuda.get_device_name(args.device),
-            compute_capability=list(torch.cuda.get_device_capability(args.device)),
-            device_index=args.device,
+            gpu_name=torch.cuda.get_device_name(device),
+            compute_capability=list(torch.cuda.get_device_capability(device)),
+            device_index=device,
             seed=SEED,
         )
 
         for case in GPU_CASES:
+            report["active_case"] = case.name
+            checkpoint(report, stream, started)
+
             try:
-                result = run_gpu_case(case, torch, args.device)
+                result = run_gpu_case(case, torch, device)
             except Exception as error:
                 result = {
                     "name": case.name,
@@ -82,25 +92,54 @@ def main():
             report["cases"].append(result)
             print(f"{result['status']}: {case.name}", flush=True)
 
-        passed = [case for case in report["cases"] if case["status"] == "PASS"]
-        report["passed_cases"] = len(passed)
-        report["total_cases"] = len(GPU_CASES)
-        report["passed_programs"] = sorted({case["program"] for case in passed})
-        report["passed_categories"] = sorted({case["category"] for case in passed})
-        complete = len(passed) == len(GPU_CASES) and len(report["passed_programs"]) >= 3
+        report.pop("active_case", None)
+        checkpoint(report, stream, started)
+        complete = (
+            report["passed_cases"] == len(GPU_CASES)
+            and len(report["passed_programs"]) >= 3
+        )
         report["status"] = "PASS" if complete else "FAIL"
         exit_code = 0 if complete else 1
+    except KeyboardInterrupt:
+        report["status"] = "INTERRUPTED"
+        report["error"] = "KeyboardInterrupt: validation did not complete"
+        exit_code = 130
+        print(report["error"], file=sys.stderr)
     except Exception as error:
+        report["status"] = "UNVERIFIED"
         report["error"] = f"{type(error).__name__}: {error}"
         report["traceback"] = traceback.format_exc()
         print(f"UNVERIFIED: {error}", file=sys.stderr)
 
-    report["elapsed_validation_seconds"] = round(time.perf_counter() - started, 3)
-    args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(
-        json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    checkpoint(report, stream, started)
+
+    return exit_code, report["status"]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--device", type=int, default=0)
+    parser.add_argument(
+        "--report",
+        type=Path,
+        default=ROOT / "results" / "interpreter_gpu_validation.json",
+        help="New output path; existing files are never overwritten.",
     )
-    print(f"{report['status']}: report saved to {args.report}")
+    args = parser.parse_args()
+
+    try:
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        # Exclusive creation also rejects dangling symlinks and concurrent writers.
+        stream = args.report.open("x", encoding="utf-8")
+    except OSError as error:
+        parser.error(
+            f"cannot create report {args.report}: {error}; choose a new output path"
+        )
+
+    with stream:
+        exit_code, status = validate(args.device, stream)
+
+    print(f"{status}: report saved to {args.report}")
 
     return exit_code
 

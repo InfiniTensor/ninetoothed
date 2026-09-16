@@ -32,8 +32,9 @@
 
 | 验证 | 已保存结果 | 口径 |
 |---|---|---|
-| 当前无 Torch/Triton 的 CPU 回归 | **493 passed，15 GPU deselected** | 合入 22e74c3 后的解释器/SSA/平台配置范围，不是无依赖的全仓库测试 |
-| 当前 RTX 4090 测试集合 | **900 passed、2 skipped，覆盖 902 个测试 ID** | 1b68040；分段执行后逐项核对，含 15 项真实 GPU 差分；[详情](cpu_interpreter_rtx4090_validation.md) |
+| 当前无 Torch/Triton 的 CPU 回归 | **502 passed，15 GPU deselected** | 合入 22e74c3 后的解释器/SSA/平台配置范围，含新增 9 项报告生命周期测试；不是无依赖的全仓库测试 |
+| 本轮 RTX 4090 D 差分与报告协议 | **15/15 GPU 差分，9/9 报告测试** | 最终文件实机复验；九项测试使用替身验证协议；[详情](cpu_interpreter_report_validation.md) |
+| 已归档 RTX 4090 测试集合 | **900 passed、2 skipped，覆盖 902 个测试 ID** | 1b68040；分段执行后逐项核对，含 15 项真实 GPU 差分；[详情](cpu_interpreter_rtx4090_validation.md) |
 | 历史 A100-SXM4-40GB 完整回归 | **835 passed，2 skipped，570.53 秒，退出 0** | 旧计算源码 ed33273；包含 15 项实际 Triton GPU 差分；2 项跳过均要求至少双 GPU |
 | 历史独立 CUDA dot | 四路正确性对照通过 | float32 标量分解案例，不代表完整 CUDA 后端或 Tensor Core 性能 |
 | 当前 wheel 与独立回放 | 68 份安装源码逐份核对，源码目录外的示例和独立回放通过 | `--no-deps` CPU 安装；保留原 GPU 依赖元数据，不是独立 CPU 发行包 |
@@ -71,3 +72,9 @@ python scripts/run_cpu_tests.py --junitxml /tmp/nine-cpu-results.xml
 建议先看 `interpreter/runtime.py` 与内存模型，再看 `ir/provenance.py`、`interpreter/debugger.py` 和定位/回放模块，最后对照专项测试。`frontend/preparation.py` 和相关调用方共享准备过程，避免 CPU 路径通过 GPU 后端执行。
 
 当前差异保留了 CPU 可选收集、解释器相关回归，以及 jagged 的显式维度构造和独立参考检查。流上下文与确定性 scatter 的修正已由新上游提供，本次采用上游版本。未放宽计算容差，也未删掉断言获取通过；历史硬件记录与本轮 CPU 兼容性检查分别说明。
+
+### GPU 报告保护
+
+`python scripts/verify_interpreter_gpu.py --report /tmp/new-gpu-report.json` 要求输出路径不存在。脚本在导入 GPU 依赖之前独占创建文件，普通文件、目录和符号链接均不能被覆盖；重新验证请换用新路径。每个用例启动前写入进度，正常中断保存已完成结果并返回 130，状态为 `INTERRUPTED`；环境不可用为 `UNVERIFIED`（退出 2），数值失败为 `FAIL`（退出 1）。只有完整通过才写入 `PASS`（退出 0）。
+
+`test_interpreter_gpu_report.py` 的 9 项 CPU 测试使用明确的测试替身检查报告协议，不构成 GPU 数值证据。进度文件会刷新到文件流；突然断电、SIGKILL 或写盘故障仍可能留下不完整文件，不能把 `RUNNING` 或损坏的文件认定为验收通过。
