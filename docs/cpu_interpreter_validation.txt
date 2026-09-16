@@ -1,3 +1,23 @@
+CPU interpreter upstream integration validation (2026-09-16)
+==========================================================
+Upstream: 22e74c3afe47e12ee29d7d0bcfaf1de8286f4560
+Scope: CPU interpreter, SSA and platform-profile regressions; no Torch/Triton.
+Command: python scripts/run_cpu_tests.py --junitxml <new-report-path>
+
+493 passed, 15 deselected in 42.79s
+JUnit: tests=493 failures=0 errors=0 skipped=0; 15 actual GPU cases deselected.
+
+The 37 default-pipeline/platform integration checks are a subset of these 493.
+Ruff, format and project contribution-style checks passed.
+A normal wheel matched all 68 Python source files; isolated installed demo and
+standalone replay passed outside the checkout, with Torch/Triton absent.
+
+GPU tests were not rerun after integrating the target architecture changes.
+The historical A100 result below must not be read as validation of this merged
+combination. Current online CPU runs are linked from the PR/Actions history.
+
+Historical submission report (2026-09-14)
+=======================================
 CPU interpreter submission validation — 2026-09-14
 
 Scope: focused submission tree; no GPU execution in this validation.

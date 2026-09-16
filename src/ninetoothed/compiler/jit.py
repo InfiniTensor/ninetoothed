@@ -7,6 +7,8 @@ def jit(
     func=None,
     *,
     backend=None,
+    platform=None,
+    compute_arch=None,
     caller="torch",
     kernel_name=None,
     num_warps=None,
@@ -28,6 +30,8 @@ def jit(
             CompileRequest(
                 application=application,
                 backend=backend,
+                platform=platform,
+                compute_arch=compute_arch,
                 caller=caller,
                 kernel_name=kernel_name or application.__name__,
                 num_warps=num_warps,

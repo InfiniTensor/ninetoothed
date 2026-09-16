@@ -21,6 +21,10 @@ from ninetoothed.compiler.cache import (
     write_source,
 )
 from ninetoothed.ir import LaunchABI, LaunchBinding, ir_to_dict
+from ninetoothed.targets import (
+    runtime_device_types,
+    validate_artifact_materialization,
+)
 
 
 class KernelLaunchError(RuntimeError):
@@ -52,6 +56,8 @@ class Handle:
         self._compilation = compilation
         self._artifact = compilation.artifact
         self._backend = compilation.artifact.backend.value
+        assert compilation.target is not None
+        self._platform = compilation.target.platform.name
         self._kernel = kernel
         self._launch = launch
         self._source = str(source)
@@ -94,6 +100,9 @@ def materialize(
     mode: str = "jit",
 ) -> Handle:
     target = compilation.artifact.backend
+    assert compilation.target is not None
+    validate_artifact_materialization(compilation.artifact, mode=mode)
+    compilation.target.validate_materialization(mode)
 
     if target != Target.TRITON and _requires_runtime_specialization(compilation):
         return _materialize_lazy(compilation, output_dir=output_dir, mode=mode)
@@ -116,6 +125,8 @@ def materialize(
 def load_built_artifact(built: BuiltArtifact):
     """Load a materialized binary and restore its public Launch ABI callable."""
     from ninetoothed.backends.materializers import materializer_for
+
+    validate_artifact_materialization(built.source, mode="aot")
 
     return materializer_for(built.source.backend).load_built_artifact(built)
 
@@ -185,6 +196,7 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
             args,
             kwargs,
             specs=compilation.kernel.tensors,
+            device_types=runtime_device_types(compilation),
         )
         dtypes = _runtime_dtypes(compilation, public)
         specialization_values = _runtime_specialization_values(compilation, public)
@@ -979,6 +991,7 @@ def _runtime_wrapper(
     *,
     low_level: bool = True,
     specs=(),
+    device_types=("cuda",),
     binding_overrides=None,
     prepare_invocation=None,
     validate_bindings=None,
@@ -987,7 +1000,13 @@ def _runtime_wrapper(
 
     def prepare(args, kwargs, *, public=None):
         if public is None:
-            public = _public_values(abi, args, kwargs, specs=specs)
+            public = _public_values(
+                abi,
+                args,
+                kwargs,
+                specs=specs,
+                device_types=device_types,
+            )
 
         bound_public = dict(public) | overrides
 
@@ -1086,7 +1105,13 @@ def _runtime_wrapper(
         return _first_output_from_call(abi, args, kwargs)
 
     def launch(*args, **kwargs):
-        public = _public_values(abi, args, kwargs, specs=specs)
+        public = _public_values(
+            abi,
+            args,
+            kwargs,
+            specs=specs,
+            device_types=device_types,
+        )
         bound_public = dict(public) | overrides
 
         if validate_bindings is not None:
@@ -1118,7 +1143,14 @@ def _runtime_wrapper(
     return launch
 
 
-def _public_values(abi: LaunchABI, args, kwargs, *, specs=()) -> dict[str, Any]:
+def _public_values(
+    abi: LaunchABI,
+    args,
+    kwargs,
+    *,
+    specs=(),
+    device_types=("cuda",),
+) -> dict[str, Any]:
     if len(args) > len(abi.public_args):
         raise TypeError(f"Expected at most {len(abi.public_args)} arguments.")
 
@@ -1147,7 +1179,7 @@ def _public_values(abi: LaunchABI, args, kwargs, *, specs=()) -> dict[str, Any]:
     if missing:
         raise TypeError(f"Missing kernel arguments: {', '.join(missing)}.")
 
-    _validate_runtime_values(values, specs)
+    _validate_runtime_values(values, specs, device_types=device_types)
 
     return values
 
@@ -1162,19 +1194,27 @@ def _filter_runtime_kwargs(abi: LaunchABI, kwargs) -> dict[str, Any]:
     return {name: value for name, value in kwargs.items() if name in accepted}
 
 
-def _validate_runtime_values(values, specs) -> None:
+def _validate_runtime_values(values, specs, *, device_types=("cuda",)) -> None:
     expected_device = None
+    device_types = tuple(
+        dict.fromkeys(str(device_type).lower() for device_type in device_types)
+    )
 
     for spec in specs:
         if spec.name not in values:
             continue
 
         value = values[spec.name]
-        expected_device = _validate_tensor_contract(spec, value, expected_device)
+        expected_device = _validate_tensor_contract(
+            spec,
+            value,
+            expected_device,
+            device_types=device_types,
+        )
         _validate_dtype_contract(spec, value)
 
 
-def _validate_tensor_contract(spec, value, expected_device):
+def _validate_tensor_contract(spec, value, expected_device, *, device_types):
     source_ndim = int(spec.attrs.get("source_ndim", spec.ndim))
 
     if source_ndim == 0:
@@ -1212,12 +1252,30 @@ def _validate_tensor_contract(spec, value, expected_device):
 
     device_type = getattr(device, "type", str(device).split(":")[0])
 
-    if device_type != "cuda":
-        raise TypeError(f"Kernel argument `{spec.name}` must be on a CUDA device.")
+    if device_type not in device_types:
+        expected = _device_type_description(device_types)
+        raise TypeError(f"Kernel argument `{spec.name}` must be on {expected}.")
 
     if expected_device is not None and device != expected_device:
-        raise TypeError("All tensor arguments must use the same CUDA device.")
+        labels = _device_type_labels(device_types)
+        expected = f"{labels[0]} device" if len(labels) == 1 else "target device"
+        raise TypeError(f"All tensor arguments must use the same {expected}.")
     return device if expected_device is None else expected_device
+
+
+def _device_type_description(device_types) -> str:
+    labels = _device_type_labels(device_types)
+
+    if len(labels) == 1:
+        return f"a {labels[0]} device"
+    return f"one of these devices: {', '.join(labels)}"
+
+
+def _device_type_labels(device_types) -> tuple[str, ...]:
+    return tuple(
+        "CUDA" if device_type == "cuda" else device_type.upper()
+        for device_type in device_types
+    )
 
 
 def _validate_dtype_contract(spec, value) -> None:
@@ -1431,10 +1489,15 @@ def _publish_library(cache_library: Path, output_dir, filename: str) -> Path:
 
 
 def _built_manifest(compilation, cache_key, source, library):
+    from ninetoothed.compiler.cache import compilation_toolchain_identity
+
+    assert compilation.target is not None
+
     return {
-        "schema": 2,
+        "schema": 3,
         "cache_key": cache_key,
         "backend": compilation.artifact.backend.value,
+        "target": compilation.target.as_metadata(),
         "kernel_name": compilation.artifact.kernel_name,
         "entrypoint": compilation.artifact.entrypoint,
         "source": str(source),
@@ -1442,6 +1505,7 @@ def _built_manifest(compilation, cache_key, source, library):
         "launch_abi": compilation.artifact.metadata.get("launch_abi", {}),
         "launch_plan": ir_to_dict(compilation.launch_plan),
         "pass_trace": compilation.pass_trace,
+        "toolchain": compilation_toolchain_identity(compilation),
     }
 
 

@@ -3,6 +3,7 @@ from dataclasses import replace
 
 import pytest
 
+import ninetoothed.backends.toolchain as toolchain
 from ninetoothed.backends import (
     Target,
     backend_capabilities,
@@ -13,6 +14,7 @@ from ninetoothed.backends import (
 from ninetoothed.backends.toolchain import cuda_compile_command
 from ninetoothed.frontend.python import from_source
 from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict
+from ninetoothed.targets import PlatformProfile, TargetContext
 
 
 def _source_only_kernel():
@@ -72,6 +74,33 @@ def _matmul_kernel(dtype: str = "float32") -> Kernel:
     )
 
 
+def _elementwise_kernel(tensor_count: int) -> Kernel:
+    input_names = tuple(f"x{index}" for index in range(tensor_count - 1))
+    parameters = ", ".join(input_names + ("out",))
+    expression = " + ".join(input_names)
+    tensors = tuple(
+        TensorSpec(
+            ndim=1,
+            shape=("n",),
+            dtype="float32",
+            name=name,
+            attrs={
+                "source_name": name,
+                "source_ndim": 1,
+                "source_shape": ("n",),
+                "source_strides": (f"{name}_stride_0",),
+            },
+        )
+        for name in input_names + ("out",)
+    )
+
+    return _kernel_from_source(
+        f"\ndef elementwise({parameters}):\n    out = {expression}\n",
+        name="elementwise",
+        tensors=tensors,
+    )
+
+
 class TestRegistry:
     def test_backend_names_are_normalized_without_aliases(self):
         assert normalize_target(None) == Target.TRITON
@@ -112,6 +141,48 @@ class TestRegistry:
         )
         assert "-arch=sm_90" in command
 
+    @pytest.mark.parametrize("environment", ("CUDA_PATH", "CUCC_PATH"))
+    def test_cuda_compiler_discovery_accepts_vendor_cucc(
+        self, environment, monkeypatch, tmp_path
+    ):
+        compiler = tmp_path / "bin" / "cucc"
+        compiler.parent.mkdir()
+        compiler.write_text("vendor compiler", encoding="utf-8")
+        compiler.chmod(0o755)
+        monkeypatch.setattr(toolchain.shutil, "which", lambda name: None)
+        monkeypatch.delenv("NINETOOTHED_CUDA_COMPILER", raising=False)
+        monkeypatch.delenv("CUDA_HOME", raising=False)
+        monkeypatch.delenv("CUDA_PATH", raising=False)
+        monkeypatch.delenv("CUCC_PATH", raising=False)
+        monkeypatch.setenv(environment, str(tmp_path))
+
+        assert toolchain.find_nvcc() == str(compiler)
+
+    def test_cuda_compiler_discovery_prefers_explicit_path(self, monkeypatch, tmp_path):
+        compiler = tmp_path / "cucc"
+        compiler.write_text("vendor compiler", encoding="utf-8")
+        compiler.chmod(0o755)
+        monkeypatch.setenv("NINETOOTHED_CUDA_COMPILER", str(compiler))
+        monkeypatch.setattr(toolchain.shutil, "which", lambda name: None)
+
+        assert toolchain.find_nvcc() == str(compiler)
+
+    def test_invalid_explicit_cuda_compiler_does_not_fall_back(
+        self, monkeypatch, tmp_path
+    ):
+        fallback = tmp_path / "nvcc"
+        fallback.write_text("fallback compiler", encoding="utf-8")
+        fallback.chmod(0o755)
+        monkeypatch.setenv("NINETOOTHED_CUDA_COMPILER", str(tmp_path / "missing-cucc"))
+        monkeypatch.setattr(
+            toolchain.shutil,
+            "which",
+            lambda name: str(fallback) if name == "nvcc" else None,
+        )
+
+        with pytest.raises(RuntimeError, match="Explicit CUDA compiler"):
+            toolchain.find_nvcc()
+
     def test_default_registry_reports_three_backends(self):
         names = {capability.name for capability in backend_capabilities()}
         assert names == {
@@ -136,9 +207,22 @@ class TestRegistry:
             artifact = emit(_add_kernel(), backend)
             assert artifact.language == language
             assert artifact.metadata["lowering_ir"] == "ssa.Program"
+            assert artifact.metadata["target"]["platform"] == "generic"
             assert artifact.metadata["ssa_metadata"]["target_backend"] == backend
             assert fragment in artifact.primary_source
             assert "NotImplementedError" not in artifact.primary_source
+
+    @pytest.mark.parametrize("tensor_count", (2, 3, 4))
+    def test_triton_contiguous_predicates_are_left_associated(self, tensor_count):
+        artifact = emit(_elementwise_kernel(tensor_count), "triton")
+        names = tuple(f"x{index}" for index in range(tensor_count - 1)) + ("out",)
+        predicates = tuple(f"({name}_stride_0 == 1)" for name in names)
+        expected = predicates[0]
+
+        for predicate in predicates[1:]:
+            expected = f"({expected} and {predicate})"
+
+        assert f"if {expected}:" in artifact.primary_source
 
     def test_cuda_backend_includes_fp16_header_for_half_artifacts(self):
         artifact = emit(_add_kernel("float16"), "cuda")
@@ -185,6 +269,25 @@ class TestRegistry:
         rejected = artifact.metadata["ssa_metadata"]["rejected_schedule_candidates"]
         assert "requires compute capability 7.0" in rejected[0]["reason"]
 
+    def test_cuda_profile_can_disable_unverified_wmma(self):
+        target = TargetContext(
+            backend=Target.CUDA,
+            platform=PlatformProfile(
+                name="vendor-cuda",
+                compute_arch="vendor-native",
+                backend_modes={"cuda": frozenset({"jit"})},
+                metadata={"cuda": {"arch": "native", "wmma": False}},
+            ),
+        )
+        artifact = emit(
+            _matmul_kernel("float16"),
+            "cuda",
+            target_context=target,
+        )
+
+        assert "wmma::" not in artifact.primary_source
+        assert not artifact.metadata["ssa_metadata"]["schedule_candidates"]
+
     def test_optimization_metadata_contains_only_materialized_choices(self):
         forbidden_fields = {
             "input_precision",
@@ -214,6 +317,63 @@ class TestRegistry:
         paths = artifact.write_to(tmp_path)
         assert len(paths) == 2
         assert all((path.exists() for path in paths))
+
+    def test_replaced_profile_revalidates_existing_targeted_ssa(self):
+        kernel = _add_kernel()
+        program = replace(
+            kernel.ssa,
+            metadata=dict(kernel.ssa.metadata)
+            | {"required_capabilities": ("dtype.fp8",)},
+        )
+        supported = TargetContext(
+            backend=Target.TRITON,
+            platform=PlatformProfile(
+                name="replaceable",
+                backend_modes={"triton": frozenset({"jit", "aot"})},
+                supported_capabilities=frozenset({"dtype.fp8"}),
+            ),
+        )
+        first = emit(replace(kernel, ssa=program), target_context=supported)
+        unsupported = TargetContext(
+            backend=Target.TRITON,
+            platform=PlatformProfile(
+                name="replaceable",
+                backend_modes={"triton": frozenset({"jit", "aot"})},
+                unsupported_capabilities=frozenset({"dtype.fp8"}),
+            ),
+        )
+
+        with pytest.raises(ValueError, match="does not support `dtype.fp8`"):
+            emit(
+                replace(
+                    kernel,
+                    ssa=replace(
+                        kernel.ssa,
+                        metadata=dict(first.metadata["ssa_metadata"]),
+                    ),
+                ),
+                target_context=unsupported,
+            )
+
+    def test_same_target_revalidates_mutated_ssa_capabilities(self):
+        kernel = _add_kernel()
+        target = TargetContext(
+            backend=Target.TRITON,
+            platform=PlatformProfile(
+                name="unsupported-profile",
+                backend_modes={"triton": frozenset({"jit", "aot"})},
+                unsupported_capabilities=frozenset({"dtype.fp8"}),
+            ),
+        )
+        first = emit(kernel, target_context=target)
+        reused = replace(
+            kernel.ssa,
+            metadata=dict(first.metadata["ssa_metadata"])
+            | {"required_capabilities": ("dtype.fp8",)},
+        )
+
+        with pytest.raises(ValueError, match="does not support `dtype.fp8`"):
+            emit(replace(kernel, ssa=reused), target_context=target)
 
     def test_manifest_and_in_memory_metadata_share_one_builder(self):
         artifact = emit(_add_kernel(), "cuda")

@@ -1,5 +1,6 @@
 """Check every real default SSA pass against an independently validated reference."""
 
+from dataclasses import replace
 from functools import partial
 
 import numpy as np
@@ -11,6 +12,7 @@ from ninetoothed.compiler.passes import Context, default_pipeline, lower_for_tar
 from ninetoothed.interpreter import interpret_program
 from ninetoothed.interpreter.debugger import check_passes
 from ninetoothed.ir import ssa
+from ninetoothed.targets import PlatformProfile, TargetContext
 
 from .test_interpreter_applications import (
     _add,
@@ -68,7 +70,9 @@ def application_case(request):
 
 
 @pytest.mark.parametrize(
-    "backend", (Target.TRITON, Target.CUDA), ids=lambda target: target.value
+    "backend",
+    (Target.TRITON, Target.CUDA, Target.TILELANG),
+    ids=lambda target: target.value,
 )
 def test_each_default_pass_preserves_the_original_application(
     backend, application_case
@@ -122,3 +126,51 @@ def test_each_default_pass_preserves_the_original_application(
 
     for name, value in inputs.items():
         np.testing.assert_array_equal(value, originals[name])
+
+
+@pytest.mark.parametrize(
+    "backend",
+    (Target.TRITON, Target.CUDA, Target.TILELANG),
+    ids=lambda target: target.value,
+)
+def test_target_capability_rejection_is_a_pass_error_and_stops_the_pipeline(
+    backend, application_case
+):
+    kernel, inputs, _expected = application_case
+    reference = replace(
+        kernel.frontend_program,
+        metadata=dict(kernel.frontend_program.metadata)
+        | {"required_capabilities": ("math.pow",)},
+    )
+    profile = PlatformProfile(
+        name="cpu-rejection-test",
+        backend_modes={backend.value: frozenset({"jit"})},
+        unsupported_capabilities=frozenset({"math.pow"}),
+    )
+    pipeline = default_pipeline(backend)
+    context = Context(
+        backend=backend,
+        compiler_options={},
+        kernel_metadata={},
+        tensors=kernel.tensors,
+        target=TargetContext(backend=backend, platform=profile),
+        pass_options=pipeline.spec.pass_options,
+        pipeline_spec=pipeline.spec,
+    )
+    checks = tuple(
+        (pass_.name, partial(pass_.run, context=context)) for pass_ in pipeline.passes
+    )
+    later = []
+    report = check_passes(
+        reference,
+        checks + (("must_not_execute", later.append),),
+        inputs,
+        tensors=kernel.tensors,
+        symbols=kernel.meta,
+    )
+    assert not report.passed
+    assert report.first_bad_pass == "ssa.validate_target_capabilities"
+    assert "math.pow" in report.error
+    assert report.difference is None
+    assert report.localization is None
+    assert not later

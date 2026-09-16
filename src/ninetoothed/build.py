@@ -45,6 +45,7 @@ class _CandidateGroup:
             "_source",
             "_artifact",
             "_backend",
+            "_platform",
             "_kernel",
             "_library",
             "_ssa",
@@ -82,6 +83,7 @@ class _BuildHandle:
             "_source",
             "_artifact",
             "_backend",
+            "_platform",
             "_kernel",
             "_library",
             "_ssa",
@@ -94,6 +96,7 @@ class _BuildHandle:
 
 def _handle_validator(handle):
     from ninetoothed.compiler.runtime import _public_values
+    from ninetoothed.targets import runtime_device_types
 
     def validate(args, kwargs):
         _public_values(
@@ -101,6 +104,7 @@ def _handle_validator(handle):
             args,
             kwargs,
             specs=handle._compilation.kernel.tensors,
+            device_types=runtime_device_types(handle._compilation),
         )
 
     return validate
@@ -125,6 +129,8 @@ def build(
     configs,
     *,
     backend=None,
+    platform=None,
+    compute_arch=None,
     caller="cuda",
     output_dir,
     kernel_name=None,
@@ -146,6 +152,8 @@ def build(
                 meta_parameters=meta_parameters,
                 caller=caller,
                 backend=backend,
+                platform=platform,
+                compute_arch=compute_arch,
                 kernel_name=kernel_name,
                 output_dir=output_dir,
                 pipeline=pipeline,
@@ -173,6 +181,8 @@ def build(
                 application=application,
                 tensors=tuple(tensors),
                 backend=backend,
+                platform=platform,
+                compute_arch=compute_arch,
                 caller=caller,
                 kernel_name=variant_name,
                 num_warps=compiler_options.get("num_warps"),
@@ -215,7 +225,10 @@ def build(
             handle=_CandidateGroup(
                 group["handles"],
                 group["keys"],
-                cache_namespace=f"build_{base_name}_{backend or 'triton'}",
+                cache_namespace=(
+                    f"build_{base_name}_{backend or 'triton'}_"
+                    f"{platform or 'generic'}_{compute_arch or 'default'}"
+                ),
             ),
         )
         for key, group in grouped.items()

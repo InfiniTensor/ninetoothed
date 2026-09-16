@@ -598,13 +598,18 @@ inputs, layouts, dtypes, seeds and pass settings.
 Latest validation and CPU automation
 ------------------------------------
 
-The current acceptance baseline is computation source
-``ed332733db28dbf16de06f166b16766760148958``. Its recorded CPU suite passed
-460 tests with 15 actual GPU cases deselected. The matching A100 full suite
-passed 835 tests with two multi-GPU cases skipped. The submission preparation
-preserved the computation sources and tests; it did not repeat the GPU run.
-See the `acceptance report <https://github.com/a962695448-rgb/ninetoothed/blob/c5cd8cc7a3d821bf7c841a336c26e060107a90a7/docs/cpu_interpreter_acceptance.md>`_
-for the exact evidence and the distinction between CPU and GPU coverage.
+The current submission integrates upstream target architecture revision
+``22e74c3afe47e12ee29d7d0bcfaf1de8286f4560``. Its selected CPU suite passed
+493 tests with 15 actual GPU cases deselected. This includes platform-profile
+checks and positive/negative target-capability pass integration for Triton,
+CUDA and TileLang. The default pipeline now also checks
+``ssa.validate_target_capabilities``.
+
+The recorded A100 full suite of 835 passed and two multi-GPU skips belongs to
+older computation source ``ed332733db28dbf16de06f166b16766760148958``. It was
+not rerun after integrating the new compiler/platform changes and must not be
+reported as hardware validation of the current combination. The current
+acceptance and compatibility reports distinguish these evidence scopes.
 
 The ``CPU interpreter`` workflow runs on ordinary GitHub-hosted Ubuntu runners
 for Python 3.10 and 3.12, including fork pull requests. Its checkout regression

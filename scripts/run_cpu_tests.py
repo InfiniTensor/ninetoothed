@@ -16,6 +16,7 @@ SSA_TESTS = (
     "test_ssa_validation.py",
     "test_ir_immutability.py",
     "test_kernel_ir.py",
+    "test_target_profiles.py",
 )
 
 

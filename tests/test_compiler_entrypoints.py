@@ -2,6 +2,7 @@ import importlib
 import os
 import subprocess
 import sys
+from dataclasses import replace
 
 import pytest
 
@@ -9,6 +10,7 @@ import ninetoothed
 from ninetoothed import Tensor
 from ninetoothed.compiler import DEFAULT_COMPILER, Compiler, CompileRequest
 from ninetoothed.compiler import driver as compiler_driver
+from ninetoothed.targets import resolve_target_context
 
 
 def _arrangement(input, other, output):
@@ -51,9 +53,23 @@ def test_jit_function_and_decorator_use_the_default_compiler(monkeypatch):
 
     assert ninetoothed.jit(_application, backend="cuda", arch="sm_90") == "cuda"
     assert ninetoothed.jit(backend="tilelang")(_application) == "tilelang"
+    assert (
+        ninetoothed.jit(
+            _application,
+            backend="cuda",
+            platform="generic",
+            compute_arch="sm_90",
+            arch="sm_90",
+        )
+        == "cuda"
+    )
     assert requests[0][0].kernel_name == "_application"
+    assert requests[0][0].platform is None
+    assert requests[0][0].compute_arch is None
     assert requests[0][0].backend_options == {"arch": "sm_90"}
     assert requests[1][2] == "jit"
+    assert requests[2][0].platform == "generic"
+    assert requests[2][0].compute_arch == "sm_90"
 
 
 def test_pure_lowering_does_not_query_runtime_cuda_architecture(monkeypatch):
@@ -68,9 +84,13 @@ def test_pure_lowering_does_not_query_runtime_cuda_architecture(monkeypatch):
         _application,
         (Tensor(1), Tensor(1), Tensor(1)),
         backend="cuda",
+        platform="generic",
+        compute_arch="sm_90",
     )
 
     assert artifact.backend.value == "cuda"
+    assert artifact.metadata["target"]["platform"] == "generic"
+    assert artifact.metadata["target"]["compute_arch"] == "sm_90"
 
 
 def test_make_preserves_legacy_caller_materialization_mode(tmp_path, monkeypatch):
@@ -96,10 +116,83 @@ def test_make_preserves_legacy_caller_materialization_mode(tmp_path, monkeypatch
         )
         == "aot"
     )
+    assert (
+        ninetoothed.make(_arrangement, _application, tensors, platform="generic")
+        == "jit"
+    )
     assert calls[0][2] == "jit"
+    assert calls[0][0].platform is None
     assert calls[1][0].caller == "cuda"
     assert calls[1][1] == tmp_path
     assert calls[1][2] == "aot"
+    assert calls[2][0].platform == "generic"
+
+
+def test_compilation_rejects_target_and_artifact_backend_mismatch():
+    compilation = DEFAULT_COMPILER.compile(
+        CompileRequest(
+            arrangement=_arrangement,
+            application=_application,
+            tensors=(Tensor(1), Tensor(1), Tensor(1)),
+            backend="triton",
+        )
+    )
+
+    with pytest.raises(ValueError, match="does not match artifact backend"):
+        replace(compilation, target=resolve_target_context("cuda"))
+
+
+def test_explicit_cuda_arch_binds_and_validates_backend_architecture():
+    compilation = DEFAULT_COMPILER.compile(
+        CompileRequest(
+            arrangement=_arrangement,
+            application=_application,
+            tensors=(Tensor(1), Tensor(1), Tensor(1)),
+            backend="cuda",
+            platform="generic",
+            compute_arch="sm_90",
+        )
+    )
+
+    assert compilation.request.backend_options["arch"] == "sm_90"
+    assert compilation.request.backend_options["compute_capability"] == "9.0"
+    assert compilation.kernel.compiler_options["backend_options"]["arch"] == "sm_90"
+
+    with pytest.raises(ValueError, match="conflicts with target architecture"):
+        DEFAULT_COMPILER.compile(
+            CompileRequest(
+                arrangement=_arrangement,
+                application=_application,
+                tensors=(Tensor(1), Tensor(1), Tensor(1)),
+                backend="cuda",
+                platform="generic",
+                compute_arch="sm_90",
+                backend_options={"arch": "sm_80"},
+            )
+        )
+
+
+def test_compilation_rejects_target_replacement_with_same_backend():
+    compilation = DEFAULT_COMPILER.compile(
+        CompileRequest(
+            arrangement=_arrangement,
+            application=_application,
+            tensors=(Tensor(1), Tensor(1), Tensor(1)),
+            backend="triton",
+            platform="generic",
+            compute_arch="arch-a",
+        )
+    )
+
+    with pytest.raises(ValueError, match="target metadata does not match"):
+        replace(
+            compilation,
+            target=resolve_target_context(
+                "triton",
+                platform="generic",
+                compute_arch="arch-b",
+            ),
+        )
 
 
 def test_triton_launch_plan_enumerates_symbolic_meta_parameters():

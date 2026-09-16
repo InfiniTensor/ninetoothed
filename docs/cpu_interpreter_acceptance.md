@@ -11,7 +11,7 @@
 - [CPU 原始清单](https://github.com/a962695448-rgb/ninetoothed/blob/0474ca792584a4b0b425abc1a271a6a974ac5740/results/memory_checkpoints_20260914/cpu/ed33273/manifest.json)
 - [A100 原始清单](https://github.com/a962695448-rgb/ninetoothed/blob/0474ca792584a4b0b425abc1a271a6a974ac5740/results/memory_checkpoints_20260914/gpu/ed33273/full/manifest.json)
 
-这些归档对应计算源码 `ed332733db28dbf16de06f166b16766760148958`。本次整理保持 `src/`、`tests/`、`scripts/` 和运行依赖内容与该版本一致；文档与仅服务于历史 `results/` 的检查配置另行整理。整理后的本地检查记录见[当前 CPU 验证摘要](cpu_interpreter_validation.txt)。
+上述归档对应旧计算源码 ed332733db28dbf16de06f166b16766760148958。本次提交已兼容上游 22e74c3 的多平台目标架构，当前 CPU 结果见[兼容性检查](upstream_compatibility_20260916.md)和[验证摘要](cpu_interpreter_validation.txt)。旧 A100 结果作为历史硬件证据保留，不代表合并后组合已经重新通过 GPU 验证。
 
 ## 功能与验证入口
 
@@ -26,19 +26,19 @@
 | 失败导出与回放 | `export_failure`、`replay_failure`；`test_interpreter_failure_workflow.py`、`test_interpreter_shared_storage.py` | 保存 SSA、数值输入、shape、dtype、seed、容差与诊断；保留共享视图；不导出任意 Python pass 代码 |
 | 局部扩展 | 可注册 operation handler，共用 frontend/SSA 与内存模型 | 未声明的自定义副作用不能被当作完整内存历史；参见接口文档的扩展示例 |
 
-默认管线包括 `ssa.canonicalize`、`ssa.analyze_effects`、`ssa.select_schedule`、后端的 `optimize_schedule` 和 `ssa.decompose_linalg`。CPU 执行这些 SSA 不能代替验证 GPU 代码生成和调度效果。
+默认管线包括 `ssa.canonicalize`、`ssa.analyze_effects`、`ssa.select_schedule`、后端的 `optimize_schedule`、`ssa.decompose_linalg` 和 `ssa.validate_target_capabilities`。CPU 执行这些 SSA 不能代替验证 GPU 代码生成和调度效果。
 
 ## 验证结果与统计口径
 
 | 验证 | 已保存结果 | 口径 |
 |---|---|---|
-| 无 Torch/Triton 的 CPU 回归 | **460 passed，15 GPU deselected** | ed33273 的选定 CPU 范围，不是无依赖的全仓库测试 |
-| A100-SXM4-40GB 完整回归 | **835 passed，2 skipped，570.53 秒，退出 0** | 同一计算源码；包含 15 项实际 Triton GPU 差分；2 项跳过均要求至少双 GPU |
-| 独立 CUDA dot | 四路正确性对照通过 | float32 标量分解案例，不代表完整 CUDA 后端或 Tensor Core 性能 |
-| 普通 wheel 与独立回放 | 67 份安装源码逐份核对，25 个新故障包和 8 个历史故障包通过 | `--no-deps` CPU 安装；保留原 GPU 依赖元数据，不是独立 CPU 发行包 |
+| 当前无 Torch/Triton 的 CPU 回归 | **493 passed，15 GPU deselected** | 合入 22e74c3 后的解释器/SSA/平台配置范围，不是无依赖的全仓库测试 |
+| 历史 A100-SXM4-40GB 完整回归 | **835 passed，2 skipped，570.53 秒，退出 0** | 旧计算源码 ed33273；包含 15 项实际 Triton GPU 差分；2 项跳过均要求至少双 GPU |
+| 历史独立 CUDA dot | 四路正确性对照通过 | float32 标量分解案例，不代表完整 CUDA 后端或 Tensor Core 性能 |
+| 当前 wheel 与独立回放 | 68 份安装源码逐份核对，源码目录外的示例和独立回放通过 | `--no-deps` CPU 安装；保留原 GPU 依赖元数据，不是独立 CPU 发行包 |
 | 文档与风格 | 归档中严格 Sphinx、Ruff、format、项目风格检查通过 | 当前整理后的检查另记在当前 CPU 验证摘要中 |
 
-同一测试在不同阶段重复运行，不累计为更多独立用例。835 项里包含 77 项内存/检查点等新增测试。全库行覆盖率为 86.43%（10069/11650），不能当作解释器专项或分支覆盖率。本次提交整理没有新增 A100 运行；上述 GPU 结果通过计算源码与测试内容的一致性建立对应关系。
+同一测试在不同阶段重复运行，不累计为更多独立用例。835 项里包含 77 项内存/检查点等新增测试。历史 ed33273 全库行覆盖率为 86.43%（10069/11650），不能当作解释器专项或分支覆盖率。本次提交没有新增 A100 运行；上游目标架构改动涉及编译与发射器，因此旧 GPU 结果不自动覆盖当前组合。
 
 ### CPU 复现
 
@@ -69,4 +69,4 @@ python scripts/run_cpu_tests.py --junitxml /tmp/nine-cpu-results.xml
 
 建议先看 `interpreter/runtime.py` 与内存模型，再看 `ir/provenance.py`、`interpreter/debugger.py` 和定位/回放模块，最后对照专项测试。`frontend/preparation.py` 和相关调用方共享准备过程，避免 CPU 路径通过 GPU 后端执行。
 
-原有测试修改也保留在本次差异中：`tests/conftest.py` 允许缺少 Torch 的 CPU 选择；`test_aot.py` 使用正确的 `torch.cuda.stream(...)` 上下文管理器；`test_generation.py` 使用定义明确的输入/输出初值和不重复索引；`test_jagged.py` 使用可执行的参考构造。它们不改变 GPU 算子的计算容差，也不通过删掉失败断言获取通过。双卡测试的跳过条件与这些修正分别说明，不将二者混作同一改动。相关开发失败和复验原件仍在固定提交的历史档案内。
+当前差异保留了 CPU 可选收集、解释器相关回归，以及 jagged 的显式维度构造和独立参考检查。流上下文与确定性 scatter 的修正已由新上游提供，本次采用上游版本。未放宽计算容差，也未删掉断言获取通过；历史硬件记录与本轮 CPU 兼容性检查分别说明。
