@@ -595,7 +595,43 @@ CPU tests cannot establish agreement with A100 hardware or measure GPU speed.
 That requires the separate real-GPU differential run on matching kernels,
 inputs, layouts, dtypes, seeds and pass settings.
 
-The current implementation is frozen in
+Latest validation and CPU automation
+------------------------------------
+
+The current acceptance baseline is computation source
+``ed332733db28dbf16de06f166b16766760148958``. Its recorded CPU suite passed
+460 tests with 15 actual GPU cases deselected. The matching A100 full suite
+passed 835 tests with two multi-GPU cases skipped. The submission preparation
+preserved the computation sources and tests; it did not repeat the GPU run.
+See the `acceptance report <https://github.com/a962695448-rgb/ninetoothed/blob/c5cd8cc7a3d821bf7c841a336c26e060107a90a7/docs/cpu_interpreter_acceptance.md>`_
+for the exact evidence and the distinction between CPU and GPU coverage.
+
+The ``CPU interpreter`` workflow runs on ordinary GitHub-hosted Ubuntu runners
+for Python 3.10 and 3.12, including fork pull requests. Its checkout regression
+entry point rejects environments containing Torch or Triton, disables GPU
+visibility and third-party pytest plugin loading, and selects the documented
+interpreter/SSA test scope. It then builds the normal wheel and exercises the
+installed demo and standalone replay outside the checkout. JUnit results and
+dependency versions are retained as workflow artifacts.
+
+In a fresh environment without Torch or Triton, run from the repository root:
+
+.. code-block:: console
+
+   python -m pip install -r requirements-cpu.txt
+   python scripts/run_cpu_tests.py --junitxml /tmp/nine-cpu-results.xml
+
+These are CPU checks, not a replacement for the separate hardware differential
+suite. The wheel retains its existing Triton dependency metadata; the isolated
+installation uses the explicit override documented in :ref:`cpu-wheel-install`.
+
+Historical validation at 6ecce58
+--------------------------------
+
+The following records belong to an earlier implementation and are retained for
+traceability. They do not describe the current acceptance baseline above.
+
+That historical implementation was frozen in
 ``6ecce58da28bb9709aa35fc6c25c1f361aff736f``. Its selected NumPy CPU suite passed
 307 tests, with 15 GPU cases deselected, in 32.68 seconds (exit 0). That
 environment contains neither Torch nor Triton, so this run does not cover the
@@ -613,9 +649,10 @@ GPU cases (nine programs, ten categories) and one scalar float32 CUDA dot
 probe. The CUDA case compares NumPy, frontend CPU, lowered SSA CPU and
 actual GPU output, with unchanged inputs and guards. It is one backend
 correctness probe, not a performance benchmark or a new independent program
-beyond the Triton matrix. New A100, full-repository and multi-device runs
-remain outside this evidence. Historical A100 results do not validate the
-new runtime, pass, emitter or provenance changes.
+beyond the Triton matrix. At that historical checkpoint, newer A100, full-repository and multi-device
+runs were outside its evidence. Earlier A100 results did not validate those
+runtime, pass, emitter or provenance changes; the later matching A100 evidence
+is summarized in the current validation section above.
 
 Two earlier Sphinx attempts failed on missing matplotlib and then tkinter.
 The closeout defers Tk imports to the interactive visualization entry point;

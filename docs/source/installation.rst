@@ -87,3 +87,14 @@ functions in child processes, so run pytest from ``CPU_WORK`` as shown, without
 
 The full repository suite includes GPU/framework tests and is not a CPU-only
 installation check. The commands above do not measure GPU performance.
+
+CPU regression automation
+-------------------------
+
+The repository's ``CPU interpreter`` workflow uses GitHub-hosted Ubuntu runners
+with Python 3.10 and 3.12. It runs the checkout regression selection through
+``python scripts/run_cpu_tests.py``, requiring Torch and Triton to be absent.
+It then builds and installs the normal wheel with the explicit CPU override,
+and runs the demo and independent replay outside the checkout as shown above.
+This adds automated coverage of the CPU path without changing the wheel's
+existing dependency metadata or treating the full GPU suite as a CPU test.

@@ -42,35 +42,16 @@
 
 ### CPU 复现
 
-从仓库根目录，使用安装了 NumPy、SymPy、pytest 的独立环境运行：
+在不含 Torch/Triton 的独立环境中，从仓库根目录执行统一入口：
 
-```bash
-PYTHONPATH=src PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 CUDA_VISIBLE_DEVICES='' \
-python -m pytest -q --color=no -ra --tb=short \
-  tests/test_interpreter_applications.py \
-  tests/test_interpreter_debugger.py \
-  tests/test_interpreter_failure_workflow.py \
-  tests/test_interpreter_gpu.py \
-  tests/test_interpreter_ssa.py \
-  tests/test_interpreter_step_debugger.py \
-  tests/test_interpreter_default_pipeline.py \
-  tests/test_interpreter_demo.py \
-  tests/test_interpreter_matmul.py \
-  tests/test_interpreter_provenance.py \
-  tests/test_interpreter_value_mapping.py \
-  tests/test_interpreter_memory_dependencies.py \
-  tests/test_interpreter_matmul_checkpoints.py \
-  tests/test_interpreter_shared_storage.py \
-  tests/test_interpreter_trace_index.py \
-  tests/test_ssa_application_lowering.py \
-  tests/test_ssa_first_backend_lowering.py \
-  tests/test_ssa_pass_pipeline.py \
-  tests/test_ssa_program_domain_regressions.py \
-  tests/test_ssa_validation.py \
-  tests/test_ir_immutability.py \
-  tests/test_kernel_ir.py \
-  -k 'not test_cpu_interpreter_matches_actual_triton_gpu'
-```
+~~~bash
+python -m pip install -r requirements-cpu.txt
+python scripts/run_cpu_tests.py --junitxml /tmp/nine-cpu-results.xml
+~~~
+
+该入口覆盖本页原有的解释器与 SSA 选择范围，并自动发现新增的解释器测试文件；Torch 适配专项单独排除，实际 GPU 差分仍明确取消选择。它会先检查 Torch/Triton 不存在，再设置 CPU 可见性和关闭第三方 pytest 插件，避免把有 GPU 包的环境误记为 CPU 独立验证。
+
+新增 [CPU 自动回归工作流](../.github/workflows/cpu-interpreter.yml) 使用普通 Ubuntu 运行器，覆盖 Python 3.10/3.12 和 fork PR。工作流同时构建普通 wheel，在源码目录外执行已安装的示例与独立故障回放，保存 JUnit 和依赖版本。每次自动运行的结果以 Actions 记录为准，不把上表历史硬件结果计为新的 GPU 运行。
 
 `test_interpreter_gpu.py` 也包含 CPU 可执行的 fixture/reference 检查，因此保留文件并明确取消选择真正的 GPU 测试。GPU 环境中的完整仓库命令是项目贡献指南规定的 `pytest`/doctest/coverage 流程；测试输出应在 PR 描述中明确附上，不把 fork PR 的跳过状态记成 GPU 通过。
 
