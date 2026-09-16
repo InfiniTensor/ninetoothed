@@ -12,9 +12,20 @@ Ruff, format and project contribution-style checks passed.
 A normal wheel matched all 68 Python source files; isolated installed demo and
 standalone replay passed outside the checkout, with Torch/Triton absent.
 
-GPU tests were not rerun after integrating the target architecture changes.
-The historical A100 result below must not be read as validation of this merged
-combination. Current online CPU runs are linked from the PR/Actions history.
+RTX 4090 current-source validation (2026-09-16)
+================================================
+Source: 1b68040f73553de9b5929cd61067c4d4369f7f22
+Real Triton differential checks: 15 passed out of 15.
+Complete collected test-ID coverage: 900 passed, 2 conditional multi-GPU skips.
+The 902 collected IDs were checked across an interrupted 898-pass/2-skip run
+and an exact two-case serial completion. Source and environment identities match.
+This is not a claim of one uninterrupted full-suite pytest invocation.
+The initial timeout and diagnostic worker-exit attempt are preserved separately.
+
+Evidence: https://github.com/a962695448-rgb/ninetoothed/tree/c5b216200a2c4ce58566cd535ae35d7cbabdbd19/docs/validation/rtx4090-20260916
+Report: docs/cpu_interpreter_rtx4090_validation.md
+The historical A100 result below does not validate this merged combination.
+Current online CPU runs remain linked from the PR/Actions history.
 
 Historical submission report (2026-09-14)
 =======================================
