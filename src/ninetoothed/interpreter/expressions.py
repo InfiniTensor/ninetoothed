@@ -1,6 +1,7 @@
 """Numeric evaluation of the existing structured layout expression IR."""
 
 import operator
+from functools import lru_cache, partial
 
 import numpy as np
 
@@ -39,6 +40,91 @@ UNARY = {
 def evaluate(expression, symbols):
     """Evaluate a trusted IndexExpr using explicit supported operations only."""
     expression = IndexExpr.parse(expression)
+
+    if expression.op == "constant":
+        return expression.value
+
+    if expression.op == "symbol":
+        return _symbol(expression.value, symbols)
+
+    try:
+        evaluator = _compiled_expression(_ExpressionIdentity(expression))
+    except TypeError:
+        # Public IndexExpr constants can be unhashable; retain their semantics.
+        return _evaluate(expression, symbols)
+    return evaluator(symbols)
+
+
+class _ExpressionIdentity:
+    __slots__ = ("expression",)
+
+    def __init__(self, expression):
+        self.expression = expression
+
+    def __hash__(self):
+        return id(self.expression)
+
+    def __eq__(self, other):
+        return (
+            isinstance(other, _ExpressionIdentity)
+            and self.expression is other.expression
+        )
+
+
+def _constant(value, symbols):
+    return value
+
+
+def _symbol(name, symbols):
+    try:
+        return symbols[name]
+    except KeyError as exc:
+        raise ValueError(f"Unbound layout symbol `{name}`.") from exc
+
+
+def _binary(function, left, right, symbols):
+    return function(left(symbols), right(symbols))
+
+
+def _unary(function, operand, symbols):
+    return function(operand(symbols))
+
+
+@lru_cache(maxsize=256)
+def _compiled_expression(identity):
+    """Cache only a bounded evaluation plan, never symbol values or arrays."""
+    expression = identity.expression
+    # Identity preserves literal types: structural equality equates True, 1 and
+    # 1.0. The hashability check rejects array/list constants before retention.
+    hash(expression)
+
+    return _build_expression(expression)
+
+
+def _build_expression(expression):
+    if expression.op == "constant":
+        return partial(_constant, expression.value)
+
+    if expression.op == "symbol":
+        return partial(_symbol, expression.value)
+
+    if not all(isinstance(value, IndexExpr) for value in expression.operands):
+        return partial(_evaluate, expression)
+
+    if expression.op in BINARY and len(expression.operands) == 2:
+        left, right = map(_build_expression, expression.operands)
+
+        return partial(_binary, BINARY[expression.op], left, right)
+
+    if expression.op in UNARY and len(expression.operands) == 1:
+        return partial(
+            _unary, UNARY[expression.op], _build_expression(expression.operands[0])
+        )
+    return partial(_evaluate, expression)
+
+
+def _evaluate(expression, symbols):
+    expression = IndexExpr.parse(expression)
     op = expression.op
 
     if op == "constant":
@@ -59,7 +145,7 @@ def evaluate(expression, symbols):
 
         raise ValueError(f"Unsupported layout attribute `{name}`.")
 
-    values = tuple(evaluate(value, symbols) for value in expression.operands)
+    values = tuple(_evaluate(value, symbols) for value in expression.operands)
 
     if op in BINARY:
         return BINARY[op](*values)

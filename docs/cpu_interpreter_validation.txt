@@ -1,3 +1,17 @@
+Expression evaluation plan validation (2026-09-16, late evening)
+===============================================================
+Base: d7e779642eab70164be849b2dcf52a5d02a7858a
+Changed runtime: src/ninetoothed/interpreter/expressions.py only.
+CPU selection: 512 passed, 15 deselected in 35.10s; Torch/Triton absent.
+RTX 4090 D: 15/15 real GPU differential cases PASS.
+New expression tests: 10 passed in 1.55s on the GPU host (CPU execution).
+Three isolated old/new process pairs met the preregistered runtime and memory gate.
+Full trace digests and independent output references matched.
+Ruff, format and contribution style passed. Installed-wheel checks are recorded by CI.
+Historical full GPU test collection counts below retain their original source scope.
+Evidence: https://github.com/a962695448-rgb/ninetoothed/tree/bb284c1a9f7ce7cfd33683571936de9523822320/docs/validation/expression-plans-20260916
+Report: docs/cpu_interpreter_performance.md
+
 Report lifecycle regression validation (2026-09-16, evening)
 ===========================================================
 Scope: GPU report CLI only; interpreter/compiler/kernel sources unchanged.
