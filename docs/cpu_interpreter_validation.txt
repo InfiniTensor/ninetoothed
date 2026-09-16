@@ -1,3 +1,15 @@
+Dtype descriptor cache validation (2026-09-17)
+===========================================
+Base: 64bd6958a610a0e5e61807aa141bf1cbc7881426
+CPU selection: 535 passed, 15 deselected in 36.18s; Torch/Triton absent.
+Actual GPU differential: 15/15 PASS on RTX 4090 D.
+New dtype regressions on that host: 23 passed in 0.42s (CPU execution).
+Three independent process pairs met the frozen runtime gate; full traces matched.
+Warm and cold tracemalloc peaks were recorded separately and are not process RSS.
+Local Ruff, format and contribution style passed.
+Evidence: https://github.com/a962695448-rgb/ninetoothed/tree/98feddcdf50a9d3991707b96d471220c92b6b132/docs/validation/dtype-cache-20260917
+Report: docs/cpu_interpreter_dtype_performance.md
+
 Expression evaluation plan validation (2026-09-16, late evening)
 ===============================================================
 Base: d7e779642eab70164be849b2dcf52a5d02a7858a

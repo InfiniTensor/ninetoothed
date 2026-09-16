@@ -203,6 +203,23 @@ def numpy_dtype(dtype, fallback=None):
         return None if fallback is None else np.dtype(fallback)
 
     name = str(dtype).rsplit(".", 1)[-1]
+
+    if name in {"symbol", "none"}:
+        return None
+
+    try:
+        result = _numpy_dtype_from_name(name)
+    except TypeError as exc:
+        raise ValueError(f"Unsupported interpreter dtype `{dtype}`.") from exc
+
+    if result is None:
+        raise ValueError(f"Unsupported interpreter dtype `{dtype}`.")
+    return result
+
+
+@lru_cache(maxsize=64)
+def _numpy_dtype_from_name(name):
+    """Reuse immutable dtype descriptors without retaining user objects."""
     names = {
         "fp16": "float16",
         "fp32": "float32",
@@ -219,13 +236,7 @@ def numpy_dtype(dtype, fallback=None):
         "i1": "bool",
     }
 
-    if name in {"symbol", "none"}:
-        return None
-
-    try:
-        result = np.dtype(names.get(name, name))
-    except TypeError as exc:
-        raise ValueError(f"Unsupported interpreter dtype `{dtype}`.") from exc
+    result = np.dtype(names.get(name, name))
 
     if result.name not in {
         "bool",
@@ -241,5 +252,5 @@ def numpy_dtype(dtype, fallback=None):
         "float32",
         "float64",
     }:
-        raise ValueError(f"Unsupported interpreter dtype `{dtype}`.")
+        return None
     return result

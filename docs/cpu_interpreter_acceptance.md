@@ -32,8 +32,9 @@
 
 | 验证 | 已保存结果 | 口径 |
 |---|---|---|
-| 当前无 Torch/Triton 的 CPU 回归 | **512 passed，15 GPU deselected** | 合入 22e74c3 后的解释器/SSA/平台配置范围，含 9 项报告生命周期和新增 10 项表达式计划测试；不是无依赖的全仓库测试 |
-| 本轮解释器性能及差分 | **三轮性能确认通过，15/15 GPU 差分、10/10 表达式测试** | 求值计划优化；[范围与数据](cpu_interpreter_performance.md) |
+| 当前无 Torch/Triton 的 CPU 回归 | **535 passed，15 GPU deselected** | 合入 22e74c3 后的解释器/SSA/平台配置范围，含 9 项报告生命周期、10 项表达式计划和新增 23 项 dtype 测试；不是无依赖的全仓库测试 |
+| 本轮 dtype 性能及差分 | **三轮确认通过，15/15 GPU 差分、23/23 dtype 测试** | 多形状/步长/类型验证；[范围与数据](cpu_interpreter_dtype_performance.md) |
+| 先前表达式计划性能及差分 | **三轮性能确认通过，15/15 GPU 差分、10/10 表达式测试** | 求值计划优化；[范围与数据](cpu_interpreter_performance.md) |
 | 先前 RTX 4090 D 差分与报告协议 | **15/15 GPU 差分，9/9 报告测试** | 最终文件实机复验；九项测试使用替身验证协议；[详情](cpu_interpreter_report_validation.md) |
 | 已归档 RTX 4090 测试集合 | **900 passed、2 skipped，覆盖 902 个测试 ID** | 1b68040；分段执行后逐项核对，含 15 项真实 GPU 差分；[详情](cpu_interpreter_rtx4090_validation.md) |
 | 历史 A100-SXM4-40GB 完整回归 | **835 passed，2 skipped，570.53 秒，退出 0** | 旧计算源码 ed33273；包含 15 项实际 Triton GPU 差分；2 项跳过均要求至少双 GPU |
