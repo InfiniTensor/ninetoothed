@@ -15,7 +15,7 @@ import ninetoothed.compiler.runtime as runtime
 from ninetoothed import Tensor
 from ninetoothed.compiler import DEFAULT_COMPILER, CompileRequest
 from ninetoothed.ir import LaunchABI, LaunchBinding
-from tests.utils import get_available_devices
+from tests.utils import get_available_devices, requires_effective_backend
 
 _prepared_test_kernel = None
 
@@ -1082,6 +1082,7 @@ def test_triton_zero_size_does_not_disturb_nonempty_prepared_call():
 
 
 @pytest.mark.parametrize("device", get_available_devices())
+@requires_effective_backend("triton")
 def test_triton_tuple_configurations_are_benchmarked_and_cached(device, monkeypatch):
     benchmarked = []
 
@@ -1119,6 +1120,7 @@ def test_triton_tuple_configurations_are_benchmarked_and_cached(device, monkeypa
 
 
 @pytest.mark.parametrize("device", get_available_devices())
+@requires_effective_backend("triton")
 def test_triton_prepared_cache_releases_gpu_tensor_storage(device):
     handle = ninetoothed.make(
         _arrangement,
