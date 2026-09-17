@@ -194,19 +194,33 @@ class TensorRef:
 
     def read(self, mask=True, other=None):
         coordinates, valid = self._access(mask)
+        layout = self.layout
+
+        if type(self.array) is np.ndarray and (
+            layout is None or (not layout.levels and layout.view_access is None)
+        ):
+            return self._read_access(
+                coordinates, valid, other, identity_source=self.array
+            )
 
         return self._read_access(coordinates, valid, other)
 
-    def _read_access(self, coordinates, valid, other=None):
+    def _read_access(self, coordinates, valid, other=None, *, identity_source=None):
         if other is None:
             other = self.spec.attrs.get("other") if self.spec is not None else None
 
         result = np.full(
             valid.shape, 0 if other is None else other, dtype=self.array.dtype
         )
-        result[valid] = self.array[
-            tuple(coordinate[valid] for coordinate in coordinates)
-        ]
+
+        if identity_source is not None:
+            # The checked identity map can copy directly into fresh result storage.
+            # Extraction still uses its selected coordinates, even for equal shapes.
+            np.copyto(result, identity_source, where=valid)
+        else:
+            result[valid] = self.array[
+                tuple(coordinate[valid] for coordinate in coordinates)
+            ]
 
         if self.observer is not None:
             self.observer.access("read", self.array, coordinates, valid)

@@ -86,3 +86,7 @@ kernel = ninetoothed.make(arrangement, application, tensors)
 ## License
 
 This project is distributed under the Apache-2.0 license. See the included [LICENSE](LICENSE) file for details.
+
+### 恒等布局读取快照优化
+
+[读取快照优化](docs/cpu_interpreter_identity_read.md) 在未安排布局、以读取为主的公开 SSA 测试中实现三轮 7.15–7.61× 的几何平均加速；32 项新边界测试、609 项纯 CPU 回归和 15 项真实 GPU 差分通过。数值只是指定 CPU 解释器测试的收益，完整轨迹及带输出写入的对照均保留。
