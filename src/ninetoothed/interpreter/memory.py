@@ -206,7 +206,11 @@ class TensorRef:
         return coordinates, mask
 
     def read(self, mask=True, other=None):
-        coordinates, valid = self._access(mask)
+        coordinates, valid = (
+            self._geometry_cache.access(self)
+            if self._geometry_cache is not None and mask is True
+            else self._access(mask)
+        )
         layout = self.layout
 
         if type(self.array) is np.ndarray and (

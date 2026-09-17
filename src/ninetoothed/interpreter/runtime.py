@@ -379,7 +379,6 @@ class _Execution:
             and type(operation.attrs.get("decomposition")) is str
             and operation.attrs["decomposition"] == "matmul"
             and type(trace) is bool
-            and not trace
             and callback is None
             and not self.watch
             and not self.handlers

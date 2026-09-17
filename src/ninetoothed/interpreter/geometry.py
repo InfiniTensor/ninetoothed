@@ -9,6 +9,7 @@ import numpy as np
 from ninetoothed.ir import AccessMap, IndexExpr, LayoutLevel, TensorLayout, TensorSpec
 
 from . import expressions
+from .access import MemoryRecorder
 
 _MIN = -(2**63)
 _MAX = 2**63 - 1
@@ -204,6 +205,7 @@ class ExtractionGeometry:
             or type(ref.spec) is not TensorSpec
             or type(ref.symbols) is not dict
             or np.dtype(int).itemsize != 8
+            or (ref.observer is not None and type(ref.observer) is not MemoryRecorder)
         ):
             return ref._access()
 

@@ -267,7 +267,7 @@ def matrix_application(a, b, out):
         {"opcodes": ()},
     ),
 )
-def test_only_pure_untraced_matmul_uses_geometry_reuse(monkeypatch, options):
+def test_matmul_geometry_reuse_preserves_user_hooks_and_filters(monkeypatch, options):
     kernel = interpret(
         matrix_arrangement,
         matrix_application,
@@ -290,7 +290,7 @@ def test_only_pure_untraced_matmul_uses_geometry_reuse(monkeypatch, options):
         kernel.program, data, tensors=kernel.tensors, symbols=kernel.meta, **options
     )
     np.testing.assert_allclose(result.outputs["out"], a @ b)
-    assert bool(calls) == (options == {})
+    assert bool(calls) == (options in ({}, {"trace": True}))
 
 
 @pytest.mark.parametrize("symbol", ("outer_index", "extract_0_0"))
@@ -371,3 +371,33 @@ def test_nonstring_symbol_key_lookup_effects_stay_live():
     assert first_calls > 0
     assert ref.extract((0,)) == 0
     assert key.calls > first_calls
+
+
+def test_cached_reads_keep_fresh_data_and_effective_masks():
+    x = np.arange(8, dtype=np.float32)
+    ref = make_ref(x)
+    first = ref.read()
+    first[:] = -19
+    x[1] = 42
+    np.testing.assert_array_equal(ref.read(), x[:4])
+    mask = np.array([True, False, True, False])
+    np.testing.assert_array_equal(ref.read(mask, other=-7), [0, -7, 2, -7])
+    np.testing.assert_array_equal(mask, [True, False, True, False])
+    ref.symbols["offset"] = 100
+    np.testing.assert_array_equal(ref.read(False, other=9), np.full(4, 9))
+
+    with pytest.raises(IndexError, match="Active layout lane"):
+        ref.read()
+
+
+@pytest.mark.parametrize("method", ("read", "extract"))
+def test_custom_observer_mutation_cannot_poison_geometry(method):
+    class Observer:
+        def access(self, kind, array, coordinates, valid):
+            valid[...] = False
+
+    ref = replace(make_ref(np.arange(8, dtype=np.float32)), observer=Observer())
+
+    for _ in range(2):
+        actual = ref.read() if method == "read" else ref.extract((slice(None),))
+        np.testing.assert_array_equal(actual, np.arange(4))

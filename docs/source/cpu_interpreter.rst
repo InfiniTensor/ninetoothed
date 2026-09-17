@@ -608,23 +608,27 @@ Latest validation and CPU automation
 
 The current submission integrates upstream target architecture revision
 ``22e74c3afe47e12ee29d7d0bcfaf1de8286f4560``. Its selected CPU suite passes
-796 tests with 15 actual GPU cases deselected in a NumPy-only environment.
+799 tests with 15 actual GPU cases deselected in a NumPy-only environment.
 This includes platform profiles, target capabilities, memory/alias semantics,
-layout calls, expression semantics, and 26 extraction-geometry regressions.
+layout calls, expression semantics, and 29 extraction-geometry regressions.
 The default pipeline also checks ``ssa.validate_target_capabilities``.
 
-Untraced scalar matmul execution can reuse the checked address map of an
+Scalar matmul without user hooks or event filters can reuse the checked address map of an
 innermost extraction. Each internal tensor reference holds at most one map
 of at most 65536 logical elements. Array contents are read on every extraction;
 shape, stride, dtype, typed referenced symbols, extraction coordinates and actual compiled
 expression plans participate in the key. Shape proofs use the original symbol
 context, before address-coordinate overrides. Unproven integer operations,
 custom numeric objects and warning-sensitive paths retain ordinary evaluation.
-Tracing, callbacks, watches, custom handlers and event filters disable reuse.
+Callbacks, watches, custom handlers and event filters disable reuse.
+Ordinary trace collection with the built-in MemoryRecorder can reuse geometry.
+Only reads with the literal True mask share it; other masks and custom observer
+types retain ordinary evaluation. Numeric data and complete snapshots are still
+read afresh, and actual memory accesses are recorded on every operation.
 
 The initial geometry-cache revision measured 3.847--3.860 times the execution
 speed of its 90197b0 baseline on three selected small CPU matmuls, at a warm
-tracemalloc peak cost of 141--183 KB. The current follow-up measures another
+tracemalloc peak cost of 141--183 KB. The related-symbol follow-up measured another
 1.128--1.133 times the speed of the published c2c35ec baseline on the same
 three targets. All 33 timed conditions satisfy the predefined five-percent
 regression limit, and all 21 complete trace comparisons agree. The follow-up
@@ -639,14 +643,26 @@ to preserve custom-key lookup effects. Removed bindings, custom numeric objects
 and recompiled plans remain covered. A preceding hit-path-only candidate failed
 its third-round 1.10-times target gate and remains rejected with all raw data.
 
+The current ordinary-tracing revision measures 2.380--2.388 times the CPU
+execution speed of a1ef123 on three traced matmul targets. All 42 timed
+conditions meet the five-percent regression limit, 21 complete trace pairs
+match, and warm/cold traced-target peaks meet the five-percent memory limit.
+The observed warm peak increases by 168--175 KB. Interactive callbacks and
+filtered debugging are outside this speedup claim. An inherited explanatory
+field in the as-run protocol contradicted the explicit trace targets; a
+separate prose erratum preserves the original file/hash and all numerical
+settings/results. This was a documentation correction during sampling, not
+a change to the measured source or acceptance thresholds.
+
 On the final geometry-cache computation source, a manual RTX 4090 D run passes
 all 15 existing actual GPU differential cases and three additional target-shape
-matmul checks. The latter compare emitted Triton GPU output, raw/target SSA and
+matmul checks with traced target-SSA execution. The latter compare emitted
+Triton GPU output, raw/target SSA and
 NumPy, preserve output guards and inputs, and confirm address-map reuse. Another
-134 geometry/layout/expression regressions pass with NumPy 1.26.4, Torch 2.6.0a0
-and Triton 3.1.0; these interpreter tests are not 134 GPU kernels. The run verifies
-202 frozen input files before and after execution. See the
-`fixed geometry evidence <https://github.com/a962695448-rgb/ninetoothed/tree/27c3e445f558859b1951292f4da9240fba9beb47/docs/validation/geometry-symbols-20260918>`_
+137 geometry/layout/expression regressions pass with NumPy 1.26.4, Torch 2.6.0a0
+and Triton 3.1.0; these interpreter tests are not 137 GPU kernels. The run verifies
+203 frozen input files before and after execution. See the
+`fixed geometry evidence <https://github.com/a962695448-rgb/ninetoothed/tree/df5c76f6ca2e71c053ebbb85731698db235de1a9/docs/validation/traced-geometry-20260918>`_
 for complete sources, limitations, initial failures and reproducible records.
 This establishes correctness for the listed cases, not a full repository GPU
 suite or GPU performance. The earlier 0706213 GPU evidence retains its own scope.
