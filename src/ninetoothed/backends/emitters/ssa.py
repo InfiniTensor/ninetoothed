@@ -1367,20 +1367,14 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
             return target.call("minimum", args)
         return _binary_expr(operator, op, ctx)
 
-    if opcode.startswith("math."):
-        name = opcode[len("math.") :]
+    if opcode.startswith(("math.", "call.")):
+        name = opcode.split(".", 1)[1]
         callee = str(op.attrs.get("callee", ""))
 
         if target.vector_value_semantics and "libdevice." in callee:
             name = f"libdevice.{name}"
         return target.call(
             name,
-            tuple(_emit_value(operand, ctx) for operand in op.operands),
-        )
-
-    if opcode.startswith("call."):
-        return target.call(
-            opcode[len("call.") :],
             tuple(_emit_value(operand, ctx) for operand in op.operands),
         )
 
@@ -1658,8 +1652,8 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
             return ctx.target.call("pow", _element_args(op, coords, ctx))
         return _element_binary(operator, op, coords, ctx)
 
-    if op.opcode.startswith("math."):
-        name = op.opcode[len("math.") :]
+    if op.opcode.startswith(("math.", "call.")):
+        name = op.opcode.split(".", 1)[1]
         callee = str(op.attrs.get("callee", ""))
 
         if ctx.target.vector_value_semantics and "libdevice." in callee:
