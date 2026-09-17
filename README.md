@@ -94,3 +94,7 @@ This project is distributed under the Apache-2.0 license. See the included [LICE
 ### 调试轨迹的活动地址记录
 
 [活动地址记录优化](docs/cpu_interpreter_active_addresses.md) 减少稀疏掩码下的临时分配；记录层微基准三轮几何平均约快 24%，实际前端程序另作完整轨迹对照。662 项 CPU 回归、15 项真实 GPU 差分通过，存储依赖和重叠字节语义保持一致。
+
+### 布局调用的边界语义
+
+[布局调用修复](docs/cpu_interpreter_layout_calls.md) 明确拒绝 IR 无法表示的关键字参数，并使零长度 padded shape 保持为零。新增 67 项回归，729 项 CPU 检查通过；此轮属于语义修复，没有新 GPU 性能结论。

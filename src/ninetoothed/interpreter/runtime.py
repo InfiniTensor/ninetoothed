@@ -14,7 +14,14 @@ from ninetoothed.ir.provenance import operation_locations
 from ninetoothed.naming import is_next_power_of_2, remove_prefixes
 
 from .access import MemoryAccess, MemoryRecorder
-from .expressions import BINARY, UNARY, evaluate, numpy_dtype, shape_value
+from .expressions import (
+    BINARY,
+    UNARY,
+    _next_power_of_2,
+    evaluate,
+    numpy_dtype,
+    shape_value,
+)
 from .memory import Pointer, TensorRef, materialize
 
 
@@ -198,7 +205,7 @@ def _bind_symbols(program, inputs, specs, supplied):
             symbols[name] = symbols[plain]
 
         if is_next_power_of_2(name) and plain in symbols:
-            symbols[name] = 1 << max(0, (int(symbols[plain]) - 1).bit_length())
+            symbols[name] = _next_power_of_2(symbols[plain])
 
     for expression, actual in checks:
         if int(evaluate(expression, symbols)) != actual:

@@ -90,6 +90,13 @@ def _unary(function, operand, symbols):
     return function(operand(symbols))
 
 
+def _next_power_of_2(value):
+    """Round an integer-normalized extent up; nonpositive extents stay empty."""
+    extent = int(value)
+
+    return 0 if extent <= 0 else 1 << (extent - 1).bit_length()
+
+
 @lru_cache(maxsize=256)
 def _compiled_expression(identity):
     """Cache only a bounded evaluation plan, never symbol values or arrays."""
@@ -173,7 +180,7 @@ def _evaluate(expression, symbols):
             "maximum": np.maximum,
             "ceiling": np.ceil,
             "cdiv": lambda x, y: -(-x // y),
-            "next_power_of_2": lambda x: 1 << (int(x) - 1).bit_length(),
+            "next_power_of_2": _next_power_of_2,
             "int": int,
         }
 

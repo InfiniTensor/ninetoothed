@@ -595,12 +595,20 @@ CPU tests cannot establish agreement with A100 hardware or measure GPU speed.
 That requires the separate real-GPU differential run on matching kernels,
 inputs, layouts, dtypes, seeds and pass settings.
 
+Layout expressions represent positional call operands. Keyword arguments,
+including ``**`` expansion, are rejected during parsing rather than discarded.
+The interpreter's integer-normalized ``next_power_of_2`` call and named padded
+shape bindings return zero for nonpositive extents and round positive extents
+upward. This agrees with the pinned Triton 3.1.0 integer utility for signed
+64-bit inputs; it does not specify physical GPU launch-block sizing.
+
+
 Latest validation and CPU automation
 ------------------------------------
 
 The current submission integrates upstream target architecture revision
 ``22e74c3afe47e12ee29d7d0bcfaf1de8286f4560``. Its selected CPU suite passed
-662 tests with 15 actual GPU cases deselected. This includes platform-profile
+729 tests with 15 actual GPU cases deselected. This includes platform-profile
 checks and positive/negative target-capability pass integration for Triton,
 CUDA and TileLang. The default pipeline now also checks
 ``ssa.validate_target_capabilities``. The identity-view revisions also pass
@@ -608,9 +616,10 @@ CUDA and TileLang. The default pipeline now also checks
 snapshot, extraction-permutation and array-subclass regressions. Another 53
 byte-oracle regressions cover compact active-address recording, including
 negative/zero strides, overlapping byte windows, empty/scalar masks and unknown
-accesses. Its 15
-actual GPU differential cases passed separately on RTX4090D; those cases do
-not constitute a full repository GPU suite.
+accesses. The call-boundary revision adds 67 parser, integer-utility and empty
+logical-view regressions. The 15 recorded actual GPU differential cases cover
+the preceding implementation; this revision has CPU evidence and does not
+claim a new hardware run or a full repository GPU suite.
 
 The recorded A100 full suite of 835 passed and two multi-GPU skips belongs to
 older computation source ``ed332733db28dbf16de06f166b16766760148958``. It was
