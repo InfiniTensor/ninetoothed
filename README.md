@@ -90,3 +90,7 @@ This project is distributed under the Apache-2.0 license. See the included [LICE
 ### 恒等布局读取快照优化
 
 [读取快照优化](docs/cpu_interpreter_identity_read.md) 在未安排布局、以读取为主的公开 SSA 测试中实现三轮 7.15–7.61× 的几何平均加速；32 项新边界测试、609 项纯 CPU 回归和 15 项真实 GPU 差分通过。数值只是指定 CPU 解释器测试的收益，完整轨迹及带输出写入的对照均保留。
+
+### 调试轨迹的活动地址记录
+
+[活动地址记录优化](docs/cpu_interpreter_active_addresses.md) 减少稀疏掩码下的临时分配；记录层微基准三轮几何平均约快 24%，实际前端程序另作完整轨迹对照。662 项 CPU 回归、15 项真实 GPU 差分通过，存储依赖和重叠字节语义保持一致。

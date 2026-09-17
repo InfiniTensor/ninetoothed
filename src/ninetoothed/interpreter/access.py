@@ -136,8 +136,9 @@ class MemoryRecorder:
             return
 
         valid = np.asarray(mask, dtype=bool)
+        active_count = np.count_nonzero(valid)
 
-        if not np.any(valid):
+        if not active_count:
             return
 
         allocation = self.allocations.get(id(array))
@@ -148,16 +149,18 @@ class MemoryRecorder:
             return
 
         storage, base = allocation
-        offsets = np.full(valid.shape, base, dtype=np.int64)
+        # Compact active lanes once instead of gathering and scattering offsets
+        # through the full logical mask for every coordinate dimension.
+        offsets = np.full(active_count, base, dtype=np.int64)
         strides = (array.itemsize,) if linear else array.strides
 
         for coordinate, stride in zip(coordinates, strides):
             active = np.broadcast_to(coordinate, valid.shape)[valid].astype(
                 np.int64, copy=False
             )
-            offsets[valid] += active * stride
+            offsets += active * stride
 
-        starts = np.sort(offsets[valid].reshape(-1))
+        starts = np.sort(offsets)
         overlap = kind == "write" and bool(np.any(np.diff(starts) < array.itemsize))
         # Find contiguous runs with vector operations, not one Python object per byte.
         breaks = np.flatnonzero(np.diff(starts) > array.itemsize)
