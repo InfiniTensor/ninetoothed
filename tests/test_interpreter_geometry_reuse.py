@@ -329,3 +329,45 @@ def test_recompiled_operator_invalidates_cached_geometry(monkeypatch):
     assert ref.extract((0,)) == 0
     assert len(calls) == 2
     expressions._compiled_expression.cache_clear()
+
+
+def test_equal_custom_symbol_after_cache_hit_keeps_operator_effects():
+    ref = make_ref(np.arange(8, dtype=np.float32))
+    assert ref.extract((0,)) == 0
+    assert ref.extract((0,)) == 0
+    value = MutableInteger()
+    ref.symbols["offset"] = value
+    assert ref.extract((0,)) == 1
+    assert ref.extract((0,)) == 2
+    assert value.calls == 2
+
+
+def test_removed_used_symbol_never_reuses_prior_coordinates():
+    ref = make_ref(np.arange(8, dtype=np.float32))
+    assert ref.extract((0,)) == 0
+    del ref.symbols["offset"]
+
+    with pytest.raises(ValueError, match="Unbound layout symbol `offset`"):
+        ref.extract((0,))
+
+
+def test_nonstring_symbol_key_lookup_effects_stay_live():
+    class OffsetKey:
+        def __init__(self):
+            self.calls = 0
+
+        def __hash__(self):
+            return hash("offset")
+
+        def __eq__(self, other):
+            self.calls += 1
+
+            return other == "offset"
+
+    key = OffsetKey()
+    ref = make_ref(np.arange(8, dtype=np.float32), symbols={key: 0, "tile": 4})
+    assert ref.extract((0,)) == 0
+    first_calls = key.calls
+    assert first_calls > 0
+    assert ref.extract((0,)) == 0
+    assert key.calls > first_calls

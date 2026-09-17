@@ -82,6 +82,26 @@ def _bounds(plan, symbols, memo):
     return result
 
 
+def _referenced_symbols(roots):
+    pending = list(roots)
+    seen = set()
+    names = set()
+
+    while pending:
+        expression = pending.pop()
+
+        if id(expression) in seen:
+            continue
+
+        seen.add(id(expression))
+
+        if expression.op == "symbol":
+            names.add(expression.value)
+
+        pending.extend(expression.operands)
+    return frozenset(names)
+
+
 def _plan_bounds(plan, symbols, memo):
     if type(plan) is not partial or plan.keywords:
         return None
@@ -174,6 +194,7 @@ class ExtractionGeometry:
     def __init__(self):
         self._schema = None
         self._roots = None
+        self._symbols = frozenset()
         self._key = None
         self._value = None
 
@@ -201,46 +222,47 @@ class ExtractionGeometry:
 
         if self._schema != schema:
             self._schema, self._roots, self._key, self._value = schema, None, None, None
+            self._symbols = frozenset()
             level, access = layout.levels[ref.level], layout.value_accesses[-1]
 
             if type(level) is LayoutLevel and type(access) is AccessMap:
                 roots = (*level.shape, access.predicate, *access.source_indices)
 
                 if all(_trusted(root) for root in roots):
-                    self._roots = (len(level.shape), roots)
+                    self._symbols = _referenced_symbols(roots)
+                    self._roots = (
+                        len(level.shape),
+                        tuple(expressions._ExpressionIdentity(root) for root in roots),
+                    )
 
         if self._roots is None or type(ref.outer_index) is not int:
             return ref._access()
 
         bindings = []
-        ranges = {}
 
         for name, value in ref.symbols.items():
-            interval = _literal(value)
+            if type(name) is not str:
+                return ref._access()
 
-            if type(name) is not str or interval is None:
+            if name not in self._symbols:
+                continue
+
+            if type(value) not in (int, bool):
                 return ref._access()
 
             bindings.append((name, type(value), value))
-            ranges[name] = interval
 
-        outer_range = _literal(ref.outer_index)
-
-        if outer_range is None or type(ref.extracted) is not tuple:
+        if type(ref.extracted) is not tuple:
             return ref._access()
 
         for coordinates in ref.extracted:
             if type(coordinates) is not tuple or any(
-                type(value) is not int or _literal(value) is None
-                for value in coordinates
+                type(value) is not int for value in coordinates
             ):
                 return ref._access()
 
         rank, roots = self._roots
-        plans = tuple(
-            expressions._compiled_expression(expressions._ExpressionIdentity(root))
-            for root in roots
-        )
+        plans = tuple(expressions._compiled_expression(identity) for identity in roots)
         key = (
             schema,
             ref.outer_index,
@@ -256,6 +278,22 @@ class ExtractionGeometry:
             return self._value
 
         self._key, self._value = None, None
+        # The typed key already matches a complete successful proof on a hit.
+        # Range construction is needed only when an actual proof input changes.
+        ranges = {name: _literal(value) for name, _kind, value in bindings}
+        outer_range = _literal(ref.outer_index)
+
+        if (
+            outer_range is None
+            or any(value is None for value in ranges.values())
+            or any(
+                _literal(value) is None
+                for coordinates in ref.extracted
+                for value in coordinates
+            )
+        ):
+            return ref._access()
+
         shape = []
 
         for plan in plans[:rank]:

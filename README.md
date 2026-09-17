@@ -105,4 +105,8 @@ This project is distributed under the Apache-2.0 license. See the included [LICE
 
 ## 无跟踪矩阵乘的地址图复用
 
-[执行内几何缓存](docs/cpu_interpreter_geometry_performance.md) 在三个小矩阵的 CPU 解释执行中，三轮目标几何平均约快 3.85 倍，代价是约 141–183 KB 的额外执行分配峰值。最终源码通过 793 项 CPU 回归、15 项原有真实 GPU 差分和 3 项目标矩阵差分；跟踪与回调保留逐次求值路径，数组数值始终实时读取。
+[执行内几何缓存](docs/cpu_interpreter_geometry_performance.md) 在三个小矩阵的 CPU 解释执行中，三轮目标几何平均约快 3.85 倍，代价是约 141–183 KB 的额外执行分配峰值。该轮源码通过 793 项 CPU 回归、15 项原有真实 GPU 差分和 3 项目标矩阵差分；跟踪与回调保留逐次求值路径，数组数值始终实时读取。
+
+## 几何缓存命中路径的增量优化
+
+[相关符号键与证明复用](docs/cpu_interpreter_geometry_symbols.md) 相对c2c35ec，在同一组CPU矩阵乘目标上三轮再获得1.128–1.133倍加速；峰值增加约0.04%–0.37%。796项CPU回归、15+3项实际GPU差分通过。初稿未达门槛的结果一并保留，不把不同阶段的加速比相乘。

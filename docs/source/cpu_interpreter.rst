@@ -608,37 +608,45 @@ Latest validation and CPU automation
 
 The current submission integrates upstream target architecture revision
 ``22e74c3afe47e12ee29d7d0bcfaf1de8286f4560``. Its selected CPU suite passes
-793 tests with 15 actual GPU cases deselected in a NumPy-only environment.
+796 tests with 15 actual GPU cases deselected in a NumPy-only environment.
 This includes platform profiles, target capabilities, memory/alias semantics,
-layout calls, expression semantics, and 23 extraction-geometry regressions.
+layout calls, expression semantics, and 26 extraction-geometry regressions.
 The default pipeline also checks ``ssa.validate_target_capabilities``.
 
 Untraced scalar matmul execution can reuse the checked address map of an
 innermost extraction. Each internal tensor reference holds at most one map
 of at most 65536 logical elements. Array contents are read on every extraction;
-shape, stride, dtype, typed symbols, extraction coordinates and actual compiled
+shape, stride, dtype, typed referenced symbols, extraction coordinates and actual compiled
 expression plans participate in the key. Shape proofs use the original symbol
 context, before address-coordinate overrides. Unproven integer operations,
 custom numeric objects and warning-sensitive paths retain ordinary evaluation.
 Tracing, callbacks, watches, custom handlers and event filters disable reuse.
 
-Three fresh-process CPU comparisons of three selected small matmuls give
-3.847--3.860 times the previous execution speed, with equal complete trace
-fingerprints and all control cases within the predefined five-percent limit.
-The warm tracemalloc peak increases by 141--183 KB; this is an explicit memory
-tradeoff, not a GPU speedup or a reduction in process RSS. The initial candidate
-passed timing but failed two shape-context exception regressions; the corrected
-version has separate passing regressions and newly measured timings. Earlier
-constant-folding experiments remain rejected under their original protocols.
+The initial geometry-cache revision measured 3.847--3.860 times the execution
+speed of its 90197b0 baseline on three selected small CPU matmuls, at a warm
+tracemalloc peak cost of 141--183 KB. The current follow-up measures another
+1.128--1.133 times the speed of the published c2c35ec baseline on the same
+three targets. All 33 timed conditions satisfy the predefined five-percent
+regression limit, and all 21 complete trace comparisons agree. The follow-up
+adds 168--2008 bytes of peak allocation; it does not reduce memory or process
+RSS. Different experiments' speedup ratios must not be multiplied.
+
+On cache hits, typed relevant bindings and current compiled plans are still
+checked; integer interval construction occurs only on a miss. Trusted schemas
+retain expression identity keys. Only names referenced by shape/access
+expressions enter the binding key, while all mapping keys must be exact strings
+to preserve custom-key lookup effects. Removed bindings, custom numeric objects
+and recompiled plans remain covered. A preceding hit-path-only candidate failed
+its third-round 1.10-times target gate and remains rejected with all raw data.
 
 On the final geometry-cache computation source, a manual RTX 4090 D run passes
 all 15 existing actual GPU differential cases and three additional target-shape
 matmul checks. The latter compare emitted Triton GPU output, raw/target SSA and
 NumPy, preserve output guards and inputs, and confirm address-map reuse. Another
-131 geometry/layout/expression regressions pass with NumPy 1.26.4, Torch 2.6.0a0
-and Triton 3.1.0; these interpreter tests are not 131 GPU kernels. The run verifies
-201 frozen input files before and after execution. See the
-`fixed geometry evidence <https://github.com/a962695448-rgb/ninetoothed/tree/ef787a082e98f44a740dd3f06b3fcc894810ca1b/docs/validation/extraction-geometry-20260918>`_
+134 geometry/layout/expression regressions pass with NumPy 1.26.4, Torch 2.6.0a0
+and Triton 3.1.0; these interpreter tests are not 134 GPU kernels. The run verifies
+202 frozen input files before and after execution. See the
+`fixed geometry evidence <https://github.com/a962695448-rgb/ninetoothed/tree/27c3e445f558859b1951292f4da9240fba9beb47/docs/validation/geometry-symbols-20260918>`_
 for complete sources, limitations, initial failures and reproducible records.
 This establishes correctness for the listed cases, not a full repository GPU
 suite or GPU performance. The earlier 0706213 GPU evidence retains its own scope.
