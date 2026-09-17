@@ -1,0 +1,160 @@
+diff --git a/tests/test_avg_pool2d.py b/tests/test_avg_pool2d.py
+index fe36390..7e2ebaf 100644
+--- a/tests/test_avg_pool2d.py
++++ b/tests/test_avg_pool2d.py
+@@ -6,6 +6,20 @@ import ntops
+ from tests.skippers import skip_if_cuda_not_available
+ 
+ 
++def _make_pool_input(n, c, h, w, dtype, device, non_contiguous):
++    storage_w = w * 2 if non_contiguous else w
++    values = torch.arange(
++        n * c * h * storage_w, dtype=torch.float32, device=device
++    ).reshape(n, c, h, storage_w)
++    values = values.remainder(29).sub(14).div(9)
++    values = values.to(dtype)
++
++    if non_contiguous:
++        values = values[..., ::2]
++
++    return values
++
++
+ @skip_if_cuda_not_available
+ @pytest.mark.parametrize("device", ("cuda",))
+ @pytest.mark.parametrize(
+@@ -45,3 +59,52 @@ def test_avg_pool2d(
+     )
+ 
+     assert torch.allclose(ninetoothed_output, reference_output, rtol=rtol, atol=atol)
++
++
++@skip_if_cuda_not_available
++@pytest.mark.parametrize("device", ("cuda",))
++@pytest.mark.parametrize(
++    "dtype, rtol, atol", ((torch.float32, 1e-5, 1e-5), (torch.float16, 1e-3, 1e-3))
++)
++@pytest.mark.parametrize(
++    "case",
++    (
++        {
++            "shape": (1, 2, 5, 6),
++            "kernel_size": (2, 3),
++            "stride": (2, 1),
++            "padding": (1, 1),
++            "non_contiguous": False,
++        },
++        {
++            "shape": (1, 1, 4, 7),
++            "kernel_size": (3, 3),
++            "stride": (1, 2),
++            "padding": (1, 0),
++            "non_contiguous": True,
++        },
++    ),
++    ids=("padded-strided-boundary", "non-contiguous-source-view"),
++)
++def test_avg_pool2d_layout_sensitive_cases(case, dtype, device, rtol, atol):
++    n, c, h, w = case["shape"]
++    input = _make_pool_input(n, c, h, w, dtype, device, case["non_contiguous"])
++
++    assert input.shape == case["shape"]
++    assert input.is_contiguous() == (not case["non_contiguous"])
++
++    ninetoothed_output = ntops.torch.avg_pool2d(
++        input,
++        kernel_size=case["kernel_size"],
++        stride=case["stride"],
++        padding=case["padding"],
++    )
++    reference_output = F.avg_pool2d(
++        input,
++        kernel_size=case["kernel_size"],
++        stride=case["stride"],
++        padding=case["padding"],
++    )
++
++    assert ninetoothed_output.shape == reference_output.shape
++    assert torch.allclose(ninetoothed_output, reference_output, rtol=rtol, atol=atol)
+diff --git a/tests/test_max_pool2d.py b/tests/test_max_pool2d.py
+index 9f29485..4397381 100644
+--- a/tests/test_max_pool2d.py
++++ b/tests/test_max_pool2d.py
+@@ -6,6 +6,20 @@ import ntops
+ from tests.skippers import skip_if_cuda_not_available
+ 
+ 
++def _make_pool_input(n, c, h, w, dtype, device, non_contiguous):
++    storage_w = w * 2 if non_contiguous else w
++    values = torch.arange(
++        n * c * h * storage_w, dtype=torch.float32, device=device
++    ).reshape(n, c, h, storage_w)
++    values = values.remainder(23).sub(11).div(7)
++    values = values.to(dtype)
++
++    if non_contiguous:
++        values = values[..., ::2]
++
++    return values
++
++
+ @skip_if_cuda_not_available
+ @pytest.mark.parametrize("device", ("cuda",))
+ @pytest.mark.parametrize("dtype", (torch.float32, torch.float16))
+@@ -46,3 +60,56 @@ def test_max_pool2d(
+     )
+ 
+     assert torch.allclose(ninetoothed_output, reference_output)
++
++
++@skip_if_cuda_not_available
++@pytest.mark.parametrize("device", ("cuda",))
++@pytest.mark.parametrize(
++    "dtype, rtol, atol", ((torch.float32, 1e-5, 1e-5), (torch.float16, 1e-3, 1e-3))
++)
++@pytest.mark.parametrize(
++    "case",
++    (
++        {
++            "shape": (1, 2, 5, 7),
++            "kernel_size": (2, 3),
++            "stride": (2, 1),
++            "padding": (1, 1),
++            "dilation": (1, 2),
++            "non_contiguous": False,
++        },
++        {
++            "shape": (1, 1, 6, 5),
++            "kernel_size": (3, 2),
++            "stride": (1, 2),
++            "padding": (1, 0),
++            "dilation": (2, 1),
++            "non_contiguous": True,
++        },
++    ),
++    ids=("padded-dilated-boundary", "non-contiguous-source-view"),
++)
++def test_max_pool2d_layout_sensitive_cases(case, dtype, device, rtol, atol):
++    n, c, h, w = case["shape"]
++    input = _make_pool_input(n, c, h, w, dtype, device, case["non_contiguous"])
++
++    assert input.shape == case["shape"]
++    assert input.is_contiguous() == (not case["non_contiguous"])
++
++    ninetoothed_output = ntops.torch.max_pool2d(
++        input,
++        kernel_size=case["kernel_size"],
++        stride=case["stride"],
++        padding=case["padding"],
++        dilation=case["dilation"],
++    )
++    reference_output = F.max_pool2d(
++        input,
++        kernel_size=case["kernel_size"],
++        stride=case["stride"],
++        padding=case["padding"],
++        dilation=case["dilation"],
++    )
++
++    assert ninetoothed_output.shape == reference_output.shape
++    assert torch.allclose(ninetoothed_output, reference_output, rtol=rtol, atol=atol)

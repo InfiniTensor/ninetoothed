@@ -1,0 +1,32 @@
+# Final Signed Release Validation Log
+
+context=final signed release staging from audited ZIP
+root=<skill-root>
+network_dependency_install=not_used
+server_login=not_used
+server_credentials_read=not_used
+external_worklogs_repos_submissions=not_used_for_evidence
+bytecode_policy=PYTHONDONTWRITEBYTECODE=1 and external PYTHONPYCACHEPREFIX
+
+Identity:
+- participant=刘李宏
+- team=123123
+- github_id=Dreamt-Deer-Waking-Fish
+- signature_text=刘李宏
+- sign_date=2026-07-12
+
+Expected final checks:
+- unittest: PASS, 20 tests
+- compileall: PASS with external pycache
+- package validation: PASS
+- strict identity validation: PASS
+- secret scan: PASS
+- false-claim scan: PASS
+- Markdown link check: PASS
+- manifest verification: PASS after final regeneration
+- ruff: SKIP if command not installed in offline environment
+
+Manual actions after package validation:
+- Confirm personal fork URL in GitHub.
+- Push the selected branch manually.
+- Create PR and upload on the competition platform manually.

@@ -1,0 +1,5 @@
+platform linux -- Python 3.12.3, pytest-8.1.1, pluggy-1.5.0
+collected 45 items
+Running 45 items in this shard
+tests/test_avg_pool2d.py ..ssss..ssss..ssss....ss....ss....ss........X   [100%]
+================== 26 passed, 18 skipped, 1 xpassed in 24.89s ==================

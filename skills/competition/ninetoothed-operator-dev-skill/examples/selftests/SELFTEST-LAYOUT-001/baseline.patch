@@ -1,0 +1,252 @@
+diff --git a/src/ntops/torch/avg_pool2d.py b/src/ntops/torch/avg_pool2d.py
+index eeaf2d7..b4fb646 100644
+--- a/src/ntops/torch/avg_pool2d.py
++++ b/src/ntops/torch/avg_pool2d.py
+@@ -14,6 +14,9 @@ def avg_pool2d(
+     count_include_pad=True,
+     divisor_override=None,
+ ):
++    if isinstance(kernel_size, int):
++        kernel_size = (kernel_size, kernel_size)
++
+     if stride is None:
+         stride = kernel_size
+ 
+diff --git a/src/ntops/torch/max_pool2d.py b/src/ntops/torch/max_pool2d.py
+index f4eb55c..957d939 100644
+--- a/src/ntops/torch/max_pool2d.py
++++ b/src/ntops/torch/max_pool2d.py
+@@ -14,6 +14,9 @@ def max_pool2d(
+     ceil_mode=False,
+     return_indices=False,
+ ):
++    if isinstance(kernel_size, int):
++        kernel_size = (kernel_size, kernel_size)
++
+     if stride is None:
+         stride = kernel_size
+ 
+diff --git a/tests/test_avg_pool2d.py b/tests/test_avg_pool2d.py
+index fe36390..1314875 100644
+--- a/tests/test_avg_pool2d.py
++++ b/tests/test_avg_pool2d.py
+@@ -4,6 +4,37 @@ import torch.nn.functional as F
+ 
+ import ntops
+ from tests.skippers import skip_if_cuda_not_available
++from tests.utils import make_pool2d_layout_sensitive_input
++
++
++AVG_POOL2D_LAYOUT_CASES = (
++    pytest.param((1, 2, 5, 6), 2, None, 0, id="int-kernel-default-stride"),
++    pytest.param(
++        (1, 2, 5, 7), (2, 3), (1, 2), (0, 1), id="asymmetric-stride-padding"
++    ),
++    pytest.param((2, 1, 6, 5), (3, 2), (2, 1), (1, 0), id="height-boundary"),
++    pytest.param((1, 1, 7, 8), (3, 3), (2, 3), 1, id="symmetric-padding"),
++)
++
++
++def _assert_avg_pool2d_matches_reference(
++    input, *, kernel_size, stride, padding, rtol, atol
++):
++    ninetoothed_output = ntops.torch.avg_pool2d(
++        input,
++        kernel_size=kernel_size,
++        stride=stride,
++        padding=padding,
++    )
++    reference_output = F.avg_pool2d(
++        input,
++        kernel_size=kernel_size,
++        stride=stride,
++        padding=padding,
++    )
++
++    assert ninetoothed_output.shape == reference_output.shape
++    assert torch.allclose(ninetoothed_output, reference_output, rtol=rtol, atol=atol)
+ 
+ 
+ @skip_if_cuda_not_available
+@@ -45,3 +76,49 @@ def test_avg_pool2d(
+     )
+ 
+     assert torch.allclose(ninetoothed_output, reference_output, rtol=rtol, atol=atol)
++
++
++@skip_if_cuda_not_available
++@pytest.mark.parametrize("device", ("cuda",))
++@pytest.mark.parametrize(
++    "dtype, rtol, atol", ((torch.float32, 1e-5, 1e-5), (torch.float16, 1e-3, 1e-3))
++)
++@pytest.mark.parametrize("shape, kernel_size, stride, padding", AVG_POOL2D_LAYOUT_CASES)
++def test_avg_pool2d_layout_sensitive_cases(
++    shape, kernel_size, stride, padding, dtype, device, rtol, atol
++):
++    input = make_pool2d_layout_sensitive_input(shape, dtype=dtype, device=device)
++
++    _assert_avg_pool2d_matches_reference(
++        input,
++        kernel_size=kernel_size,
++        stride=stride,
++        padding=padding,
++        rtol=rtol,
++        atol=atol,
++    )
++
++
++@skip_if_cuda_not_available
++@pytest.mark.xfail(
++    reason="ntops avg_pool2d non-contiguous input layout support is not proven.",
++    strict=False,
++)
++@pytest.mark.parametrize("device", ("cuda",))
++@pytest.mark.parametrize("dtype, rtol, atol", ((torch.float32, 1e-5, 1e-5),))
++def test_avg_pool2d_non_contiguous_input_layout_risk(dtype, device, rtol, atol):
++    base = make_pool2d_layout_sensitive_input(
++        (1, 2, 7, 5), dtype=dtype, device=device
++    )
++    input = base.transpose(-1, -2)
++
++    assert input.shape == (1, 2, 5, 7)
++    assert not input.is_contiguous()
++    _assert_avg_pool2d_matches_reference(
++        input,
++        kernel_size=(2, 3),
++        stride=(1, 2),
++        padding=(0, 1),
++        rtol=rtol,
++        atol=atol,
++    )
+diff --git a/tests/test_max_pool2d.py b/tests/test_max_pool2d.py
+index 9f29485..dc48bcf 100644
+--- a/tests/test_max_pool2d.py
++++ b/tests/test_max_pool2d.py
+@@ -4,6 +4,58 @@ import torch.nn.functional as F
+ 
+ import ntops
+ from tests.skippers import skip_if_cuda_not_available
++from tests.utils import make_pool2d_layout_sensitive_input
++
++
++MAX_POOL2D_LAYOUT_CASES = (
++    pytest.param((1, 2, 5, 6), 2, None, 0, 1, id="int-kernel-default-stride"),
++    pytest.param(
++        (1, 2, 5, 7),
++        (2, 3),
++        (1, 2),
++        (0, 1),
++        1,
++        id="asymmetric-stride-padding",
++    ),
++    pytest.param(
++        (2, 1, 6, 7),
++        (2, 2),
++        (2, 3),
++        (1, 0),
++        (2, 1),
++        id="dilated-height-boundary",
++    ),
++    pytest.param(
++        (1, 1, 7, 8),
++        (3, 2),
++        (2, 2),
++        (1, 0),
++        (2, 3),
++        id="non-square-dilated-window",
++    ),
++)
++
++
++def _assert_max_pool2d_matches_reference(
++    input, *, kernel_size, stride, padding, dilation
++):
++    ninetoothed_output = ntops.torch.max_pool2d(
++        input,
++        kernel_size=kernel_size,
++        stride=stride,
++        padding=padding,
++        dilation=dilation,
++    )
++    reference_output = F.max_pool2d(
++        input,
++        kernel_size=kernel_size,
++        stride=stride,
++        padding=padding,
++        dilation=dilation,
++    )
++
++    assert ninetoothed_output.shape == reference_output.shape
++    assert torch.allclose(ninetoothed_output, reference_output, rtol=0, atol=0)
+ 
+ 
+ @skip_if_cuda_not_available
+@@ -46,3 +98,47 @@ def test_max_pool2d(
+     )
+ 
+     assert torch.allclose(ninetoothed_output, reference_output)
++
++
++@skip_if_cuda_not_available
++@pytest.mark.parametrize("device", ("cuda",))
++@pytest.mark.parametrize("dtype", (torch.float32, torch.float16))
++@pytest.mark.parametrize(
++    "shape, kernel_size, stride, padding, dilation", MAX_POOL2D_LAYOUT_CASES
++)
++def test_max_pool2d_layout_sensitive_cases(
++    shape, kernel_size, stride, padding, dilation, dtype, device
++):
++    input = make_pool2d_layout_sensitive_input(shape, dtype=dtype, device=device)
++
++    _assert_max_pool2d_matches_reference(
++        input,
++        kernel_size=kernel_size,
++        stride=stride,
++        padding=padding,
++        dilation=dilation,
++    )
++
++
++@skip_if_cuda_not_available
++@pytest.mark.xfail(
++    reason="ntops max_pool2d non-contiguous input layout support is not proven.",
++    strict=False,
++)
++@pytest.mark.parametrize("device", ("cuda",))
++@pytest.mark.parametrize("dtype", (torch.float32,))
++def test_max_pool2d_non_contiguous_input_layout_risk(dtype, device):
++    base = make_pool2d_layout_sensitive_input(
++        (1, 2, 7, 5), dtype=dtype, device=device
++    )
++    input = base.transpose(-1, -2)
++
++    assert input.shape == (1, 2, 5, 7)
++    assert not input.is_contiguous()
++    _assert_max_pool2d_matches_reference(
++        input,
++        kernel_size=(2, 3),
++        stride=(1, 2),
++        padding=(0, 1),
++        dilation=1,
++    )
+diff --git a/tests/utils.py b/tests/utils.py
+index ac1949f..e939c9f 100644
+--- a/tests/utils.py
++++ b/tests/utils.py
+@@ -31,6 +31,16 @@ def gauss(mu=0.0, sigma=1.0):
+     return random.gauss(mu, sigma)
+ 
+ 
++def make_pool2d_layout_sensitive_input(shape, dtype, device):
++    base = torch.arange(math.prod(shape), dtype=torch.int64, device=device).reshape(
++        shape
++    )
++    fine = (base.remainder(17).to(torch.float32) - 8.0) * 0.25
++    coarse = torch.floor(base.to(torch.float32) / 17.0) * 0.03125
++
++    return (fine + coarse).to(dtype=dtype)
++
++
+ def _random_shape(ndim, min_num_elements=2**8, max_num_elements=2**10):
+     num_elements = random.randint(min_num_elements, max_num_elements)
+ 

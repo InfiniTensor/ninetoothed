@@ -1,0 +1,3 @@
+task_id,operator,shape,dtype,layout,device,warmup,repeat,baseline,baseline_median_ms,candidate,candidate_median_ms,median_ratio,correctness_status,conclusion
+SELFTEST-EW-001,add,1024x1024,float32,contiguous,NVIDIA GeForce RTX 4090,10,30,pytorch,0.017408,ntops,0.066000,0.263758,PASS,selected-shape ntops regression only
+SELFTEST-RED-001,softmax,64x1024,float32,contiguous,NVIDIA GeForce RTX 4090,10,30,pytorch,0.023568,ntops,0.071728,0.328575,PASS,selected-shape ntops regression only
