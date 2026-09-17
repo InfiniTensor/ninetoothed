@@ -1,0 +1,326 @@
+{
+  "version": 1,
+  "total": 24,
+  "split_rule": "per category: 4 train + 2 holdout",
+  "tolerance_ref": "see ninetoothed-operator-dev/scripts/run_correctness_matrix.py (MERE/MARE)",
+  "tasks": [
+    {
+      "id": "ew01",
+      "category": "elementwise",
+      "split": "train",
+      "difficulty": "easy",
+      "name": "add",
+      "kind": "operator",
+      "prompt": "用 NineToothed 实现一维逐元素加法 out = a + b，a 和 b 同形状一维张量，支持 fp32 与 fp16。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "ew02",
+      "category": "elementwise",
+      "split": "train",
+      "difficulty": "easy",
+      "name": "mul_broadcast",
+      "kind": "operator",
+      "prompt": "实现逐元素乘法 out = a * b，支持 a 形状 (M,1) 与 b 形状 (1,N) 广播到 (M,N)。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "ew03",
+      "category": "elementwise",
+      "split": "train",
+      "difficulty": "medium",
+      "name": "relu",
+      "kind": "operator",
+      "prompt": "实现 ReLU：out = max(x, 0)，逐元素，支持 fp32 与 fp16。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "ew04",
+      "category": "elementwise",
+      "split": "train",
+      "difficulty": "medium",
+      "name": "gelu",
+      "kind": "operator",
+      "prompt": "实现 GELU（tanh 近似），逐元素。注意 fp16 下的数值表现。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "ew05",
+      "category": "elementwise",
+      "split": "holdout",
+      "difficulty": "medium",
+      "name": "silu",
+      "kind": "operator",
+      "prompt": "实现 SiLU：out = x * sigmoid(x)，逐元素，支持 fp32 与 fp16。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "ew06",
+      "category": "elementwise",
+      "split": "holdout",
+      "difficulty": "hard",
+      "name": "masked_add",
+      "kind": "operator",
+      "prompt": "实现带掩码加法：mask 为真处 out = a + b，否则 out = a。mask 形状 (1,N) 广播到 (M,N)。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "rd01",
+      "category": "reduction",
+      "split": "train",
+      "difficulty": "easy",
+      "name": "sum_last",
+      "kind": "operator",
+      "prompt": "对最后一维求和：输入 (M,N)，输出 (M,)。fp16 输入需在 fp32 中累积。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "rd02",
+      "category": "reduction",
+      "split": "train",
+      "difficulty": "easy",
+      "name": "mean_last",
+      "kind": "operator",
+      "prompt": "对最后一维求均值：输入 (M,N)，输出 (M,)。fp16 输入需 fp32 累积后再除以 N。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "rd03",
+      "category": "reduction",
+      "split": "train",
+      "difficulty": "medium",
+      "name": "softmax",
+      "kind": "operator",
+      "prompt": "行 softmax：输入 (M,N)，对最后一维归一化。必须先减去行最大值以保证数值稳定。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "rd04",
+      "category": "reduction",
+      "split": "train",
+      "difficulty": "hard",
+      "name": "rms_norm",
+      "kind": "operator",
+      "prompt": "RMS Norm，对最后一维归一化，eps=1e-6。中间统计量在 fp32 中累积。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "rd05",
+      "category": "reduction",
+      "split": "holdout",
+      "difficulty": "medium",
+      "name": "max_last",
+      "kind": "operator",
+      "prompt": "对最后一维求最大值：输入 (M,N)，输出 (M,)。padding lane 用 -inf 填充。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "rd06",
+      "category": "reduction",
+      "split": "holdout",
+      "difficulty": "hard",
+      "name": "l2_norm",
+      "kind": "operator",
+      "prompt": "对最后一维求 L2 范数：sqrt(sum(x^2))，输入 (M,N)，输出 (M,)。平方和在 fp32 中累积。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "ly01",
+      "category": "layout",
+      "split": "train",
+      "difficulty": "medium",
+      "name": "contig_transpose",
+      "kind": "operator",
+      "prompt": "把一个转置后的非连续输入物化为连续张量（数值不变，存储变连续）。输入是 x.t()。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "ly02",
+      "category": "layout",
+      "split": "train",
+      "difficulty": "medium",
+      "name": "flip_last",
+      "kind": "operator",
+      "prompt": "沿最后一维翻转：out[..., i] = x[..., N-1-i]。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "ly03",
+      "category": "layout",
+      "split": "train",
+      "difficulty": "medium",
+      "name": "narrow_half",
+      "kind": "operator",
+      "prompt": "取最后一维前半段 x[..., :N//2] 并物化为连续张量。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "ly04",
+      "category": "layout",
+      "split": "train",
+      "difficulty": "hard",
+      "name": "strided_gather",
+      "kind": "operator",
+      "prompt": "从带步长的视图 x[:, ::2]（每隔一列取一列）物化为连续张量。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "ly05",
+      "category": "layout",
+      "split": "holdout",
+      "difficulty": "hard",
+      "name": "pixel_unshuffle",
+      "kind": "operator",
+      "prompt": "实现 pixel_unshuffle（space-to-depth），下采样因子 r=2，输入 (B,C,H,W)，需支持非连续输入。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "ly06",
+      "category": "layout",
+      "split": "holdout",
+      "difficulty": "hard",
+      "name": "pixel_shuffle",
+      "kind": "operator",
+      "prompt": "实现 pixel_shuffle（depth-to-space），上采样因子 r=2，输入 (B, C*r*r, H, W)。",
+      "dtypes": [
+        "float32",
+        "float16"
+      ]
+    },
+    {
+      "id": "pd01",
+      "category": "perf_diag",
+      "split": "train",
+      "difficulty": "medium",
+      "name": "softmax_no_maxsub",
+      "kind": "diagnosis",
+      "prompt": "给定一个 softmax kernel，在 fp16 大值输入下输出 NaN。定位根因并给出最小修复。",
+      "expected_findings": [
+        "缺少减去行最大值的数值稳定步骤",
+        "exp 在 fp16 大值下溢出",
+        "修复：先计算 row max 再 exp(x - row_max)"
+      ]
+    },
+    {
+      "id": "pd02",
+      "category": "perf_diag",
+      "split": "train",
+      "difficulty": "medium",
+      "name": "mean_no_upcast",
+      "kind": "diagnosis",
+      "prompt": "给定一个 mean reduction kernel，fp16 大 N 输入下精度不达标。定位根因并修复。",
+      "expected_findings": [
+        "fp16 中累积导致精度损失",
+        "需在 fp32 中累积",
+        "修复：ntl.cast 到 float32 后求和，再 cast 回"
+      ]
+    },
+    {
+      "id": "pd03",
+      "category": "perf_diag",
+      "split": "train",
+      "difficulty": "easy",
+      "name": "add_bench_memorybound",
+      "kind": "diagnosis",
+      "prompt": "为一个 add kernel 设计 benchmark 并判定瓶颈类型。",
+      "expected_findings": [
+        "给出 benchmark 模板（warmup + 多次测量 + CUDA Event）",
+        "计算有效带宽 GB/s 或与峰值带宽对比",
+        "算术强度远低于脊点，判定为 memory-bound"
+      ]
+    },
+    {
+      "id": "pd04",
+      "category": "perf_diag",
+      "split": "train",
+      "difficulty": "medium",
+      "name": "inspect_tile_config",
+      "kind": "diagnosis",
+      "prompt": "检查某 kernel 的生成源码，报告其 tile 配置与并行参数。",
+      "expected_findings": [
+        "从 ~/.ninetoothed 缓存读取生成源码",
+        "报告 tile 形状与 block 大小",
+        "报告 num_warps / num_stages"
+      ]
+    },
+    {
+      "id": "pd05",
+      "category": "perf_diag",
+      "split": "holdout",
+      "difficulty": "hard",
+      "name": "noncontig_regression",
+      "kind": "diagnosis",
+      "prompt": "某 kernel 在连续输入下正确，非连续输入下结果错误。定位根因并给出修复路径。",
+      "expected_findings": [
+        "根因是 kernel 假设了连续存储",
+        "wrapper 层 .contiguous() 快速路径，或用 tile(strides=) 表达布局",
+        "在测试矩阵中加入非连续输入用例验证"
+      ]
+    },
+    {
+      "id": "pd06",
+      "category": "perf_diag",
+      "split": "holdout",
+      "difficulty": "hard",
+      "name": "aot_numwarps_mismatch",
+      "kind": "diagnosis",
+      "prompt": "JIT 路径正常，但 AOT 构建失败。定位根因并给出修复。",
+      "expected_findings": [
+        "AOT 与 JIT 的默认 num_warps / num_stages 不一致",
+        "向 make(caller='cuda', ...) 显式传入 num_warps / num_stages",
+        "用 aot_build_smoke 验证产物 .py 与 .h 完整"
+      ]
+    }
+  ]
+}

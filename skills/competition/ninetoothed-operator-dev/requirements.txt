@@ -1,0 +1,6 @@
+ninetoothed>=0.25.0
+torch>=2.4.0
+triton>=3.0.0
+numpy>=1.26.4
+sympy>=1.13.0
+pytest>=7.0
