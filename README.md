@@ -114,3 +114,7 @@ This project is distributed under the Apache-2.0 license. See the included [LICE
 ## 普通跟踪的地址几何复用
 
 [跟踪执行优化](docs/cpu_interpreter_traced_geometry.md) 在三个CPU矩阵乘目标上，相对a1ef123三轮约快2.38倍，完整轨迹一致；用户回调、watch、handlers和事件过滤器保留原路径。799项CPU、15项常规及3项带跟踪目标实机差分通过，峰值增加约168–175KB。协议的一处继承文案错误已明确记录，数值配置和原始结果未改。
+
+## dtype快照格式化实验
+
+[三版尝试与未采用原因](docs/cpu_interpreter_dtype_display.md) 保留字符串共享差异和控制点退化结果。候选虽在部分跟踪用例提速，但未满足完整门槛；生产格式化路径保持原样。
