@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from .expressions import evaluate, shape_value
+from .geometry import ExtractionGeometry
 
 
 def _identity_coordinates(shape):
@@ -75,6 +76,9 @@ class TensorRef:
     level: int = 0
     extracted: tuple = ()
     observer: object | None = field(default=None, compare=False, repr=False)
+    _geometry_cache: object | None = field(
+        default=None, compare=False, repr=False, kw_only=True
+    )
 
     @property
     def layout(self):
@@ -110,10 +114,19 @@ class TensorRef:
                     "Nested tensor extraction index is outside the logical tile."
                 )
             return replace(
-                self, level=self.level + 1, extracted=(*self.extracted, coordinates)
+                self,
+                level=self.level + 1,
+                extracted=(*self.extracted, coordinates),
+                _geometry_cache=(
+                    None if self._geometry_cache is None else ExtractionGeometry()
+                ),
             )
 
-        coordinates, valid = self._access()
+        coordinates, valid = (
+            self._access()
+            if self._geometry_cache is None
+            else self._geometry_cache.access(self)
+        )
         selected = tuple(indices)
         value = self._read_access(
             tuple(coordinate[selected] for coordinate in coordinates), valid[selected]

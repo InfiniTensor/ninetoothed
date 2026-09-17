@@ -607,27 +607,41 @@ Latest validation and CPU automation
 ------------------------------------
 
 The current submission integrates upstream target architecture revision
-``22e74c3afe47e12ee29d7d0bcfaf1de8286f4560``. Its selected CPU suite passed
-770 tests with 15 actual GPU cases deselected. This includes platform-profile
-checks and positive/negative target-capability pass integration for Triton,
-CUDA and TileLang. The default pipeline now also checks
-``ssa.validate_target_capabilities``. The identity-view revisions also pass
-42 masking, strided-storage, observer and alias tests plus 32 direct-read
-snapshot, extraction-permutation and array-subclass regressions. Another 53
-byte-oracle regressions cover compact active-address recording, including
-negative/zero strides, overlapping byte windows, empty/scalar masks and unknown
-accesses. The call-boundary revision adds 67 parser, integer-utility and empty
-logical-view regressions. Another 41 expression-semantic regressions cover
-literal types, signed zero, seeded expression trees, dynamic inputs, warning
-policies, custom numeric objects and error order. Two additional evaluation-plan
-experiments failed their predeclared performance gates; the production evaluator
-is unchanged by this test-only revision. A new RTX4090 run passes all 15 actual
-GPU differential cases on computation source ``07062137e599cfead66d510cede3c0a3c1bbdf6b``.
-The 108 layout/expression semantic tests also pass in that environment, with
-NumPy 1.26.4, Torch 2.6.0a0 and Triton 3.1.0. Those semantic tests execute the
-interpreter; they are not 108 GPU kernel cases. The manual run verifies the
-recorded inputs and current source, not GPU performance or a full repository
-GPU suite.
+``22e74c3afe47e12ee29d7d0bcfaf1de8286f4560``. Its selected CPU suite passes
+793 tests with 15 actual GPU cases deselected in a NumPy-only environment.
+This includes platform profiles, target capabilities, memory/alias semantics,
+layout calls, expression semantics, and 23 extraction-geometry regressions.
+The default pipeline also checks ``ssa.validate_target_capabilities``.
+
+Untraced scalar matmul execution can reuse the checked address map of an
+innermost extraction. Each internal tensor reference holds at most one map
+of at most 65536 logical elements. Array contents are read on every extraction;
+shape, stride, dtype, typed symbols, extraction coordinates and actual compiled
+expression plans participate in the key. Shape proofs use the original symbol
+context, before address-coordinate overrides. Unproven integer operations,
+custom numeric objects and warning-sensitive paths retain ordinary evaluation.
+Tracing, callbacks, watches, custom handlers and event filters disable reuse.
+
+Three fresh-process CPU comparisons of three selected small matmuls give
+3.847--3.860 times the previous execution speed, with equal complete trace
+fingerprints and all control cases within the predefined five-percent limit.
+The warm tracemalloc peak increases by 141--183 KB; this is an explicit memory
+tradeoff, not a GPU speedup or a reduction in process RSS. The initial candidate
+passed timing but failed two shape-context exception regressions; the corrected
+version has separate passing regressions and newly measured timings. Earlier
+constant-folding experiments remain rejected under their original protocols.
+
+On the final geometry-cache computation source, a manual RTX 4090 D run passes
+all 15 existing actual GPU differential cases and three additional target-shape
+matmul checks. The latter compare emitted Triton GPU output, raw/target SSA and
+NumPy, preserve output guards and inputs, and confirm address-map reuse. Another
+131 geometry/layout/expression regressions pass with NumPy 1.26.4, Torch 2.6.0a0
+and Triton 3.1.0; these interpreter tests are not 131 GPU kernels. The run verifies
+201 frozen input files before and after execution. See the
+`fixed geometry evidence <https://github.com/a962695448-rgb/ninetoothed/tree/ef787a082e98f44a740dd3f06b3fcc894810ca1b/docs/validation/extraction-geometry-20260918>`_
+for complete sources, limitations, initial failures and reproducible records.
+This establishes correctness for the listed cases, not a full repository GPU
+suite or GPU performance. The earlier 0706213 GPU evidence retains its own scope.
 
 The recorded A100 full suite of 835 passed and two multi-GPU skips belongs to
 older computation source ``ed332733db28dbf16de06f166b16766760148958``. It was

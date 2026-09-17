@@ -22,6 +22,7 @@ from .expressions import (
     numpy_dtype,
     shape_value,
 )
+from .geometry import ExtractionGeometry
 from .memory import Pointer, TensorRef, materialize
 
 
@@ -373,6 +374,19 @@ class _Execution:
                     operation, f"entry:{index}:mem.store"
                 )
 
+        self.reuse_extraction_geometry = (
+            self.scalar_output is not None
+            and type(operation.attrs.get("decomposition")) is str
+            and operation.attrs["decomposition"] == "matmul"
+            and type(trace) is bool
+            and not trace
+            and callback is None
+            and not self.watch
+            and not self.handlers
+            and program_ids is None
+            and opcodes is None
+        )
+
     def _validate_scalar_storage(self, operation, location):
         """Scalar lane replay cannot read storage that an earlier lane writes."""
 
@@ -568,6 +582,11 @@ class _Execution:
                         self.symbols,
                         outer_index=local,
                         observer=self.memory,
+                        _geometry_cache=(
+                            ExtractionGeometry()
+                            if self.reuse_extraction_geometry
+                            else None
+                        ),
                     )
                 else:
                     env[value.name] = np.asarray(

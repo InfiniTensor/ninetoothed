@@ -102,3 +102,7 @@ This project is distributed under the Apache-2.0 license. See the included [LICE
 [表达式语义回归与负实验](docs/cpu_interpreter_expression_semantics.md) 新增 41 项测试，完整 CPU 选择范围为 770 passed / 15 GPU deselected。两项求值优化未达到预设性能门槛，生产求值器保持原版，候选源码与完整原始数据已归档。
 
 [近期修订的 RTX4090 实机核对](docs/cpu_interpreter_layout_gpu.md) 已对精确版本 0706213 完成 15 项实际 GPU 差分和 108 项布局/表达式语义回归；196 份提交文件与远端输入逐一匹配。该记录用于正确性，不是新的 GPU 性能成绩。
+
+## 无跟踪矩阵乘的地址图复用
+
+[执行内几何缓存](docs/cpu_interpreter_geometry_performance.md) 在三个小矩阵的 CPU 解释执行中，三轮目标几何平均约快 3.85 倍，代价是约 141–183 KB 的额外执行分配峰值。最终源码通过 793 项 CPU 回归、15 项原有真实 GPU 差分和 3 项目标矩阵差分；跟踪与回调保留逐次求值路径，数组数值始终实时读取。
