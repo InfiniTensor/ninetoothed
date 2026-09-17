@@ -98,3 +98,5 @@ This project is distributed under the Apache-2.0 license. See the included [LICE
 ### 布局调用的边界语义
 
 [布局调用修复](docs/cpu_interpreter_layout_calls.md) 明确拒绝 IR 无法表示的关键字参数，并使零长度 padded shape 保持为零。新增 67 项回归，729 项 CPU 检查通过；此轮属于语义修复，没有新 GPU 性能结论。
+
+[表达式语义回归与负实验](docs/cpu_interpreter_expression_semantics.md) 新增 41 项测试，完整 CPU 选择范围为 770 passed / 15 GPU deselected。两项求值优化未达到预设性能门槛，生产求值器保持原版，候选源码与完整原始数据已归档。
