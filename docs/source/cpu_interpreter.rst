@@ -621,9 +621,13 @@ logical-view regressions. Another 41 expression-semantic regressions cover
 literal types, signed zero, seeded expression trees, dynamic inputs, warning
 policies, custom numeric objects and error order. Two additional evaluation-plan
 experiments failed their predeclared performance gates; the production evaluator
-is unchanged by this test-only revision. The 15 recorded actual GPU differential cases cover
-the preceding implementation; this revision has CPU evidence and does not
-claim a new hardware run or a full repository GPU suite.
+is unchanged by this test-only revision. A new RTX4090 run passes all 15 actual
+GPU differential cases on computation source ``07062137e599cfead66d510cede3c0a3c1bbdf6b``.
+The 108 layout/expression semantic tests also pass in that environment, with
+NumPy 1.26.4, Torch 2.6.0a0 and Triton 3.1.0. Those semantic tests execute the
+interpreter; they are not 108 GPU kernel cases. The manual run verifies the
+recorded inputs and current source, not GPU performance or a full repository
+GPU suite.
 
 The recorded A100 full suite of 835 passed and two multi-GPU skips belongs to
 older computation source ``ed332733db28dbf16de06f166b16766760148958``. It was
