@@ -1565,6 +1565,9 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
     if not name.startswith("%"):
         if name not in ctx.tensor_infos:
             return name
+
+        if ctx.tensor_infos[name].ndim == 0:
+            return _tensor_value(name, ctx)
         return _load_tensor_at(name, coords, ctx)
 
     op = ctx.operations.get(name)
