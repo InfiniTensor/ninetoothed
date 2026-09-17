@@ -32,8 +32,9 @@
 
 | 验证 | 已保存结果 | 口径 |
 |---|---|---|
-| 当前无 Torch/Triton 的 CPU 回归 | **535 passed，15 GPU deselected** | 合入 22e74c3 后的解释器/SSA/平台配置范围，含 9 项报告生命周期、10 项表达式计划和新增 23 项 dtype 测试；不是无依赖的全仓库测试 |
-| 本轮 dtype 性能及差分 | **三轮确认通过，15/15 GPU 差分、23/23 dtype 测试** | 多形状/步长/类型验证；[范围与数据](cpu_interpreter_dtype_performance.md) |
+| 当前无 Torch/Triton 的 CPU 回归 | **577 passed，15 GPU deselected** | 合入 22e74c3 后的解释器/SSA/平台配置范围，含 9 项报告生命周期、10 项表达式计划、23 项 dtype 和新增 42 项恒等布局测试；不是无依赖的全仓库测试 |
+| 本轮恒等布局内存及差分 | **三轮确认通过，15/15 GPU 差分、42/42 新增测试** | 受测大张量分配峰值下降 36%–42%；[范围与限制](cpu_interpreter_identity_memory.md) |
+| 先前 dtype 性能及差分 | **三轮确认通过，15/15 GPU 差分、23/23 dtype 测试** | 多形状/步长/类型验证；[范围与数据](cpu_interpreter_dtype_performance.md) |
 | 先前表达式计划性能及差分 | **三轮性能确认通过，15/15 GPU 差分、10/10 表达式测试** | 求值计划优化；[范围与数据](cpu_interpreter_performance.md) |
 | 先前 RTX 4090 D 差分与报告协议 | **15/15 GPU 差分，9/9 报告测试** | 最终文件实机复验；九项测试使用替身验证协议；[详情](cpu_interpreter_report_validation.md) |
 | 已归档 RTX 4090 测试集合 | **900 passed、2 skipped，覆盖 902 个测试 ID** | 1b68040；分段执行后逐项核对，含 15 项真实 GPU 差分；[详情](cpu_interpreter_rtx4090_validation.md) |

@@ -27,6 +27,8 @@ the default GPU installation above is unchanged. See the
 The [validation summary](docs/cpu_interpreter_acceptance.md) records the tested
 scope, reproduction commands, implementation tradeoffs and fixed evidence links.
 
+[恒等布局内存优化](docs/cpu_interpreter_identity_memory.md) 在大张量测试中降低约 36%–42% 的执行分配峰值，并修复零维张量掩码写入；577 项 CPU 回归与 15 项真实 GPU 差分通过。
+
 ## Usage
 
 Thanks to tensor-oriented meta-programming, NineToothed can be written using the **arrange-and-apply** paradigm, which involves separately defining `arrangement`, `application`, and `tensors`, and then integrating them using `ninetoothed.make` to generate the kernel.

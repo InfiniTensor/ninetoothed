@@ -7,6 +7,15 @@ import numpy as np
 from .expressions import evaluate, shape_value
 
 
+def _identity_coordinates(shape):
+    # Coordinate values are read-only. Broadcasting one vector per axis avoids
+    # allocating rank copies of every logical element for an identity layout.
+    return tuple(
+        np.broadcast_to(coordinate, shape)
+        for coordinate in np.indices(shape, sparse=True)
+    )
+
+
 @dataclass(frozen=True)
 class Pointer:
     """An element offset into an explicitly contiguous NumPy allocation."""
@@ -121,7 +130,7 @@ class TensorRef:
             )
 
         if self.layout is None:
-            coords = np.indices(self.array.shape, sparse=False)
+            coords = _identity_coordinates(self.array.shape)
 
             return tuple(coords), np.broadcast_to(
                 np.asarray(extra_mask, dtype=bool), self.array.shape
@@ -151,7 +160,7 @@ class TensorRef:
 
             if access is None:
                 if self.array.shape == shape:
-                    coords = np.indices(shape, sparse=False)
+                    coords = _identity_coordinates(shape)
 
                     return tuple(coords), np.broadcast_to(
                         np.asarray(extra_mask, dtype=bool), shape
@@ -207,9 +216,15 @@ class TensorRef:
     def write(self, value, mask=True):
         coordinates, valid = self._access(mask)
         value = np.broadcast_to(np.asarray(value), valid.shape)
-        self.array[tuple(coordinate[valid] for coordinate in coordinates)] = value[
-            valid
-        ]
+
+        if self.array.ndim == 0 and valid.ndim == 0:
+            # An empty coordinate tuple selects the scalar even when masked out.
+            # Boolean indexing preserves the mask and avoids array-to-scalar casts.
+            self.array[valid] = value[valid]
+        else:
+            self.array[tuple(coordinate[valid] for coordinate in coordinates)] = value[
+                valid
+            ]
 
         if self.observer is not None:
             self.observer.access("write", self.array, coordinates, valid)

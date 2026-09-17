@@ -600,10 +600,13 @@ Latest validation and CPU automation
 
 The current submission integrates upstream target architecture revision
 ``22e74c3afe47e12ee29d7d0bcfaf1de8286f4560``. Its selected CPU suite passed
-493 tests with 15 actual GPU cases deselected. This includes platform-profile
+577 tests with 15 actual GPU cases deselected. This includes platform-profile
 checks and positive/negative target-capability pass integration for Triton,
 CUDA and TileLang. The default pipeline now also checks
-``ssa.validate_target_capabilities``.
+``ssa.validate_target_capabilities``. The identity-view revision also passes
+42 identity-view masking, strided-storage, observer and alias tests. Its 15
+actual GPU differential cases passed separately on RTX4090D; those cases do
+not constitute a full repository GPU suite.
 
 The recorded A100 full suite of 835 passed and two multi-GPU skips belongs to
 older computation source ``ed332733db28dbf16de06f166b16766760148958``. It was
