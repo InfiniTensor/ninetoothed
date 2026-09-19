@@ -490,6 +490,13 @@ class _ApplicationSSABuilder:
             handler(statement, operations, env)
 
     def _lower_expression_statement(self, statement, operations, env) -> None:
+        # A bare literal expression statement is a no-op in Python, so it must
+        # never reach the IR.  This is what stops a function docstring, which is
+        # an `ast.Expr` wrapping an `ast.Constant` string, from being lowered as
+        # a genuine `arith.constant` string that no target can represent.
+        if isinstance(statement.value, ast.Constant):
+            return
+
         self._lower_expr(statement.value, operations, env)
 
     def _lower_return_statement(self, statement, operations, env) -> None:
