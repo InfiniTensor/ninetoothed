@@ -956,8 +956,12 @@ def _is_top_level_effect(op: ssa.Operation) -> bool:
     if op.opcode in {"mem.store", "mem.atomic_add"}:
         return True
 
-    if op.opcode in {"scf.for", "scf.if"} and not op.results:
-        return True
+    if op.opcode in {"scf.for", "scf.if"}:
+        return not op.results or any(
+            _is_top_level_effect(inner)
+            for region in op.regions
+            for inner in region.operations
+        )
     return False
 
 

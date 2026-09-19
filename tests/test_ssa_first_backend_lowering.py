@@ -1335,3 +1335,22 @@ def scalarized_index_application(x, indices, y):
                     backend,
                     source_fragment,
                 )
+
+    def test_unused_nested_region_results_preserve_stores(self):
+        kernel = _ssa_kernel(
+            """
+def application(x, out):
+    acc = x[0]
+    for i in range(n):
+        if i < 2:
+            acc = acc + x[i]
+            out[i] = acc
+""",
+            "nested_region_store",
+            (
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
+            ),
+        )
+        source = emit_kernel(kernel, "triton").primary_source
+        assert source.count("tl.store(") == 1
