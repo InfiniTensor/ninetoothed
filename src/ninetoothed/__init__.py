@@ -16,6 +16,7 @@ from ninetoothed.dtype import (
 )
 from ninetoothed.eval import _eval as eval
 from ninetoothed.eval import _subs as subs
+from ninetoothed.interpreter import interpret
 from ninetoothed.make import make
 from ninetoothed.symbol import Symbol, block_size
 from ninetoothed.tensor import Tensor
@@ -37,6 +38,7 @@ __all__ = [
     "subs",
     "jit",
     "make",
+    "interpret",
     "uint8",
     "uint16",
     "uint32",

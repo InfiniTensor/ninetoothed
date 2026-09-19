@@ -1,0 +1,120 @@
+LATEST A100 ACCEPTANCE — 2026-09-19
+Source: a86bea9d32a43e122322acd52c0168b19682ffa2; subsequent closeout changes are documentation only.
+1206 passed, 2 skipped in 1431.71s (0:23:51)
+15/15 formal GPU differential cases; 3/3 traced target matmuls.
+1208 collected IDs match phase outcomes and JUnit; 209 frozen files verified.
+The two skips require multiple GPUs. Final uncorrectable ECC counts: zero.
+Report: docs/cpu_interpreter_a100_final.md
+Evidence: https://github.com/a962695448-rgb/ninetoothed/tree/6ea3cb3c7b9724a45625d07e33c48540ed6c8fd2/docs/validation/a100-final-20260919
+
+HISTORICAL CHECKPOINT OUTPUTS FOLLOW; THEIR COUNTS ARE NOT THE LATEST TOTAL.
+
+Dtype descriptor cache validation (2026-09-17)
+===========================================
+Base: 64bd6958a610a0e5e61807aa141bf1cbc7881426
+CPU selection: 535 passed, 15 deselected in 36.18s; Torch/Triton absent.
+Actual GPU differential: 15/15 PASS on RTX 4090 D.
+New dtype regressions on that host: 23 passed in 0.42s (CPU execution).
+Three independent process pairs met the frozen runtime gate; full traces matched.
+Warm and cold tracemalloc peaks were recorded separately and are not process RSS.
+Local Ruff, format and contribution style passed.
+Evidence: https://github.com/a962695448-rgb/ninetoothed/tree/98feddcdf50a9d3991707b96d471220c92b6b132/docs/validation/dtype-cache-20260917
+Report: docs/cpu_interpreter_dtype_performance.md
+
+Expression evaluation plan validation (2026-09-16, late evening)
+===============================================================
+Base: d7e779642eab70164be849b2dcf52a5d02a7858a
+Changed runtime: src/ninetoothed/interpreter/expressions.py only.
+CPU selection: 512 passed, 15 deselected in 35.10s; Torch/Triton absent.
+RTX 4090 D: 15/15 real GPU differential cases PASS.
+New expression tests: 10 passed in 1.55s on the GPU host (CPU execution).
+Three isolated old/new process pairs met the preregistered runtime and memory gate.
+Full trace digests and independent output references matched.
+Ruff, format and contribution style passed. Installed-wheel checks are recorded by CI.
+Historical full GPU test collection counts below retain their original source scope.
+Evidence: https://github.com/a962695448-rgb/ninetoothed/tree/bb284c1a9f7ce7cfd33683571936de9523822320/docs/validation/expression-plans-20260916
+Report: docs/cpu_interpreter_performance.md
+
+Report lifecycle regression validation (2026-09-16, evening)
+===========================================================
+Scope: GPU report CLI only; interpreter/compiler/kernel sources unchanged.
+CPU environment has neither Torch nor Triton.
+Command: python scripts/run_cpu_tests.py --junitxml <new-report-path>
+502 passed, 15 deselected in 43.91s
+Final formatted report tests: 9 passed in 0.37s (included in the 502).
+The script AST is unchanged by the final blank-line formatting pass.
+Ruff, format and project contribution-style checks passed.
+Final RTX 4090 D: 15/15 real GPU differential cases PASS; 9 report tests passed in 0.35s.
+Raw final source hashes matched the local candidate.
+Evidence: https://github.com/a962695448-rgb/ninetoothed/tree/c6d9dd6bfaa3d7fe1b6dd06aedde427549c9f556/docs/validation/report-lifecycle-20260916
+Report: docs/cpu_interpreter_report_validation.md
+Historical wheel and full GPU collection results below retain their source scopes.
+
+CPU interpreter upstream integration validation (2026-09-16)
+==========================================================
+Upstream: 22e74c3afe47e12ee29d7d0bcfaf1de8286f4560
+Scope: CPU interpreter, SSA and platform-profile regressions; no Torch/Triton.
+Command: python scripts/run_cpu_tests.py --junitxml <new-report-path>
+
+493 passed, 15 deselected in 42.79s
+JUnit: tests=493 failures=0 errors=0 skipped=0; 15 actual GPU cases deselected.
+
+The 37 default-pipeline/platform integration checks are a subset of these 493.
+Ruff, format and project contribution-style checks passed.
+A normal wheel matched all 68 Python source files; isolated installed demo and
+standalone replay passed outside the checkout, with Torch/Triton absent.
+
+RTX 4090 current-source validation (2026-09-16)
+================================================
+Source: 1b68040f73553de9b5929cd61067c4d4369f7f22
+Real Triton differential checks: 15 passed out of 15.
+Complete collected test-ID coverage: 900 passed, 2 conditional multi-GPU skips.
+The 902 collected IDs were checked across an interrupted 898-pass/2-skip run
+and an exact two-case serial completion. Source and environment identities match.
+This is not a claim of one uninterrupted full-suite pytest invocation.
+The initial timeout and diagnostic worker-exit attempt are preserved separately.
+
+Evidence: https://github.com/a962695448-rgb/ninetoothed/tree/c5b216200a2c4ce58566cd535ae35d7cbabdbd19/docs/validation/rtx4090-20260916
+Report: docs/cpu_interpreter_rtx4090_validation.md
+The historical A100 result below does not validate this merged combination.
+Current online CPU runs remain linked from the PR/Actions history.
+
+Historical submission report (2026-09-14)
+=======================================
+CPU interpreter submission validation — 2026-09-14
+
+Scope: focused submission tree; no GPU execution in this validation.
+Executable source reference: ed332733db28dbf16de06f166b16766760148958
+Matching src/tests/scripts/requirements files: 137
+Normalized source-map SHA256: bff9e7b64ff7f908e05ab75a68a8cf93865801ecc71c4df350517fc015b006a4
+Source hashes matched before and after validation.
+Project/runtime dependency metadata matches the reference revision.
+Python: 3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]
+Packages: {"numpy": "2.5.2", "pytest": "9.1.1", "ruff": "0.16.6", "sympy": "1.14.0"}
+Torch installed: no; Triton installed: no; CUDA_VISIBLE_DEVICES: empty.
+
+pytest output:
+460 passed, 15 deselected in 98.51s (0:01:38)
+JUnit: tests=460 failures=0 errors=0 skipped=0; 15 GPU cases deselected.
+Reproduction: see cpu_interpreter_acceptance.md, CPU reproduction command.
+
+ruff-check: exit 0
+ruff-format: exit 0
+style: exit 0
+cpu: exit 0
+sphinx: exit 0
+wheel-build: exit 0
+wheel-venv: exit 0
+wheel-deps: exit 0
+wheel-install: exit 0
+installed-probe: exit 0
+installed-demo: exit 0
+installed-replay: exit 0
+Wheel SHA256: b213d36a567beff1ed00b7117eb18ec9026676bdc7c8647be5f141b8c37cdbda
+Wheel Python sources matched against review tree: 67
+The ordinary wheel was installed with --no-deps into a separate CPU environment.
+The demo and exported replay both passed using python -I outside the source tree.
+
+A100 evidence is archived separately at computation revision ed33273:
+835 passed, 2 multi-GPU skips, 570.53 s. This was not rerun here.
+The executable source and tests are unchanged; archival-only discovery/style settings were removed.

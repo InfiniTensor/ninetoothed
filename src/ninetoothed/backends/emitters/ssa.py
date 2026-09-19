@@ -1350,12 +1350,8 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
         if operator in _UNARY:
             return f"({_UNARY[operator]}{args[0]})"
 
-        if operator == "floordiv":
-            return (
-                f"(({args[0]}) // ({args[1]}))"
-                if not target.c_style_syntax
-                else f"(({args[0]}) / ({args[1]}))"
-            )
+        if operator in {"floordiv", "mod"}:
+            return _floor_divmod_expr(operator, op, args, ctx)
 
         if operator == "pow":
             return target.call("pow", args)
@@ -1421,6 +1417,32 @@ def _binary_expr(operator: str, op: ssa.Operation, ctx: _EmitContext) -> str:
     symbol = _BINARY[operator]
 
     return f"({args[0]} {symbol} {args[1]})"
+
+
+def _floor_divmod_expr(
+    operator: str, op: ssa.Operation, args: tuple[str, ...], ctx: _EmitContext
+) -> str:
+    """Preserve SSA floor division when target integers truncate toward zero."""
+    lhs, rhs = (f"({arg})" for arg in args)
+    division_symbol = "/" if ctx.target.c_style_syntax else "//"
+    quotient = f"({lhs} {division_symbol} {rhs})"
+    remainder = f"({lhs} % {rhs})"
+    dtype = _normalize_dtype(ctx.target.arithmetic_result_type(op, ctx).dtype)
+
+    if ctx.target.signed_division_rounds_to_zero and dtype in {
+        "int8",
+        "int16",
+        "int32",
+        "int64",
+    }:
+        # Correct a truncating remainder whose sign differs from the divisor.
+        # Testing its sign also leaves compile-time Python scalars unchanged.
+        correction = f"(({remainder} != 0) & (({remainder} < 0) != ({rhs} < 0)))"
+
+        if operator == "floordiv":
+            return ctx.target.where(correction, f"({quotient} - 1)", quotient)
+        return ctx.target.where(correction, f"({remainder} + {rhs})", remainder)
+    return quotient if operator == "floordiv" else remainder
 
 
 def _emit_linalg_dot(
@@ -1740,12 +1762,8 @@ def _element_binary(
 
     args = ctx.target.coerce_binary_args(op, args, ctx)
 
-    if operator == "floordiv":
-        return (
-            f"(({args[0]}) // ({args[1]}))"
-            if not ctx.target.c_style_syntax
-            else f"(({args[0]}) / ({args[1]}))"
-        )
+    if operator in {"floordiv", "mod"}:
+        return _floor_divmod_expr(operator, op, args, ctx)
 
     symbol = _BINARY[operator]
     result = f"({args[0]} {symbol} {args[1]})"
@@ -1938,6 +1956,27 @@ def _emit_offset_element(
 ) -> str:
     operand = op.operands[0]
     dim = int(op.attrs.get("dim", 0) or 0)
+    coordinate_space = op.attrs.get("coordinate_space", "source")
+
+    if coordinate_space == "value":
+        axes = _access_axes(
+            ctx.tensor_infos.get(operand),
+            ctx,
+            _dtype_level(operand, ctx),
+            fallback=_value_axes(operand, ctx),
+        )
+        value_coords = (
+            coords if len(coords) == len(axes) else _current_coords(axes, ctx)
+        )
+
+        if not -len(value_coords) <= dim < len(value_coords):
+            raise ValueError(
+                "Value-space offset dimension is outside the logical tile."
+            )
+        return value_coords[dim]
+
+    if coordinate_space != "source":
+        raise ValueError(f"Unsupported offset coordinate space `{coordinate_space}`.")
 
     if operand in ctx.tensor_infos:
         return _offset_from_template(
@@ -2102,7 +2141,7 @@ def _offset_from_template(
             info, shape, coords, level=level, dim=dim, ctx=ctx
         )
 
-    replacements = {"outer_index": ctx.outer_index_expr}
+    replacements = {"outer_index": _tensor_outer_index(info, ctx)}
     replacements.update(
         {f"value_{index}": coord for index, coord in enumerate(value_coords)}
     )
@@ -2959,7 +2998,7 @@ def _source_index_for_value(
         if len(value_coords) == len(shape)
         else _coords_from_linear(view_index, shape, ctx.target)
     )
-    replacements = {"outer_index": ctx.outer_index_expr}
+    replacements = {"outer_index": _tensor_outer_index(info, ctx)}
     replacements.update({f"value_{index}": coord for index, coord in enumerate(coords)})
     replacements.update(_jagged_extent_replacements(ctx))
 
@@ -3151,7 +3190,7 @@ def _mask_from_template_offsets(
 
     shape = tuple(str(dim) for dim in template.get("shape", ())) or ctx.output_axes
     coords = _coords_from_linear(view_index, shape, ctx.target)
-    replacements = {"outer_index": ctx.outer_index_expr}
+    replacements = {"outer_index": _tensor_outer_index(info, ctx)}
     replacements.update({f"value_{index}": coord for index, coord in enumerate(coords)})
     replacements.update(_jagged_extent_replacements(ctx))
     replacements.update(_jagged_runtime_replacements(template, replacements, ctx))
@@ -3247,7 +3286,7 @@ def _combined_mask(
                 if len(value_coords) == len(shape)
                 else _coords_from_linear(view_index, shape, target)
             )
-            replacements = {"outer_index": ctx.outer_index_expr}
+            replacements = {"outer_index": _tensor_outer_index(info, ctx)}
             replacements.update(
                 {f"value_{index}": coord for index, coord in enumerate(coords)}
             )
@@ -3286,6 +3325,66 @@ def _combined_mask(
     if len(masks) == 1:
         return masks[0]
     return " & ".join(f"({mask})" for mask in masks)
+
+
+def _tensor_outer_index(info: _TensorInfo | None, ctx: _EmitContext) -> str:
+    """Map a broadcast input's program domain before applying its access map.
+
+    Right-align the input domain with the output and zero singleton axes,
+    including axes whose size is only known at launch. Reusing the output's
+    flat index would advance a broadcast input's pointer and mask past its
+    storage. Addresses and masks must use the same local program coordinate.
+    """
+    output = ctx.tensor_infos.get(ctx.output)
+
+    if info is None or output is None or info.name == output.name:
+        return ctx.outer_index_expr
+
+    # Expanded dense views can contain a jagged tensor's logical sequence
+    # symbol. Program domains use the padded launch extent, before per-batch
+    # lengths are bound by the access template.
+    extents = _jagged_extent_replacements(ctx)
+    axes = tuple(_replace_symbols(axis, extents) for axis in info.shape)
+    output_axes = tuple(_replace_symbols(axis, extents) for axis in output.shape)
+
+    if not axes:
+        return "0"
+
+    if len(axes) > len(output_axes) or axes == output_axes:
+        return ctx.outer_index_expr
+
+    pairs = tuple(zip(axes, output_axes[-len(axes) :]))
+    compatibility = []
+
+    for axis, output_axis in pairs:
+        if _is_one_expr(axis) or axis == output_axis:
+            continue
+
+        if axis.isdecimal() and output_axis.isdecimal():
+            return ctx.outer_index_expr
+
+        compatibility.append(f"((({axis}) == 1) | (({axis}) == ({output_axis})))")
+
+    output_coords = _coords_from_linear(ctx.outer_index_expr, output_axes, ctx.target)
+    coords = tuple(
+        "0"
+        if _is_one_expr(axis)
+        else coordinate
+        if axis.isdecimal()
+        else f"({coordinate}) * (({axis}) != 1)"
+        for axis, coordinate in zip(axes, output_coords[-len(axes) :])
+    )
+
+    mapped = _target_index_expr(ctx.target, _linearized_index(coords, axes))
+
+    if compatibility:
+        # Flattened debug outputs and other reshaped domains share a flat
+        # program ID without having a right-aligned broadcasting relation.
+        # Preserve that ID unless the runtime extents prove broadcasting.
+        valid = " & ".join(compatibility)
+
+        return ctx.target.where(valid, mapped, ctx.outer_index_expr)
+    return mapped
 
 
 def _access_template(info: _TensorInfo | None, level: int) -> Mapping[str, Any] | None:
@@ -3866,12 +3965,12 @@ def _axis_offset_expr(
     index_expr = index if _valid_symbol(str(index)) else f"({index})"
 
     if dim == len(axes) - 1:
-        return _target_index_expr(target, f"({index_expr} % {axes[dim]})")
+        return _target_index_expr(target, f"({index_expr} % ({axes[dim]}))")
 
     stride = _product(axes[dim + 1 :])
     div = "/" if target.c_style_syntax else "//"
     base = f"({index_expr} {div} ({stride}))"
-    expr = base if dim == 0 else f"({base} % {axes[dim]})"
+    expr = base if dim == 0 else f"({base} % ({axes[dim]}))"
 
     return _target_index_expr(target, expr)
 

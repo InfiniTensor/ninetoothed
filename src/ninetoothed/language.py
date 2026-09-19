@@ -1,12 +1,20 @@
 import ast
 
-from triton.language.extra import libdevice
-
 from ninetoothed.symbol import Symbol
 
-__all__ = ["libdevice"]
+__all__ = ["libdevice"]  # noqa: F822 - exported lazily through __getattr__.
 
 LANGUAGE = "ninetoothed.language"
+
+
+def __getattr__(name):
+    """Load optional GPU math bindings only when a caller uses them."""
+    if name == "libdevice":
+        from triton.language.extra import libdevice
+
+        return libdevice
+
+    raise AttributeError(f"Module {__name__!r} has no attribute {name!r}.")
 
 
 def call(func, *args, **kwargs):

@@ -1,0 +1,4 @@
+# Match the interpreter runtime requirements without installing GPU packages.
+numpy>=1.26.4
+sympy>=1.13.0
+pytest
