@@ -1336,7 +1336,7 @@ class _ApplicationSSABuilder:
             )
 
         if name in {"maximum", "minimum"}:
-            result_type = operands[0].type if operands else ssa.Type(kind="tensor")
+            result_type = _math_result_type(name, operands)
 
             return self._emit(
                 operations,
