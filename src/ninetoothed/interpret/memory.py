@@ -1,16 +1,14 @@
 """CPU memory model for the reference interpreter.
 
-The model mirrors the layout information the NineToothed frontend already
-attaches to every tensor: ``source_shape``/``source_strides`` describe the
-backing buffer, ``dtype_shapes`` describes the tile hierarchy, and
-``access_templates`` maps ``(outer_index, extract_*, value_*)`` coordinates to a
-linear buffer offset plus a bounds predicate.
+The model mirrors the layout information the NineToothed frontend attaches to
+every tensor: ``source_shape``/``source_strides`` describe the backing buffer,
+``dtype_shapes`` describes the tile hierarchy, and ``access_templates`` maps
+``(outer_index, extract_*, value_*)`` coordinates to a linear buffer offset plus
+a bounds predicate.
 
-Two invariants are enforced here:
-
-* a masked-out access never touches the backing buffer, and
-* an access that is *not* masked out but falls outside the buffer is reported as
-  an error instead of silently reading or writing the wrong element.
+Two invariants are enforced here.  A masked-out access never touches the backing
+buffer.  An unmasked access that falls outside the buffer is an error, not a
+silent read or write of the wrong element.
 """
 
 import itertools
@@ -80,10 +78,10 @@ def _split_top_level(text) -> tuple:
 def parse_subscript(text) -> tuple:
     """Parse an SSA ``subscript`` attribute into element kinds.
 
-    The frontend records the *unparsed* slice node, so the text is a
-    comma-separated list rather than a valid expression: ``x[:, None]`` is
-    recorded as ``"(:, None)"`` and ``x[0, i]`` as ``"(0, i)"``.  This matches
-    the convention used by the backend emitters.
+    The frontend records the unparsed slice node, so the text is a
+    comma-separated list instead of a valid expression.  For example
+    ``x[:, None]`` is recorded as ``"(:, None)"`` and ``x[0, i]`` as
+    ``"(0, i)"``.  This matches the backend emitters' convention.
 
     :param text: The subscript text, for example ``"(0, i)"`` or ``"(:, None)"``.
     :return: A tuple whose entries are :data:`NEW_AXIS`, :data:`SLICE`, or

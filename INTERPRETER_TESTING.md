@@ -1,12 +1,12 @@
 # Testing the CPU Reference Interpreter
 
-This guide covers three things, in order of how much hardware they need:
+This guide covers three things, ordered by how much hardware they need:
 
-1. **CPU-only tests** — run the interpreter test suite with no GPU at all.
-2. **GPU tests** — run the project's full suite once you have a CUDA server.
-3. **CPU vs. GPU cross-validation** — the most valuable check: run the same
+1. **CPU-only tests**: run the interpreter test suite with no GPU.
+2. **GPU tests**: run the project's full suite once you have a CUDA server.
+3. **CPU vs. GPU cross-validation**: the strongest check. Run the same
    application through the interpreter and through the real Triton/CUDA kernel,
-   and compare the numbers.
+   then compare the numbers.
 
 ---
 
@@ -41,23 +41,23 @@ pip install pytest numpy
 
 ### On a CUDA server
 
-`git clone https://github.com/InfiniTensor/ninetoothed.git` gets you the *upstream*
-repository, which does **not** contain the interpreter — that work is not pushed
+`git clone https://github.com/InfiniTensor/ninetoothed.git` gets you the upstream
+repository, which does not contain the interpreter. That work is not pushed
 there. Bring the checkout over instead:
 
 ```shell
-# Option A — upload `ninetoothed-server.tar.gz` through the JupyterLab file
+# Option A: upload `ninetoothed-server.tar.gz` through the JupyterLab file
 # browser (the ⬆ button), then:
 cd /root/autodl-tmp
 tar -xzf ninetoothed-server.tar.gz
 cd ninetoothed
 bash setup_on_server.sh          # installs, runs the GPU-free suite, prints the matrix
 
-# Option B — copy from your laptop:
+# Option B: copy from your laptop:
 scp -P <port> ninetoothed-server.tar.gz root@<host>:/root/autodl-tmp/
 ```
 
-Doing it by hand is the same thing:
+Doing it by hand is the same:
 
 ```shell
 cd /root/autodl-tmp/ninetoothed
@@ -69,8 +69,8 @@ pip install torch --index-url https://download.pytorch.org/whl/cu124   # match y
 pip install pytest numpy
 ```
 
-Most rented PyTorch images already ship a matching `torch`/`triton` pair, in which
-case skip the `torch` line and just run `pip install -e . --no-deps`.
+Most rented PyTorch images already ship a matching `torch`/`triton` pair. In that
+case skip the `torch` line and run `pip install -e . --no-deps`.
 
 Verify the GPU is visible before going further:
 
@@ -80,7 +80,7 @@ python -c "import torch; print(torch.cuda.get_device_name(0), torch.cuda.is_avai
 
 ### What the environment has to satisfy
 
-`pyproject.toml` is the authority:
+`pyproject.toml` has the exact versions:
 
 | Requirement | Declared |
 | --- | --- |
@@ -88,34 +88,33 @@ python -c "import torch; print(torch.cuda.get_device_name(0), torch.cuda.is_avai
 | Runtime deps | `triton>=3.0.0`, `sympy>=1.13.0`, `numpy>=1.26.4` |
 | `debugging` extra | `torch>=2.4.0` (needed by the 28 test files that import torch) |
 
-So a stock **PyTorch 2.4+ / Python 3.10–3.12 / CUDA 12.x** image satisfies
-everything, because a PyTorch wheel already brings a matching Triton
-(`torch 2.4 → triton 3.0`, `2.5 → 3.1`, `2.6 → 3.2`). Do not pin Triton
-separately — `pip install -e .` sees the torch-provided version already satisfies
-`triton>=3.0.0` and leaves it alone. If pip ever tries to move it, install the
-project with `--no-deps` instead.
+A stock PyTorch 2.4+ / Python 3.10–3.12 / CUDA 12.x image satisfies all of this,
+because the PyTorch wheel brings a matching Triton (`torch 2.4 → triton 3.0`,
+`2.5 → 3.1`, `2.6 → 3.2`). Do not pin Triton separately. `pip install -e .` sees
+that the torch-provided version already satisfies `triton>=3.0.0` and leaves it
+alone. If pip ever tries to move it, install the project with `--no-deps`.
 
 ### Which GPU, and does the model matter?
 
-**One GPU is enough.** The interpreter and every test in this repository are
-single-device; there is no collective communication anywhere in the path.
+One GPU is enough. The interpreter and every test in this repository are
+single-device, and there is no collective communication anywhere in the path.
 
-The model *does* matter for one specific thing — the compute architecture:
+The model matters for one thing: the compute architecture.
 
 | GPU | Compute capability | Platform profile |
 | --- | --- | --- |
 | A100 / **A800** | `sm_80` | `nvidia-a100` |
 | H100 | `sm_90` | `nvidia-h100` |
 
-`A800` is the A100 with reduced NVLink bandwidth; the compute capability, the
+`A800` is the A100 with reduced NVLink bandwidth. The compute capability, the
 memory and the generated Triton code are identical, so an A800 run reproduces an
 A100 run exactly. If the grading environment is stated as A100, developing on an
-A800 is safe — but re-run `cross_validate.py` on an actual A100 before submitting
+A800 is safe, but re-run `cross_validate.py` on an actual A100 before submitting
 if you want the artifact to say A100.
 
-Note that `resolve_target_context` does **not** probe the device. With no
+`resolve_target_context` does not probe the device. With no
 `NINETOOTHED_PLATFORM` set, the profile is `generic` and the architecture is left
-to Triton, which probes the device itself — so the default Triton backend works on
+to Triton, which probes the device itself, so the default Triton backend works on
 any GPU with no configuration:
 
 ```shell
@@ -123,24 +122,23 @@ python -c "from ninetoothed.targets import resolve_target_context as r; c = r(No
 # triton generic None
 ```
 
-The **CUDA** backend (`backend="cuda"`) is the exception: `generic` carries no
-architecture and it refuses to guess, so it must be told.
+The CUDA backend (`backend="cuda"`) is the exception: `generic` carries no
+architecture and refuses to guess, so it must be told.
 
 ```shell
 export NINETOOTHED_PLATFORM=nvidia-a100   # sm_80, matches A100 and A800
 # or, equivalently, pass platform="nvidia-a100" / compute_arch="sm_80" explicitly
 ```
 
-The `nvidia-a100` profile also declares `unsupported_capabilities={"dtype.fp8"}`,
-which is consistent with the project scope: `float8` is deliberately out of scope
-and the interpreter refuses it too.
+The `nvidia-a100` profile also declares `unsupported_capabilities={"dtype.fp8"}`.
+That matches the project scope: `float8` is out of scope, and the interpreter
+refuses it too.
 
 ---
 
 ## 2. CPU-only tests (no GPU required)
 
-This is the whole point of the interpreter: most of the verification can happen
-before you ever rent a machine.
+Most of the verification can happen before you rent a machine.
 
 ```shell
 # The interpreter's own suite.
@@ -160,9 +158,11 @@ files (`110 passed` together).
 
 ### Everything that runs without a GPU
 
-28 of the 47 test files import `torch` at module scope and therefore cannot even
-be collected on a laptop. The other 19 need only NumPy, and 248 of their tests
-pass:
+27 of the 47 test files import `torch` at module scope, so they cannot even be
+collected on a laptop. Of the remaining 20, 19 need no device at all: 18 need only
+NumPy, and `test_lowering_inference.py` additionally imports `triton.language`.
+The last one, `test_ipynb.py`, needs `jupytext`. With `triton` installed, 248 of
+the tests in the 19 files below pass:
 
 ```shell
 python -m pytest -q \
@@ -189,12 +189,12 @@ python -m pytest -q \
 
 Expected: `248 passed, 1 failed`. The single failure is
 `test_compiler_cache_runtime.py::test_cuda_compiler_identity_is_part_of_compilation_cache_key`,
-which asks the cache for the *runtime* CUDA architecture and so genuinely needs a
-GPU; it passes on the server. Everything else is a real regression if it fails.
+which asks the cache for the runtime CUDA architecture and so needs a GPU; it
+passes on the server. Everything else is a real regression if it fails.
 
 If pytest refuses to start with `ModuleNotFoundError: No module named 'torch'`,
-your checkout predates the graceful-degradation change in `tests/conftest.py`;
-add the following to that file:
+your checkout predates the graceful-degradation change in `tests/conftest.py`.
+Add the following to that file:
 
 ```python
 try:
@@ -208,15 +208,15 @@ and guard the `torch.manual_seed(seed)` call in `_set_random_seed`.
 ### The whole suite, on the server
 
 With `torch` and a CUDA device present, every file collects and the remaining 28
-files run too. This is the broadest regression check available:
+files run too. This is the broadest regression check:
 
 ```shell
 python -m pytest -q --continue-on-collection-errors tests/
 ```
 
-It compiles a real Triton kernel per test, so budget **20–40 minutes** on a
-single GPU; `-q` prints one character per test, so a lone `.` on a stalled-looking
-line is progress, not a hang. To run it without babysitting:
+It compiles a real Triton kernel per test, so budget 20–40 minutes on a single
+GPU. `-q` prints one character per test, so a lone `.` on a stalled-looking line
+is progress, not a hang. To run it without babysitting:
 
 ```shell
 nohup python -m pytest -q --continue-on-collection-errors tests/ > pytest.log 2>&1 &
@@ -229,7 +229,7 @@ A clean result on one A800 (Python 3.12.3, CUDA 12, torch + triton preinstalled)
 2 failed, 546 passed, 10 skipped in 1935.96s (0:32:15)
 ```
 
-Both failures are missing optional third-party tools, not defects — neither test
+Both failures are missing optional third-party tools, not defects. Neither test
 file imports the interpreter, and neither tool is a declared dependency:
 
 | Failure | Cause | Fix |
@@ -247,10 +247,10 @@ visible, and `test_jagged.py` skips when jagged nested tensors are unavailable.
 | --- | --- |
 | Semantics | Results match a NumPy reference for elementwise, broadcast, reduction, softmax, layernorm, matmul, transpose, integer and boolean ops |
 | Masking | A masked-out lane never touches the buffer; the untouched tail keeps the caller's sentinel value |
-| Bounds | An *unmasked* access outside the buffer raises instead of reading the wrong element |
-| Layout | The resolved access map equals `ninetoothed.eval._eval` — the compiler's own ground truth — for 1-D, 2-D and nested tiles |
+| Bounds | An unmasked access outside the buffer raises instead of reading the wrong element |
+| Layout | The resolved access map equals `ninetoothed.eval._eval` (the compiler's own ground truth) for 1-D, 2-D and nested tiles |
 | Dtypes | Integer/bool results are bit-exact; `float32` is not silently widened; `bfloat16` is refused |
-| Diagnostics | Failures name the offending SSA opcode and location; unknown symbols list the symbols that *are* available |
+| Diagnostics | Failures name the offending SSA opcode and location; unknown symbols list the available ones |
 | Tooling | Traces record program ids and mask counts; `compare_pipeline` is semantics-preserving; `compare_passes` names the first diverging pass and pins it on a program instance and a `mem.store`; reproduction snippets carry the SSA, data, shape, dtype and seed, and compile |
 
 ---
@@ -265,9 +265,9 @@ python -m pytest tests/ -q
 
 Then confirm the interpreter agrees with the real backend. The script below is
 the cross-validation check: it compiles the application for the GPU, runs it, and
-compares the result against the CPU interpretation of the *same* lowered program.
+compares the result against the CPU interpretation of the same lowered program.
 
-The repository already ships this as `cross_validate.py` in the root; run it on
+The repository already ships this as `cross_validate.py` in the root. Run it on
 the server with `python cross_validate.py`. Its shape is:
 
 ```python
@@ -327,10 +327,10 @@ def main():
     on_gpu = dataclasses.replace(reference, outputs={"out": gpu_result})
     diff = compare_interpretations(reference, on_gpu, label="cpu vs gpu")
 
-    print(diff.render())          # per-output mismatch count and max error
+    print(diff.render())  # per-output mismatch count and max error
 
     if not diff.matches:
-        print(diff.to_json())     # for a CI log
+        print(diff.to_json())  # for a CI log
         print(reference.render_trace(limit=40))
         raise SystemExit(1)
 
@@ -355,9 +355,9 @@ python cross_validate.py
 ```
 
 A clean run prints `MATCH` and a `max |cpu - numpy|` around `1e-8`. The default
-tolerance is `rtol=1e-3, atol=1e-3`, the project's standard for `float32`; pass
-`rtol=1e-6, atol=1e-6` to `compare_interpretations` if you want to see how much
-margin there actually is.
+tolerance is `rtol=1e-3, atol=1e-3`, the project's standard for `float32`. Pass
+`rtol=1e-6, atol=1e-6` to `compare_interpretations` to see how much margin there
+is.
 
 ### Comparing a real kernel against saved outputs
 
@@ -378,8 +378,8 @@ cpu = interpret(arrangement, application, inputs=(x, out))
 gpu = dataclasses.replace(cpu, outputs={"out": np.load("gpu_out.npy")})
 
 diff = compare_interpretations(cpu, gpu, label="cpu vs gpu")
-print(diff.render())      # per-output mismatch count, first indices, max error
-print(diff.to_json())     # the same information, for CI logs
+print(diff.render())  # per-output mismatch count, first indices, max error
+print(diff.to_json())  # the same information, for CI logs
 ```
 
 If the two disagree, `diff.outputs["out"].first_mismatches` gives the indices to
@@ -408,13 +408,13 @@ diff = compare_pipeline(
 print(diff.render())
 
 if not diff.matches:
-    print(diff.minimal_reproduction())    # a runnable snippet for a bug report
+    print(diff.minimal_reproduction())  # a runnable snippet for a bug report
 ```
 
 ### Finding *which* pass broke it
 
 `compare_pipeline` answers "is the pipeline sound?". `compare_passes` answers
-"which pass is at fault?" — it applies the pipeline one pass at a time and
+"which pass is at fault?". It applies the pipeline one pass at a time and
 interprets the program at every cumulative prefix:
 
 ```python
@@ -469,13 +469,13 @@ first semantic difference introduced by `ssa.select_schedule`
 
 A stage the interpreter cannot execute (a pass it has not been taught yet) is
 recorded with its error instead of aborting the scan, so a partially covered
-pipeline still gives you the stages that *do* run.
+pipeline still gives you the stages that do run.
 
 ### The reproduction
 
 `diff.reproduction()` (or `diff.minimal_reproduction()` for the snippet) returns
-everything a bug report needs — the executed SSA, the input data with its shapes
-and dtypes, and the recorded random seed:
+everything a bug report needs: the executed SSA, the input data with its shapes
+and dtypes, and the recorded random seed.
 
 ```python
 from ninetoothed.interpret import build_reproduction, random_inputs
@@ -484,15 +484,16 @@ from ninetoothed.interpret import build_reproduction, random_inputs
 x, out = random_inputs([((3, 11), "float32"), ((3, 11), "float32")], seed=17)
 
 result = interpret(
-    arrangement, application,
+    arrangement,
+    application,
     inputs=(x, out),
-    seed=17,                      # ...and record it on the interpretation
+    seed=17,  # ...and record it on the interpretation
 )
 
 reproduction = build_reproduction(result, label="softmax")
-print(reproduction.seed)          # 17
-print(reproduction.to_json())     # SSA + data + shape + dtype + seed
-print(reproduction.render())      # a snippet that re-runs the case
+print(reproduction.seed)  # 17
+print(reproduction.to_json())  # SSA + data + shape + dtype + seed
+print(reproduction.render())  # a snippet that re-runs the case
 ```
 
 ---
@@ -516,12 +517,12 @@ The workflow when a GPU kernel gives a wrong answer:
 
    offsets = access_offsets(result, "x")
    mask = access_mask(result, "x")
-   print(np.where(mask, offsets, -1))       # interpreter
-   print(_eval(arranged_x, subs))           # compiler, same layout expected
+   print(np.where(mask, offsets, -1))  # interpreter
+   print(_eval(arranged_x, subs))  # compiler, same layout expected
    ```
 
    They must be identical. A difference means the interpreter and the code
-   generator disagree about the mapping — that alone is the bug.
+   generator disagree about the mapping, and that alone is the bug.
 
 3. **Single-step the SSA.** Turn on tracing and read the operation stream:
 
@@ -529,9 +530,10 @@ The workflow when a GPU kernel gives a wrong answer:
    from ninetoothed.interpret import Tracer
 
    result = interpret(
-       arrangement, application,
+       arrangement,
+       application,
        inputs=(x, out),
-          trace=Tracer(),                       # everything
+       trace=Tracer(),  # everything
    )
    print(result.render_trace(limit=60))
    ```
@@ -541,7 +543,7 @@ The workflow when a GPU kernel gives a wrong answer:
    `Tracer(watch={"%6"})` to dump the full contents of one value.
 
 4. **Stop at a specific operation.** `Tracer(breakpoints={...})` maps an opcode
-   or an SSA location to a callback invoked *before* the operation runs; raising
+   or an SSA location to a callback invoked before the operation runs; raising
    from it aborts with a `TraceStop` carrying the event.
 
 ---
@@ -552,7 +554,7 @@ Keep these in mind before concluding that a mismatch is a real bug:
 
 - `bfloat16` and `float8` are refused, not approximated. Cast to `float32` to
   interpret a kernel that uses them.
-- `mem.atomic_add` is not implemented — accumulation order is not deterministic,
+- `mem.atomic_add` is not implemented: accumulation order is not deterministic,
   so there is no well-defined reference. Kernels that use it (for example the
   `test_data_ptr.py` reduction) cannot be interpreted as-is.
 - `math.rand` is not implemented.
@@ -561,20 +563,20 @@ Keep these in mind before concluding that a mismatch is a real bug:
 - Reading a view before every outer dtype level has been indexed is rejected.
   For `x.tile((1, B)).tile((1, -1))`, index down with `x[0, i]` first.
 - The frontend lowers an application by reading its source, so the arrangement and
-  the application must be module-level functions — a `lambda` cannot be lowered.
+  the application must be module-level functions; a `lambda` cannot be lowered.
   (`interpret` says so explicitly when it is handed one.)
 - Docstrings are fine. A bare literal statement is a no-op in Python, so the
   frontend skips it instead of emitting an `arith.constant` string, and a
   documented arrangement or application lowers exactly like an undocumented one.
 - A `block_size()` meta parameter cannot be pinned from the call site. The
   compiled kernel accepts meta overrides only under the symbol's auto-generated
-  internal name (`BLOCK_SIZE_0`, `BLOCK_SIZE_1`, … — the counter is global), so
+  internal name (`BLOCK_SIZE_0`, `BLOCK_SIZE_1`, …; the counter is global), so
   `kernel(x, out, BLOCK_SIZE=16)` raises `Unknown kernel arguments: BLOCK_SIZE`.
   The interpreter still takes the friendly name via `symbols={"BLOCK_SIZE": 16}`,
-  which means the two sides can silently disagree on the block width — and since
-  the width decides how a row is tiled, that changes the answer rather than just
-  the performance. Use a plain constant in the arrangement when both sides must
-  agree, as `cross_validate.py` does.
+  so the two sides can silently disagree on the block width. Since the width
+  decides how a row is tiled, that changes the answer, not just the performance.
+  Use a plain constant in the arrangement when both sides must agree, as
+  `cross_validate.py` does.
 - Execution is single-threaded, one program instance at a time. Use small inputs.
 
 Run `python -c "from ninetoothed.interpret import format_support_matrix; print(format_support_matrix())"`
@@ -585,10 +587,10 @@ on the server to see the exact operation set of the checkout you are testing.
 ## 7. Quick reference
 
 ```shell
-# CPU only — the interpreter's own suite
+# CPU only: the interpreter's own suite
 python -m pytest tests/test_interpret.py -v
 
-# CPU only — everything in the repo that does not need torch (248 tests)
+# CPU only: everything in the repo that does not need torch (248 tests)
 python -m pytest -q tests/test_backend_registry.py tests/test_compiler_cache_runtime.py \
     tests/test_compiler_entrypoints.py tests/test_emitter_boundaries.py \
     tests/test_eval.py tests/test_getitem.py tests/test_interpret.py \
@@ -613,14 +615,14 @@ ruff format --check src tests
 ## 8. Requirements coverage
 
 A checklist of what each acceptance criterion maps to, so it can be re-verified
-rather than taken on trust.
+instead of taken on trust.
 
 ### Pass criteria
 
 | Criterion | Where it is satisfied | How to check |
 | --- | --- | --- |
 | 1. Existing tests still pass, project style followed, design doc / support matrix / usage docs present | `src/ninetoothed/interpret/`; `docs/source/python_api/interpret.rst`; `README.md`; this file | `pytest tests/ -q` on a GPU host; `ruff check src tests`; `ruff format --check src tests` |
-| 2. No CUDA execution path imported or called; tests run where CUDA is invisible | `ninetoothed.language` resolves `libdevice` lazily; nothing on the interpreter path imports Triton | `test_importing_the_interpreter_pulls_in_no_cuda_runtime` — runs a bare `python -c` and asserts no `triton`/`torch`/`tilelang` module is loaded |
+| 2. No CUDA execution path imported or called; tests run where CUDA is invisible | `ninetoothed.language` resolves `libdevice` lazily; nothing on the interpreter path imports Triton | `test_importing_the_interpreter_pulls_in_no_cuda_runtime` runs a bare `python -c` and asserts no `triton`/`torch`/`tilelang` module is loaded |
 | 3. Five application classes covered: elementwise, broadcast, masked load/store on non-divisible sizes, row reduction, branch/loop | `tests/test_interpret.py` semantics group | `pytest tests/test_interpret.py -k "elementwise or broadcast or masked or reduction or loop" -v` |
 | 4. `float32` / `int32` / `bool`; integer and boolean exact, float compared at `rtol=1e-3, atol=1e-3` | `interpret/dtypes.py`; `DEFAULT_RTOL` / `DEFAULT_ATOL` in `interpret/diff.py` | `test_integer_arithmetic_is_bit_exact`, `test_bool_comparison_and_select`, `test_elementwise_does_not_widen_float32` |
 | 5. At least three programs agree before vs. after the default optimisation passes; agreement with the GPU backend on A100 | `test_default_pipeline_is_semantics_preserving` (3 programs) and `test_matmul_survives_the_whole_default_pipeline`; GPU agreement via `cross_validate.py` | `pytest tests/test_interpret.py -k default_pipeline -v`; then `python cross_validate.py` on the server |
@@ -672,5 +674,5 @@ that uses `ntl.logaddexp` now interprets instead of raising, and
 `test_every_frontend_opcode_is_covered_or_declared` keeps the declared set honest
 when the frontend grows.
 
-Note that a *registered* handler always wins over the built-in `call.*` refusal,
-so an intrinsic can be adopted incrementally, one opcode at a time.
+A registered handler always wins over the built-in `call.*` refusal, so an
+intrinsic can be adopted one opcode at a time.

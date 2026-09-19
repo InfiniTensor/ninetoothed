@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Compare a CPU interpretation against a real Triton/CUDA execution.
 
-This is the GPU half of the differential validation: it runs the same
-arrangement and application through the CPU reference interpreter and through
-the real Triton kernel, then diffs the two with the interpreter's own differ.
+This is the GPU half of the differential validation.  It runs the same
+arrangement and application through the CPU reference interpreter and the real
+Triton kernel, then diffs the two with the interpreter's own differ.
 
-It needs a CUDA device and ``torch``, so it is a script rather than a test — the
-GPU-free suite in ``tests/`` covers everything that does not.
+It needs a CUDA device and ``torch``, so it is a script and not a test; the
+GPU-free suite in ``tests/`` covers the rest.
 
 Usage::
 
@@ -44,12 +44,11 @@ BLOCK = 16
 def arrangement(x, out):
     """Tile each row of the input into one program instance.
 
-    The block width is a plain constant rather than a ``block_size()`` meta
+    The block width is a plain constant instead of a ``block_size()`` meta
     parameter.  A meta parameter is resolved at compile time under an
     auto-generated internal name, so there is no supported way to pin it to the
-    same value on the CPU side and the GPU side of the comparison — and a
-    mismatched block width would tile the rows differently and make the two
-    runs incomparable.
+    same value on both sides of the comparison.  A mismatched block width would
+    tile the rows differently and make the two runs incomparable.
     """
     return x.tile((1, BLOCK)), out.tile((1, BLOCK))
 

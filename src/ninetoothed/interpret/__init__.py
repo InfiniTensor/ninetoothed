@@ -1,23 +1,25 @@
 """CPU reference interpreter and differential debugger for NineToothed.
 
-The interpreter reuses the existing lowering chain — the arrangement produces the
-layout and index mapping, the Python frontend produces an ``ssa.Program`` — and
-executes that program with NumPy.  It never calls a GPU backend, so applications
-can be developed, traced and diff-tested on machines without a CUDA device.
+Executes the same lowered ``ssa.Program`` the GPU backends consume, with NumPy in
+place of Triton.  Nothing on this path imports a GPU runtime, so applications can
+be developed, traced and diff-tested without a CUDA device.
 
 Typical use::
 
     import numpy as np
-    from ninetoothed import Tensor
+
+    from ninetoothed import Tensor, block_size
     from ninetoothed.interpret import interpret
 
+    BLOCK_SIZE = block_size()
 
-    def arrangement(x, out, BLOCK_SIZE=128):
+
+    def arrangement(x, out, BLOCK_SIZE=BLOCK_SIZE):
         return x.tile((BLOCK_SIZE,)), out.tile((BLOCK_SIZE,))
 
 
     def application(x, out):
-        out = x * 2.0
+        out = x * 2.0  # noqa: F841
 
 
     x = np.arange(1000, dtype=np.float32)

@@ -1,11 +1,11 @@
 """Safe evaluation of the symbolic expressions stored in SSA attributes.
 
-The NineToothed frontend records layout and index mappings as *text* (for
-example ``"(outer_index // 4 + extract_0_0) * ninetoothed_x_stride_0"``).  The
+The NineToothed frontend records layout and index mappings as text, for example
+``"(outer_index // 4 + extract_0_0) * ninetoothed_x_stride_0"``.  The
 interpreter has to turn that text back into numbers.  Instead of handing the
 string to :func:`eval`, the text is parsed once, checked against a whitelist of
-node types, and compiled — arbitrary attribute access, imports, and calls are
-rejected before a single byte of the expression runs.
+node types, and compiled.  Arbitrary attribute access, imports, and calls are
+rejected.
 """
 
 import ast

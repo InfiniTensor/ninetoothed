@@ -2,9 +2,9 @@ CPU Reference Interpreter
 ==========================
 
 ``ninetoothed.interpret`` executes a lowered ``ssa.Program`` with NumPy instead of
-a GPU backend. It reuses the existing lowering chain — the arrangement produces
-the layout and index mapping, the Python frontend produces the ``ssa.Program`` —
-and then walks that program once per program instance.
+a GPU backend. It reuses the existing lowering chain: the arrangement produces the
+layout and index mapping, the Python frontend produces the ``ssa.Program``, and
+the interpreter then walks that program once per program instance.
 
 Because no CUDA device is involved, applications can be developed, traced and
 diff-tested on any machine. The interpreter is also useful on a GPU host: it is
@@ -13,8 +13,8 @@ discrepancy has to be attributed to either the application or the compiler.
 
 .. note::
 
-   The interpreter is a *reference* implementation, not a fast one. It executes
-   one program instance at a time in Python, so it is intended for small inputs
+   The interpreter is a reference implementation, not a fast one. It executes one
+   program instance at a time in Python, so it is meant for small inputs
    (hundreds to a few thousand elements), not for production runs.
 
 Quick Start
@@ -67,13 +67,12 @@ program instance is identified by ``program_id``, which never appears in the SSA
 The interpreter therefore executes the entry block once per program instance and
 exposes the instance id to the layout expressions as ``outer_index``.
 
-The **launch domain** is the view domain of the primary output — the target of
-the first ``mem.store``. A tensor that was tiled exposes its tile grid; a tensor
-that was only sliced is a single tile covering the whole view domain, giving a
-launch shape of ``(1,)``. Every tiled tensor in the arrangement must imply the
-same number of instances; a mismatch is reported as a
-:class:`~ninetoothed.interpret.ProgramDomainError` rather than being silently
-ignored.
+The **launch domain** is the view domain of the primary output, which is the
+target of the first ``mem.store``. A tensor that was tiled exposes its tile grid;
+a tensor that was only sliced is a single tile covering the whole view domain,
+giving a launch shape of ``(1,)``. Every tiled tensor in the arrangement must
+imply the same number of instances; a mismatch raises a
+:class:`~ninetoothed.interpret.ProgramDomainError` instead of being ignored.
 
 Dtype Levels
 ------------
@@ -103,11 +102,11 @@ Masking and Bounds
 
 The CPU memory model enforces two invariants:
 
-* a **masked-out** access never touches the backing buffer — it contributes
-  ``other`` (the value declared on the ``Tensor`` descriptor, ``0`` by default)
-  when reading, and is skipped when writing;
-* an access that is **not** masked out but falls outside the buffer is an error,
-  not a silent read of the wrong element.
+* a masked-out access never touches the backing buffer: it contributes ``other``
+  (the value declared on the ``Tensor`` descriptor, ``0`` by default) when
+  reading, and is skipped when writing;
+* an access that is not masked out but falls outside the buffer is an error, not
+  a silent read of the wrong element.
 
 This mirrors what the generated GPU code does, so a discrepancy caused by an
 incorrect arrangement surfaces on the CPU instead of as a wrong answer or a
@@ -119,13 +118,13 @@ Dtypes
 Integer and boolean semantics are bit-exact: integer casts truncate towards zero
 exactly like the C casts the CUDA backend emits, and ``%`` uses C-style
 remainder, so the sign follows the dividend. Floating point results are produced
-by NumPy in the requested width — ``float32`` is never silently widened to
-``float64`` — so comparisons against a NumPy or PyTorch reference stay within the
+by NumPy in the requested width, so ``float32`` is never silently widened to
+``float64`` and comparisons against a NumPy or PyTorch reference stay within the
 documented tolerance.
 
-``bfloat16`` and the ``float8`` formats are understood but deliberately refused
-with an explicit :class:`~ninetoothed.interpret.UnsupportedDTypeError`, because
-the host cannot represent them exactly.
+``bfloat16`` and the ``float8`` formats are understood but refused with an
+explicit :class:`~ninetoothed.interpret.UnsupportedDTypeError`, because the host
+cannot represent them exactly.
 
 Supported Operations
 --------------------
@@ -195,10 +194,10 @@ single-stepping possible from a notebook.
 Differential Debugging
 ----------------------
 
-The interpreter is most useful when it compares two runs rather than showing one.
+The interpreter is most useful when it compares two runs instead of showing one.
 :func:`~ninetoothed.interpret.compare_pipeline` interprets the same program with
-and without a pass pipeline — a pass pipeline must be semantics preserving, so
-any output difference is a compiler bug:
+and without a pass pipeline. A pipeline has to preserve semantics, so any output
+difference is a compiler bug:
 
 .. code-block:: python
 
@@ -219,8 +218,8 @@ any output difference is a compiler bug:
         print(diff.minimal_reproduction())
 
 :func:`~ninetoothed.interpret.compare_interpretations` compares any two
-interpretations — for example a reference run against a GPU run whose outputs
-were saved with ``numpy.save``. Both return a
+interpretations, for example a reference run against a GPU run whose outputs were
+saved with ``numpy.save``. Both return a
 :class:`~ninetoothed.interpret.ProgramDiff` with per-output mismatch counts, the
 first mismatching indices, the maximum error, the first trace divergence, and
 ``to_dict``/``to_json`` serialization for CI logs.
@@ -275,7 +274,7 @@ first pass whose own rewrite changed the result:
 
 Passing ``pipeline=None`` bisects the default pipeline of ``backend``; passing a
 sequence of names bisects that sequence instead. A stage the interpreter cannot
-execute is recorded with its error rather than aborting the scan, which matters
+execute is recorded with its error instead of aborting the scan, which matters
 when a pass has not been taught to the interpreter yet.
 
 When a stage does diverge, :meth:`~ninetoothed.interpret.PipelineDiff.localize`
@@ -316,8 +315,8 @@ as structured data:
     print(reproduction.to_json())        # SSA + data + shape + dtype + seed
 
 A :class:`~ninetoothed.interpret.Reproduction` carries the five things a minimal
-reproduction needs — the executed SSA, the input data, the shapes, the dtypes and
-the random seed — plus the resolved symbols, the pass pipeline and, when the
+reproduction needs (the executed SSA, the input data, the shapes, the dtypes and
+the random seed), plus the resolved symbols, the pass pipeline and, when the
 functions are still importable, their source.
 
 Inspecting Layouts
@@ -342,7 +341,7 @@ the arrangement debugger and agrees exactly with
 Known Limitations
 -----------------
 
-* ``bfloat16`` and ``float8`` dtypes are refused rather than approximated.
+* ``bfloat16`` and ``float8`` dtypes are refused instead of approximated.
 * ``mem.atomic_add`` and ``math.rand`` are not implemented.
 * ``call.*`` target intrinsics have no CPU implementation.
 * Reading a view before every outer dtype level has been indexed is rejected;

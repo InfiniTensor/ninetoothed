@@ -1,10 +1,9 @@
 """Runtime values produced while interpreting an ``ssa.Program``.
 
-The interpreter uses a single value class with a tagged payload instead of one
-class per SSA type.  This keeps operation handlers uniform: they call
-:func:`materialize` when they need numbers and :attr:`Value.data` when they need
-to inspect the representation (for example to find the destination view of a
-``mem.store``).
+One value class with a tagged payload covers every SSA type, which keeps the
+operation handlers uniform.  Handlers call :func:`materialize` for numbers and
+read :attr:`Value.data` when they need the representation itself, for example
+the destination view of a ``mem.store``.
 """
 
 import numpy as np

@@ -1,10 +1,8 @@
 """Public entry points of the NineToothed CPU reference interpreter.
 
-The high-level entry :func:`interpret` reuses the existing lowering chain — the
-arrangement produces the layout, the Python frontend produces the
-``ssa.Program`` — and then executes that program with NumPy.  The low-level
-entry :func:`interpret_program` takes an already lowered program so that pass
-pipelines and backends can share the same executor.
+:func:`interpret` runs the normal lowering chain and executes the resulting
+``ssa.Program`` with NumPy.  :func:`interpret_program` takes a program that is
+already lowered, so pass pipelines and backends can share one executor.
 """
 
 import inspect
@@ -47,10 +45,7 @@ class Interpretation:
     :param arrangement: The arrangement function, when one was used.
     :param application: The application function.
     :param inputs: The runtime arrays, in parameter order.
-    :param tensors: The symbolic tensors the arrangement was built from.  Together
-        with ``arrangement``, ``application``, ``inputs`` and ``symbols`` this is
-        enough to re-run the interpretation, which is what the reproduction
-        helpers rely on.
+    :param tensors: The symbolic tensors the arrangement was built from.
     :param pipeline: The pass pipeline the program was lowered with, when one was.
     :param seed: The random seed the caller recorded for the inputs, when one was.
     """
@@ -162,7 +157,7 @@ def interpret(
         tracer keyword arguments, or ``None``.
     :param tracer: An explicit tracer instance (alias of ``trace``).
     :param seed: The random seed the inputs were generated from, if any.  It is
-        only recorded, so that a failing run can be reproduced from the seed.
+        recorded only, so a failing run can be replayed from the seed.
     :param strict_domain: Validate that every tiled tensor shares the launch domain.
     :return: An :class:`Interpretation`.
     """
@@ -307,10 +302,9 @@ def interpret_program(
 def access_map(interpretation, name, *, program_ids=None, level=None):
     """Return the resolved access map of one tensor, per program instance.
 
-    This is the CPU analogue of the arrangement debugger: it answers "which
-    source element does each element of the tile read or write, and is it
-    masked?" without needing a GPU.  The result can be compared directly against
-    :func:`ninetoothed.eval._eval`, which is the compiler's own view of the same
+    It answers which source element each element of the tile reads or writes,
+    and whether the access is masked.  The result can be compared directly
+    against :func:`ninetoothed.eval._eval`, the compiler's own view of the same
     mapping.
 
     :param interpretation: An :class:`Interpretation`.
@@ -342,9 +336,8 @@ def access_map(interpretation, name, *, program_ids=None, level=None):
 def _stacked_access(interpretation, name, level, index):
     """Stack one component of the access map over the launch grid.
 
-    The result is shaped ``view_shape + tile_shape`` so it lines up exactly with
-    :func:`ninetoothed.eval._eval`, which reports the same mapping in the same
-    layout.
+    The result is shaped ``view_shape + tile_shape``, matching the layout
+    :func:`ninetoothed.eval._eval` reports.
     """
     resolved = access_map(interpretation, name, level=level)
 
@@ -392,9 +385,8 @@ def access_mask(interpretation, name, *, level=None):
 def random_inputs(specs, *, seed, float_range=(-1.0, 1.0), integer_range=(0, 8)):
     """Build deterministic random input arrays from a seed.
 
-    A failing differential test is only reproducible when the inputs are, so the
-    interpreter treats the seed as first-class metadata: generate the inputs here,
-    pass the same ``seed`` to :func:`interpret`, and a reproduction rendered by
+    Generate the inputs here, pass the same ``seed`` to :func:`interpret`, and a
+    reproduction rendered by
     :func:`ninetoothed.interpret.diff.render_reproduction` will carry everything
     needed to rebuild them.
 
@@ -712,11 +704,11 @@ def _strip_once(name):
 def _symbol_aliases(name):
     """Return every spelling a user may use to bind ``name``.
 
-    Symbols are renamed several times on the way from the Python source to the
-    SSA program: the frontend adds ``ninetoothed_``, the ``constexpr``/``meta``
+    Symbols are renamed several times between the Python source and the SSA
+    program: the frontend adds ``ninetoothed_``, the ``constexpr``/``meta``
     markers add ``ninetoothed_<marker>_prefix_``, and each declaration appends a
-    uniquifying ``_<digits>`` counter.  Rather than making callers reproduce that
-    chain, every intermediate spelling is accepted.
+    uniquifying ``_<digits>`` counter.  Every intermediate spelling is accepted,
+    so callers do not have to reproduce that chain.
     """
     aliases = {name}
     pending = [name]
@@ -777,9 +769,9 @@ def arrangement_symbol_aliases(arrangement):
     """Return ``{parameter_name: symbol_name}`` for a symbolic arrangement.
 
     An arrangement such as ``def arrangement(x, out, WIDTH=block_size())`` binds
-    the symbol to the parameter ``WIDTH``.  Callers naturally want to write
-    ``symbols={"WIDTH": 128}``, so the parameter name is accepted as an alias of
-    the symbol's own (prefixed) name.
+    the symbol to the parameter ``WIDTH``.  The parameter name is accepted as an
+    alias of the symbol's own (prefixed) name, so ``symbols={"WIDTH": 128}``
+    works.
     """
     if arrangement is None:
         return {}

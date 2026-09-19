@@ -1,16 +1,14 @@
 """Differential debugging for the CPU reference interpreter.
 
-The interpreter is most useful when it is used to *compare* two runs of the same
-program rather than to inspect one run in isolation.  The comparisons that matter
-in practice are:
+The interpreter earns its keep when it compares two runs of the same program
+instead of inspecting one run on its own.  Two comparisons come up most often:
+before and after a pass pipeline, where a differing output means the pipeline
+broke semantics, and a reference run against a suspect one, for example a CPU
+interpretation versus a GPU execution whose outputs were saved with
+``numpy.save``.
 
-* **before vs. after a pass pipeline** — a pass pipeline must be semantics
-  preserving, so any output difference is a compiler bug, not a user bug;
-* **a reference run vs. a suspect run** — for example a CPU interpretation
-  against a GPU execution whose outputs were saved with ``numpy.save``.
-
-Both comparisons are turned into structured data (so a test can assert on them),
-a human-readable report, and a self-contained minimal reproduction snippet.
+Each comparison yields structured data for tests, a readable report, and a
+self-contained reproduction snippet.
 """
 
 import json
@@ -351,10 +349,10 @@ def compare_interpretations(
 def compare_traces(left_events, right_events):
     """Compare two traces event by event.
 
-    Only the *shape* of the execution is compared — the opcode sequence, the
-    program instance, the region depth and the applied mask.  Recorded values are
-    reported only for the first divergence, because they are the fastest way to
-    see *why* the two runs parted ways.
+    Only the shape of the execution is compared: the opcode sequence, the program
+    instance, the region depth and the applied mask.  Recorded values are
+    reported for the first divergence only, which is usually enough to see where
+    the two runs parted ways.
 
     :param left_events: The reference trace events.
     :param right_events: The trace events under test.
@@ -455,9 +453,8 @@ def compare_pipeline(
 ):
     """Interpret a program before and after a pass pipeline, then compare.
 
-    A pass pipeline is required to be semantics preserving.  Running the same
-    program through the interpreter with and without the pipeline is therefore a
-    direct, GPU-free check of that contract.
+    Running the same program with and without the pipeline checks that the
+    pipeline preserves semantics, without a GPU.
 
     :param arrangement: The arrangement function.
     :param application: The application function.
@@ -660,8 +657,8 @@ class PipelineDiff:
     def matches(self):
         """Return whether every executed stage agrees with the baseline.
 
-        A scan whose baseline never ran cannot have validated anything, so it does
-        not report a match: an unexecutable stage is an unknown, not agreement.
+        An unexecutable stage is unknown, not agreement, so a scan whose baseline
+        never ran reports no match.
         """
         baseline = self.baseline
 
@@ -827,15 +824,13 @@ def compare_passes(
 ):
     """Interpret a program after each cumulative prefix of a pass pipeline.
 
-    A pass pipeline is required to be semantics preserving, so every stage must
-    agree with the program the frontend produced.  Running the interpreter at each
-    prefix turns that contract into a concrete answer: which pass, and which SSA
-    operation, first changed the result.
+    Every stage must agree with the program the frontend produced.  Running the
+    interpreter at each prefix shows which pass, and which SSA operation, first
+    changed the result.
 
-    Prefixes are applied cumulatively, so the reported pass is the *first* one
-    whose own rewrite changed behaviour, not merely one that is present in a
-    broken pipeline.  A stage that the interpreter cannot execute (an opcode it
-    does not support yet, for instance) is recorded with its error instead of
+    Prefixes are applied cumulatively, so the reported pass is the first one
+    whose own rewrite changed behaviour.  A stage the interpreter cannot execute
+    (an unsupported opcode, for instance) is recorded with its error instead of
     aborting the whole scan.
 
     :param arrangement: The arrangement function.
@@ -948,11 +943,7 @@ def _element(interpretation, name, index):
 
 
 def _instance_writing(interpretation, name, index):
-    """Return the program instance that writes one output element.
-
-    The lookup reuses the access map the interpreter executed with, so it stays
-    exact for nested tiles and masked tails.
-    """
+    """Return the program instance that writes one output element."""
     from .interpreter import domain_size
     from .memory import tile_access_map
 
@@ -1054,10 +1045,6 @@ class BufferSpec:
 class Reproduction:
     """Everything needed to rebuild one failing interpretation.
 
-    A differential failure is only actionable when the reproduction carries all
-    of it: the SSA that was executed, the input data, and the shape, dtype and
-    random seed that produced that data.
-
     :param ssa: The executed SSA program, rendered as text.
     :param buffers: The :class:`BufferSpec` of every tensor in CPU memory.
     :param symbols: The resolved symbol values.
@@ -1082,11 +1069,7 @@ class Reproduction:
     application_source: str | None = None
 
     def to_dict(self):
-        """Return the reproduction as JSON-friendly data.
-
-        The result carries the five things a minimal reproduction needs: the SSA,
-        the input data, the shapes, the dtypes and the random seed.
-        """
+        """Return the reproduction as JSON-friendly data."""
         return {
             "label": self.label,
             "ssa": self.ssa,
@@ -1280,8 +1263,6 @@ def render_reproduction(interpretation, *, label="interpretation", program_id=0)
     The snippet embeds the executed SSA (as a comment), the input arrays with
     their shapes and dtypes, the resolved symbol values, the recorded random seed
     and, when the original functions are still importable, their source.
-    Everything needed to rebuild the failing run is therefore in one place and can
-    be pasted into a test.
 
     :param interpretation: The :class:`~ninetoothed.interpret.Interpretation` to
         reproduce.

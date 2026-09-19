@@ -1,9 +1,7 @@
 """Structured execution traces for the CPU reference interpreter.
 
-A trace records, for every executed SSA operation, the program instance that
-executed it, the SSA location of the operation, the operand and result values,
-and the mask that was applied to memory accesses.  Traces are plain data, so a
-test can assert on them and a developer can filter, replay, or diff them.
+A trace records, for every executed SSA operation, the program instance, the SSA
+location, the operand and result values, and the mask applied to memory accesses.
 """
 
 import numpy as np

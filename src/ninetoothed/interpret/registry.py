@@ -1,9 +1,9 @@
 """Opcode registry for the CPU reference interpreter.
 
-Operations are registered by opcode so that new operations can be added by
-importing an extra module and calling :func:`register` — no interpreter change
-is required.  The registry doubles as the machine-readable support matrix
-exposed through :func:`support_matrix`.
+Operations are registered by opcode, so a new operation is added by importing an
+extra module and calling :func:`register`.  No interpreter change is required.
+The registry also holds the machine-readable support matrix exposed through
+:func:`support_matrix`.
 """
 
 from dataclasses import dataclass
@@ -24,7 +24,7 @@ class OperationSpec:
 
 _HANDLERS: dict[str, OperationSpec] = {}
 
-#: Opcodes the interpreter knowingly refuses, mapped to the reason.
+#: Opcodes the interpreter refuses, mapped to the reason.
 UNSUPPORTED_OPERATIONS: dict[str, str] = {
     "mem.atomic_add": "Atomic accumulation is order-dependent and out of scope.",
     "math.rand": "Random number generation is not reproducible across backends.",

@@ -1,8 +1,7 @@
 """Errors raised by the CPU reference interpreter.
 
-Every diagnostic carries the SSA operation name and the SSA location of the
-offending operation so that a failing interpretation can be traced back to a
-single node of the ``ssa.Program`` without reading generated backend code.
+Every diagnostic carries the SSA operation and its location, so a failure points
+at one node of the ``ssa.Program``, not at generated backend code.
 """
 
 

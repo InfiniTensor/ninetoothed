@@ -1,10 +1,10 @@
 """Dtype handling for the CPU reference interpreter.
 
-The interpreter is a *reference* implementation, so dtypes must round-trip
-exactly whenever the host can represent them.  Integer and boolean semantics are
-bit-exact; floating point results are produced by NumPy in the requested width
-(no silent widening to ``float64``) so that ``float32`` comparisons against
-NumPy or PyTorch references stay within the documented tolerance.
+The interpreter is a reference implementation, so dtypes must round-trip exactly
+whenever the host can represent them.  Integer and boolean semantics are
+bit-exact.  Floating point results are produced by NumPy in the requested width,
+with no silent widening to ``float64``, so ``float32`` comparisons against NumPy
+or PyTorch references stay within the documented tolerance.
 """
 
 import numpy as np
@@ -30,7 +30,7 @@ _NUMPY_DTYPES = {
     "float64": np.float64,
 }
 
-#: Dtypes the interpreter understands but deliberately refuses to execute.
+#: Dtypes the interpreter understands but refuses to execute.
 _DEFERRED_DTYPES = {
     "bfloat16": "bfloat16 has no NumPy equivalent in the supported NumPy range.",
     "float8_e4m3fn": "float8 is out of scope for the first interpreter version.",

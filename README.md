@@ -69,7 +69,7 @@ kernel = ninetoothed.make(arrangement, application, tensors)
 
 ## Debugging Without a GPU
 
-`ninetoothed.interpret` runs a lowered program with NumPy instead of a GPU backend. It reuses the existing lowering chain — the arrangement produces the layout, the Python frontend produces the `ssa.Program` — and then walks that program once per program instance. Because no CUDA device is involved, applications can be developed, traced and diff-tested on any machine.
+`ninetoothed.interpret` runs a lowered program with NumPy instead of a GPU backend. It reuses the existing lowering chain: the arrangement produces the layout, the Python frontend produces the `ssa.Program`, and the interpreter walks that program once per program instance. Because no CUDA device is involved, applications can be developed, traced and diff-tested on any machine.
 
 ```python
 import numpy as np
@@ -108,9 +108,9 @@ print(result.output("out"))
 print(result.render_trace())
 ```
 
-The interpreter enforces the same masking contract as the generated code: a masked-out access never touches the backing buffer, while an unmasked access that falls outside the buffer is an error rather than a silent wrong read. Integer and boolean results are bit-exact, and `float32` is never silently widened to `float64`.
+The interpreter enforces the same masking contract as the generated code: a masked-out access never touches the backing buffer, while an unmasked access that falls outside the buffer is an error, not a silent wrong read. Integer and boolean results are bit-exact, and `float32` is never silently widened to `float64`.
 
-It also doubles as a differential debugger. `compare_pipeline` runs the same program with and without a pass pipeline — a pipeline must be semantics preserving, so any output difference is a compiler bug — and `compare_interpretations` compares any two runs:
+It also doubles as a differential debugger. `compare_pipeline` runs the same program with and without a pass pipeline; a pipeline has to preserve semantics, so any output difference is a compiler bug. `compare_interpretations` compares any two runs:
 
 ```python
 from ninetoothed.interpret import compare_pipeline
@@ -130,7 +130,7 @@ if not diff.matches:
     print(diff.minimal_reproduction())
 ```
 
-When a pipeline is not semantics preserving, `compare_passes` applies it one pass at a time and names the first pass at fault, then pins the difference on a program instance and the `mem.store` that produced the wrong value:
+When a pipeline breaks semantics, `compare_passes` applies it one pass at a time and names the first pass at fault, then pins the difference on a program instance and the `mem.store` that produced the wrong value:
 
 ```python
 from ninetoothed.interpret import compare_passes
@@ -142,8 +142,8 @@ diff = compare_passes(
     symbols={"BLOCK_SIZE": 16},
 )
 
-print(diff.render())        # one line per cumulative pass prefix
-print(diff.localize())      # the pass, the program instance, the store
+print(diff.render())  # one line per cumulative pass prefix
+print(diff.localize())  # the pass, the program instance, the store
 ```
 
 See the [CPU Reference Interpreter](https://ninetoothed.org/python_api/interpret.html) documentation for the supported operation set, the tracing filters, per-pass bisection, minimal reproductions and the known limitations.

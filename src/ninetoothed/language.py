@@ -1,8 +1,8 @@
 """Namespace helpers for the NineToothed language surface.
 
-The module deliberately keeps the Triton import lazy.  The Python frontend and
-the CPU reference interpreter only need the ``ninetoothed.language`` namespace
-string, so importing this module must not pull in a GPU toolchain.
+The Triton import is lazy.  The Python frontend and the CPU reference
+interpreter only need the ``ninetoothed.language`` namespace string, so
+importing this module must not pull in a GPU toolchain.
 """
 
 import ast

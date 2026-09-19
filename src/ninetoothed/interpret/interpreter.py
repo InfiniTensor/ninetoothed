@@ -1,9 +1,8 @@
 """The CPU reference interpreter core.
 
 The interpreter walks an :class:`ninetoothed.ir.ssa.Program` once per program
-instance.  It never calls a GPU backend: every operation is executed with NumPy
-against the CPU memory model built from the layout information the frontend
-already attached to the program.
+instance, executing every operation with NumPy against a CPU memory model built
+from the layout the frontend attached.
 """
 
 import contextlib
@@ -161,9 +160,8 @@ class InterpreterState:
     def execute_region(self, block, parent):
         """Execute a region and return the values yielded by ``scf.yield``.
 
-        The location of the enclosing operation (``self.location``) is used to
-        build a readable path for the nested operations, so a failure inside a
-        loop or branch still points at the exact SSA node.
+        Nested operations are reported under the enclosing operation's location
+        (``self.location``).
         """
         path = f"{self.location}/{block.name or 'region'}"
 

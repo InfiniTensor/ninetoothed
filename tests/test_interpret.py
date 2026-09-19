@@ -1,22 +1,19 @@
 """Tests for the CPU reference interpreter (``ninetoothed.interpret``).
 
-These tests are deliberately GPU-free: they need only NumPy, so they run on any
-machine and in CI without a CUDA device.  They are organised as
-
-* *semantics* — the interpreter must agree with a NumPy reference;
-* *layout* — the resolved access map must agree with the compiler's own
-  :func:`ninetoothed.eval._eval`, which is the authoritative view of the same
-  mapping;
-* *invariants* — masked accesses must never touch the backing buffer;
-* *diagnostics* — failures must be reported against a specific SSA operation;
-* *tooling* — tracing, differential comparison and reproduction rendering;
-* *bisection* — per-pass semantic comparison and minimal reproductions.
+These tests need only NumPy, so they run anywhere and in CI without a CUDA
+device.  The suite covers six areas.  Semantics: the interpreter must agree with
+a NumPy reference.  Layout: the resolved access map must agree with the
+compiler's own :func:`ninetoothed.eval._eval`.  Invariants: a masked access must
+never touch the backing buffer.  Diagnostics: a failure must be reported against
+a specific SSA operation.  Tooling covers tracing, differential comparison and
+reproduction rendering.  Bisection covers per-pass semantic comparison and
+minimal reproductions.
 """
 
 # A NineToothed application writes its result by assigning to the output
 # parameter, and the frontend lowers that assignment to `mem.store`.  The
-# assignment is therefore meaningful even though Python never reads it back,
-# which is why every application body carries a per-line noqa marker.
+# assignment matters even though Python never reads it back, so every
+# application body carries a per-line noqa marker.
 
 import dataclasses
 import json
@@ -555,7 +552,7 @@ def test_unmasked_out_of_bounds_store_is_reported():
 
     # A tensor whose declared extent (8) is larger than its backing buffer (4):
     # the layout says every access is in bounds, so the interpreter must notice
-    # that the buffer disagrees rather than silently corrupting memory.
+    # that the buffer disagrees instead of silently corrupting memory.
     tensor = TensorRuntime(
         name="t",
         buffer=np.zeros(4, dtype=np.float32),
@@ -678,7 +675,7 @@ def test_target_intrinsics_are_reported_clearly():
 def _import_environment():
     """Return an environment where a bare ``python -c`` can import the package.
 
-    ``PYTHONPATH`` is replaced rather than extended, so a stub or a partially
+    ``PYTHONPATH`` is replaced instead of extended, so a stub or a partially
     installed Triton on the developer's machine cannot make the check pass by
     accident.
     """
@@ -983,10 +980,10 @@ def test_access_map_can_be_restricted_to_one_instance():
 
 
 class _WrongConstant(Pass):
-    """A deliberately broken pass: it bumps the first float constant.
+    """A broken pass that bumps the first float constant.
 
-    Registering it into a private registry is how the bisection is tested — a pass
-    that is *not* semantics preserving must be named as the culprit.
+    Registering it into a private registry is how the bisection is tested: a
+    pass that does not preserve semantics must be named as the culprit.
     """
 
     name = "test.wrong_constant"
@@ -1110,7 +1107,7 @@ def test_compare_passes_reports_stages_it_cannot_execute():
     out = np.zeros_like(x)
 
     # Declaring the tensors as rank-1 makes every stage fail to resolve `WIDTH`,
-    # which is exactly the situation a partially covered pipeline hits.
+    # exactly the situation a partially covered pipeline hits.
     diff = compare_passes(
         row_tiled,
         _double,
