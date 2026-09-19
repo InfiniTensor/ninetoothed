@@ -1138,6 +1138,10 @@ def scalarized_index_application(x, indices, y):
 
             if backend == "triton":
                 assert "for v1_i in range" not in artifact.primary_source
+                assert (
+                    "tl.load(bias + (tl.program_id(0)) % (rows))"
+                    in artifact.primary_source
+                )
 
     def test_from_source_generates_rowwise_reduction_for_native_backends(self):
         kernel = _ssa_kernel(
