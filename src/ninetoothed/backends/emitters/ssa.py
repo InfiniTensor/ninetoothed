@@ -2004,6 +2004,11 @@ def _load_tensor_at(
 
     if ctx.vector_program:
         base_mask = _mask_for_coords(coords, ctx)
+
+        if _coords_use_reduction_lane(coords, ctx) and not _index_expr_is_vector(
+            source_index, ctx
+        ):
+            source_index = f"({source_index}) + 0 * ({ctx.reduction_lane})"
     elif extract_indices:
         base_mask = None
 
