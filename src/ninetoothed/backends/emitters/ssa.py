@@ -1974,6 +1974,9 @@ def _emit_offset_element(
             producer.results[0].type.attrs.get("dtype_level", _dtype_level(base, ctx))
         )
 
+        if level == _dtype_level(base, ctx):
+            coords = (*extract_indices, *coords)
+
         return _offset_from_template(
             ctx.tensor_infos.get(base),
             coords,

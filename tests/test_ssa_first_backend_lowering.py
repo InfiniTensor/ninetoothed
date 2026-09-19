@@ -1404,3 +1404,27 @@ def test_source_offset_emission_maps_compact_coordinates_to_template():
     )
     source = emit_kernel(kernel, "triton").primary_source
     assert "v0 = ((index) - 1)" in source
+
+
+def test_source_offset_emission_includes_scalar_extract_index():
+    kernel = _ssa_kernel(
+        "def application(x, out):\n    out = x[2].offsets(0)\n",
+        "extracted_source_offset",
+        (
+            TensorSpec(
+                ndim=1,
+                shape=("8",),
+                dtype="float32",
+                name="x",
+                attrs={
+                    "access_templates": (
+                        {"level": 0, "shape": ("8",), "offsets": ("value_0 - 1",)},
+                    )
+                },
+            ),
+            TensorSpec(ndim=1, shape=("8",), dtype="index", name="out"),
+        ),
+    )
+    source = emit_kernel(kernel, "triton").primary_source
+    assert "v0 = 2" in source
+    assert "(v0) - 1" in source
