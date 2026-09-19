@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from ninetoothed.backends.toolchain import (
+    ascendc_compiler_identity,
     bangc_compiler_identity,
     cuda_compiler_identity,
 )
@@ -258,6 +259,9 @@ def compilation_toolchain_identity(compilation) -> Mapping[str, Any]:
         except Exception:
             identity["arch"] = str(options.get("arch", "native"))
         return {"bangc": identity}
+
+    if backend == "ascendc":
+        return {"ascendc": ascendc_compiler_identity()}
     return {}
 
 
