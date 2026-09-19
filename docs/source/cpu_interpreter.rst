@@ -667,11 +667,19 @@ for complete sources, limitations, initial failures and reproducible records.
 This establishes correctness for the listed cases, not a full repository GPU
 suite or GPU performance. The earlier 0706213 GPU evidence retains its own scope.
 
-The recorded A100 full suite of 835 passed and two multi-GPU skips belongs to
-older computation source ``ed332733db28dbf16de06f166b16766760148958``. It was
-not rerun after integrating the new compiler/platform changes and must not be
-reported as hardware validation of the current combination. The current
-acceptance and compatibility reports distinguish these evidence scopes.
+The final computation source ``a86bea9`` has now passed the full repository
+A100-SXM4-40GB suite: 1206 passed and two multi-GPU skips in 1431.71 seconds.
+All 1208 collected test IDs match the per-phase outcomes and JUnit results;
+209 frozen input files remain unchanged. The separate 15 actual GPU differential
+cases and three traced target matmuls pass as well. The 15 cases overlap the
+full suite and are not added to its count. This is correctness evidence, not a
+GPU speedup measurement. A missing driver linker name and an uncorrectable ECC
+failure on the first physical GPU are preserved as separate failed attempts;
+the successful full run followed migration to another A100 with zero
+uncorrectable ECC counters. See the `final A100 evidence <https://github.com/a962695448-rgb/ninetoothed/tree/6ea3cb3c7b9724a45625d07e33c48540ed6c8fd2/docs/validation/a100-final-20260919>`_.
+
+The historical A100 suite of 835 passed and two multi-GPU skips still belongs
+to ``ed332733db28dbf16de06f166b16766760148958`` and is not added to the new run.
 
 The ``CPU interpreter`` workflow runs on ordinary GitHub-hosted Ubuntu runners
 for Python 3.10 and 3.12, including fork pull requests. Its checkout regression

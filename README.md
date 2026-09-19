@@ -118,3 +118,7 @@ This project is distributed under the Apache-2.0 license. See the included [LICE
 ## dtype快照格式化实验
 
 [三版尝试与未采用原因](docs/cpu_interpreter_dtype_display.md) 保留字符串共享差异和控制点退化结果。候选虽在部分跟踪用例提速，但未满足完整门槛；生产格式化路径保持原样。
+
+## 最终版本 A100 验收
+
+[完整验收报告](docs/cpu_interpreter_a100_final.md)：最终功能源码a86bea9在A100-SXM4-40GB通过全库1206项、仅2项多GPU条件跳过；正式GPU差分15/15及额外跟踪目标3/3通过，所有源码指纹与测试集合核对完成。原镜像链接问题及第一台GPU的ECC硬件故障分别归档，迁移后完整重跑通过。

@@ -1,3 +1,14 @@
+LATEST A100 ACCEPTANCE — 2026-09-19
+Source: a86bea9d32a43e122322acd52c0168b19682ffa2; subsequent closeout changes are documentation only.
+1206 passed, 2 skipped in 1431.71s (0:23:51)
+15/15 formal GPU differential cases; 3/3 traced target matmuls.
+1208 collected IDs match phase outcomes and JUnit; 209 frozen files verified.
+The two skips require multiple GPUs. Final uncorrectable ECC counts: zero.
+Report: docs/cpu_interpreter_a100_final.md
+Evidence: https://github.com/a962695448-rgb/ninetoothed/tree/6ea3cb3c7b9724a45625d07e33c48540ed6c8fd2/docs/validation/a100-final-20260919
+
+HISTORICAL CHECKPOINT OUTPUTS FOLLOW; THEIR COUNTS ARE NOT THE LATEST TOTAL.
+
 Dtype descriptor cache validation (2026-09-17)
 ===========================================
 Base: 64bd6958a610a0e5e61807aa141bf1cbc7881426
