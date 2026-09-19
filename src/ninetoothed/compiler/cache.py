@@ -10,7 +10,10 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
-from ninetoothed.backends.toolchain import cuda_compiler_identity
+from ninetoothed.backends.toolchain import (
+    bangc_compiler_identity,
+    cuda_compiler_identity,
+)
 from ninetoothed.ir import ir_to_dict
 
 _CACHE_ROOT = Path(
@@ -240,6 +243,21 @@ def compilation_toolchain_identity(compilation) -> Mapping[str, Any]:
 
     if backend == "cuda":
         return {"cuda": cuda_compiler_identity()}
+
+    if backend == "bangc":
+        identity = dict(bangc_compiler_identity())
+        options = dict(compilation.request.backend_options or {})
+
+        # The resolved architecture selects different cncc code paths, so
+        # binaries must not be shared across targets with different archs.
+        try:
+            from ninetoothed.backends.toolchain import resolve_bangc_arch
+
+            identity["arch"] = resolve_bangc_arch(options.get("arch", "native"))
+
+        except Exception:
+            identity["arch"] = str(options.get("arch", "native"))
+        return {"bangc": identity}
     return {}
 
 
