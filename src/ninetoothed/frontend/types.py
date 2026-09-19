@@ -1,6 +1,7 @@
 """Shape and dtype inference for the Python SSA frontend."""
 
 import ast
+import re
 from typing import Any
 
 from ninetoothed.dtype import normalize_dtype
@@ -138,6 +139,41 @@ def _offset_type(type_: ssa.Type, dim: Any) -> ssa.Type:
         return ssa.Type(kind="scalar", dtype="index")
 
     shape = tuple(str(item) for item in type_.shape)
+    level = int(type_.attrs.get("dtype_level", 0))
+
+    for template in type_.attrs.get("access_templates", ()):
+        if int(template.get("level", -1)) != level:
+            continue
+
+        offsets = tuple(template.get("offsets", ()))
+        source_dim = int(dim or 0)
+
+        if source_dim < 0:
+            source_dim += len(offsets)
+
+        if not 0 <= source_dim < len(offsets):
+            break
+
+        dimensions = tuple(
+            sorted(
+                {
+                    int(index)
+                    for index in re.findall(
+                        r"\bvalue_(\d+)\b", str(offsets[source_dim])
+                    )
+                }
+            )
+        )
+        template_shape = tuple(str(axis) for axis in template.get("shape", ()))
+        result_shape = tuple(template_shape[index] for index in dimensions)
+
+        return ssa.Type(
+            kind="tensor" if result_shape else "scalar",
+            shape=result_shape,
+            dtype="index",
+            attrs={"offset_value_dims": dimensions},
+        )
+
     dtype_target_dims = tuple(
         tuple(None if item is None else str(item) for item in dims)
         for dims in type_.attrs.get("dtype_target_dims", ())

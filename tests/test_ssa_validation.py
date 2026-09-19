@@ -1,6 +1,7 @@
 import pytest
 
 from ninetoothed.frontend.python import LoweringError, from_source
+from ninetoothed.frontend.types import _offset_type
 from ninetoothed.ir import TensorSpec, ssa
 
 
@@ -144,3 +145,23 @@ def application(scalar, tensor, high, low):
         (type_.kind, type_.shape, type_.dtype) == ("tensor", ("n",), "float64")
         for type_ in result_types
     )
+
+
+def test_source_offset_type_tracks_template_dependencies():
+    type_ = ssa.Type(
+        kind="tensor",
+        shape=("4", "8"),
+        dtype="float32",
+        attrs={
+            "access_templates": (
+                {
+                    "level": 0,
+                    "shape": ("4", "8"),
+                    "offsets": ("value_1 - 1", "value_0 * 8 + value_1", "outer_index"),
+                },
+            )
+        },
+    )
+    assert _offset_type(type_, 0).shape == ("8",)
+    assert _offset_type(type_, 1).shape == ("4", "8")
+    assert _offset_type(type_, -1).kind == "scalar"
