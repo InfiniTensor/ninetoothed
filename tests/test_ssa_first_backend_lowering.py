@@ -939,6 +939,7 @@ def canonical_math_application(x, y, out):
         triton_source = artifacts["triton"].primary_source
         assert "y.dtype.element_ty" in triton_source
         assert "tl.dtype" not in triton_source
+        assert "tl.broadcast_to(tl.cast(" in triton_source
         assert "float vacc_" in artifacts["cuda"].primary_source
         assert 'T.alloc_var("float32"' in artifacts["tilelang"].primary_source
 

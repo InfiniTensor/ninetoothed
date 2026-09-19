@@ -79,6 +79,18 @@ class TritonTarget(EmitterTarget):
 
         return f"tl.full({shape}, {value}, {dtype_expr})"
 
+    def loop_initializer(self, shape: str, value: str, dtype: str) -> str:
+        match = re.fullmatch(
+            r"([A-Za-z_][A-Za-z0-9_]*)(?:\.source)?\.dtype", dtype.strip()
+        )
+        dtype_expr = (
+            f"{match.group(1)}.dtype.element_ty"
+            if match is not None
+            else f"tl.{common.normalize_dtype(dtype)}"
+        )
+
+        return f"tl.broadcast_to(tl.cast({value}, {dtype_expr}), {shape})"
+
     def literal(self, value: Any) -> str:
         if isinstance(value, float) and math.isinf(value):
             return "float('inf')" if value > 0 else "-float('inf')"
