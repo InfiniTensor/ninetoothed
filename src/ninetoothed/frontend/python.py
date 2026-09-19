@@ -24,6 +24,7 @@ from ninetoothed.frontend.types import (
     _load_type,
     _math_result_type,
     _matmul_type,
+    _next_dtype_shape,
     _offset_type,
     _reduce_type,
     _shape_dim_from_type,
@@ -1017,6 +1018,24 @@ class _ApplicationSSABuilder:
             return method
 
         name = _call_leaf_name(node.func)
+
+        if name == "cast":
+            if len(node.args) != 2 or node.keywords:
+                raise _lowering_error(
+                    node, "`cast()` requires an input value and a destination dtype"
+                )
+
+            value = self._lower_expr(node.args[0], operations, env)
+            dtype = _unparse(node.args[1])
+
+            return self._emit(
+                operations,
+                "tensor.cast",
+                operands=(value.name,),
+                attrs={"dtype": dtype},
+                result_type=_cast_type(value.type, dtype),
+            )
+
         constructor = self._lower_constructor_call(name, node, operations, env)
 
         if constructor is not None:
@@ -1695,6 +1714,27 @@ def _value_for_shape_node(
 ) -> ssa.Value | None:
     if isinstance(node, ast.Name):
         return env.get(node.id) or builder.values.get(node.id)
+
+    if isinstance(node, ast.Attribute) and node.attr == "dtype":
+        base = _value_for_shape_node(node.value, env, builder)
+
+        if base is None:
+            return None
+
+        shape = _next_dtype_shape(base.type)
+
+        if shape is None:
+            return None
+
+        attrs = dict(base.type.attrs)
+        attrs["dtype_level"] = int(attrs.get("dtype_level", 0)) + 1
+
+        return ssa.Value(
+            name="<shape-proxy>",
+            type=ssa.Type(
+                kind="tensor", shape=shape, dtype=base.type.dtype, attrs=attrs
+            ),
+        )
 
     if isinstance(node, ast.Subscript):
         base = _value_for_shape_node(node.value, env, builder)
