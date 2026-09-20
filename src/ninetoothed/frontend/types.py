@@ -154,6 +154,7 @@ def _offset_type(type_: ssa.Type, dim: Any) -> ssa.Type:
         if not 0 <= source_dim < len(offsets):
             break
 
+        partial_indices = int(type_.attrs.get("partial_indices", 0))
         dimensions = tuple(
             sorted(
                 {
@@ -161,6 +162,7 @@ def _offset_type(type_: ssa.Type, dim: Any) -> ssa.Type:
                     for index in re.findall(
                         r"\bvalue_(\d+)\b", str(offsets[source_dim])
                     )
+                    if int(index) >= partial_indices
                 }
             )
         )

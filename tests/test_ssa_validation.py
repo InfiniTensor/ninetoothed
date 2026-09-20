@@ -157,7 +157,12 @@ def test_source_offset_type_tracks_template_dependencies():
                 {
                     "level": 0,
                     "shape": ("4", "8"),
-                    "offsets": ("value_1 - 1", "value_0 * 8 + value_1", "outer_index"),
+                    "offsets": (
+                        "value_1 - 1",
+                        "value_0 * 8 + value_1",
+                        "value_0",
+                        "outer_index",
+                    ),
                 },
             )
         },
@@ -165,3 +170,14 @@ def test_source_offset_type_tracks_template_dependencies():
     assert _offset_type(type_, 0).shape == ("8",)
     assert _offset_type(type_, 1).shape == ("4", "8")
     assert _offset_type(type_, -1).kind == "scalar"
+
+    partial = ssa.Type(
+        kind="tensor",
+        shape=("8",),
+        dtype=type_.dtype,
+        attrs={**type_.attrs, "partial_indices": 1},
+    )
+    assert _offset_type(partial, 0).shape == ("8",)
+    assert _offset_type(partial, 1).shape == ("8",)
+    assert _offset_type(partial, 1).attrs["offset_value_dims"] == (1,)
+    assert _offset_type(partial, 2).kind == "scalar"
