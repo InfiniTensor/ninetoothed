@@ -1975,7 +1975,19 @@ def _emit_offset_element(
         )
 
         if level == _dtype_level(base, ctx):
-            coords = (*extract_indices, *coords)
+            dimensions = op.results[0].type.attrs.get("offset_value_dims")
+            template = _access_template(ctx.tensor_infos.get(base), level)
+
+            if dimensions is not None and template is not None:
+                value_coords = ["0"] * len(template.get("shape", ()))
+
+                for dimension, coord in zip(dimensions, coords):
+                    value_coords[int(dimension)] = coord
+
+                value_coords[: len(extract_indices)] = extract_indices
+                coords = tuple(value_coords)
+            else:
+                coords = (*extract_indices, *coords)
 
         return _offset_from_template(
             ctx.tensor_infos.get(base),

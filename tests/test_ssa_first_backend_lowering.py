@@ -1432,26 +1432,26 @@ def test_source_offset_emission_includes_scalar_extract_index():
 
 def test_partial_source_offsets_preserve_fixed_and_remaining_coordinates():
     kernel = _ssa_kernel(
-        "def application(x, out):\n    out = x[2].offsets(0) * 8 + x[2].offsets(1)\n",
+        "def application(x, out):\n    out = x[2].offsets(0) * 16 + x[2].offsets(2)\n",
         "partial_source_offsets",
         (
             TensorSpec(
-                ndim=2,
-                shape=("4", "8"),
+                ndim=3,
+                shape=("4", "8", "16"),
                 dtype="float32",
                 name="x",
                 attrs={
                     "access_templates": (
                         {
                             "level": 0,
-                            "shape": ("4", "8"),
-                            "offsets": ("value_0", "value_1"),
+                            "shape": ("4", "8", "16"),
+                            "offsets": ("value_0", "value_1", "value_2"),
                         },
                     ),
-                    "dtype_target_dims": (("0", "1"),),
+                    "dtype_target_dims": (("0", "1", "2"),),
                 },
             ),
-            TensorSpec(ndim=1, shape=("8",), dtype="index", name="out"),
+            TensorSpec(ndim=1, shape=("16",), dtype="index", name="out"),
         ),
     )
     source = emit_kernel(kernel, "triton").primary_source
