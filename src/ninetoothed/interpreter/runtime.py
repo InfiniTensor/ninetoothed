@@ -1042,6 +1042,14 @@ class _Execution:
                     if isinstance(reference, TensorRef)
                     else np.asarray(reference).dtype
                 )
+            elif (
+                isinstance(dtype, str)
+                and len(dtype) >= 2
+                and dtype[0] == dtype[-1]
+                and dtype[0] in {"'", '"'}
+            ):
+                dtype = ast.literal_eval(dtype)
+
             return np.asarray(materialize(args[0])).astype(numpy_dtype(dtype))
 
         if code in {"tensor.zeros", "tensor.empty", "tensor.full"}:
