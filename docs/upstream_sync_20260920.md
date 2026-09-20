@@ -1,5 +1,7 @@
 # 同步上游整数类型别名（2026-09-20）
 
+> 后续封版：字符串dtype兼容修复和当前源码的针对性A100结果见[最终验收](final_gpu_freeze_20260920.md)。本页保留原阶段数据，不扩大旧全库结果的版本范围。
+
 将官方#218（7ffdab8a9ae5a1da03ec2e7359a2199a4475a142）合入功能分支3011b3f，得到双父合并提交8c0c9bbc796ade27fb84fdb62b2fdeb40e666936，受测树为01becd0e737d49b2661ccda55c087e4588a2819c。Git三方合并无冲突，共8个上游变更文件。compiler/passes.py同时保留本项目的ProvenancePass、record_pass、seed_origins和上游normalize_dtype更新，未覆盖解释器的追踪改动。
 
 ## 回归

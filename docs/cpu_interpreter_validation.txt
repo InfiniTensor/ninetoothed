@@ -1,3 +1,13 @@
+FROZEN TARGETED GPU ACCEPTANCE — 2026-09-20
+Source: 150f5268977174164db383a75254f541aad14ffa
+829 passed, 15 deselected in 27.44s (NumPy-only)
+A100-SXM4-80GB: 15/15 formal GPU, 3/3 traced targets, 64/64 integer alias configurations (96 values), 32/32 AOT reload configurations (48 values)
+127 passed in 3.81s (targeted regressions on the GPU host, no skips)
+This is targeted GPU acceptance; prior full-repository 1206/2 results remain tied to a86bea9.
+Evidence: https://github.com/a962695448-rgb/ninetoothed/tree/42b26e9273feb34c6872a9ad633a27f021818f33/docs/validation/final-gpu-20260920
+
+HISTORICAL CHECKPOINTS FOLLOW
+
 LATEST UPSTREAM SYNC — 2026-09-20
 Merged source: 8c0c9bbc796ade27fb84fdb62b2fdeb40e666936; upstream: 7ffdab8a9ae5a1da03ec2e7359a2199a4475a142
 799 passed, 15 deselected in 28.84s (NumPy-only)

@@ -667,7 +667,17 @@ for complete sources, limitations, initial failures and reproducible records.
 This establishes correctness for the listed cases, not a full repository GPU
 suite or GPU performance. The earlier 0706213 GPU evidence retains its own scope.
 
-After the 2026-09-20 upstream synchronization, merge computation source
+The final frozen computation source ``150f526`` fixes quoted dtype literals
+in interpreter ``tensor.cast`` after preserving dynamic dtype references.
+The new regression suite has 30 passing cases; 28 failed on the previous source.
+The NumPy-only suite passes 829 tests with 15 actual GPU cases deselected.
+On an A100-SXM4-80GB, all 15 formal GPU differential cases, three traced targets,
+64 integer-alias configurations (96 values, plus 48 AOT reload value checks),
+and 127 targeted pytest cases pass. Inputs, guards and source fingerprints are
+checked. This is targeted GPU validation, not a new full-repository GPU run.
+See the `final frozen evidence <https://github.com/a962695448-rgb/ninetoothed/tree/42b26e9273feb34c6872a9ad633a27f021818f33/docs/validation/final-gpu-20260920>`_ for sources and raw outcomes.
+
+At the earlier 2026-09-20 upstream synchronization checkpoint, merge computation source
 ``8c0c9bbc796ade27fb84fdb62b2fdeb40e666936`` includes the official integer dtype alias
 normalization change. The NumPy-only suite passes 799 tests, with 15 actual GPU
 cases deselected. A separate Torch CPU selection passes 96 tests, including all
