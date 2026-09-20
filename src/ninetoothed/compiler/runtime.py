@@ -20,6 +20,7 @@ from ninetoothed.compiler.cache import (
     write_manifest,
     write_source,
 )
+from ninetoothed.dtype import normalize_dtype
 from ninetoothed.ir import LaunchABI, LaunchBinding, ir_to_dict
 from ninetoothed.targets import (
     runtime_device_types,
@@ -1294,14 +1295,7 @@ def _validate_dtype_contract(spec, value) -> None:
 
 
 def _canonical_dtype(dtype) -> str:
-    name = str(dtype).split(".")[-1]
-
-    return {
-        "fp16": "float16",
-        "fp32": "float32",
-        "fp64": "float64",
-        "bf16": "bfloat16",
-    }.get(name, name)
+    return normalize_dtype(str(dtype))
 
 
 def _bound_values(abi, public, *, scalar_mode, specs=None, cuda_scalar=None):

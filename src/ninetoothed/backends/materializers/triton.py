@@ -30,6 +30,7 @@ from ninetoothed.compiler.layout_runtime import (
     memory_spans_overlap,
     tensor_memory_span,
 )
+from ninetoothed.dtype import normalize_dtype
 from ninetoothed.targets import runtime_device_types
 
 _TRITON_AOT_LAUNCHER_SCHEMA = 1
@@ -1187,15 +1188,11 @@ def _compile_signature(compilation) -> str:
 
 
 def _triton_dtype(dtype) -> str:
-    name = str(dtype).split(".")[-1]
+    name = normalize_dtype(str(dtype))
     aliases = {
-        "fp16": "fp16",
         "float16": "fp16",
-        "bf16": "bf16",
         "bfloat16": "bf16",
-        "fp32": "fp32",
         "float32": "fp32",
-        "fp64": "fp64",
         "float64": "fp64",
         "bool": "i1",
     }
@@ -1212,16 +1209,12 @@ def _triton_dtype(dtype) -> str:
 
 
 def _triton_scalar_dtype(dtype) -> str:
-    name = str(dtype).split(".")[-1]
+    name = normalize_dtype(str(dtype))
 
     if name in {
-        "fp16",
         "float16",
-        "bf16",
         "bfloat16",
-        "fp32",
         "float32",
-        "fp64",
         "float64",
     }:
         return "fp64"
@@ -1436,13 +1429,7 @@ def _aot_wrapper(
 
 
 def _triton_aot_scalar(value, dtype):
-    name = str(dtype).split(".")[-1]
-    name = {
-        "fp16": "float16",
-        "fp32": "float32",
-        "fp64": "float64",
-        "bf16": "bfloat16",
-    }.get(name, name)
+    name = normalize_dtype(str(dtype))
 
     if hasattr(value, "item"):
         value = value.item()
@@ -1472,13 +1459,7 @@ def _triton_aot_ctype(binding, specs):
         return ctypes.c_void_p
 
     if binding.kind == "scalar":
-        name = str(specs[binding.source].dtype).split(".")[-1]
-        name = {
-            "fp16": "float16",
-            "fp32": "float32",
-            "fp64": "float64",
-            "bf16": "bfloat16",
-        }.get(name, name)
+        name = normalize_dtype(str(specs[binding.source].dtype))
 
         if name in {"float16", "bfloat16", "float32", "float64"}:
             return ctypes.c_double

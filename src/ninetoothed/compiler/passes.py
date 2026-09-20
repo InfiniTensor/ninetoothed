@@ -23,6 +23,7 @@ from typing import Any, Mapping
 from ninetoothed.backends.core import Target, normalize_target
 from ninetoothed.compiler.layout import LayoutTransfer, analyze_layout_transfer
 from ninetoothed.compiler.reductions import analyze_reductions
+from ninetoothed.dtype import normalize_dtype
 from ninetoothed.ir import ssa
 from ninetoothed.ir.provenance import ProvenancePass, record_pass, seed_origins
 from ninetoothed.targets import TargetContext, resolve_target_context
@@ -1051,14 +1052,7 @@ def _linalg_input_dtypes(program: ssa.Program) -> tuple[str, ...]:
                     dtype = value_types.get(operand, ssa.Type(kind="unknown")).dtype
 
                     if dtype is not None:
-                        dtypes.append(
-                            {
-                                "fp16": "float16",
-                                "fp32": "float32",
-                                "fp64": "float64",
-                                "bf16": "bfloat16",
-                            }.get(dtype, dtype)
-                        )
+                        dtypes.append(normalize_dtype(dtype))
 
             for region in operation.regions:
                 visit_block(region)
