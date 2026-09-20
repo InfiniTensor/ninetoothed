@@ -407,8 +407,15 @@ def _render_source(
     vector_block_program = bool(
         target.vector_value_semantics
         and split_outer_inner
-        and len(value_axes) == 2
-        and has_dot
+        and (
+            (len(value_axes) == 2 and has_dot)
+            or (
+                program.metadata.get("schedule", {})
+                .get("block_reductions", {})
+                .get("enabled", False)
+                and 1 <= len(value_axes) <= 2
+            )
+        )
     )
     vector_scalar_program = bool(
         target.vector_value_semantics and primary_atomic is not None and not value_axes
@@ -3388,7 +3395,7 @@ def _default_tensor_index(name: str, ctx: _EmitContext) -> str:
     info = ctx.tensor_infos.get(name, _TensorInfo(name=name))
     axes = _value_axes(name, ctx)
 
-    if info.ndim <= 1 and not ctx.vector_program:
+    if info.ndim <= 1 and not (ctx.vector_program or ctx.block_program):
         if (
             len(ctx.output_axes) >= 2
             and name != ctx.output
