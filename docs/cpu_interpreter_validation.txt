@@ -1,3 +1,10 @@
+LATEST UPSTREAM SYNC — 2026-09-20
+Merged source: 8c0c9bbc796ade27fb84fdb62b2fdeb40e666936; upstream: 7ffdab8a9ae5a1da03ec2e7359a2199a4475a142
+799 passed, 15 deselected in 28.84s (NumPy-only)
+96 passed, 1 deselected, 1 warning in 2.39s (Torch CPU targeted; includes all 40 new alias cases)
+No new GPU run; A100 result below remains specific to a86bea9.
+Evidence: https://github.com/a962695448-rgb/ninetoothed/tree/e12afe25929a890c073fc85a0d154599ec92f253/docs/validation/upstream-sync-20260920
+
 LATEST A100 ACCEPTANCE — 2026-09-19
 Source: a86bea9d32a43e122322acd52c0168b19682ffa2; subsequent closeout changes are documentation only.
 1206 passed, 2 skipped in 1431.71s (0:23:51)

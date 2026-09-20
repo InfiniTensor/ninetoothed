@@ -2,7 +2,11 @@
 
 本页是当前提交的验收入口。实现支持在不安装 Torch/Triton、CUDA 不可见的环境中执行 NumPy 参考语义，并提供逐阶段结果比较、SSA 差异定位、单步观察和失败回放。接口、支持矩阵和使用方法见[解释器文档](source/cpu_interpreter.rst)，独立安装见[安装说明](source/installation.rst#cpu-interpreter-without-gpu-packages)。
 
-## 最新验收：2026-09-19
+## 最新同步：2026-09-20
+
+已合入官方#218（7ffdab8）并完成799项NumPy-only与96项Torch CPU相关回归。详见[同步报告](upstream_sync_20260920.md)。本轮未重跑GPU，下方A100结果保持a86bea9的历史范围，不能视为最新合并组合的新实机成绩。
+
+## A100验收记录：2026-09-19
 
 最终功能提交a86bea9已在A100-SXM4-40GB通过**1206 passed, 2 skipped in 1431.71s**，并完成15项正式GPU差分和3个强制跟踪目标。两项跳过均为多GPU条件；209个冻结输入运行前后SHA一致，1208项收集集合与结果逐项匹配。详见[最终A100报告](cpu_interpreter_a100_final.md)和[完整证据](https://github.com/a962695448-rgb/ninetoothed/tree/6ea3cb3c7b9724a45625d07e33c48540ed6c8fd2/docs/validation/a100-final-20260919)。下面各历史版本的计数保留原有范围。
 

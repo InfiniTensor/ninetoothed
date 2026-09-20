@@ -667,7 +667,17 @@ for complete sources, limitations, initial failures and reproducible records.
 This establishes correctness for the listed cases, not a full repository GPU
 suite or GPU performance. The earlier 0706213 GPU evidence retains its own scope.
 
-The final computation source ``a86bea9`` has now passed the full repository
+After the 2026-09-20 upstream synchronization, merge computation source
+``8c0c9bbc796ade27fb84fdb62b2fdeb40e666936`` includes the official integer dtype alias
+normalization change. The NumPy-only suite passes 799 tests, with 15 actual GPU
+cases deselected. A separate Torch CPU selection passes 96 tests, including all
+40 new upstream alias cases; its one CUDA-input rejection case is deselected.
+The sparse-input test emits a Torch invariant-check warning and passes its
+rejection assertion. These selections overlap and are not added together.
+No fresh GPU run was made for this merge, so the following A100 evidence retains
+its earlier source scope. See the `upstream synchronization evidence <https://github.com/a962695448-rgb/ninetoothed/tree/e12afe25929a890c073fc85a0d154599ec92f253/docs/validation/upstream-sync-20260920>`_.
+
+The previously validated computation source ``a86bea9`` passed the full repository
 A100-SXM4-40GB suite: 1206 passed and two multi-GPU skips in 1431.71 seconds.
 All 1208 collected test IDs match the per-phase outcomes and JUnit results;
 209 frozen input files remain unchanged. The separate 15 actual GPU differential

@@ -122,3 +122,7 @@ This project is distributed under the Apache-2.0 license. See the included [LICE
 ## 最终版本 A100 验收
 
 [完整验收报告](docs/cpu_interpreter_a100_final.md)：最终功能源码a86bea9在A100-SXM4-40GB通过全库1206项、仅2项多GPU条件跳过；正式GPU差分15/15及额外跟踪目标3/3通过，所有源码指纹与测试集合核对完成。原镜像链接问题及第一台GPU的ECC硬件故障分别归档，迁移后完整重跑通过。
+
+## 2026-09-20 上游兼容性同步
+
+[同步说明与回归](docs/upstream_sync_20260920.md)：已合入官方整数dtype别名规范#218，三方合并保留解释器追踪逻辑。NumPy-only回归799通过，Torch CPU相关回归96通过（含新增40项别名测试）；GPU相关排除项和原A100证据的版本边界在报告中明确列出。
