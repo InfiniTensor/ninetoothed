@@ -1198,7 +1198,7 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
         return ctx.memo[name]
 
     if op.opcode == "scf.if":
-        if len(op.results) > 1:
+        if len(op.results) > 1 or _is_top_level_effect(op):
             _emit_scf_if_results(op, ctx)
 
             return ctx.memo[name]
@@ -2602,7 +2602,9 @@ def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
             )
             ctx.memo[result.name] = _mutable_scalar_read(ctx.target, local)
         else:
-            ctx.lines.append(ctx.target.local_decl(result.type, local, init))
+            if ctx.target.c_style_syntax or len(op.regions) < 2:
+                ctx.lines.append(ctx.target.local_decl(result.type, local, init))
+
             ctx.memo[result.name] = local
 
     condition = _emit_value(op.operands[0], ctx)

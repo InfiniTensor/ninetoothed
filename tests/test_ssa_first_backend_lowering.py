@@ -1345,6 +1345,9 @@ def application(x, out):
         if i < 2:
             acc = acc + x[i]
             out[i] = acc
+        else:
+            acc = acc - x[i]
+            out[i] = acc
 """,
             "nested_region_store",
             (
@@ -1353,4 +1356,19 @@ def application(x, out):
             ),
         )
         source = emit_kernel(kernel, "triton").primary_source
-        assert source.count("tl.store(") == 1
+        assert source.count("tl.store(") == 2
+        conditional = next(
+            node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.If)
+        )
+
+        for branch in (conditional.body, conditional.orelse):
+            stores = [
+                node
+                for statement in branch
+                for node in ast.walk(statement)
+                if isinstance(node, ast.Call) and ast.unparse(node.func) == "tl.store"
+            ]
+            assert len(stores) == 1
+
+        result = ast.unparse(conditional.body[-1].targets[0])
+        assert source.count(f"{result} = ") == 2
