@@ -160,12 +160,14 @@ class TritonOptimizeSchedule(OptimizeSchedule):
 def register_ssa_passes(registry: "Registry") -> None:
     from ninetoothed.backends.registry import register_pass_bundle
     from ninetoothed.backends.triton_reductions import TritonBlockReductions
+    from ninetoothed.backends.triton_singleton_dot import TritonSingletonDot
 
     register_pass_bundle(
         registry,
         backend=Target.TRITON,
         optimize_schedule=TritonOptimizeSchedule,
     )
+    registry.register(TritonSingletonDot, tags=("optimization", "triton", "linalg"))
     registry.register(
         TritonBlockReductions, tags=("optimization", "triton", "reduction")
     )

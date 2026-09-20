@@ -222,6 +222,7 @@ class TritonTarget(EmitterTarget):
             return f"({self.call('exp', args)} - 1.0)"
 
         functions = {
+            "transpose": "tl.trans",
             "abs": "tl.abs",
             "acos": "tl.acos",
             "asin": "tl.asin",
