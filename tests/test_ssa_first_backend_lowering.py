@@ -1432,7 +1432,7 @@ def test_source_offset_emission_includes_scalar_extract_index():
 
 def test_partial_source_offsets_preserve_fixed_and_remaining_coordinates():
     kernel = _ssa_kernel(
-        "def application(x, out):\n    out = x[2].offsets(0) * 16 + x[2].offsets(2)\n",
+        "def application(x, out):\n    out = x[2, :].offsets(-3) * 16 + x[2, :].offsets(-1)\n",
         "partial_source_offsets",
         (
             TensorSpec(
@@ -1445,7 +1445,7 @@ def test_partial_source_offsets_preserve_fixed_and_remaining_coordinates():
                         {
                             "level": 0,
                             "shape": ("4", "8", "16"),
-                            "offsets": ("value_0", "value_1", "value_2"),
+                            "offsets": ("value_0 - 1", "value_1", "value_2 - 1"),
                         },
                     ),
                     "dtype_target_dims": (("0", "1", "2"),),
@@ -1460,5 +1460,5 @@ def test_partial_source_offsets_preserve_fixed_and_remaining_coordinates():
         for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
     }
-    assert expressions["v2"] == "v0"
-    assert expressions["v7"] == "index"
+    assert expressions["v2"] == "v0 - 1"
+    assert expressions["v7"] == "index - 1"
