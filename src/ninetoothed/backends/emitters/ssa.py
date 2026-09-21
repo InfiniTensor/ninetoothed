@@ -956,8 +956,12 @@ def _is_top_level_effect(op: ssa.Operation) -> bool:
     if op.opcode in {"mem.store", "mem.atomic_add"}:
         return True
 
-    if op.opcode in {"scf.for", "scf.if"} and not op.results:
-        return True
+    if op.opcode in {"scf.for", "scf.if"}:
+        return not op.results or any(
+            _is_top_level_effect(inner)
+            for region in op.regions
+            for inner in region.operations
+        )
     return False
 
 
@@ -1194,7 +1198,7 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
         return ctx.memo[name]
 
     if op.opcode == "scf.if":
-        if len(op.results) > 1:
+        if len(op.results) > 1 or _is_top_level_effect(op):
             _emit_scf_if_results(op, ctx)
 
             return ctx.memo[name]
@@ -1367,20 +1371,14 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
             return target.call("minimum", args)
         return _binary_expr(operator, op, ctx)
 
-    if opcode.startswith("math."):
-        name = opcode[len("math.") :]
+    if opcode.startswith(("math.", "call.")):
+        name = opcode.split(".", 1)[1]
         callee = str(op.attrs.get("callee", ""))
 
         if target.vector_value_semantics and "libdevice." in callee:
             name = f"libdevice.{name}"
         return target.call(
             name,
-            tuple(_emit_value(operand, ctx) for operand in op.operands),
-        )
-
-    if opcode.startswith("call."):
-        return target.call(
-            opcode[len("call.") :],
             tuple(_emit_value(operand, ctx) for operand in op.operands),
         )
 
@@ -1565,6 +1563,9 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
     if not name.startswith("%"):
         if name not in ctx.tensor_infos:
             return name
+
+        if ctx.tensor_infos[name].ndim == 0:
+            return _tensor_value(name, ctx)
         return _load_tensor_at(name, coords, ctx)
 
     op = ctx.operations.get(name)
@@ -1658,8 +1659,8 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
             return ctx.target.call("pow", _element_args(op, coords, ctx))
         return _element_binary(operator, op, coords, ctx)
 
-    if op.opcode.startswith("math."):
-        name = op.opcode[len("math.") :]
+    if op.opcode.startswith(("math.", "call.")):
+        name = op.opcode.split(".", 1)[1]
         callee = str(op.attrs.get("callee", ""))
 
         if ctx.target.vector_value_semantics and "libdevice." in callee:
@@ -2439,7 +2440,7 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
             and ctx.target.needs_block_init(initial_name, value, ctx)
         ):
             dtype = _loop_initializer_dtype(initial_name, value, ctx)
-            init = ctx.target.vector_splat("(BLOCK,)", init, dtype)
+            init = ctx.target.loop_initializer("(BLOCK,)", init, dtype)
         elif (
             ctx.target.vector_value_semantics
             and ctx.block_program
@@ -2447,7 +2448,7 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
         ):
             dtype = _loop_initializer_dtype(initial_name, value, ctx)
             shape = ctx.target.block_shape(tuple(str(dim) for dim in value.type.shape))
-            init = ctx.target.vector_splat(shape, init, dtype)
+            init = ctx.target.loop_initializer(shape, init, dtype)
 
         result_local = _local_symbol(result, ctx)
         result_locals[result] = result_local
@@ -2603,7 +2604,9 @@ def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
             )
             ctx.memo[result.name] = _mutable_scalar_read(ctx.target, local)
         else:
-            ctx.lines.append(ctx.target.local_decl(result.type, local, init))
+            if ctx.target.c_style_syntax or len(op.regions) < 2:
+                ctx.lines.append(ctx.target.local_decl(result.type, local, init))
+
             ctx.memo[result.name] = local
 
     condition = _emit_value(op.operands[0], ctx)
@@ -3385,7 +3388,7 @@ def _default_tensor_index(name: str, ctx: _EmitContext) -> str:
     info = ctx.tensor_infos.get(name, _TensorInfo(name=name))
     axes = _value_axes(name, ctx)
 
-    if info.ndim <= 1:
+    if info.ndim <= 1 and not ctx.vector_program:
         if (
             len(ctx.output_axes) >= 2
             and name != ctx.output
