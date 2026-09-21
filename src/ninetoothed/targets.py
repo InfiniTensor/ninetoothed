@@ -507,13 +507,18 @@ def create_default_platform_registry() -> PlatformRegistry:
             accelerator_name="910b3",
             compute_arch="ascend910b3",
             device_types=("npu",),
-            backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
-            unsupported_capabilities=frozenset({"math.pow"}),
+            backend_modes=_backend_modes(
+                (Target.TRITON, Target.ASCENDC), modes=("jit", "aot")
+            ),
             backend_unsupported_capabilities={
-                Target.TRITON.value: frozenset({"dtype.fp8"})
+                Target.TRITON.value: frozenset({"dtype.fp8", "math.pow"}),
+                Target.ASCENDC.value: frozenset({"dtype.fp8"}),
             },
             constraints={"compiler_options": {"triton": {"max_num_configs": 1}}},
-            metadata={"triton_block_size": 512},
+            metadata={
+                "triton_block_size": 512,
+                "ascendc": {"arch": "dav-c220"},
+            },
         ),
         PlatformProfile(
             name="ascend-910b4",
@@ -521,10 +526,18 @@ def create_default_platform_registry() -> PlatformRegistry:
             accelerator_name="910b4",
             compute_arch="ascend910b4",
             device_types=("npu",),
-            backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
-            unsupported_capabilities=frozenset({"math.pow"}),
+            backend_modes=_backend_modes(
+                (Target.TRITON, Target.ASCENDC), modes=("jit", "aot")
+            ),
+            backend_unsupported_capabilities={
+                Target.TRITON.value: frozenset({"math.pow"}),
+                Target.ASCENDC.value: frozenset({"dtype.fp8"}),
+            },
             constraints={"compiler_options": {"triton": {"max_num_configs": 1}}},
-            metadata={"triton_block_size": 512},
+            metadata={
+                "triton_block_size": 512,
+                "ascendc": {"arch": "dav-c220"},
+            },
         ),
         PlatformProfile(
             name="iluvatar-bi-v150",
@@ -803,6 +816,7 @@ def target_device_types(value: Any) -> tuple[str, ...]:
 # hardware backend means adding its device tuple here once.
 _BACKEND_DEVICE_TYPES = {
     Target.BANGC.value: ("mlu",),
+    Target.ASCENDC.value: ("npu",),
 }
 
 
