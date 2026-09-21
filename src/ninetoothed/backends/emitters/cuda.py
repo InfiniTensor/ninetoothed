@@ -282,8 +282,38 @@ class CudaTarget(EmitterTarget):
 {common.indent_block(body, "    ")}"""
             blocks_expr = grid_total
         elif context.cooperative_reduction_program:
-            kernel_prelude = body
-            blocks_expr = grid_total
+            from ninetoothed.backends.emitters.patterns import (
+                match_reduce_broadcast,
+            )
+            from ninetoothed.backends.emitters.staging import staging_extent
+
+            reduce_match = match_reduce_broadcast(context)
+            staged_names = []
+
+            for name in (*context.variables, *context.outputs):
+                info = context.tensors.get(name)
+
+                if info is not None and info.ndim == 2:
+                    staged_names.append(name)
+
+            extent = staging_extent(
+                context,
+                [
+                    (name, name)
+                    for name in staged_names
+                    if context.tensors.get(name) is not None
+                ],
+            )
+
+            if reduce_match is not None and extent is not None:
+                operator, x_name, out_name, rows, cols, scale = reduce_match
+                kernel_prelude = _render_shared_reduce_broadcast(
+                    operator, x_name, out_name, cols, scale, context
+                )
+                blocks_expr = rows
+            else:
+                kernel_prelude = body
+                blocks_expr = grid_total
         else:
             kernel_prelude = f"""    int64_t {self.index_name} = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if ({self.index_name} < {total}) {{
@@ -329,6 +359,80 @@ extern "C" int launch_{kernel.kernel_name}(
     return static_cast<int>(cudaGetLastError());
 }}
 """
+
+
+def _render_shared_reduce_broadcast(operator, x_name, out_name, cols, scale, context):
+    """Emit a shared-memory row reduce + broadcast kernel."""
+    newline = chr(10)
+    lines = [
+        f"    const int64_t nt_cols = {cols};",
+        f"    const float* nt_row_in = {x_name} + (int64_t)blockIdx.x * nt_cols;",
+        f"    float* nt_row_out = {out_name} + (int64_t)blockIdx.x * nt_cols;",
+        "    __shared__ float nt_sbuf[1024];",
+        "    __shared__ float nt_red[32];",
+        "    int64_t nt_tid = threadIdx.x;",
+        "    float nt_acc = 0.0f;",
+    ]
+
+    if operator in {"sum", "sum_sq"}:
+        load = "nt_sbuf[nt_tid] = nt_row_in[nt_tid];"
+
+        if operator == "sum_sq":
+            load = "nt_sbuf[nt_tid] = nt_row_in[nt_tid] * nt_row_in[nt_tid];"
+
+        lines += [
+            f"    if (nt_tid < nt_cols) {{ {load} }}",
+            "    __syncthreads();",
+            "    for (int64_t nt_j = nt_tid; nt_j < nt_cols; nt_j += blockDim.x) {",
+            "        nt_acc += nt_sbuf[nt_j];",
+            "    }",
+        ]
+    elif operator == "max":
+        lines += [
+            "    float nt_acc = -3.402823466e38f;",
+            "    if (nt_tid < nt_cols) { nt_sbuf[nt_tid] = nt_row_in[nt_tid]; }",
+            "    __syncthreads();",
+            "    for (int64_t nt_j = nt_tid; nt_j < nt_cols; nt_j += blockDim.x) {",
+            "        if (nt_sbuf[nt_j] > nt_acc) { nt_acc = nt_sbuf[nt_j]; }",
+            "    }",
+        ]
+    else:
+        lines += [
+            "    float nt_acc = 3.402823466e38f;",
+            "    if (nt_tid < nt_cols) { nt_sbuf[nt_tid] = nt_row_in[nt_tid]; }",
+            "    __syncthreads();",
+            "    for (int64_t nt_j = nt_tid; nt_j < nt_cols; nt_j += blockDim.x) {",
+            "        if (nt_sbuf[nt_j] < nt_acc) { nt_acc = nt_sbuf[nt_j]; }",
+            "    }",
+        ]
+
+    if scale:
+        lines.append(f"    nt_acc = nt_acc{scale};")
+
+    if operator == "sum_sq":
+        lines.append("    nt_acc = sqrtf(nt_acc);")
+
+    lines += [
+        "    // Warp-level reduction then cross-warp via shared memory.",
+        "    for (int offset = 16; offset > 0; offset >>= 1) {",
+        "        nt_acc += __shfl_down_sync(0xffffffff, nt_acc, offset);",
+        "    }",
+        "    if ((nt_tid & 31) == 0) { nt_red[nt_tid >> 5] = nt_acc; }",
+        "    __syncthreads();",
+        "    if (nt_tid < 32) {",
+        "        float nt_warp_acc = (nt_tid < (blockDim.x + 31) / 32) ? nt_red[nt_tid] : 0.0f;",
+        "        for (int offset = 16; offset > 0; offset >>= 1) {",
+        "            nt_warp_acc += __shfl_down_sync(0xffffffff, nt_warp_acc, offset);",
+        "        }",
+        "        if (nt_tid == 0) { nt_red[0] = nt_warp_acc; }",
+        "    }",
+        "    __syncthreads();",
+        "    for (int64_t nt_j = nt_tid; nt_j < nt_cols; nt_j += blockDim.x) {",
+        "        nt_row_out[nt_j] = nt_red[0];",
+        "    }",
+    ]
+
+    return newline.join(lines)
 
 
 def _emit_cuda_cooperative_reduction(
