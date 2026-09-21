@@ -1,7 +1,9 @@
+import ast
+
 import pytest
 
 from ninetoothed.frontend.python import LoweringError, from_source
-from ninetoothed.frontend.types import _offset_type
+from ninetoothed.frontend.types import _offset_type, _subscript_type
 from ninetoothed.ir import TensorSpec, ssa
 
 
@@ -181,3 +183,36 @@ def test_source_offset_type_tracks_template_dependencies():
     assert _offset_type(partial, 1).shape == ("8",)
     assert _offset_type(partial, 1).attrs["offset_value_dims"] == (1,)
     assert _offset_type(partial, 2).kind == "scalar"
+
+    type_ = ssa.Type(
+        kind="tensor",
+        shape=("4", "8", "16"),
+        attrs={
+            "access_templates": (
+                {
+                    "level": 0,
+                    "shape": ("4", "8", "16"),
+                    "offsets": ("value_0", "value_1", "value_2"),
+                },
+            )
+        },
+    )
+
+    for expression in (
+        "x[:, 2]",
+        "x[None]",
+        "x[1:3]",
+        "x[:]",
+    ):
+        indexed = _subscript_type(type_, ast.parse(expression, mode="eval").body.slice)
+
+        with pytest.raises(LoweringError, match=r"Offsets\(\) after indexing"):
+            _offset_type(indexed, -1)
+
+    prefix = _subscript_type(type_, ast.parse("x[2, :]", mode="eval").body.slice)
+    assert _offset_type(prefix, 0).kind == "scalar"
+    assert _offset_type(prefix, -1).shape == ("16",)
+    chained = _subscript_type(prefix, ast.Constant(value=1))
+
+    with pytest.raises(LoweringError, match=r"Offsets\(\) after indexing"):
+        _offset_type(chained, 0)

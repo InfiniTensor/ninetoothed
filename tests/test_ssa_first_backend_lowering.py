@@ -1379,7 +1379,6 @@ def application(x, out):
         assert source.count(f"{result} = ") == 2
 
 
-
 def test_source_offset_emission_maps_compact_coordinates_to_template():
     kernel = _ssa_kernel(
         "def application(x, out):\n    out = x.offsets(0) * 2\n",

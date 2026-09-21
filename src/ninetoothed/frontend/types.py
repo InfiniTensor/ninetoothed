@@ -48,13 +48,20 @@ def _subscript_type(
     result_shape: list[str] = []
     position = 0
     consumed = 0
+    offset_unsupported = bool(type_.attrs.get("offset_subscript"))
 
     for element in elements:
         if isinstance(element, ast.Constant) and element.value is None:
+            offset_unsupported = True
             result_shape.append("1")
             continue
 
         if isinstance(element, ast.Slice):
+            offset_unsupported |= any(
+                item is not None
+                for item in (element.lower, element.upper, element.step)
+            )
+
             if position < len(shape):
                 result_shape.append(shape[position])
                 position += 1
@@ -62,11 +69,16 @@ def _subscript_type(
             continue
 
         if position < len(shape):
+            offset_unsupported |= bool(result_shape) or (
+                isinstance(element, ast.Constant) and element.value is Ellipsis
+            )
             position += 1
             consumed += 1
 
     result_shape.extend(shape[position:])
     attrs = dict(type_.attrs)
+    attrs["offset_subscript"] = True
+    attrs["offset_unsupported"] = offset_unsupported or not consumed
 
     if not result_shape:
         next_shape = _next_dtype_shape(type_)
@@ -135,6 +147,13 @@ def _reduce_type(type_: ssa.Type, axis: Any, *, strict: bool) -> ssa.Type:
 
 
 def _offset_type(type_: ssa.Type, dim: Any) -> ssa.Type:
+    if type_.attrs.get("offset_unsupported"):
+        raise LoweringError(
+            "Offsets() after indexing supports only a single subscript with "
+            "leading scalar indices followed by full slices; None, non-prefix "
+            "indices, sliced views, and chained subscripts are unsupported."
+        )
+
     if type_.kind != "tensor":
         return ssa.Type(kind="scalar", dtype="index")
 
