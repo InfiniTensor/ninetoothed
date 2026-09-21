@@ -5,12 +5,16 @@ import json
 import os
 import platform
 import tempfile
+import time
 from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
-from ninetoothed.backends.toolchain import cuda_compiler_identity
+from ninetoothed.backends.toolchain import (
+    bangc_compiler_identity,
+    cuda_compiler_identity,
+)
 from ninetoothed.ir import ir_to_dict
 
 _CACHE_ROOT = Path(
@@ -118,8 +122,6 @@ def atomic_write_bytes(path: str | Path, content: bytes) -> None:
 
 
 def _atomic_write(path: Path, content: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
     with cache_lock(path):
         if path.is_file() and path.read_bytes() == content:
             return
@@ -148,15 +150,29 @@ def _atomic_write(path: Path, content: bytes) -> None:
 def cache_lock(path: str | Path) -> Iterator[None]:
     """Hold a process lock associated with one cache artifact path."""
     lock_path = Path(f"{Path(path)}.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with lock_path.open("a+b") as lock:
-        _lock_file(lock)
+    # Network filesystems (NFS/AFS) can surface transient errors from
+    # concurrent mkdir/open even with exist_ok; retry briefly.
+    last_error: OSError | None = None
 
+    for _ in range(8):
         try:
-            yield
-        finally:
-            _unlock_file(lock)
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with lock_path.open("a+b") as lock:
+                _lock_file(lock)
+
+                try:
+                    yield
+                finally:
+                    _unlock_file(lock)
+
+            return
+        except OSError as error:
+            last_error = error
+            time.sleep(0.01)
+
+    raise last_error  # type: ignore[misc]
 
 
 def _lock_file(file) -> None:
@@ -240,6 +256,21 @@ def compilation_toolchain_identity(compilation) -> Mapping[str, Any]:
 
     if backend == "cuda":
         return {"cuda": cuda_compiler_identity()}
+
+    if backend == "bangc":
+        identity = dict(bangc_compiler_identity())
+        options = dict(compilation.request.backend_options or {})
+
+        # The resolved architecture selects different cncc code paths, so
+        # binaries must not be shared across targets with different archs.
+        try:
+            from ninetoothed.backends.toolchain import resolve_bangc_arch
+
+            identity["arch"] = resolve_bangc_arch(options.get("arch", "native"))
+
+        except Exception:
+            identity["arch"] = str(options.get("arch", "native"))
+        return {"bangc": identity}
     return {}
 
 
