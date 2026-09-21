@@ -17,6 +17,7 @@ from ninetoothed.backends.emitters import ssa as common
 from ninetoothed.backends.emitters.base import EmitterTarget, ModuleRenderContext
 from ninetoothed.backends.emitters.context import EmitContext as _EmitContext
 from ninetoothed.backends.emitters.patterns import (
+    constant_value,
     match_binary_chain,
     match_reduce_broadcast,
     match_softmax,
@@ -260,7 +261,16 @@ class BangCTarget(EmitterTarget):
             # 228 GB/s at 1024 vs 1214 GB/s at 16384), so staged kernels
             # default to the largest in-budget chunk unless overridden.
             buffer_count = len(staging.inputs) + len(staging.outputs)
-            budget_chunk = max(128, _NRAM_BUDGET_BYTES // (4 * max(buffer_count, 1)))
+            bang = staging.bang_op
+
+            if bang is not None and bang[4] == "composed":
+                sequence = bang[0]
+                save_count = sum(1 for fn, _ in sequence if fn == "save")
+                buffer_count += 2 + save_count
+
+            budget_chunk = max(
+                128, (_NRAM_BUDGET_BYTES // (4 * max(buffer_count, 1))) // 128 * 128
+            )
 
             if "task_chunk" not in options:
                 chunk = budget_chunk
@@ -313,7 +323,7 @@ class BangCTarget(EmitterTarget):
         if context.cooperative_reduction_program:
             softmax = None
 
-            if options.get("fast_softmax"):
+            if options.get("fast_softmax", True):
                 softmax = match_softmax(context)
 
             reduce_bcast = match_reduce_broadcast(context)
@@ -454,6 +464,7 @@ _ELEMENTWISE_PREFIXES = (
     "math.",
     "cmp.",
     "select.",
+    "call.",
 )
 
 
@@ -666,7 +677,7 @@ def _render_nram_softmax(info, context):
 
 def _render_chain_staged(plan, bang, chunk):
     """Render a staged multi-op binary chain on NRAM buffers."""
-    chain = bang[1]
+    chain, constants = bang[1]
     extent = _bangc_integer_expr(plan.extent)
     newline = chr(10)
     lines = [
@@ -688,42 +699,48 @@ def _render_chain_staged(plan, bang, chunk):
         )
 
     # Declare NRAM buffers for chain intermediates (v0, v1, ...).
-    for index, step in enumerate(chain[:-1]):
+    for step in chain[:-1]:
         lines.append(f"    __nram__ float nt_buf_{step[1]}[{chunk}];")
 
-    buffer_map = {name: f"nt_buf_{name}" for name, _ in (*plan.inputs, *plan.outputs)}
+    def buffer_ref(name: str) -> str:
+        safe = name.replace("%", "v").replace("@", "i")
 
-    for index, (function, intermediate, lhs, rhs, _) in enumerate(chain):
-        lhs_safe = lhs.replace("%", "v").replace("@", "i")
-        rhs_safe = rhs.replace("%", "v").replace("@", "i")
-        lhs_buf = buffer_map.get(lhs, f"nt_buf_{lhs_safe}")
-        rhs_buf = buffer_map.get(rhs, f"nt_buf_{rhs_safe}")
+        return f"nt_buf_{safe}"
+
+    for index, (opcode, intermediate, lhs, rhs, kind) in enumerate(chain):
         dst = (
             f"nt_buf_{intermediate}"
             if index < len(chain) - 1
             else f"nt_buf_{plan.outputs[0][0]}"
         )
 
-        if index == 0:
-            lines.append(f"    {function}({dst}, {lhs_buf}, {rhs_buf}, nt_aligned);")
-        else:
-            prev = chain[index - 1][1]
-            prev_buf = buffer_map.get(prev, f"nt_buf_{prev}")
+        if kind == "scalar":
+            lhs_const = lhs in constants
+            const_name = lhs if lhs_const else rhs
+            other = rhs if lhs_const else lhs
+            value = constants[const_name]
 
-            if lhs == prev:
+            if lhs_const and opcode == "arith.div" and abs(value - 1.0) < 1e-12:
                 lines.append(
-                    f"    {function}({dst}, {prev_buf}, {rhs_buf}, nt_aligned);"
-                )
-            elif rhs == prev:
-                lines.append(
-                    f"    {function}({dst}, {lhs_buf}, {prev_buf}, nt_aligned);"
-                )
-            else:
-                lines.append(
-                    f"    {function}({dst}, {lhs_buf}, {rhs_buf}, nt_aligned);"
+                    f"    __bang_active_reciphp({dst}, {buffer_ref(other)}, "
+                    f"nt_aligned);"
                 )
 
-        buffer_map[intermediate] = dst
+                continue
+
+            function = _BINARY_BANG_SCALAR_OPS[opcode]
+
+            lines.append(
+                f"    {function}({dst}, {buffer_ref(other)}, {value:.9g}f, nt_aligned);"
+            )
+
+            continue
+
+        function = _BINARY_BANG_OPS[opcode]
+
+        lines.append(
+            f"    {function}({dst}, {buffer_ref(lhs)}, {buffer_ref(rhs)}, nt_aligned);"
+        )
 
     for name, buffer in plan.outputs:
         lines.append(
@@ -751,27 +768,76 @@ def _render_composed_staged(plan, bang, chunk):
     for _, buffer in (*plan.inputs, *plan.outputs):
         lines.append(f"    __nram__ float {buffer}[{chunk}];")
 
+    lines.append(f"    __nram__ float nt_w0[{chunk}];")
+    lines.append(f"    __nram__ float nt_w1[{chunk}];")
+
     for name, buffer in plan.inputs:
         lines.append(
             f"    __memcpy({buffer}, {name} + nt_base, "
             f"(uint32_t)(nt_cnt) * sizeof(float), GDRAM2NRAM);"
         )
 
-    src_buf = f"nt_buf_{operand}"
-    work_buf = f"nt_buf_{output}"
+    input_buf = f"nt_buf_{operand}"
+    save_names = sorted({arg for fn, arg in sequence if fn == "save"})
 
-    for intrinsic, arg in sequence:
-        if arg == "self":
+    for name in save_names:
+        lines.append(f"    __nram__ float nt_s_{name}[{chunk}];")
+
+    cur = input_buf
+    last_dst = "nt_w1"
+
+    for fn, arg in sequence:
+        if fn == "save":
             lines.append(
-                f"    {intrinsic}({work_buf}, {src_buf}, {src_buf}, nt_aligned);"
+                f"    __memcpy(nt_s_{arg}, {cur}, "
+                f"(uint32_t)(nt_cnt) * sizeof(float), NRAM2NRAM);"
             )
-            src_buf = work_buf
-        elif arg is None:
-            lines.append(f"    {intrinsic}({work_buf}, {src_buf}, nt_aligned);")
-            src_buf = work_buf
+
+            continue
+
+        if fn == "ld":
+            cur = f"nt_s_{arg}"
+
+            continue
+
+        dst = "nt_w0" if last_dst == "nt_w1" else "nt_w1"
+        last_dst = dst
+
+        if arg is None:
+            lines.append(f"    {fn}({dst}, {cur}, nt_aligned);")
+            cur = dst
+        elif arg == "self":
+            lines.append(f"    {fn}({dst}, {cur}, {cur}, nt_aligned);")
+            cur = dst
+        elif arg == "@input":
+            lines.append(f"    {fn}({dst}, {input_buf}, nt_aligned);")
+            cur = dst
+        elif arg == "sqinput":
+            lines.append(f"    {fn}({dst}, {input_buf}, {input_buf}, nt_aligned);")
+            cur = dst
+        elif arg == "input":
+            lines.append(f"    {fn}({dst}, {cur}, {input_buf}, nt_aligned);")
+            cur = dst
+        elif arg == "input2":
+            lines.append(f"    {fn}({dst}, {input_buf}, {cur}, nt_aligned);")
+            cur = dst
+        elif arg.startswith("s:"):
+            lines.append(f"    {fn}({dst}, {cur}, nt_s_{arg[2:]}, nt_aligned);")
+            cur = dst
+        elif arg.startswith("s2:"):
+            lines.append(f"    {fn}({dst}, nt_s_{arg[3:]}, {cur}, nt_aligned);")
+            cur = dst
         else:
-            lines.append(f"    {intrinsic}({work_buf}, {src_buf}, {arg}, nt_aligned);")
-            src_buf = work_buf
+            lines.append(f"    {fn}({dst}, {cur}, {arg}, nt_aligned);")
+            cur = dst
+
+    output_buf = f"nt_buf_{output}"
+
+    if cur != output_buf:
+        lines.append(
+            f"    __memcpy({output_buf}, {cur}, "
+            f"(uint32_t)(nt_cnt) * sizeof(float), NRAM2NRAM);"
+        )
 
     for name, buffer in plan.outputs:
         lines.append(
@@ -864,12 +930,208 @@ def _nram_staging_plan(context: ModuleRenderContext, body: str) -> _StagingPlan 
     bang_op = _match_bang_operation(context)
 
     if bang_op is None:
-        chain = match_binary_chain(context, _BINARY_BANG_OPS)
+        bang_op = _match_fused_activation(context)
 
-        if chain is not None:
+    if bang_op is None:
+        chain = match_binary_chain(
+            context, _BINARY_BANG_OPS, scalar_ops=_BINARY_BANG_SCALAR_OPS
+        )
+
+        if chain is not None and _chain_renderable(chain[0], chain[1]):
             bang_op = ("__nt_chain__", chain, "", "", "chain")
 
     return _StagingPlan(inputs, outputs, rewritten, bang_op, limit_expr)
+
+
+def _chain_renderable(steps, constants) -> bool:
+    """Reject scalar steps whose constant sits on the wrong operand side.
+
+    ``__bang_sub_scalar``/``__bang_div_scalar`` evaluate ``src − k``/``src / k``;
+    a constant left-hand operand (``k − x``) has no direct mapping.
+    """
+    for opcode, _, lhs, rhs, kind in steps:
+        if kind != "scalar":
+            continue
+
+        lhs_const = lhs in constants
+
+        if not lhs_const:
+            continue
+
+        if opcode in {"arith.sub", "arith.div"}:
+            value = constants[lhs]
+
+            if not (opcode == "arith.div" and abs(value - 1.0) < 1e-12):
+                return False
+
+    return True
+
+
+def _is_staged_tensor(context, name: str) -> bool:
+    info = context.tensors.get(name)
+
+    return info is not None and info.ndim != 0
+
+
+def _negated_scale(context, value: str, input_name: str) -> float | None:
+    """Match ``-c · input`` subtrees; return the positive scale ``c``."""
+    producer = context.operations.get(value)
+
+    if producer is None or len(producer.operands) != 2:
+        return None
+
+    if producer.opcode == "arith.mul":
+        lhs, rhs = producer.operands
+
+        lhs_const = constant_value(context, lhs)
+        rhs_const = constant_value(context, rhs)
+
+        if lhs_const is not None and rhs == input_name:
+            return abs(lhs_const)
+
+        if rhs_const is not None and lhs == input_name:
+            return abs(rhs_const)
+
+        for a, b in ((lhs, rhs), (rhs, lhs)):
+            neg = context.operations.get(a)
+
+            if (
+                neg is not None
+                and neg.opcode == "arith.neg"
+                and neg.operands
+                and neg.operands[0] == input_name
+            ):
+                scale = constant_value(context, b)
+
+                if scale is not None:
+                    return abs(scale)
+
+        return None
+
+    if producer.opcode == "arith.neg":
+        inner = context.operations.get(producer.operands[0])
+
+        if (
+            inner is not None
+            and inner.opcode == "arith.mul"
+            and len(inner.operands) == 2
+        ):
+            lhs, rhs = inner.operands
+
+            if lhs == input_name:
+                scale = constant_value(context, rhs)
+
+                if scale is not None:
+                    return abs(scale)
+
+            if rhs == input_name:
+                scale = constant_value(context, lhs)
+
+                if scale is not None:
+                    return abs(scale)
+
+    return None
+
+
+def _match_fused_activation(context):
+    """Detect swish (x·sigmoid(x)) and sigmoid-GELU (x/(1+exp(−c·x)))."""
+    stores = [operation for operation in context.stores if len(operation.operands) == 2]
+
+    if len(stores) != 1 or len(context.outputs) != 1:
+        return None
+
+    output = context.outputs[0]
+    store = stores[0]
+
+    if store.operands[1] != output:
+        return None
+
+    producer = context.operations.get(store.operands[0])
+
+    if producer is None or len(producer.operands) != 2:
+        return None
+
+    opcode = producer.opcode
+
+    if opcode.startswith("call."):
+        opcode = "math." + opcode[len("call.") :]
+
+    lhs, rhs = producer.operands
+
+    if opcode == "arith.mul":
+        for value, other in ((lhs, rhs), (rhs, lhs)):
+            if not _is_staged_tensor(context, value):
+                continue
+
+            sigmoid = context.operations.get(other)
+
+            if sigmoid is None or len(sigmoid.operands) != 1:
+                continue
+
+            sigmoid_opcode = sigmoid.opcode
+
+            if sigmoid_opcode.startswith("call."):
+                sigmoid_opcode = "math." + sigmoid_opcode[len("call.") :]
+
+            if sigmoid_opcode != "math.sigmoid":
+                continue
+
+            if sigmoid.operands[0] != value:
+                continue
+
+            sequence = [
+                ("__bang_mul_scalar", "-0.125f"),
+                ("__bang_active_exphp", None),
+                ("__bang_mul", "self"),
+                ("__bang_mul", "self"),
+                ("__bang_mul", "self"),
+                ("__bang_add_scalar", "1.0f"),
+                ("__bang_active_reciphp", None),
+                ("__bang_mul", "input"),
+            ]
+
+            return (sequence, output, value, "", "composed")
+
+    if opcode == "arith.div" and _is_staged_tensor(context, lhs):
+        denom = context.operations.get(rhs)
+
+        if denom is None or denom.opcode != "arith.add" or len(denom.operands) != 2:
+            return None
+
+        for operand in denom.operands:
+            exp_op = context.operations.get(operand)
+
+            if exp_op is None or not exp_op.operands:
+                continue
+
+            exp_opcode = exp_op.opcode
+
+            if exp_opcode.startswith("call."):
+                exp_opcode = "math." + exp_opcode[len("call.") :]
+
+            if exp_opcode != "math.exp":
+                continue
+
+            scale = _negated_scale(context, exp_op.operands[0], lhs)
+
+            if scale is None or scale <= 0:
+                continue
+
+            halved = -scale / 8
+
+            sequence = [
+                ("__bang_mul_scalar", f"{halved:.9f}f"),
+                ("__bang_active_exphp", None),
+                ("__bang_mul", "self"),
+                ("__bang_mul", "self"),
+                ("__bang_mul", "self"),
+                ("__bang_add_scalar", "1.0f"),
+                ("__bang_div", "input2"),
+            ]
+
+            return (sequence, output, lhs, "", "composed")
+
+    return None
 
 
 def _staged_extent_expression(
@@ -931,24 +1193,44 @@ _COMMUTATIVE_BANG_OPS = {"arith.add", "arith.mul"}
 # Measured accuracy on MLU590: the ``hp`` variants reach fp32-class
 # precision (log 6e-6, sqrt 4.6e-5, rsqrt 8e-6, recip 1e-7) while the
 # plain ``__bang_active_exp`` family saturates at e^11.6 and mis-extrapolates
-# past |x| ~ 15, so exp stays on the scalar ``expf`` loop.  tanh/sigmoid
-# intrinsics carry ~3e-3 relative error (reduced mantissa), accepted for
-# inference-class activations.
+# past |x| ~ 15, so exp stays on the scalar ``expf`` loop.  The plain
+# sin/cos/tanh/sigmoid intrinsics carry ~1e-3 relative error (reduced
+# mantissa), accepted for inference-class activations.
 _UNARY_BANG_OPS = {
     "math.abs": "__bang_abs",
     "math.sqrt": "__bang_active_sqrthp",
     "math.rsqrt": "__bang_active_rsqrthp",
     "math.log": "__bang_active_loghp",
-    "math.reciprocal": "__bang_recip",
+    "math.reciprocal": "__bang_active_reciphp",
     "math.tanh": "__bang_active_tanh",
-    "math.sigmoid": "__bang_active_sigmoid",
+    "math.sin": "__bang_active_sin",
+    "math.cos": "__bang_active_cos",
+    "math.floor": "__bang_floor",
+    "math.round": "__bang_round",
+    "arith.neg": "__bang_neg",
 }
 
+_LN2 = 0.6931471805599453
+_LOG2E = 1.4426950408889634
 
-# Multi-op bang sequences: the plain `__bang_active_exp` saturates at
-# e^11.63, so exp composes from the high-precision variant with argument
-# halving (exp(x) = exp(x/8)^8, ~6e-4 relative error across the fp32
-# range).  Sigmoid uses the same halving plus the accurate reciprocal.
+# Steps render onto ping-pong on-chip work buffers:
+#   (fn, None)          fn(w, cur, n)
+#   (fn, self)          fn(w, cur, cur, n)          [square]
+#   (fn, const)         fn(w, cur, const, n)        [scalar variant]
+#   (fn, @input)        fn(w, input, n)             [restart from the staged input]
+#   (fn, sqinput)       fn(w, input, input, n)
+#   (fn, input)         fn(w, cur, input, n)
+#   (fn, input2)        fn(w, input, cur, n)
+#   (fn, s:name)        fn(w, cur, saved, n)
+#   (fn, s2:name)       fn(w, saved, cur, n)
+#   (save, name)        copy cur into the dedicated save buffer
+#   (ld, name)          continue from a saved buffer
+#
+# The plain `__bang_active_exp` saturates at e^11.63, so exp composes
+# from the high-precision variant with argument halving
+# (exp(x) = exp(x/8)^8).  erf uses the Abramowitz-Stegun 7.1.26 rational
+# polynomial; atan uses a double tan(θ/2) range reduction (|y| ≤ tan(π/8))
+# followed by the odd-power series 1 − y²/3 + y⁴/5.
 _COMPOSED_BANG_OPS = {
     "math.exp": [
         ("__bang_mul_scalar", "0.125f"),
@@ -964,7 +1246,78 @@ _COMPOSED_BANG_OPS = {
         ("__bang_mul", "self"),
         ("__bang_mul", "self"),
         ("__bang_add_scalar", "1.0f"),
-        ("__bang_recip", None),
+        ("__bang_active_reciphp", None),
+    ],
+    "math.exp2": [
+        ("__bang_mul_scalar", f"{_LN2 / 8:.9f}f"),
+        ("__bang_active_exphp", None),
+        ("__bang_mul", "self"),
+        ("__bang_mul", "self"),
+        ("__bang_mul", "self"),
+    ],
+    "math.log2": [
+        ("__bang_active_loghp", None),
+        ("__bang_mul_scalar", f"{_LOG2E:.9f}f"),
+    ],
+    "math.ceil": [
+        ("__bang_neg", None),
+        ("__bang_floor", None),
+        ("__bang_neg", None),
+    ],
+    "math.erf": [
+        ("__bang_active_sign", "@input"),
+        ("save", "sgn"),
+        ("__bang_abs", "@input"),
+        ("__bang_mul_scalar", "0.3275911f"),
+        ("__bang_add_scalar", "1.0f"),
+        ("__bang_active_reciphp", None),
+        ("save", "t"),
+        ("__bang_mul_scalar", "1.061405429f"),
+        ("__bang_add_scalar", "-1.453152027f"),
+        ("__bang_mul", "s:t"),
+        ("__bang_add_scalar", "1.421413741f"),
+        ("__bang_mul", "s:t"),
+        ("__bang_add_scalar", "-0.284496736f"),
+        ("__bang_mul", "s:t"),
+        ("__bang_add_scalar", "0.254829592f"),
+        ("__bang_mul", "s:t"),
+        ("save", "poly"),
+        ("__bang_mul", "sqinput"),
+        ("__bang_mul_scalar", "-0.125f"),
+        ("__bang_active_exphp", None),
+        ("__bang_mul", "self"),
+        ("__bang_mul", "self"),
+        ("__bang_mul", "self"),
+        ("__bang_mul", "s:poly"),
+        ("__bang_mul_scalar", "-1.0f"),
+        ("__bang_add_scalar", "1.0f"),
+        ("__bang_mul", "s:sgn"),
+    ],
+    "math.atan": [
+        ("save", "x"),
+        ("__bang_mul", "sqinput"),
+        ("__bang_add_scalar", "1.0f"),
+        ("__bang_active_rsqrthp", None),
+        ("__bang_active_reciphp", None),
+        ("__bang_add_scalar", "1.0f"),
+        ("save", "r1"),
+        ("__bang_div", "s2:x"),
+        ("save", "y1"),
+        ("__bang_mul", "self"),
+        ("__bang_add_scalar", "1.0f"),
+        ("__bang_active_rsqrthp", None),
+        ("__bang_active_reciphp", None),
+        ("__bang_add_scalar", "1.0f"),
+        ("__bang_div", "s2:y1"),
+        ("save", "y2"),
+        ("__bang_mul", "self"),
+        ("save", "y2sq"),
+        ("__bang_mul_scalar", "0.2f"),
+        ("__bang_add_scalar", "-0.333333333f"),
+        ("__bang_mul", "s:y2sq"),
+        ("__bang_add_scalar", "1.0f"),
+        ("__bang_mul", "s2:y2"),
+        ("__bang_mul_scalar", "4.0f"),
     ],
 }
 
@@ -1140,20 +1493,37 @@ def _match_bang_operation(
 
         return "scalar" if info.ndim == 0 else "tensor"
 
+    opcode = producer.opcode
+
+    if opcode.startswith("call."):
+        opcode = "math." + opcode[len("call.") :]
+
     operands = tuple((operand, operand_kind(operand)) for operand in producer.operands)
 
-    if not operands or any(kind is None for _, kind in operands):
+    if not operands:
         return None
 
-    if producer.opcode in _BINARY_BANG_OPS and len(operands) == 2:
+    if opcode == "arith.div" and len(operands) == 2:
+        (lhs, lhs_kind), (rhs, rhs_kind) = operands
+
+        if lhs_kind is None and rhs_kind == "tensor":
+            constant = constant_value(context, lhs)
+
+            if constant is not None and abs(constant - 1.0) < 1e-12:
+                return ("__bang_active_reciphp", output, rhs, "", "unary")
+
+    if any(kind is None for _, kind in operands):
+        return None
+
+    if opcode in _BINARY_BANG_OPS and len(operands) == 2:
         (lhs, lhs_kind), (rhs, rhs_kind) = operands
 
         if lhs_kind == "tensor" and rhs_kind == "tensor":
-            return (_BINARY_BANG_OPS[producer.opcode], output, lhs, rhs, "tensor")
+            return (_BINARY_BANG_OPS[opcode], output, lhs, rhs, "tensor")
 
         if lhs_kind == "tensor" and rhs_kind == "scalar":
             return (
-                _BINARY_BANG_SCALAR_OPS[producer.opcode],
+                _BINARY_BANG_SCALAR_OPS[opcode],
                 output,
                 lhs,
                 rhs,
@@ -1161,35 +1531,35 @@ def _match_bang_operation(
             )
 
         if lhs_kind == "scalar" and rhs_kind == "tensor":
-            function = _BINARY_BANG_SCALAR_OPS.get(producer.opcode)
+            function = _BINARY_BANG_SCALAR_OPS.get(opcode)
 
-            if function is None or producer.opcode not in _COMMUTATIVE_BANG_OPS:
+            if function is None or opcode not in _COMMUTATIVE_BANG_OPS:
                 return None
 
             return (function, output, rhs, lhs, "scalar")
         return None
 
-    if producer.opcode in _COMPOSED_BANG_OPS and len(operands) == 1:
+    if opcode in _COMPOSED_BANG_OPS and len(operands) == 1:
         operand, kind = operands[0]
 
         if kind != "tensor":
             return None
 
         return (
-            _COMPOSED_BANG_OPS[producer.opcode],
+            _COMPOSED_BANG_OPS[opcode],
             output,
             operand,
             "",
             "composed",
         )
 
-    if producer.opcode in _UNARY_BANG_OPS and len(operands) == 1:
+    if opcode in _UNARY_BANG_OPS and len(operands) == 1:
         operand, kind = operands[0]
 
         if kind != "tensor":
             return None
 
-        return (_UNARY_BANG_OPS[producer.opcode], output, operand, "", "unary")
+        return (_UNARY_BANG_OPS[opcode], output, operand, "", "unary")
     return None
 
 

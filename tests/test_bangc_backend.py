@@ -101,8 +101,9 @@ class TestBangCTarget:
         assert "__nram__ float nt_buf_x[16384];" in source
         assert "__memcpy(nt_buf_x, x + nt_base," in source
         assert "__memcpy(out + nt_base, nt_buf_out," in source
-        assert "for (int64_t nt_j = 0; nt_j < nt_cnt; nt_j++)" in source
-        assert "__bang_add" not in source
+        assert "__bang_add(nt_buf_v0, nt_buf_x, nt_buf_y, nt_aligned);" in source
+        assert "__bang_mul_scalar(nt_buf_v2, nt_buf_v0, 2f, nt_aligned);" in source
+        assert "__bang_div_scalar(nt_buf_out, nt_buf_v2, 3f, nt_aligned);" in source
 
     def test_bangc_half_elementwise_keeps_scalar_task_domain(self):
         artifact = emit(_add_kernel("float16"), "bangc")
