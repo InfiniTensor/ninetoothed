@@ -260,4 +260,186 @@ def render_reduce_broadcast(match):
     return n.join(lines)
 
 
-__all__ = ["match_reduce_broadcast", "render_reduce_broadcast"]
+def match_row_reduce(context):
+    """Detect `reduce_op(x)` rows collapsed to a ``(rows, 1)`` output.
+
+    Returns ``(op, input, output, rows, cols, scale)`` or ``None``.
+    """
+    stores = [op for op in context.stores if len(op.operands) == 2]
+
+    if len(stores) != 1 or len(context.outputs) != 1:
+        return None
+
+    output = context.outputs[0]
+    store = stores[0]
+
+    if store.operands[1] != output:
+        return None
+
+    producer = context.operations.get(store.operands[0])
+
+    if producer is None or producer.opcode != "arith.add":
+        return None
+
+    if len(producer.operands) != 2:
+        return None
+
+    chain = None
+
+    for operand in producer.operands:
+        chain = _extract_reduce_chain(operand, context)
+
+        if chain is not None:
+            break
+
+    if chain is None:
+        return None
+
+    operator, x_name, scale = chain
+    input_info = context.tensors.get(x_name)
+    output_info = context.tensors.get(output)
+
+    if input_info is None or output_info is None:
+        return None
+
+    if input_info.ndim != 2 or output_info.ndim != 2:
+        return None
+
+    attrs = input_info.attrs or {}
+    shape = attrs.get("source_shape") or input_info.shape
+
+    if not shape or len(shape) != 2:
+        return None
+
+    # A (1, 1) output tile leaves no ceil-division in the tile-count
+    # expression; any wider tile keeps its `//` marker and is rejected.
+    if "//" in str(output_info.shape[1]):
+        return None
+
+    cols_str = str(shape[1])
+
+    try:
+        cols = int(cols_str)
+
+        if cols % 8 != 0 or cols > _REDUCE_CHUNK:
+            return None
+    except ValueError:
+        # Symbolic column counts (unsized tensors) stay dynamic; the
+        # kernel guards alignment at runtime and falls back to scalar.
+        pass
+
+    if operator not in {"sum", "max", "min", "sum_sq"}:
+        return None
+
+    return (operator, x_name, output, str(shape[0]), cols_str, scale)
+
+
+def render_row_reduce(match):
+    """Emit a UB vector row reduce; eight rows per block keep 32B stores."""
+    operator, name, output, rows, cols, scale = match
+    tree_op = "Max" if operator == "max" else "Add"
+
+    if operator == "min":
+        tree_op = "Min"
+
+    if operator in {"sum", "sum_sq"}:
+        accumulate = """        nt_result = 0.0f;
+        for (int32_t nt_j = 0; nt_j < nt_len; nt_j++) {
+            nt_result += nt_w.GetValue((uint32_t)nt_j);
+        }"""
+        gm_step = "nt_result += nt_v;"
+    else:
+        cmp = ">" if operator == "max" else "<"
+        accumulate = f"""        nt_result = nt_w.GetValue(0);
+        for (int32_t nt_j = 1; nt_j < nt_len; nt_j++) {{
+            float nt_v = nt_w.GetValue((uint32_t)nt_j);
+            if (nt_v {cmp} nt_result) {{ nt_result = nt_v; }}
+        }}"""
+        gm_step = f"if (nt_v {cmp} nt_result) {{ nt_result = nt_v; }}"
+
+    square = ""
+
+    if operator == "sum_sq":
+        square = """        Mul(nt_w, nt_w, nt_w, (int32_t)nt_cols);
+        PipeBarrier<PIPE_V>();"""
+
+    post = []
+
+    if scale:
+        post.append("        nt_result = nt_result" + scale + ";")
+
+    if operator == "sum_sq":
+        post.append("        nt_result = sqrt(nt_result);")
+
+    post_lines = chr(10).join(post)
+
+    return f"""    const int64_t nt_cols = {cols};
+    const int64_t nt_row0 = (int64_t)GetBlockIdx() * 8;
+    if (nt_row0 >= ({rows})) {{ return; }}
+    const int32_t nt_nr = (int32_t)(((({rows}) - nt_row0) < 8) ? (({rows}) - nt_row0) : 8);
+    GlobalTensor<float> nt_gm_{name};
+    nt_gm_{name}.SetGlobalBuffer((__gm__ float*){name}_gm);
+    GlobalTensor<float> nt_gm_{output};
+    nt_gm_{output}.SetGlobalBuffer((__gm__ float*){output}_gm);
+    TPipe nt_pipe;
+    TQue<TPosition::VECIN, 1> nt_qi;
+    TQue<TPosition::VECOUT, 1> nt_qo;
+    TBuf<TPosition::VECCALC> nt_bw;
+    nt_pipe.InitBuffer(nt_qi, 1, {_REDUCE_CHUNK} * sizeof(float));
+    nt_pipe.InitBuffer(nt_qo, 1, 8 * sizeof(float));
+    nt_pipe.InitBuffer(nt_bw, {_REDUCE_CHUNK} * sizeof(float));
+    LocalTensor<float> nt_w = nt_bw.Get<float>();
+    float nt_vals[8];
+    for (int32_t nt_r = 0; nt_r < nt_nr; nt_r++) {{
+        float nt_result = 0.0f;
+        if ((nt_cols % 8 == 0) && (nt_cols <= {_REDUCE_CHUNK})) {{
+            LocalTensor<float> nt_x = nt_qi.AllocTensor<float>();
+            DataCopy(nt_x, nt_gm_{name}[(nt_row0 + nt_r) * nt_cols], (uint32_t)nt_cols);
+            nt_qi.EnQue(nt_x);
+            nt_x = nt_qi.DeQue<float>();
+            Adds(nt_w, nt_x, 0.0f, (int32_t)nt_cols);
+            PipeBarrier<PIPE_V>();
+            nt_qi.FreeTensor<float>(nt_x);
+{square}
+            int32_t nt_len = (int32_t)nt_cols;
+            while (nt_len >= 128) {{
+                int32_t nt_h = nt_len / 2;
+                if (nt_h % 8 != 0) {{ nt_h &= ~7; }}
+                if (nt_h < 64) {{ break; }}
+                {tree_op}(nt_w, nt_w, nt_w[nt_h], (int32_t)nt_h);
+                PipeBarrier<PIPE_V>();
+                nt_len = nt_h;
+            }}
+{accumulate}
+            PipeBarrier<PIPE_V>();
+        }} else {{
+            int64_t nt_base = (nt_row0 + nt_r) * nt_cols;
+            for (int64_t nt_j = 0; nt_j < nt_cols; nt_j++) {{
+                float nt_v = nt_gm_{name}[nt_base + nt_j].GetValue(0);
+                if (nt_j == 0) {{ nt_result = nt_v; }}
+                else {{ {gm_step} }}
+            }}
+        }}
+{post_lines}
+        nt_vals[nt_r] = nt_result;
+    }}
+    auto nt_event = nt_pipe.FetchEventID(HardEvent::S_V);
+    SetFlag<HardEvent::S_V>(nt_event);
+    WaitFlag<HardEvent::S_V>(nt_event);
+    LocalTensor<float> nt_o8 = nt_qo.AllocTensor<float>();
+    for (int32_t nt_r = 0; nt_r < 8; nt_r++) {{
+        nt_o8.SetValue((uint32_t)nt_r, (nt_r < nt_nr) ? nt_vals[nt_r] : 0.0f);
+    }}
+    SetFlag<HardEvent::S_V>(nt_event);
+    WaitFlag<HardEvent::S_V>(nt_event);
+    nt_qo.EnQue(nt_o8);
+    LocalTensor<float> nt_ov8 = nt_qo.DeQue<float>();
+    DataCopy(nt_gm_{output}[nt_row0], nt_ov8, (uint32_t)8);"""
+
+
+__all__ = [
+    "match_reduce_broadcast",
+    "render_reduce_broadcast",
+    "match_row_reduce",
+    "render_row_reduce",
+]

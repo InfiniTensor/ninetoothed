@@ -275,16 +275,26 @@ class AscendCTarget(EmitterTarget):
 
             tasks_expr = grid_total
         else:
+            from ninetoothed.backends.emitters.ascendc_reduce import (
+                match_row_reduce as _row_match,
+            )
+            from ninetoothed.backends.emitters.ascendc_reduce import (
+                render_row_reduce as _row_render,
+            )
             from ninetoothed.backends.emitters.ascendc_vector import (
                 _VECTOR_ELEM_CHUNK,
                 match_vector_elementwise,
                 render_vector_elementwise,
             )
 
+            row_match = _row_match(context)
             vector_match = match_vector_elementwise(context, _normalize_dtype)
             total_param = _elementwise_total_param(context)
 
-            if vector_match is not None and total_param is not None:
+            if row_match is not None:
+                kernel_prelude = _row_render(row_match)
+                tasks_expr = f"(({row_match[3]}) + 7) / 8"
+            elif vector_match is not None and total_param is not None:
                 kernel_prelude = render_vector_elementwise(vector_match, total_param)
                 tasks_expr = (
                     f"({total_param} + {_VECTOR_ELEM_CHUNK} - 1) / {_VECTOR_ELEM_CHUNK}"
@@ -923,6 +933,15 @@ def _ascendc_validate_reduction_lowering(context: ModuleRenderContext) -> None:
     )
 
     if not has_tensor_stores:
+        return
+
+    from ninetoothed.backends.emitters.ascendc_reduce import (
+        match_row_reduce as _match_row,
+    )
+
+    if _match_row(context) is not None:
+        # Collapsed (rows, 1) stores lower through the per-row kernel
+        # instead of the generic flat-index path.
         return
 
     raise ValueError(
