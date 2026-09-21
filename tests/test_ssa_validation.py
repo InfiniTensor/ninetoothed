@@ -117,3 +117,30 @@ def application(a, b, out):
         if operation.opcode == "linalg.matmul"
     )
     assert matmul.results[0].type.shape == ("batch", "m", "n")
+
+
+def test_elementwise_calls_broadcast_and_promote_all_operands():
+    program = from_source(
+        """
+def application(scalar, tensor, high, low):
+    high = maximum(scalar, tensor)
+    low = minimum(tensor, scalar)
+""",
+        (
+            _tensor("scalar", (), "float64"),
+            _tensor("tensor", ("n",), "float32"),
+            _tensor("high", ("n",), "float64"),
+            _tensor("low", ("n",), "float64"),
+        ),
+        strict=True,
+    )
+    result_types = [
+        operation.results[0].type
+        for operation in program.blocks[0].operations
+        if operation.opcode in {"arith.maximum", "arith.minimum"}
+    ]
+    assert len(result_types) == 2
+    assert all(
+        (type_.kind, type_.shape, type_.dtype) == ("tensor", ("n",), "float64")
+        for type_ in result_types
+    )
