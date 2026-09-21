@@ -2435,7 +2435,7 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
             and ctx.target.needs_block_init(initial_name, value, ctx)
         ):
             dtype = _loop_initializer_dtype(initial_name, value, ctx)
-            init = ctx.target.vector_splat("(BLOCK,)", init, dtype)
+            init = ctx.target.loop_initializer("(BLOCK,)", init, dtype)
         elif (
             ctx.target.vector_value_semantics
             and ctx.block_program
@@ -2443,7 +2443,7 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
         ):
             dtype = _loop_initializer_dtype(initial_name, value, ctx)
             shape = ctx.target.block_shape(tuple(str(dim) for dim in value.type.shape))
-            init = ctx.target.vector_splat(shape, init, dtype)
+            init = ctx.target.loop_initializer(shape, init, dtype)
 
         result_local = _local_symbol(result, ctx)
         result_locals[result] = result_local
