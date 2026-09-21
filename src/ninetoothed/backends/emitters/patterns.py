@@ -222,20 +222,40 @@ def match_softmax(context) -> tuple | None:
     return (x_name, output, str(shape[0]), str(shape[1]))
 
 
+def constant_value(context, value: str) -> float | None:
+    """Return the numeric value of an ``arith.constant`` operand."""
+    producer = context.operations.get(value)
+
+    if producer is None or producer.opcode != "arith.constant":
+        return None
+
+    raw = producer.attrs.get("value")
+
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+
+    return float(raw)
+
+
 def match_binary_chain(
     context,
     binary_ops: Mapping[str, str],
     *,
+    scalar_ops: Mapping[str, str] | None = None,
     max_chain: int = 4,
 ) -> list[tuple] | None:
     """Detect a chain (or tree) of binary operations feeding a single store.
 
-    ``binary_ops`` maps SSA opcodes to target function names.  Every leaf
-    operand must be a staged tensor parameter; chains containing constant
-    or scalar operands are rejected so callers fall back safely.
+    ``binary_ops`` maps SSA opcodes to target function names;
+    ``scalar_ops`` maps the same opcodes to their scalar-operand
+    variants.  Leaf operands are staged tensor parameters or (when
+    ``scalar_ops`` is given) numeric constants.
 
-    Returns a list of ``(function, intermediate, lhs, rhs, kind)`` tuples
-    in topological execution order, or ``None``.
+    Returns ``(steps, constants)`` where ``steps`` is a list of
+    ``(opcode, intermediate, lhs, rhs, kind)`` tuples in topological
+    execution order (``kind`` is ``"tensor"`` or ``"scalar"``) and
+    ``constants`` maps constant operand names to their float values, or
+    ``None``.
     """
     stores = [operation for operation in context.stores if len(operation.operands) == 2]
 
@@ -254,6 +274,7 @@ def match_binary_chain(
         return None
 
     ops: list[tuple] = []
+    constants: dict[str, float] = {}
     collected: set[str] = set()
     visiting: set[str] = set()
 
@@ -267,7 +288,18 @@ def match_binary_chain(
         ):
             info = context.tensors.get(value)
 
-            return info is not None and info.ndim != 0
+            if info is not None and info.ndim != 0:
+                return True
+
+            if scalar_ops is not None:
+                constant = constant_value(context, value)
+
+                if constant is not None:
+                    constants[value] = constant
+
+                    return True
+
+            return False
 
         if value in collected:
             return True
@@ -286,9 +318,22 @@ def match_binary_chain(
         if not ok:
             return False
 
+        scalar_step = scalar_ops is not None and (lhs in constants or rhs in constants)
+
+        if scalar_step and producer.opcode not in scalar_ops:
+            return False
+
         intermediate = producer.results[0].name if producer.results else value
         safe = intermediate.replace("%", "v").replace("@", "i")
-        ops.append((binary_ops[producer.opcode], safe, lhs, rhs, "tensor"))
+        ops.append(
+            (
+                producer.opcode,
+                safe,
+                lhs,
+                rhs,
+                "scalar" if scalar_step else "tensor",
+            )
+        )
         collected.add(intermediate)
 
         return True
@@ -299,7 +344,7 @@ def match_binary_chain(
     if len(ops) < 2:
         return None
 
-    return ops
+    return (ops, constants)
 
 
 def is_pure_elementwise(context) -> bool:
