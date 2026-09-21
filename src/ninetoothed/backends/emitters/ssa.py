@@ -956,8 +956,12 @@ def _is_top_level_effect(op: ssa.Operation) -> bool:
     if op.opcode in {"mem.store", "mem.atomic_add"}:
         return True
 
-    if op.opcode in {"scf.for", "scf.if"} and not op.results:
-        return True
+    if op.opcode in {"scf.for", "scf.if"}:
+        return not op.results or any(
+            _is_top_level_effect(inner)
+            for region in op.regions
+            for inner in region.operations
+        )
     return False
 
 
@@ -1194,7 +1198,7 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
         return ctx.memo[name]
 
     if op.opcode == "scf.if":
-        if len(op.results) > 1:
+        if len(op.results) > 1 or _is_top_level_effect(op):
             _emit_scf_if_results(op, ctx)
 
             return ctx.memo[name]
@@ -2595,7 +2599,9 @@ def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
             )
             ctx.memo[result.name] = _mutable_scalar_read(ctx.target, local)
         else:
-            ctx.lines.append(ctx.target.local_decl(result.type, local, init))
+            if ctx.target.c_style_syntax or len(op.regions) < 2:
+                ctx.lines.append(ctx.target.local_decl(result.type, local, init))
+
             ctx.memo[result.name] = local
 
     condition = _emit_value(op.operands[0], ctx)
