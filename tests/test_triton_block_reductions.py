@@ -139,13 +139,16 @@ def test_block_reduction_loads_each_input_domain(device):
     x = torch.zeros(8, device=device)
     y = torch.arange(16, device=device, dtype=torch.float32)
     out = torch.empty_like(x)
+
     for enabled in (False, True):
         compilation = DEFAULT_COMPILER.compile(
             request if enabled else replace(request, pipeline=None)
         )
+
         if enabled:
             assert compilation.artifact.metadata["ssa_metadata"]["schedule"][
                 "block_reductions"
             ]["enabled"]
+
         DEFAULT_COMPILER.materialize(compilation)(x, y, out)
         torch.testing.assert_close(out, torch.full_like(out, 120), rtol=0, atol=0)
