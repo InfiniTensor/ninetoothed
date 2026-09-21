@@ -228,14 +228,14 @@ def match_binary_chain(
     *,
     max_chain: int = 4,
 ) -> list[tuple] | None:
-    """Detect a chain of binary operations feeding a single store.
+    """Detect a chain (or tree) of binary operations feeding a single store.
 
-    ``binary_ops`` maps SSA opcodes to target function names.  Only
-    tensor-tensor float32 operands are supported (use
-    ``match_scalar_chain`` for constant operands).
+    ``binary_ops`` maps SSA opcodes to target function names.  Every leaf
+    operand must be a staged tensor parameter; chains containing constant
+    or scalar operands are rejected so callers fall back safely.
 
     Returns a list of ``(function, intermediate, lhs, rhs, kind)`` tuples
-    in execution order, or ``None``.
+    in topological execution order, or ``None``.
     """
     stores = [operation for operation in context.stores if len(operation.operands) == 2]
 
@@ -253,55 +253,51 @@ def match_binary_chain(
     if output_info is None:
         return None
 
-    ops = []
-    current = store.operands[0]
-    seen = set()
+    ops: list[tuple] = []
+    collected: set[str] = set()
+    visiting: set[str] = set()
 
-    while current is not None and current not in seen and len(ops) < max_chain:
-        seen.add(current)
-        producer = context.operations.get(current)
+    def covered(value: str) -> bool:
+        producer = context.operations.get(value)
 
-        if producer is None:
-            break
+        if (
+            producer is None
+            or producer.opcode not in binary_ops
+            or len(producer.operands) != 2
+        ):
+            info = context.tensors.get(value)
 
-        if producer.opcode not in binary_ops or len(producer.operands) != 2:
-            break
+            return info is not None and info.ndim != 0
+
+        if value in collected:
+            return True
+
+        if value in visiting or len(ops) >= max_chain:
+            return False
+
+        visiting.add(value)
 
         lhs, rhs = producer.operands
 
-        chain_values = {step[1] for step in ops}
+        ok = covered(lhs) and covered(rhs)
 
-        for operand in (lhs, rhs):
-            if operand in chain_values:
-                continue
+        visiting.discard(value)
 
-            info = context.tensors.get(operand)
+        if not ok:
+            return False
 
-            if info is not None:
-                continue
-
-            operand_producer = context.operations.get(operand)
-
-            if operand_producer is None or operand_producer.opcode not in binary_ops:
-                return None
-
-        intermediate = producer.results[0].name if producer.results else current
+        intermediate = producer.results[0].name if producer.results else value
         safe = intermediate.replace("%", "v").replace("@", "i")
         ops.append((binary_ops[producer.opcode], safe, lhs, rhs, "tensor"))
+        collected.add(intermediate)
 
-        current = None
+        return True
 
-        for operand in producer.operands:
-            operand_producer = context.operations.get(operand)
-
-            if operand_producer is not None and operand_producer.opcode in binary_ops:
-                current = operand
-                break
+    if not covered(store.operands[0]):
+        return None
 
     if len(ops) < 2:
         return None
-
-    ops.reverse()
 
     return ops
 
