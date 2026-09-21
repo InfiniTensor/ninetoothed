@@ -47,8 +47,14 @@ def test_add(test_multi_device, size, dtype, device, ninetoothed_dtype):
     )
     shape = (size,)
 
+    device_kind = str(device).split(":")[0]
+    module = getattr(torch, device_kind, None)
+
+    if module is None:
+        pytest.skip(f"torch has no {device_kind} module")
+
     if test_multi_device:
-        if torch.cuda.device_count() < 2:
+        if module.device_count() < 2:
             pytest.skip("multi-device testing requires at least 2 devices")
 
         devices = (f"{device}:0", f"{device}:1")
@@ -56,9 +62,9 @@ def test_add(test_multi_device, size, dtype, device, ninetoothed_dtype):
         devices = (device,)
 
     for device in devices:
-        stream = torch.cuda.Stream(device=device)
+        stream = module.Stream(device=device)
 
-        with torch.cuda.stream(stream):
+        with module.stream(stream):
             input = torch.randn(shape, dtype=dtype, device=device)
             other = torch.randn(shape, dtype=dtype, device=device)
             output = torch.empty_like(input)

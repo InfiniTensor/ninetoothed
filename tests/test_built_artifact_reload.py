@@ -13,7 +13,11 @@ from ninetoothed.compiler import (
     CompileRequest,
     load_built_artifact,
 )
-from tests.utils import get_available_devices
+from tests.utils import (
+    backend_runtime_available,
+    get_available_devices,
+    requires_backend,
+)
 
 
 def _arrangement(input, other, output):
@@ -24,8 +28,20 @@ def _application(input, other, output):
     output = input + other  # noqa: F841
 
 
+def _backend_id(backend):
+    return (
+        backend
+        if backend_runtime_available(backend)
+        else pytest.param(
+            backend, marks=pytest.mark.skip(reason=f"`{backend}` platform unavailable")
+        )
+    )
+
+
 @pytest.mark.parametrize("device", get_available_devices())
-@pytest.mark.parametrize("backend", ("triton", "cuda", "tilelang"))
+@pytest.mark.parametrize(
+    "backend", tuple(map(_backend_id, ("triton", "cuda", "tilelang", "bangc")))
+)
 def test_aot_built_artifact_can_be_reloaded(backend, device, tmp_path):
     tensors = tuple(Tensor(shape=(257,), dtype=ninetoothed.float32) for _ in range(3))
     compilation = DEFAULT_COMPILER.compile(
@@ -115,6 +131,7 @@ def test_triton_aot_handle_is_reusable_across_cuda_contexts(tmp_path):
 
 @pytest.mark.parametrize("device", get_available_devices())
 @pytest.mark.parametrize("mode", ("jit", "aot"))
+@requires_backend("cuda")
 def test_cuda_empty_tensor_is_a_no_op(mode, device, tmp_path):
     tensors = tuple(Tensor(1, dtype=ninetoothed.float32) for _ in range(3))
     compilation = DEFAULT_COMPILER.compile(
@@ -155,11 +172,13 @@ from ninetoothed.compiler import load_built_artifact
 
 built = pickle.loads(open(sys.argv[1], "rb").read())
 launch = load_built_artifact(built)
-input = torch.randn(257, device=sys.argv[2])
+device = sys.argv[2]
+input = torch.randn(257, device=device)
 other = torch.randn_like(input)
 output = torch.empty_like(input)
 launch(input, other, output)
-torch.cuda.synchronize()
+sync_module = getattr(torch, device.split(":")[0], torch.cuda)
+sync_module.synchronize()
 if not torch.allclose(output, input + other):
     raise SystemExit("reloaded kernel produced an incorrect result")
 """
