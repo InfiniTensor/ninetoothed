@@ -323,11 +323,25 @@ class CudaTarget(EmitterTarget):
                 kernel_prelude = body
                 blocks_expr = grid_total
         else:
-            kernel_prelude = f"""    int64_t {self.index_name} = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+            from ninetoothed.backends.emitters.patterns import match_row_reduce
+
+            fallback_row = None
+
+            if context.cooperative_reduction_program is False and context.outputs:
+                fallback_row = match_row_reduce(context)
+
+            if fallback_row is not None:
+                operator, x_name, out_name, rows, cols, scale = fallback_row
+                kernel_prelude = _render_row_reduce(
+                    operator, x_name, out_name, cols, scale, context
+                )
+                blocks_expr = rows
+            else:
+                kernel_prelude = f"""    int64_t {self.index_name} = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if ({self.index_name} < {total}) {{
 {common.indent_block(body, "        ")}
     }}"""
-            blocks_expr = f"({total} + threads - 1) / threads"
+                blocks_expr = f"({total} + threads - 1) / threads"
 
         curand_header, curand_support = _curand_support(context)
 
@@ -376,41 +390,35 @@ def _render_shared_reduce_broadcast(operator, x_name, out_name, cols, scale, con
         f"    const int64_t nt_cols = {cols};",
         f"    const float* nt_row_in = {x_name} + (int64_t)blockIdx.x * nt_cols;",
         f"    float* nt_row_out = {out_name} + (int64_t)blockIdx.x * nt_cols;",
-        "    __shared__ float nt_sbuf[1024];",
         "    __shared__ float nt_red[32];",
         "    int64_t nt_tid = threadIdx.x;",
         "    float nt_acc = 0.0f;",
     ]
 
     if operator in {"sum", "sum_sq"}:
-        load = "nt_sbuf[nt_tid] = nt_row_in[nt_tid];"
-
-        if operator == "sum_sq":
-            load = "nt_sbuf[nt_tid] = nt_row_in[nt_tid] * nt_row_in[nt_tid];"
+        term = (
+            "nt_row_in[nt_j] * nt_row_in[nt_j]"
+            if operator == "sum_sq"
+            else "nt_row_in[nt_j]"
+        )
 
         lines += [
-            f"    if (nt_tid < nt_cols) {{ {load} }}",
-            "    __syncthreads();",
             "    for (int64_t nt_j = nt_tid; nt_j < nt_cols; nt_j += blockDim.x) {",
-            "        nt_acc += nt_sbuf[nt_j];",
+            f"        nt_acc += {term};",
             "    }",
         ]
     elif operator == "max":
         lines += [
             "    float nt_acc = -3.402823466e38f;",
-            "    if (nt_tid < nt_cols) { nt_sbuf[nt_tid] = nt_row_in[nt_tid]; }",
-            "    __syncthreads();",
             "    for (int64_t nt_j = nt_tid; nt_j < nt_cols; nt_j += blockDim.x) {",
-            "        if (nt_sbuf[nt_j] > nt_acc) { nt_acc = nt_sbuf[nt_j]; }",
+            "        if (nt_row_in[nt_j] > nt_acc) { nt_acc = nt_row_in[nt_j]; }",
             "    }",
         ]
     else:
         lines += [
             "    float nt_acc = 3.402823466e38f;",
-            "    if (nt_tid < nt_cols) { nt_sbuf[nt_tid] = nt_row_in[nt_tid]; }",
-            "    __syncthreads();",
             "    for (int64_t nt_j = nt_tid; nt_j < nt_cols; nt_j += blockDim.x) {",
-            "        if (nt_sbuf[nt_j] < nt_acc) { nt_acc = nt_sbuf[nt_j]; }",
+            "        if (nt_row_in[nt_j] < nt_acc) { nt_acc = nt_row_in[nt_j]; }",
             "    }",
         ]
 
@@ -464,41 +472,35 @@ def _render_row_reduce(operator, x_name, out_name, cols, scale, context):
         f"    const int64_t nt_cols = {cols};",
         f"    const float* nt_row_in = {x_name} + (int64_t)blockIdx.x * nt_cols;",
         f"    float* nt_row_out = {out_name} + (int64_t)blockIdx.x;",
-        "    __shared__ float nt_sbuf[1024];",
         "    __shared__ float nt_red[32];",
         "    int64_t nt_tid = threadIdx.x;",
         "    float nt_acc = 0.0f;",
     ]
 
     if operator in {"sum", "sum_sq"}:
-        load = "nt_sbuf[nt_tid] = nt_row_in[nt_tid];"
-
-        if operator == "sum_sq":
-            load = "nt_sbuf[nt_tid] = nt_row_in[nt_tid] * nt_row_in[nt_tid];"
+        term = (
+            "nt_row_in[nt_j] * nt_row_in[nt_j]"
+            if operator == "sum_sq"
+            else "nt_row_in[nt_j]"
+        )
 
         lines += [
-            f"    if (nt_tid < nt_cols) {{ {load} }}",
-            "    __syncthreads();",
             "    for (int64_t nt_j = nt_tid; nt_j < nt_cols; nt_j += blockDim.x) {",
-            "        nt_acc += nt_sbuf[nt_j];",
+            f"        nt_acc += {term};",
             "    }",
         ]
     elif operator == "max":
         lines += [
             "    float nt_acc = -3.402823466e38f;",
-            "    if (nt_tid < nt_cols) { nt_sbuf[nt_tid] = nt_row_in[nt_tid]; }",
-            "    __syncthreads();",
             "    for (int64_t nt_j = nt_tid; nt_j < nt_cols; nt_j += blockDim.x) {",
-            "        if (nt_sbuf[nt_j] > nt_acc) { nt_acc = nt_sbuf[nt_j]; }",
+            "        if (nt_row_in[nt_j] > nt_acc) { nt_acc = nt_row_in[nt_j]; }",
             "    }",
         ]
     else:
         lines += [
             "    float nt_acc = 3.402823466e38f;",
-            "    if (nt_tid < nt_cols) { nt_sbuf[nt_tid] = nt_row_in[nt_tid]; }",
-            "    __syncthreads();",
             "    for (int64_t nt_j = nt_tid; nt_j < nt_cols; nt_j += blockDim.x) {",
-            "        if (nt_sbuf[nt_j] < nt_acc) { nt_acc = nt_sbuf[nt_j]; }",
+            "        if (nt_row_in[nt_j] < nt_acc) { nt_acc = nt_row_in[nt_j]; }",
             "    }",
         ]
 
