@@ -33,6 +33,15 @@ _VEC_UNARY = {
     "math.rsqrt": "Rsqrt",
     "math.reciprocal": "Reciprocal",
     "math.relu": "Relu",
+    "math.floor": "Floor",
+    "math.ceil": "Ceil",
+    "math.sin": "Sin",
+    "math.cos": "Cos",
+    "math.tan": "Tan",
+    "math.tanh": "Tanh",
+    "math.erf": "Erf",
+    "math.atan": "Atan",
+    "math.sigmoid": "Sigmoid",
 }
 
 _VECTOR_ELEM_CHUNK = 8192
@@ -130,8 +139,15 @@ def _build_tree(context, normalize_dtype, value, depth=0):
     if opcode == "arith.div" and len(children) == 2:
         # The vector Div intrinsic computes unreliably on this platform
         # (measured O(1) errors); a / b rewrites to a * Reciprocal(b), and
-        # 1 / b collapses to Reciprocal(b) outright.
+        # 1 / b collapses to Reciprocal(b) outright.  Sigmoid-shaped
+        # denominators a / (1 + exp(-c*a)) lower to a * Sigmoid(c*a).
         lhs, rhs = children
+
+        if lhs[0] == "input":
+            sigmoid_form = _match_sigmoid_denominator(rhs, lhs)
+
+            if sigmoid_form is not None:
+                return ("call", "Mul", (lhs, sigmoid_form), "")
 
         if rhs[0] in {"input", "call"}:
             if lhs[0] == "literal":
@@ -219,6 +235,56 @@ def _build_tree(context, normalize_dtype, value, depth=0):
     return None
 
 
+def _match_sigmoid_denominator(denominator, operand):
+    """Match a ``1 + exp(-c*x)`` denominator tree over ``operand``.
+
+    Returns the equivalent ``Sigmoid(c*x)`` tree, or ``None``.
+    """
+    if denominator[0] != "call" or denominator[1] != "Adds":
+        return None
+
+    args = denominator[2]
+
+    if len(args) != 2:
+        return None
+
+    exp_node, one = args
+
+    if one[0] != "literal" or float(one[1].rstrip("f")) != 1.0:
+        return None
+
+    if exp_node[0] != "call" or exp_node[1] != "Exp":
+        return None
+
+    (inner,) = exp_node[2]
+
+    scale = 1.0
+    current = inner
+
+    while current[0] == "call" and current[1] == "Muls" and len(current[2]) == 2:
+        factor = current[2][1]
+
+        if factor[0] != "literal":
+            return None
+
+        scale *= float(factor[1].rstrip("f"))
+        current = current[2][0]
+
+    if scale >= 0 or current != operand:
+        return None
+
+    positive = -scale
+
+    scaled = (
+        "call",
+        "Muls",
+        (operand, ("literal", f"{positive:.9g}f")),
+        "",
+    )
+
+    return ("call", "Sigmoid", (scaled,), "")
+
+
 def _substitute(tree, replacement):
     kind = tree[0]
 
@@ -242,13 +308,6 @@ def _composed_tree(opcode):
     if opcode == "arith.neg":
         return ("call", "Muls", (x, ("literal", "-1.0f")), "")
 
-    if opcode == "math.sigmoid":
-        neg = ("call", "Muls", (x, ("literal", "-1.0f")), "")
-        exp = ("call", "Exp", (neg,), "")
-        one = ("call", "Adds", (exp, ("literal", "1.0f")), "")
-
-        return ("call", "Reciprocal", (one,), "")
-
     if opcode == "math.exp2":
         scaled = ("call", "Muls", (x, ("literal", "0.69314718f")), "")
 
@@ -258,10 +317,6 @@ def _composed_tree(opcode):
         ln = ("call", "Ln", (x,), "")
 
         return ("call", "Muls", (ln, ("literal", "1.44269504f")), "")
-
-    # Tanh stays scalar: the vector Exp/Reciprocal intrinsics compute at
-    # reduced mantissa precision, and the 1 - 2/(e^(2x)+1) composition
-    # amplifies that error to O(1) for |x| > ~3 (measured 0.0 vs 0.999).
 
     return None
 
@@ -373,6 +428,15 @@ _TAIL_UNARY = {
     "Rsqrt": "nt_rsqrt",
     "Reciprocal": None,
     "Relu": None,
+    "Floor": "nt_floor",
+    "Ceil": "nt_ceil",
+    "Sin": "nt_sin",
+    "Cos": "nt_cos",
+    "Tan": "nt_tan",
+    "Tanh": "nt_tanh",
+    "Erf": "nt_erf",
+    "Atan": "nt_atan",
+    "Sigmoid": "nt_sigmoid",
 }
 
 _TAIL_BINARY = {
