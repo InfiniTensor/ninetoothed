@@ -274,11 +274,15 @@ def _match_sigmoid_denominator(denominator, operand):
         return None
 
     positive = -scale
+    text = f"{positive:.9g}"
+
+    if "e" not in text and "." not in text:
+        text += ".0"
 
     scaled = (
         "call",
         "Muls",
-        (operand, ("literal", f"{positive:.9g}f")),
+        (operand, ("literal", text + "f")),
         "",
     )
 
