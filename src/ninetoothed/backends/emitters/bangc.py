@@ -323,7 +323,7 @@ class BangCTarget(EmitterTarget):
         if context.cooperative_reduction_program:
             softmax = None
 
-            if options.get("fast_softmax", True):
+            if options.get("fast_softmax"):
                 softmax = match_softmax(context)
 
             reduce_bcast = match_reduce_broadcast(context)
@@ -658,7 +658,7 @@ def _render_nram_softmax(info, context):
         "        nt_buf[nt_j] = 0.0f;",
         "    }",
         "    __bang_sub_scalar(nt_buf, nt_buf, nt_mx, (uint32_t)nt_padded);",
-        "    __bang_active_exp(nt_buf, nt_buf, (uint32_t)nt_padded);",
+        "    __bang_active_exphp(nt_buf, nt_buf, (uint32_t)nt_padded);",
         "    for (int64_t nt_j = nt_cols; nt_j < nt_padded; nt_j++) {",
         "        nt_buf[nt_j] = 0.0f;",
         "    }",
@@ -974,42 +974,19 @@ def _is_staged_tensor(context, name: str) -> bool:
 
 
 def _negated_scale(context, value: str, input_name: str) -> float | None:
-    """Match ``-c · input`` subtrees; return the positive scale ``c``."""
+    """Match ``-c * input`` subtrees; return the positive scale ``c``."""
     producer = context.operations.get(value)
 
-    if producer is None or len(producer.operands) != 2:
+    if producer is None or len(producer.operands) not in {1, 2}:
         return None
 
-    if producer.opcode == "arith.mul":
-        lhs, rhs = producer.operands
+    if producer.opcode == "arith.neg" and len(producer.operands) == 1:
+        operand = producer.operands[0]
 
-        lhs_const = constant_value(context, lhs)
-        rhs_const = constant_value(context, rhs)
+        if operand == input_name:
+            return 1.0
 
-        if lhs_const is not None and rhs == input_name:
-            return abs(lhs_const)
-
-        if rhs_const is not None and lhs == input_name:
-            return abs(rhs_const)
-
-        for a, b in ((lhs, rhs), (rhs, lhs)):
-            neg = context.operations.get(a)
-
-            if (
-                neg is not None
-                and neg.opcode == "arith.neg"
-                and neg.operands
-                and neg.operands[0] == input_name
-            ):
-                scale = constant_value(context, b)
-
-                if scale is not None:
-                    return abs(scale)
-
-        return None
-
-    if producer.opcode == "arith.neg":
-        inner = context.operations.get(producer.operands[0])
+        inner = context.operations.get(operand)
 
         if (
             inner is not None
@@ -1029,6 +1006,63 @@ def _negated_scale(context, value: str, input_name: str) -> float | None:
 
                 if scale is not None:
                     return abs(scale)
+
+        return None
+
+    if producer.opcode != "arith.mul" or len(producer.operands) != 2:
+        return None
+
+    lhs, rhs = producer.operands
+
+    lhs_const = constant_value(context, lhs)
+    rhs_const = constant_value(context, rhs)
+
+    if lhs_const is not None and rhs == input_name:
+        return abs(lhs_const)
+
+    if rhs_const is not None and lhs == input_name:
+        return abs(rhs_const)
+
+    for a, b in ((lhs, rhs), (rhs, lhs)):
+        neg = context.operations.get(a)
+
+        if (
+            neg is not None
+            and neg.opcode == "arith.neg"
+            and neg.operands
+            and neg.operands[0] == input_name
+        ):
+            scale = constant_value(context, b)
+
+            if scale is not None:
+                return abs(scale)
+
+    return None
+
+
+def _find_exp_negated_scale(context, add_node, input_name):
+    """Find ``exp(-c * input)`` inside an add node; return ``c``."""
+    if add_node is None:
+        return None
+
+    for operand in add_node.operands:
+        exp_op = context.operations.get(operand)
+
+        if exp_op is None or not exp_op.operands:
+            continue
+
+        exp_opcode = exp_op.opcode
+
+        if exp_opcode.startswith("call."):
+            exp_opcode = "math." + exp_opcode[len("call.") :]
+
+        if exp_opcode != "math.exp":
+            continue
+
+        scale = _negated_scale(context, exp_op.operands[0], input_name)
+
+        if scale is not None and scale > 0:
+            return scale
 
     return None
 
@@ -1092,44 +1126,66 @@ def _match_fused_activation(context):
 
             return (sequence, output, value, "", "composed")
 
-    if opcode == "arith.div" and _is_staged_tensor(context, lhs):
+    if opcode == "arith.div":
+        # Formula sigmoid: 1 / (1 + exp(-c * x)) lowers to the composed
+        # sigmoid sequence (c == 1 covers the plain formula form).
         denom = context.operations.get(rhs)
 
-        if denom is None or denom.opcode != "arith.add" or len(denom.operands) != 2:
-            return None
+        if (
+            denom is not None
+            and denom.opcode == "arith.add"
+            and len(denom.operands) == 2
+        ):
+            numerator = constant_value(context, lhs)
 
-        for operand in denom.operands:
-            exp_op = context.operations.get(operand)
+            if numerator is not None and abs(numerator - 1.0) < 1e-12:
+                rhs_input = next(
+                    (
+                        name
+                        for name in context.variables
+                        if _is_staged_tensor(context, name)
+                    ),
+                    None,
+                )
 
-            if exp_op is None or not exp_op.operands:
-                continue
+                sigmoid_like = (
+                    rhs_input is not None
+                    and _find_exp_negated_scale(context, denom, rhs_input) is not None
+                )
 
-            exp_opcode = exp_op.opcode
+                if sigmoid_like:
+                    scale = _find_exp_negated_scale(context, denom, rhs_input)
+                    halved = -scale / 8
 
-            if exp_opcode.startswith("call."):
-                exp_opcode = "math." + exp_opcode[len("call.") :]
+                    sequence = [
+                        ("__bang_mul_scalar", f"{halved:.9f}f"),
+                        ("__bang_active_exphp", None),
+                        ("__bang_mul", "self"),
+                        ("__bang_mul", "self"),
+                        ("__bang_mul", "self"),
+                        ("__bang_add_scalar", "1.0f"),
+                        ("__bang_active_reciphp", None),
+                    ]
 
-            if exp_opcode != "math.exp":
-                continue
+                    return (sequence, output, rhs_input, "", "composed")
 
-            scale = _negated_scale(context, exp_op.operands[0], lhs)
+        if _is_staged_tensor(context, lhs):
+            scale = _find_exp_negated_scale(context, denom, lhs) if denom else None
 
-            if scale is None or scale <= 0:
-                continue
+            if scale is not None and scale > 0:
+                halved = -scale / 8
 
-            halved = -scale / 8
+                sequence = [
+                    ("__bang_mul_scalar", f"{halved:.9f}f"),
+                    ("__bang_active_exphp", None),
+                    ("__bang_mul", "self"),
+                    ("__bang_mul", "self"),
+                    ("__bang_mul", "self"),
+                    ("__bang_add_scalar", "1.0f"),
+                    ("__bang_div", "input2"),
+                ]
 
-            sequence = [
-                ("__bang_mul_scalar", f"{halved:.9f}f"),
-                ("__bang_active_exphp", None),
-                ("__bang_mul", "self"),
-                ("__bang_mul", "self"),
-                ("__bang_mul", "self"),
-                ("__bang_add_scalar", "1.0f"),
-                ("__bang_div", "input2"),
-            ]
-
-            return (sequence, output, lhs, "", "composed")
+                return (sequence, output, lhs, "", "composed")
 
     return None
 
