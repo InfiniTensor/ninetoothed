@@ -3377,7 +3377,7 @@ def _default_tensor_index(name: str, ctx: _EmitContext) -> str:
     info = ctx.tensor_infos.get(name, _TensorInfo(name=name))
     axes = _value_axes(name, ctx)
 
-    if info.ndim <= 1:
+    if info.ndim <= 1 and not ctx.vector_program:
         if (
             len(ctx.output_axes) >= 2
             and name != ctx.output
