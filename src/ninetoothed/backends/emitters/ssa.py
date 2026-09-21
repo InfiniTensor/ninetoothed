@@ -1941,6 +1941,20 @@ def _emit_offset_element(
     dim = int(op.attrs.get("dim", 0) or 0)
 
     if operand in ctx.tensor_infos:
+        dimensions = op.results[0].type.attrs.get("offset_value_dims")
+
+        if dimensions is not None:
+            template = _access_template(
+                ctx.tensor_infos[operand], _dtype_level(operand, ctx)
+            )
+
+            if template is not None:
+                value_coords = ["0"] * len(template.get("shape", ()))
+
+                for dimension, coord in zip(dimensions, coords):
+                    value_coords[int(dimension)] = coord
+
+                coords = tuple(value_coords)
         return _offset_from_template(
             ctx.tensor_infos.get(operand),
             coords,
@@ -2115,7 +2129,10 @@ def _offset_from_template(
 
     for index, value in enumerate(extract_indices):
         replacements[f"extract_0_{index}"] = value
-    return _target_index_expr(ctx.target, _replace_symbols(offsets[dim], replacements))
+
+    expr = _target_index_expr(ctx.target, _replace_symbols(offsets[dim], replacements))
+
+    return f"({expr})"
 
 
 def _offset_value_coords(

@@ -1377,3 +1377,30 @@ def application(x, out):
 
         result = ast.unparse(conditional.body[-1].targets[0])
         assert source.count(f"{result} = ") == 2
+
+
+def test_source_offset_emission_maps_compact_coordinates_to_template():
+    kernel = _ssa_kernel(
+        "def application(x, out):\n    out = x.offsets(0) * 2\n",
+        "source_offset_domain",
+        (
+            TensorSpec(
+                ndim=2,
+                shape=("4", "8"),
+                dtype="float32",
+                name="x",
+                attrs={
+                    "access_templates": (
+                        {
+                            "level": 0,
+                            "shape": ("4", "8"),
+                            "offsets": ("value_1 - 1", "value_0"),
+                        },
+                    )
+                },
+            ),
+            TensorSpec(ndim=1, shape=("8",), dtype="index", name="out"),
+        ),
+    )
+    source = emit_kernel(kernel, "triton").primary_source
+    assert "v0 = ((index) - 1)" in source
