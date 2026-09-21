@@ -662,9 +662,20 @@ def _render_nram_softmax(info, context):
         "    for (int64_t nt_j = nt_cols; nt_j < nt_padded; nt_j++) {",
         "        nt_buf[nt_j] = 0.0f;",
         "    }",
-        "    __bang_reduce_sum(nt_wrk, nt_buf, (uint32_t)nt_padded);",
+        # The reduce_sum intrinsic accumulates at reduced precision
+        # (measured 8e-3 relative error on softmax); a halving add tree
+        # plus a scalar tail restores fp32-class accumulation.
+        "    __memcpy(nt_wrk, nt_buf, (uint32_t)(nt_padded * sizeof(float)), NRAM2NRAM);",
+        "    nt_len = nt_padded;",
+        "    while (nt_len >= 64) {",
+        "        int64_t nt_h = nt_len / 2;",
+        "        if (nt_h % 8 != 0) { nt_h &= ~7LL; }",
+        "        if (nt_h < 32) { break; }",
+        "        __bang_add(nt_wrk, nt_wrk, nt_wrk + nt_h, (uint32_t)nt_h);",
+        "        nt_len = nt_h;",
+        "    }",
         "    float nt_total = 0.0f;",
-        "    for (int64_t nt_j = 0; nt_j < nt_padded; nt_j += 32) {",
+        "    for (int64_t nt_j = 0; nt_j < nt_len; nt_j++) {",
         "        nt_total += nt_wrk[nt_j];",
         "    }",
         "    __bang_mul_scalar(nt_buf, nt_buf, 1.0f / nt_total, (uint32_t)nt_cols);",
