@@ -70,6 +70,70 @@ def match_reduce_broadcast(context) -> tuple | None:
     return (operator, x_name, output, str(shape[0]), str(shape[1]), scale)
 
 
+def match_row_reduce(context) -> tuple | None:
+    """Detect ``reduce(x) [+ scale]`` rows collapsed to a ``(rows, 1)`` output.
+
+    Mirrors ``match_reduce_broadcast`` for row reductions whose store
+    collapses each row to one scalar (``output.tile((1, 1))``).
+
+    Returns ``(operator, input, output, rows, cols, scale)``.
+    """
+    stores = [operation for operation in context.stores if len(operation.operands) == 2]
+
+    if len(stores) != 1 or len(context.outputs) != 1:
+        return None
+
+    output = context.outputs[0]
+    store = stores[0]
+
+    if store.operands[1] != output:
+        return None
+
+    producer = context.operations.get(store.operands[0])
+
+    if producer is None or producer.opcode != "arith.add":
+        return None
+
+    if len(producer.operands) != 2:
+        return None
+
+    reduce_result = None
+
+    for operand in producer.operands:
+        chain = _extract_reduce_chain(operand, context)
+
+        if chain is not None:
+            reduce_result = chain
+            break
+
+    if reduce_result is None:
+        return None
+
+    operator, x_name, scale = reduce_result
+    input_info = context.tensors.get(x_name)
+    output_info = context.tensors.get(output)
+
+    if input_info is None or output_info is None:
+        return None
+
+    if input_info.ndim != 2 or output_info.ndim != 2:
+        return None
+
+    attrs = input_info.attrs or {}
+    shape = attrs.get("source_shape") or input_info.shape
+
+    if not shape or len(shape) != 2:
+        return None
+
+    out_attrs = output_info.attrs or {}
+    out_shape = out_attrs.get("source_shape") or output_info.shape
+
+    if not out_shape or len(out_shape) != 2 or str(out_shape[1]) != "1":
+        return None
+
+    return (operator, x_name, output, str(shape[0]), str(shape[1]), scale)
+
+
 def _extract_reduce_chain(value: str, context) -> tuple | None:
     """Walk a value back through wrappers to the reduction + scale.
 
