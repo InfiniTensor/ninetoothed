@@ -263,10 +263,14 @@ class BangCTarget(EmitterTarget):
             buffer_count = len(staging.inputs) + len(staging.outputs)
             bang = staging.bang_op
 
-            if bang is not None and bang[4] == "composed":
+            if bang is not None and len(bang) == 5 and bang[4] == "composed":
                 sequence = bang[0]
                 save_count = sum(1 for fn, _ in sequence if fn == "save")
                 buffer_count += 2 + save_count
+
+            if bang is not None and isinstance(bang, tuple) and bang[0] == "dropout":
+                # An int16 RNG stream plus one float work buffer.
+                buffer_count += 2
 
             budget_chunk = max(
                 128, (_NRAM_BUDGET_BYTES // (4 * max(buffer_count, 1))) // 128 * 128
@@ -353,7 +357,14 @@ class BangCTarget(EmitterTarget):
         elif staging is not None:
             staged_body = _render_nram_staged_body(staging, total, chunk)
 
-            if guard_predicate is not None:
+            staged_bang = staging.bang_op
+            body_free = (
+                isinstance(staged_bang, tuple)
+                and len(staged_bang) == 2
+                and staged_bang[0] == "dropout"
+            )
+
+            if guard_predicate is not None and not body_free:
                 newline = chr(10)
                 indented_staged = newline.join(
                     "    " + line for line in staged_body.split(newline)
@@ -788,7 +799,12 @@ def _render_composed_staged(plan, bang, chunk):
             f"(uint32_t)(nt_cnt) * sizeof(float), GDRAM2NRAM);"
         )
 
-    input_buf = f"nt_buf_{operand}"
+    if isinstance(operand, tuple):
+        lhs_buf, rhs_buf = f"nt_buf_{operand[0]}", f"nt_buf_{operand[1]}"
+    else:
+        lhs_buf = rhs_buf = f"nt_buf_{operand}"
+
+    input_buf = rhs_buf
     save_names = sorted({arg for fn, arg in sequence if fn == "save"})
 
     for name in save_names:
@@ -808,6 +824,11 @@ def _render_composed_staged(plan, bang, chunk):
 
         if fn == "ld":
             cur = f"nt_s_{arg}"
+
+            continue
+
+        if fn == "curR":
+            cur = rhs_buf
 
             continue
 
@@ -831,6 +852,21 @@ def _render_composed_staged(plan, bang, chunk):
             cur = dst
         elif arg == "input2":
             lines.append(f"    {fn}({dst}, {input_buf}, {cur}, nt_aligned);")
+            cur = dst
+        elif arg == "inL":
+            lines.append(f"    {fn}({dst}, {cur}, {lhs_buf}, nt_aligned);")
+            cur = dst
+        elif arg == "inR":
+            lines.append(f"    {fn}({dst}, {cur}, {rhs_buf}, nt_aligned);")
+            cur = dst
+        elif arg == "inL2":
+            lines.append(f"    {fn}({dst}, {lhs_buf}, {cur}, nt_aligned);")
+            cur = dst
+        elif arg == "sqinL":
+            lines.append(f"    {fn}({dst}, {lhs_buf}, {lhs_buf}, nt_aligned);")
+            cur = dst
+        elif arg == "sqinR":
+            lines.append(f"    {fn}({dst}, {rhs_buf}, {rhs_buf}, nt_aligned);")
             cur = dst
         elif arg.startswith("s:"):
             lines.append(f"    {fn}({dst}, {cur}, nt_s_{arg[2:]}, nt_aligned);")
@@ -877,6 +913,42 @@ def _nram_staging_plan(context: ModuleRenderContext, body: str) -> _StagingPlan 
 
     if "taskIdX" in body:
         return None
+
+    # The fused dropout pattern consumes per-element offsets, which neither
+    # the tiled-body flattener nor the flat-residue check tolerates; match
+    # it up front because its renderer ignores the body entirely.
+    dropout_match = _match_dropout(context)
+
+    input_names = set(context.variables)
+    output_names = set(context.outputs)
+    rewritten_pre = body
+    inputs_pre: list[tuple[str, str]] = []
+    outputs_pre: list[tuple[str, str]] = []
+
+    for name in (*context.variables, *context.outputs):
+        info = context.tensors.get(name)
+
+        if info is None or info.ndim != 1:
+            continue
+
+        if _normalize_dtype(info.dtype) != "float32":
+            continue
+
+        buffer = f"nt_buf_{name}"
+
+        if name in output_names:
+            outputs_pre.append((name, buffer))
+
+        if name in input_names:
+            inputs_pre.append((name, buffer))
+
+    if dropout_match is not None and len(inputs_pre) == 1 and len(outputs_pre) == 1:
+        limit_pre = _staged_extent_expression(context, (*inputs_pre, *outputs_pre))
+
+        if limit_pre is not None:
+            return _StagingPlan(
+                inputs_pre, outputs_pre, rewritten_pre, dropout_match, limit_pre
+            )
 
     body = _flatten_tiled_accesses(body, context)
 
@@ -1049,6 +1121,133 @@ def _negated_scale(context, value: str, input_name: str) -> float | None:
                 return abs(scale)
 
     return None
+
+
+def _match_dropout(context):
+    """Detect `where(rand(seed, off) > p, x / (1 - p), 0)` fused dropout."""
+    stores = [operation for operation in context.stores if len(operation.operands) == 2]
+
+    if len(stores) != 1 or len(context.outputs) != 1:
+        return None
+
+    output = context.outputs[0]
+    store = stores[0]
+
+    if store.operands[1] != output:
+        return None
+
+    producer = context.operations.get(store.operands[0])
+
+    if (
+        producer is None
+        or producer.opcode != "select.where"
+        or len(producer.operands) != 3
+    ):
+        return None
+
+    cond, kept_value, dropped_value = producer.operands
+
+    output_info = context.tensors.get(output)
+
+    if output_info is None or output_info.ndim != 1:
+        return None
+
+    kept = context.operations.get(kept_value)
+
+    if kept is None or kept.opcode != "arith.div" or len(kept.operands) != 2:
+        return None
+
+    scale_input, one_minus_p = kept.operands
+
+    if scale_input not in context.variables:
+        return None
+
+    sub = context.operations.get(one_minus_p)
+
+    if sub is None or sub.opcode != "arith.sub" or len(sub.operands) != 2:
+        return None
+
+    lhs, rhs = sub.operands
+
+    p_name = rhs if constant_value(context, lhs) == 1.0 else lhs
+
+    if constant_value(context, lhs) != 1.0 and constant_value(context, rhs) != 1.0:
+        return None
+
+    p_info = context.tensors.get(p_name)
+
+    if p_info is None or p_info.ndim != 0:
+        return None
+
+    if constant_value(context, dropped_value) != 0.0:
+        return None
+
+    cmp_op = context.operations.get(cond)
+
+    if cmp_op is None or cmp_op.opcode != "cmp.gt" or len(cmp_op.operands) != 2:
+        return None
+
+    rand_value, p_again = cmp_op.operands
+
+    if p_again != p_name:
+        return None
+
+    rand = context.operations.get(rand_value)
+
+    if rand is None or rand.opcode not in {"math.rand", "call.rand"}:
+        return None
+
+    return ("dropout", (scale_input, p_name))
+
+
+def _render_dropout_staged(plan, match, chunk):
+    """Emit a fused dropout on staged NRAM buffers via ``__bang_rand``."""
+    input_name, p_name = match
+    extent = _bangc_integer_expr(plan.extent)
+    newline = chr(10)
+    lines = [
+        f"    const int64_t nt_chunk = {chunk};",
+        "    const int64_t nt_base = (int64_t)(taskIdX) * nt_chunk;",
+        f"    if (nt_base >= {extent}) {{ return; }}",
+        f"    int64_t nt_cnt = {extent} - nt_base;",
+        "    if (nt_cnt > nt_chunk) { nt_cnt = nt_chunk; }",
+        "    const uint32_t nt_aligned = (uint32_t)((nt_cnt + 127) / 128 * 128);",
+    ]
+
+    for _, buffer in (*plan.inputs, *plan.outputs):
+        lines.append(f"    __nram__ float {buffer}[{chunk}];")
+
+    lines.append(f"    __nram__ int16_t nt_r16[{chunk}];")
+    lines.append(f"    __nram__ float nt_u[{chunk}];")
+
+    for name, buffer in plan.inputs:
+        lines.append(
+            f"    __memcpy({buffer}, {name} + nt_base, "
+            f"(uint32_t)(nt_cnt) * sizeof(float), GDRAM2NRAM);"
+        )
+
+    lines += [
+        "    __bang_rand(nt_r16, nt_aligned);",
+        "    __bang_int162float(nt_u, nt_r16, nt_aligned, 0);",
+        "    __bang_add_scalar(nt_u, nt_u, 32768.0f, nt_aligned);",
+        "    __bang_mul_scalar(nt_u, nt_u, 1.52587890625e-05f, nt_aligned);",
+        f"    __bang_gt_scalar(nt_u, nt_u, {p_name}, nt_aligned);",
+        f"    __bang_mul(nt_u, nt_u, nt_buf_{input_name}, nt_aligned);",
+    ]
+
+    out_buffer = plan.outputs[0][1]
+    lines.append(
+        f"    __bang_mul_scalar({out_buffer}, nt_u, "
+        f"1.0f / (1.0f - {p_name}), nt_aligned);"
+    )
+
+    for name, buffer in plan.outputs:
+        lines.append(
+            f"    __memcpy({name} + nt_base, {buffer}, "
+            f"(uint32_t)(nt_cnt) * sizeof(float), NRAM2GDRAM);"
+        )
+
+    return newline.join(lines)
 
 
 def _find_exp_negated_scale(context, add_node, input_name):
@@ -1650,13 +1849,17 @@ def _render_nram_staged_body(plan: _StagingPlan, total: str, chunk: int) -> str:
 
     bang = plan.bang_op
 
+    # Fused dropout keeps its own RNG pipeline.
+    if bang is not None and isinstance(bang, tuple) and bang[0] == "dropout":
+        return _render_dropout_staged(plan, bang[1], chunk)
+
     # Multi-op composed sequences (exp/sigmoid) run as vector bang chains.
-    if bang is not None and bang[4] == "composed":
+    if bang is not None and len(bang) == 5 and bang[4] == "composed":
         return _render_composed_staged(plan, bang, chunk)
 
     # Multi-op binary chains (fused add3/muladd/axpy) run as staged bang
     # sequences writing into an NRAM work buffer.
-    if bang is not None and bang[4] == "chain":
+    if bang is not None and len(bang) == 5 and bang[4] == "chain":
         return _render_chain_staged(plan, bang, chunk)
 
     # A pure identity body lowers to a bulk NRAM bounce, which __memcpy
@@ -1684,7 +1887,7 @@ def _render_nram_staged_body(plan: _StagingPlan, total: str, chunk: int) -> str:
             ]
         )
 
-    if bang is not None and chunk % 128 == 0:
+    if bang is not None and len(bang) == 5 and chunk % 128 == 0:
         function, output, lhs, rhs, kind = bang
         lines.append(
             "    const uint32_t nt_aligned = (uint32_t)((nt_cnt + 127) / 128 * 128);"
