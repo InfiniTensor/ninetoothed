@@ -1,8 +1,10 @@
+import ast
 from dataclasses import replace
 
 import pytest
 
 from ninetoothed.frontend.python import LoweringError, from_source
+from ninetoothed.frontend.types import _offset_type, _subscript_type
 from ninetoothed.ir import TensorSpec, ssa
 
 
@@ -334,3 +336,99 @@ def test_verifier_checks_memory_contracts(opcode, operands, message):
 
     with pytest.raises(ssa.VerificationError, match=message):
         ssa.verify_program(program)
+
+
+def test_elementwise_calls_broadcast_and_promote_all_operands():
+    program = from_source(
+        """
+def application(scalar, tensor, high, low):
+    high = maximum(scalar, tensor)
+    low = minimum(tensor, scalar)
+""",
+        (
+            _tensor("scalar", (), "float64"),
+            _tensor("tensor", ("n",), "float32"),
+            _tensor("high", ("n",), "float64"),
+            _tensor("low", ("n",), "float64"),
+        ),
+        strict=True,
+    )
+    result_types = [
+        operation.results[0].type
+        for operation in program.blocks[0].operations
+        if operation.opcode in {"arith.maximum", "arith.minimum"}
+    ]
+    assert len(result_types) == 2
+    assert all(
+        (type_.kind, type_.shape, type_.dtype) == ("tensor", ("n",), "float64")
+        for type_ in result_types
+    )
+
+
+def test_source_offset_type_tracks_template_dependencies():
+    type_ = ssa.Type(
+        kind="tensor",
+        shape=("4", "8"),
+        dtype="float32",
+        attrs={
+            "access_templates": (
+                {
+                    "level": 0,
+                    "shape": ("4", "8"),
+                    "offsets": (
+                        "value_1 - 1",
+                        "value_0 * 8 + value_1",
+                        "value_0",
+                        "outer_index",
+                    ),
+                },
+            )
+        },
+    )
+    assert _offset_type(type_, 0).shape == ("8",)
+    assert _offset_type(type_, 1).shape == ("4", "8")
+    assert _offset_type(type_, -1).kind == "scalar"
+
+    partial = ssa.Type(
+        kind="tensor",
+        shape=("8",),
+        dtype=type_.dtype,
+        attrs={**type_.attrs, "partial_indices": 1},
+    )
+    assert _offset_type(partial, 0).shape == ("8",)
+    assert _offset_type(partial, 1).shape == ("8",)
+    assert _offset_type(partial, 1).attrs["offset_value_dims"] == (1,)
+    assert _offset_type(partial, 2).kind == "scalar"
+
+    type_ = ssa.Type(
+        kind="tensor",
+        shape=("4", "8", "16"),
+        attrs={
+            "access_templates": (
+                {
+                    "level": 0,
+                    "shape": ("4", "8", "16"),
+                    "offsets": ("value_0", "value_1", "value_2"),
+                },
+            )
+        },
+    )
+
+    for expression in (
+        "x[:, 2]",
+        "x[None]",
+        "x[1:3]",
+        "x[:]",
+    ):
+        indexed = _subscript_type(type_, ast.parse(expression, mode="eval").body.slice)
+
+        with pytest.raises(LoweringError, match=r"Offsets\(\) after indexing"):
+            _offset_type(indexed, -1)
+
+    prefix = _subscript_type(type_, ast.parse("x[2, :]", mode="eval").body.slice)
+    assert _offset_type(prefix, 0).kind == "scalar"
+    assert _offset_type(prefix, -1).shape == ("16",)
+    chained = _subscript_type(prefix, ast.Constant(value=1))
+
+    with pytest.raises(LoweringError, match=r"Offsets\(\) after indexing"):
+        _offset_type(chained, 0)

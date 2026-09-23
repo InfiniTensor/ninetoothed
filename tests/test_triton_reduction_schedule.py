@@ -434,3 +434,24 @@ def test_row_vector_only_vectorizes_scheduled_reductions_and_masks_source_store(
         output = torch.empty(2, device=device)
         kernel(x, output, WIDTH=3)
         torch.testing.assert_close(output, expected)
+
+
+def test_broadcast_load_pointer_matches_reduction_mask():
+    def arrangement(x, weight, out):
+        x = x[:, None].expand((-1, weight.shape[1]))
+
+        return x.tile((1, 32)), weight.tile((1, 32)), out.tile((1,))
+
+    compilation = DEFAULT_COMPILER.compile(
+        CompileRequest(
+            arrangement=arrangement,
+            application=_row_product_sum,
+            tensors=(Tensor(1), Tensor(2), Tensor(1)),
+            backend="triton",
+            max_num_configs=1,
+        )
+    )
+    load = compilation.artifact.primary_source.split("tl.load(x +", 1)[1]
+    pointer, masked_load = load.split(", mask=", 1)
+    assert "0 * (offsets)" in pointer
+    assert "offsets" in masked_load.split(", other=", 1)[0]

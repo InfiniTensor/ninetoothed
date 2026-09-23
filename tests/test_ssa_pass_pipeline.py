@@ -137,7 +137,12 @@ class TestPipeline:
                 descriptor.name
                 for descriptor in registered(category=BACKEND_SPECIFIC, backend=backend)
             }
-            assert backend_passes == {f"ssa.{backend.value}.optimize_schedule"}
+            expected = {f"ssa.{backend.value}.optimize_schedule"}
+
+            if backend == Target.TRITON:
+                expected.add("ssa.triton.block_reductions")
+
+            assert backend_passes == expected
             assert (
                 f"ssa.{backend.value}.optimize_schedule" in default_spec(backend).passes
             )
@@ -146,6 +151,7 @@ class TestPipeline:
             descriptor.name for descriptor in registered(category="backend_specific")
         } == {
             "ssa.triton.optimize_schedule",
+            "ssa.triton.block_reductions",
             "ssa.cuda.optimize_schedule",
             "ssa.tilelang.optimize_schedule",
         }

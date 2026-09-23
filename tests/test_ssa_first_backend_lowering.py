@@ -964,6 +964,7 @@ def canonical_math_application(x, y, out):
         triton_source = artifacts["triton"].primary_source
         assert "y.dtype.element_ty" in triton_source
         assert "tl.dtype" not in triton_source
+        assert "tl.broadcast_to(tl.cast(" in triton_source
         assert "float vacc_" in artifacts["cuda"].primary_source
         assert 'T.alloc_var("float32"' in artifacts["tilelang"].primary_source
 
@@ -1163,6 +1164,10 @@ def scalarized_index_application(x, indices, y):
 
             if backend == "triton":
                 assert "for v1_i in range" not in artifact.primary_source
+                assert (
+                    "tl.load(bias + (tl.program_id(0)) % (rows))"
+                    in artifact.primary_source
+                )
 
     def test_from_source_generates_rowwise_reduction_for_native_backends(self):
         kernel = _ssa_kernel(
@@ -1360,3 +1365,125 @@ def scalarized_index_application(x, indices, y):
                     backend,
                     source_fragment,
                 )
+
+    def test_unused_nested_region_results_preserve_stores(self):
+        kernel = _ssa_kernel(
+            """
+def application(x, out):
+    acc = x[0]
+    for i in range(n):
+        if i < 2:
+            acc = acc + x[i]
+            out[i] = acc
+        else:
+            acc = acc - x[i]
+            out[i] = acc
+""",
+            "nested_region_store",
+            (
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
+            ),
+        )
+        source = emit_kernel(kernel, "triton").primary_source
+        assert source.count("tl.store(") == 2
+        conditional = next(
+            node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.If)
+        )
+
+        for branch in (conditional.body, conditional.orelse):
+            stores = [
+                node
+                for statement in branch
+                for node in ast.walk(statement)
+                if isinstance(node, ast.Call) and ast.unparse(node.func) == "tl.store"
+            ]
+            assert len(stores) == 1
+
+        result = ast.unparse(conditional.body[-1].targets[0])
+        assert source.count(f"{result} = ") == 2
+
+
+def test_source_offset_emission_maps_compact_coordinates_to_template():
+    kernel = _ssa_kernel(
+        "def application(x, out):\n    out = x.offsets(0) * 2\n",
+        "source_offset_domain",
+        (
+            TensorSpec(
+                ndim=2,
+                shape=("4", "8"),
+                dtype="float32",
+                name="x",
+                attrs={
+                    "access_templates": (
+                        {
+                            "level": 0,
+                            "shape": ("4", "8"),
+                            "offsets": ("value_1 - 1", "value_0"),
+                        },
+                    )
+                },
+            ),
+            TensorSpec(ndim=1, shape=("8",), dtype="index", name="out"),
+        ),
+    )
+    source = emit_kernel(kernel, "triton").primary_source
+    assert "v0 = ((index) - 1)" in source
+
+
+def test_source_offset_emission_includes_scalar_extract_index():
+    kernel = _ssa_kernel(
+        "def application(x, out):\n    out = x[2].offsets(0)\n",
+        "extracted_source_offset",
+        (
+            TensorSpec(
+                ndim=1,
+                shape=("8",),
+                dtype="float32",
+                name="x",
+                attrs={
+                    "access_templates": (
+                        {"level": 0, "shape": ("8",), "offsets": ("value_0 - 1",)},
+                    )
+                },
+            ),
+            TensorSpec(ndim=1, shape=("8",), dtype="index", name="out"),
+        ),
+    )
+    source = emit_kernel(kernel, "triton").primary_source
+    assert "v0 = 2" in source
+    assert "(v0) - 1" in source
+
+
+def test_partial_source_offsets_preserve_fixed_and_remaining_coordinates():
+    kernel = _ssa_kernel(
+        "def application(x, out):\n    out = x[2, :].offsets(-3) * 16 + x[2, :].offsets(-1)\n",
+        "partial_source_offsets",
+        (
+            TensorSpec(
+                ndim=3,
+                shape=("4", "8", "16"),
+                dtype="float32",
+                name="x",
+                attrs={
+                    "access_templates": (
+                        {
+                            "level": 0,
+                            "shape": ("4", "8", "16"),
+                            "offsets": ("value_0 - 1", "value_1", "value_2 - 1"),
+                        },
+                    ),
+                    "dtype_target_dims": (("0", "1", "2"),),
+                },
+            ),
+            TensorSpec(ndim=1, shape=("16",), dtype="index", name="out"),
+        ),
+    )
+    source = emit_kernel(kernel, "triton").primary_source
+    expressions = {
+        node.targets[0].id: ast.unparse(node.value)
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+    }
+    assert expressions["v2"] == "v0 - 1"
+    assert expressions["v7"] == "index - 1"

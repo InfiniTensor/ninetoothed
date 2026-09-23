@@ -149,6 +149,9 @@ class EmitterTarget(ABC):
             f"Emitter {type(self).__name__} has no vector splat syntax."
         )
 
+    def loop_initializer(self, shape: str, value: str, dtype: str) -> str:
+        return self.vector_splat(shape, value, dtype)
+
     def atomic_add(self, operands: tuple[str, ...], dtype: str) -> str:
         del dtype
 

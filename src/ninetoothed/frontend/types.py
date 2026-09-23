@@ -1,6 +1,7 @@
 """Shape and dtype inference for the Python SSA frontend."""
 
 import ast
+import re
 from typing import Any
 
 from ninetoothed.dtype import normalize_dtype
@@ -47,13 +48,20 @@ def _subscript_type(
     result_shape: list[str] = []
     position = 0
     consumed = 0
+    offset_unsupported = bool(type_.attrs.get("offset_subscript"))
 
     for element in elements:
         if isinstance(element, ast.Constant) and element.value is None:
+            offset_unsupported = True
             result_shape.append("1")
             continue
 
         if isinstance(element, ast.Slice):
+            offset_unsupported |= any(
+                item is not None
+                for item in (element.lower, element.upper, element.step)
+            )
+
             if position < len(shape):
                 result_shape.append(shape[position])
                 position += 1
@@ -61,11 +69,16 @@ def _subscript_type(
             continue
 
         if position < len(shape):
+            offset_unsupported |= bool(result_shape) or (
+                isinstance(element, ast.Constant) and element.value is Ellipsis
+            )
             position += 1
             consumed += 1
 
     result_shape.extend(shape[position:])
     attrs = dict(type_.attrs)
+    attrs["offset_subscript"] = True
+    attrs["offset_unsupported"] = offset_unsupported or not consumed
 
     if not result_shape:
         next_shape = _next_dtype_shape(type_)
@@ -134,10 +147,54 @@ def _reduce_type(type_: ssa.Type, axis: Any, *, strict: bool) -> ssa.Type:
 
 
 def _offset_type(type_: ssa.Type, dim: Any) -> ssa.Type:
+    if type_.attrs.get("offset_unsupported"):
+        raise LoweringError(
+            "Offsets() after indexing supports only a single subscript with "
+            "leading scalar indices followed by full slices; None, non-prefix "
+            "indices, sliced views, and chained subscripts are unsupported."
+        )
+
     if type_.kind != "tensor":
         return ssa.Type(kind="scalar", dtype="index")
 
     shape = tuple(str(item) for item in type_.shape)
+    level = int(type_.attrs.get("dtype_level", 0))
+
+    for template in type_.attrs.get("access_templates", ()):
+        if int(template.get("level", -1)) != level:
+            continue
+
+        offsets = tuple(template.get("offsets", ()))
+        source_dim = int(dim or 0)
+
+        if source_dim < 0:
+            source_dim += len(offsets)
+
+        if not 0 <= source_dim < len(offsets):
+            break
+
+        partial_indices = int(type_.attrs.get("partial_indices", 0))
+        dimensions = tuple(
+            sorted(
+                {
+                    int(index)
+                    for index in re.findall(
+                        r"\bvalue_(\d+)\b", str(offsets[source_dim])
+                    )
+                    if int(index) >= partial_indices
+                }
+            )
+        )
+        template_shape = tuple(str(axis) for axis in template.get("shape", ()))
+        result_shape = tuple(template_shape[index] for index in dimensions)
+
+        return ssa.Type(
+            kind="tensor" if result_shape else "scalar",
+            shape=result_shape,
+            dtype="index",
+            attrs={"offset_value_dims": dimensions},
+        )
+
     dtype_target_dims = tuple(
         tuple(None if item is None else str(item) for item in dims)
         for dims in type_.attrs.get("dtype_target_dims", ())
