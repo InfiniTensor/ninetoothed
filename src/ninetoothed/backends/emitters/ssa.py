@@ -1948,6 +1948,20 @@ def _emit_offset_element(
     dim = int(op.attrs.get("dim", 0) or 0)
 
     if operand in ctx.tensor_infos:
+        dimensions = op.results[0].type.attrs.get("offset_value_dims")
+
+        if dimensions is not None:
+            template = _access_template(
+                ctx.tensor_infos[operand], _dtype_level(operand, ctx)
+            )
+
+            if template is not None:
+                value_coords = ["0"] * len(template.get("shape", ()))
+
+                for dimension, coord in zip(dimensions, coords):
+                    value_coords[int(dimension)] = coord
+
+                coords = tuple(value_coords)
         return _offset_from_template(
             ctx.tensor_infos.get(operand),
             coords,
@@ -1966,6 +1980,21 @@ def _emit_offset_element(
         level = int(
             producer.results[0].type.attrs.get("dtype_level", _dtype_level(base, ctx))
         )
+
+        if level == _dtype_level(base, ctx):
+            dimensions = op.results[0].type.attrs.get("offset_value_dims")
+            template = _access_template(ctx.tensor_infos.get(base), level)
+
+            if dimensions is not None and template is not None:
+                value_coords = ["0"] * len(template.get("shape", ()))
+
+                for dimension, coord in zip(dimensions, coords):
+                    value_coords[int(dimension)] = coord
+
+                value_coords[: len(extract_indices)] = extract_indices
+                coords = tuple(value_coords)
+            else:
+                coords = (*extract_indices, *coords)
 
         return _offset_from_template(
             ctx.tensor_infos.get(base),
@@ -2122,7 +2151,10 @@ def _offset_from_template(
 
     for index, value in enumerate(extract_indices):
         replacements[f"extract_0_{index}"] = value
-    return _target_index_expr(ctx.target, _replace_symbols(offsets[dim], replacements))
+
+    expr = _target_index_expr(ctx.target, _replace_symbols(offsets[dim], replacements))
+
+    return f"({expr})"
 
 
 def _offset_value_coords(

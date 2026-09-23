@@ -1377,3 +1377,88 @@ def application(x, out):
 
         result = ast.unparse(conditional.body[-1].targets[0])
         assert source.count(f"{result} = ") == 2
+
+
+def test_source_offset_emission_maps_compact_coordinates_to_template():
+    kernel = _ssa_kernel(
+        "def application(x, out):\n    out = x.offsets(0) * 2\n",
+        "source_offset_domain",
+        (
+            TensorSpec(
+                ndim=2,
+                shape=("4", "8"),
+                dtype="float32",
+                name="x",
+                attrs={
+                    "access_templates": (
+                        {
+                            "level": 0,
+                            "shape": ("4", "8"),
+                            "offsets": ("value_1 - 1", "value_0"),
+                        },
+                    )
+                },
+            ),
+            TensorSpec(ndim=1, shape=("8",), dtype="index", name="out"),
+        ),
+    )
+    source = emit_kernel(kernel, "triton").primary_source
+    assert "v0 = ((index) - 1)" in source
+
+
+def test_source_offset_emission_includes_scalar_extract_index():
+    kernel = _ssa_kernel(
+        "def application(x, out):\n    out = x[2].offsets(0)\n",
+        "extracted_source_offset",
+        (
+            TensorSpec(
+                ndim=1,
+                shape=("8",),
+                dtype="float32",
+                name="x",
+                attrs={
+                    "access_templates": (
+                        {"level": 0, "shape": ("8",), "offsets": ("value_0 - 1",)},
+                    )
+                },
+            ),
+            TensorSpec(ndim=1, shape=("8",), dtype="index", name="out"),
+        ),
+    )
+    source = emit_kernel(kernel, "triton").primary_source
+    assert "v0 = 2" in source
+    assert "(v0) - 1" in source
+
+
+def test_partial_source_offsets_preserve_fixed_and_remaining_coordinates():
+    kernel = _ssa_kernel(
+        "def application(x, out):\n    out = x[2, :].offsets(-3) * 16 + x[2, :].offsets(-1)\n",
+        "partial_source_offsets",
+        (
+            TensorSpec(
+                ndim=3,
+                shape=("4", "8", "16"),
+                dtype="float32",
+                name="x",
+                attrs={
+                    "access_templates": (
+                        {
+                            "level": 0,
+                            "shape": ("4", "8", "16"),
+                            "offsets": ("value_0 - 1", "value_1", "value_2 - 1"),
+                        },
+                    ),
+                    "dtype_target_dims": (("0", "1", "2"),),
+                },
+            ),
+            TensorSpec(ndim=1, shape=("16",), dtype="index", name="out"),
+        ),
+    )
+    source = emit_kernel(kernel, "triton").primary_source
+    expressions = {
+        node.targets[0].id: ast.unparse(node.value)
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+    }
+    assert expressions["v2"] == "v0 - 1"
+    assert expressions["v7"] == "index - 1"
