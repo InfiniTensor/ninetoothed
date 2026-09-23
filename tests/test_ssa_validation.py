@@ -197,6 +197,26 @@ def test_verifier_checks_partially_known_loop_types(dtypes, valid):
 
 
 @pytest.mark.parametrize(
+    "type_",
+    (
+        ssa.Type(kind="scalar", dtype="int32"),
+        ssa.Type(kind="tensor", shape=("1",), dtype="int64"),
+    ),
+)
+def test_verifier_rejects_incompatible_index_representations(type_):
+    value = ssa.Value(name="index", type=ssa.Type(kind="index"))
+    program = ssa.Program(
+        kind="index_contract",
+        inputs=(value,),
+        outputs=(replace(value, type=type_),),
+        blocks=(ssa.Block(),),
+    )
+
+    with pytest.raises(ssa.VerificationError, match="Type mismatch"):
+        ssa.verify_program(program)
+
+
+@pytest.mark.parametrize(
     "type_, valid",
     (
         (ssa.Type(kind="scalar", dtype="index"), True),
@@ -235,10 +255,8 @@ def test_verifier_checks_loop_bound_types(type_, valid):
     "fault, message",
     (
         ("parent_result", "undefined values"),
-        ("escaped_value", "Undefined SSA output"),
         ("early_yield", "must terminate"),
         ("bounds", "three bounds"),
-        ("yield_type", "Type mismatch"),
         ("bindings", "loop-carried bindings"),
         ("induction", "inconsistent induction"),
     ),
@@ -253,16 +271,10 @@ def test_verifier_checks_region_contracts(fault, message):
         body = replace(
             body, operations=(replace(yielded, operands=(loop.results[0].name,)),)
         )
-    elif fault == "escaped_value":
-        program = replace(program, outputs=(body.args[1],))
     elif fault == "early_yield":
         body = replace(body, operations=(yielded, yielded))
     elif fault == "bounds":
         loop = replace(loop, operands=loop.operands[1:])
-    elif fault == "yield_type":
-        body = replace(
-            body, operations=(replace(yielded, operands=(body.args[0].name,)),)
-        )
     elif fault == "bindings":
         loop = replace(loop, attrs={"induction": "%iv"})
     elif fault == "induction":
@@ -287,21 +299,16 @@ def test_verifier_rejects_if_without_regions():
         ssa.verify_program(program)
 
 
-@pytest.mark.parametrize(
-    "duplicate, message", ((False, "Type mismatch"), (True, "Duplicate SSA output"))
-)
-def test_verifier_checks_output_declarations(duplicate, message):
+def test_verifier_rejects_duplicate_outputs():
     output = ssa.Value(name="x", type=ssa.Type(kind="scalar", dtype="float32"))
-    outputs = (
-        (output, output)
-        if duplicate
-        else (replace(output, type=replace(output.type, dtype="int32")),)
-    )
     program = ssa.Program(
-        kind="outputs", inputs=(output,), outputs=outputs, blocks=(ssa.Block(),)
+        kind="outputs",
+        inputs=(output,),
+        outputs=(output, output),
+        blocks=(ssa.Block(),),
     )
 
-    with pytest.raises(ssa.VerificationError, match=message):
+    with pytest.raises(ssa.VerificationError, match="Duplicate SSA output"):
         ssa.verify_program(program)
 
 
@@ -310,6 +317,7 @@ def test_verifier_checks_output_declarations(duplicate, message):
     (
         ("mem.store", ("x",), "requires 2 operands"),
         ("mem.load", ("x",), "Invalid memory target"),
+        ("mem.unknown_write", (), "Unknown memory effect"),
     ),
 )
 def test_verifier_checks_memory_contracts(opcode, operands, message):

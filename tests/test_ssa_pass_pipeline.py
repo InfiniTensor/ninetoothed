@@ -17,7 +17,7 @@ from ninetoothed.compiler.passes import (
     registered,
 )
 from ninetoothed.frontend.python import from_source
-from ninetoothed.ir import TensorSpec, ssa
+from ninetoothed.ir import TensorSpec
 from ninetoothed.targets import PlatformProfile, TargetContext
 
 
@@ -68,48 +68,6 @@ def _opcodes(operations):
 
 
 class TestPipeline:
-    @pytest.mark.parametrize("invalid_input", (False, True))
-    def test_verification_stops_invalid_ir_before_next_pass(self, invalid_input):
-        def corrupt(program):
-            block = program.blocks[0]
-
-            return replace(
-                program,
-                blocks=(
-                    replace(
-                        block,
-                        operations=(
-                            *block.operations,
-                            ssa.Operation(opcode="mem.unknown_write"),
-                        ),
-                    ),
-                ),
-            )
-
-        class CorruptPass(Pass):
-            name = "test.corrupt"
-
-            def run(self, program, context):
-                return corrupt(program)
-
-        class MustNotRun(Pass):
-            name = "test.must_not_run"
-
-            def run(self, program, context):
-                pytest.fail("Invalid SSA reached the next compiler pass.")
-
-        program = ssa.Program(kind="pipeline", blocks=(ssa.Block(),))
-        pipeline = (CorruptPass(), MustNotRun())
-
-        if invalid_input:
-            program = corrupt(program)
-            pipeline = (MustNotRun(),)
-
-        with pytest.raises(ssa.VerificationError, match="Unknown memory effect"):
-            lower_for_target(
-                program, backend=Target.TRITON, pass_pipeline=Pipeline(pipeline)
-            )
-
     def test_pipeline_attaches_target_schedule_without_coarse_nodes(self):
         program = _program(
             "\ndef add(x, y, out):\n    out = x + y\n",

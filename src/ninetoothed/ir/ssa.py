@@ -224,7 +224,10 @@ def _verify_block(
 
 def _verify_types(types: tuple[Type, ...], location: str) -> None:
     # Unknown dtypes must not hide conflicts between known types in the same slot.
-    expected = next((type_ for type_ in types if type_.dtype is not None), types[0])
+    expected = next(
+        (type_ for type_ in types if _verification_signature(type_)[2] is not None),
+        types[0],
+    )
 
     for actual in types:
         _verify_type(actual, expected, location)
@@ -232,19 +235,34 @@ def _verify_types(types: tuple[Type, ...], location: str) -> None:
 
 def _verify_type(actual: Type, expected: Type, location: str) -> None:
     # Provenance and layout attributes are not part of the SSA value signature.
-    actual_dtype = normalize_dtype(actual.dtype)
-    expected_dtype = normalize_dtype(expected.dtype)
+    actual_kind, actual_shape, actual_dtype = _verification_signature(actual)
+    expected_kind, expected_shape, expected_dtype = _verification_signature(expected)
     dtype_mismatch = (
         actual_dtype is not None
         and expected_dtype is not None
         and actual_dtype != expected_dtype
     )
 
-    if (actual.kind, actual.shape) != (expected.kind, expected.shape) or dtype_mismatch:
+    if (actual_kind, actual_shape) != (expected_kind, expected_shape) or dtype_mismatch:
         raise VerificationError(
             f"Type mismatch at {location}: got {_format_type(actual)}; "
             f"expected {_format_type(expected)}."
         )
+
+
+def _verification_signature(type_: Type) -> tuple[str, tuple[str, ...], str | None]:
+    dtype = normalize_dtype(type_.dtype)
+
+    # Shape dimensions and induction values use index, while their integer
+    # arithmetic uses scalar/int64. Compare these existing representations
+    # without rewriting the IR or admitting other integer widths or signedness.
+    if not type_.shape and (
+        (type_.kind == "index" and dtype in {None, "index", "int64"})
+        or (type_.kind == "scalar" and dtype == "index")
+    ):
+        return "scalar", (), "int64"
+
+    return type_.kind, type_.shape, dtype
 
 
 def _verify_region_contract(

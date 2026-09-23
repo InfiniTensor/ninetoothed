@@ -148,6 +148,31 @@ def _triton_load_mask(source: str, *, tensor: str | None = None) -> ast.AST | No
 
 
 class TestSSAFirstBackendLowering:
+    @pytest.mark.parametrize(
+        "body",
+        (
+            "    for i in range(2):\n        counter = counter - 1\n",
+            "    if x.shape[0] > 2:\n        counter = counter - 1\n",
+        ),
+        ids=("loop", "if"),
+    )
+    def test_from_source_preserves_index_counter_control_flow(self, body):
+        kernel = _ssa_kernel(
+            "def application(x, out):\n    counter = x.shape[0]\n"
+            + body
+            + "    out = counter\n",
+            "ssa_index_counter",
+            (
+                TensorSpec(ndim=1, shape=("n",), dtype="int64", name="x"),
+                TensorSpec(ndim=1, shape=("n",), dtype="int64", name="out"),
+            ),
+        )
+
+        for backend in ("triton", "cuda"):
+            artifact = emit_kernel(kernel, backend)
+            _assert_ssa_artifact(artifact, route=f"ssa-unified-{backend}-emitter")
+            assert "out" in artifact.primary_source
+
     def test_cuda_injects_curand_support_only_for_rand_operations(self):
         add_artifact = lower_application(
             arrangement,
