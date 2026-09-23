@@ -1,4 +1,5 @@
 import ast
+from dataclasses import replace
 
 import pytest
 
@@ -11,14 +12,20 @@ def _tensor(name, shape, dtype="float32"):
     return TensorSpec(ndim=len(shape), shape=tuple(shape), dtype=dtype, name=name)
 
 
-def test_verifier_rejects_undefined_operand():
+@pytest.mark.parametrize("indexed_store", (False, True))
+def test_verifier_rejects_undefined_operand(indexed_store):
+    value = ssa.Value(name="x", type=ssa.Type(kind="tensor", dtype="float32"))
+    operation = (
+        ssa.Operation(
+            opcode="mem.store", operands=("x", "x"), attrs={"indices": ("missing",)}
+        )
+        if indexed_store
+        else ssa.Operation(opcode="arith.add", operands=("missing",))
+    )
     program = ssa.Program(
         kind="invalid",
-        blocks=(
-            ssa.Block(
-                operations=(ssa.Operation(opcode="arith.add", operands=("missing",)),)
-            ),
-        ),
+        inputs=(value,),
+        blocks=(ssa.Block(operations=(operation,)),),
     )
 
     with pytest.raises(ssa.VerificationError, match="undefined values: missing"):
@@ -41,6 +48,20 @@ def test_verifier_rejects_duplicate_result_definition():
 
     with pytest.raises(ssa.VerificationError, match="Duplicate SSA definition"):
         ssa.verify_program(program)
+
+
+def test_verifier_accepts_scalar_string_store_index():
+    value = ssa.Value(name="x", type=ssa.Type(kind="tensor", dtype="float32"))
+    index = ssa.Value(name="%i", type=ssa.Type(kind="index"))
+    store = ssa.Operation(
+        opcode="mem.store", operands=("x", "x"), attrs={"indices": "%i"}
+    )
+    program = ssa.Program(
+        kind="indexed_store",
+        inputs=(value, index),
+        blocks=(ssa.Block(operations=(store,)),),
+    )
+    assert ssa.verify_program(program) is program
 
 
 def test_unknown_python_helper_fails_closed_with_source_location():
@@ -120,6 +141,201 @@ def application(a, b, out):
         if operation.opcode == "linalg.matmul"
     )
     assert matmul.results[0].type.shape == ("batch", "m", "n")
+
+
+def _loop_program(
+    *, initial_dtype="float32", argument_dtype="float32", result_dtype="float32"
+):
+    bound = ssa.Value(name="bound", type=ssa.Type(kind="index"))
+    initial = ssa.Value(
+        name="initial", type=ssa.Type(kind="scalar", dtype=initial_dtype)
+    )
+    argument = replace(
+        initial, name="%acc", type=replace(initial.type, dtype=argument_dtype)
+    )
+    result = replace(
+        initial, name="%result", type=replace(initial.type, dtype=result_dtype)
+    )
+    body = ssa.Block(
+        args=(replace(bound, name="%iv"), argument),
+        operations=(ssa.Operation(opcode="scf.yield", operands=(argument.name,)),),
+    )
+    loop = ssa.Operation(
+        opcode="scf.for",
+        operands=("bound", "bound", "bound", "initial"),
+        results=(result,),
+        attrs={
+            "induction": "%iv",
+            "iter_args": ({"initial": "initial", "block_arg": "%acc"},),
+        },
+        regions=(body,),
+    )
+
+    return ssa.Program(
+        kind="loop",
+        inputs=(bound, initial),
+        outputs=(result,),
+        blocks=(ssa.Block(operations=(loop,)),),
+    )
+
+
+@pytest.mark.parametrize(
+    "dtypes, valid",
+    (
+        ((None, "float32", "float32"), True),
+        (("float32", None, "int32"), False),
+    ),
+)
+def test_verifier_checks_partially_known_loop_types(dtypes, valid):
+    program = _loop_program(
+        initial_dtype=dtypes[0], argument_dtype=dtypes[1], result_dtype=dtypes[2]
+    )
+
+    if valid:
+        assert ssa.verify_program(program) is program
+    else:
+        with pytest.raises(ssa.VerificationError, match="Type mismatch"):
+            ssa.verify_program(program)
+
+
+@pytest.mark.parametrize(
+    "type_",
+    (
+        ssa.Type(kind="scalar", dtype="int32"),
+        ssa.Type(kind="tensor", shape=("1",), dtype="int64"),
+    ),
+)
+def test_verifier_rejects_incompatible_index_representations(type_):
+    value = ssa.Value(name="index", type=ssa.Type(kind="index"))
+    program = ssa.Program(
+        kind="index_contract",
+        inputs=(value,),
+        outputs=(replace(value, type=type_),),
+        blocks=(ssa.Block(),),
+    )
+
+    with pytest.raises(ssa.VerificationError, match="Type mismatch"):
+        ssa.verify_program(program)
+
+
+@pytest.mark.parametrize(
+    "type_, valid",
+    (
+        (ssa.Type(kind="scalar", dtype="index"), True),
+        (ssa.Type(kind="scalar", dtype="float32"), False),
+        (ssa.Type(kind="tensor", shape=("4",), dtype="index"), False),
+    ),
+)
+def test_verifier_checks_loop_bound_types(type_, valid):
+    lower = ssa.Value(name="lower", type=ssa.Type(kind="scalar"))
+    bound = ssa.Value(name="bound", type=type_)
+    step = ssa.Value(name="step", type=ssa.Type(kind="index"))
+    loop = ssa.Operation(
+        opcode="scf.for",
+        operands=(lower.name, bound.name, step.name),
+        regions=(
+            ssa.Block(
+                args=(ssa.Value(name="%iv", type=ssa.Type(kind="index")),),
+                operations=(ssa.Operation(opcode="scf.yield"),),
+            ),
+        ),
+    )
+    program = ssa.Program(
+        kind="loop",
+        inputs=(lower, bound, step),
+        blocks=(ssa.Block(operations=(loop,)),),
+    )
+
+    if valid:
+        assert ssa.verify_program(program) is program
+    else:
+        with pytest.raises(ssa.VerificationError, match="integer scalar bounds"):
+            ssa.verify_program(program)
+
+
+@pytest.mark.parametrize(
+    "fault, message",
+    (
+        ("parent_result", "undefined values"),
+        ("early_yield", "must terminate"),
+        ("bounds", "three bounds"),
+        ("bindings", "loop-carried bindings"),
+        ("induction", "inconsistent induction"),
+    ),
+)
+def test_verifier_checks_region_contracts(fault, message):
+    program = _loop_program()
+    loop = program.blocks[0].operations[0]
+    body = loop.regions[0]
+    yielded = body.operations[-1]
+
+    if fault == "parent_result":
+        body = replace(
+            body, operations=(replace(yielded, operands=(loop.results[0].name,)),)
+        )
+    elif fault == "early_yield":
+        body = replace(body, operations=(yielded, yielded))
+    elif fault == "bounds":
+        loop = replace(loop, operands=loop.operands[1:])
+    elif fault == "bindings":
+        loop = replace(loop, attrs={"induction": "%iv"})
+    elif fault == "induction":
+        loop = replace(loop, attrs={"iter_args": loop.attrs["iter_args"]})
+        body = replace(body, args=(replace(body.args[0], name="%i"), body.args[1]))
+
+    loop = replace(loop, regions=(body,))
+    program = replace(program, blocks=(ssa.Block(operations=(loop,)),))
+
+    with pytest.raises(ssa.VerificationError, match=message):
+        ssa.verify_program(program)
+
+
+def test_verifier_rejects_if_without_regions():
+    condition = ssa.Value(name="condition", type=ssa.Type(kind="scalar", dtype="bool"))
+    operation = ssa.Operation(opcode="scf.if", operands=(condition.name,))
+    program = ssa.Program(
+        kind="if", inputs=(condition,), blocks=(ssa.Block(operations=(operation,)),)
+    )
+
+    with pytest.raises(ssa.VerificationError, match="one or two regions"):
+        ssa.verify_program(program)
+
+
+def test_verifier_rejects_duplicate_outputs():
+    output = ssa.Value(name="x", type=ssa.Type(kind="scalar", dtype="float32"))
+    program = ssa.Program(
+        kind="outputs",
+        inputs=(output,),
+        outputs=(output, output),
+        blocks=(ssa.Block(),),
+    )
+
+    with pytest.raises(ssa.VerificationError, match="Duplicate SSA output"):
+        ssa.verify_program(program)
+
+
+@pytest.mark.parametrize(
+    "opcode, operands, message",
+    (
+        ("mem.store", ("x",), "requires 2 operands"),
+        ("mem.load", ("x",), "Invalid memory target"),
+        ("mem.unknown_write", (), "Unknown memory effect"),
+    ),
+)
+def test_verifier_checks_memory_contracts(opcode, operands, message):
+    value = ssa.Value(name="x", type=ssa.Type(kind="tensor", dtype="float32"))
+    result = replace(value, name="%loaded")
+    operation = ssa.Operation(
+        opcode=opcode,
+        operands=operands,
+        results=(result,) if opcode == "mem.load" else (),
+    )
+    program = ssa.Program(
+        kind="invalid", inputs=(value,), blocks=(ssa.Block(operations=(operation,)),)
+    )
+
+    with pytest.raises(ssa.VerificationError, match=message):
+        ssa.verify_program(program)
 
 
 def test_elementwise_calls_broadcast_and_promote_all_operands():

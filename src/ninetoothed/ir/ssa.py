@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from ninetoothed.dtype import normalize_dtype
 from ninetoothed.ir.frozen import freeze
 
 
@@ -89,13 +90,13 @@ def verify_program(program: Program) -> Program:
             f"got {len(program.blocks)}."
         )
 
-    definitions: set[str] = set()
+    definitions: dict[str, Type] = {}
 
     for value in program.inputs:
         if value.name in definitions:
             raise VerificationError(f"Duplicate SSA input `{value.name}`.")
 
-        definitions.add(value.name)
+        definitions[value.name] = value.type
 
     symbols = set(str(name) for name in program.metadata.get("symbols", ()))
 
@@ -103,50 +104,59 @@ def verify_program(program: Program) -> Program:
         for dimension in value.type.shape:
             symbols.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", str(dimension)))
 
-    _verify_block(
-        program.blocks[0], definitions | symbols, set(definitions), path="entry"
+    visible = {name: Type(kind="index") for name in symbols} | definitions
+    top_level = _verify_block(
+        program.blocks[0], visible, set(definitions), path="entry"
     )
-    top_level_definitions = definitions | {
-        result.name
-        for operation in program.blocks[0].operations
-        for result in operation.results
-    }
+    output_names = set()
 
-    missing_outputs = tuple(
-        value.name
-        for value in program.outputs
-        if value.name not in top_level_definitions
-    )
+    for value in program.outputs:
+        if value.name in output_names:
+            raise VerificationError(f"Duplicate SSA output `{value.name}`.")
 
-    if missing_outputs:
-        raise VerificationError(f"Undefined SSA outputs: {', '.join(missing_outputs)}.")
+        output_names.add(value.name)
+
+        if value.name not in top_level or (
+            value.name in symbols and value.name not in definitions
+        ):
+            raise VerificationError(f"Undefined SSA output `{value.name}`.")
+
+        _verify_type(value.type, top_level[value.name], f"output `{value.name}`")
+
     return program
 
 
 def _verify_block(
     block: Block,
-    visible: set[str],
+    visible: dict[str, Type],
     all_definitions: set[str],
     *,
     path: str,
-) -> None:
-    local_visible = set(visible)
+    owner: Operation | None = None,
+) -> dict[str, Type]:
+    local_visible = dict(visible)
     block_arguments: list[str] = []
 
     for argument in block.args:
-        if argument.name in all_definitions:
+        if argument.name in all_definitions or argument.name in local_visible:
             raise VerificationError(
                 f"Duplicate SSA definition `{argument.name}` in block `{path}`."
             )
 
-        local_visible.add(argument.name)
+        local_visible[argument.name] = argument.type
         all_definitions.add(argument.name)
         block_arguments.append(argument.name)
 
     for index, operation in enumerate(block.operations):
         location = f"{path}:{index}:{operation.opcode}"
+        references = operation.operands
+
+        if operation.opcode == "mem.store":
+            indices = operation.attrs.get("indices", ())
+            references += (indices,) if isinstance(indices, str) else tuple(indices)
+
         missing = tuple(
-            operand for operand in operation.operands if operand not in local_visible
+            operand for operand in references if operand not in local_visible
         )
 
         if missing:
@@ -155,13 +165,45 @@ def _verify_block(
             )
 
         for result in operation.results:
-            if result.name in all_definitions:
+            if result.name in all_definitions or result.name in local_visible:
                 raise VerificationError(
                     f"Duplicate SSA definition `{result.name}` at `{location}`."
                 )
 
-            local_visible.add(result.name)
             all_definitions.add(result.name)
+
+        _verify_region_contract(operation, location, local_visible)
+        _verify_memory_contract(operation, location, local_visible)
+
+        if operation.opcode == "scf.yield":
+            if owner is None or index != len(block.operations) - 1:
+                raise VerificationError(
+                    f"Operation `{location}` must terminate an scf region."
+                )
+
+            if operation.results or operation.regions:
+                raise VerificationError(
+                    f"Operation `{location}` cannot define results or regions."
+                )
+
+            if len(operation.operands) != len(owner.results):
+                raise VerificationError(
+                    f"Operation `{location}` yields {len(operation.operands)} values; "
+                    f"expected {len(owner.results)}."
+                )
+
+            for slot, (operand, result) in enumerate(
+                zip(operation.operands, owner.results)
+            ):
+                types = (local_visible[operand], result.type)
+
+                if owner.opcode == "scf.for":
+                    types += (
+                        local_visible[owner.operands[slot + 3]],
+                        owner.regions[0].args[slot + 1].type,
+                    )
+
+                _verify_types(types, location)
 
         for region_index, region in enumerate(operation.regions):
             _verify_block(
@@ -169,14 +211,63 @@ def _verify_block(
                 local_visible,
                 all_definitions,
                 path=f"{location}/region{region_index}",
+                owner=operation,
             )
 
-        _verify_region_contract(operation, location)
+        # Results become visible only after their defining regions finish.
+        local_visible.update((result.name, result.type) for result in operation.results)
 
     all_definitions.difference_update(block_arguments)
 
+    return local_visible
 
-def _verify_region_contract(operation: Operation, location: str) -> None:
+
+def _verify_types(types: tuple[Type, ...], location: str) -> None:
+    # Unknown dtypes must not hide conflicts between known types in the same slot.
+    expected = next(
+        (type_ for type_ in types if _verification_signature(type_)[2] is not None),
+        types[0],
+    )
+
+    for actual in types:
+        _verify_type(actual, expected, location)
+
+
+def _verify_type(actual: Type, expected: Type, location: str) -> None:
+    # Provenance and layout attributes are not part of the SSA value signature.
+    actual_kind, actual_shape, actual_dtype = _verification_signature(actual)
+    expected_kind, expected_shape, expected_dtype = _verification_signature(expected)
+    dtype_mismatch = (
+        actual_dtype is not None
+        and expected_dtype is not None
+        and actual_dtype != expected_dtype
+    )
+
+    if (actual_kind, actual_shape) != (expected_kind, expected_shape) or dtype_mismatch:
+        raise VerificationError(
+            f"Type mismatch at {location}: got {_format_type(actual)}; "
+            f"expected {_format_type(expected)}."
+        )
+
+
+def _verification_signature(type_: Type) -> tuple[str, tuple[str, ...], str | None]:
+    dtype = normalize_dtype(type_.dtype)
+
+    # Shape dimensions and induction values use index, while their integer
+    # arithmetic uses scalar/int64. Compare these existing representations
+    # without rewriting the IR or admitting other integer widths or signedness.
+    if not type_.shape and (
+        (type_.kind == "index" and dtype in {None, "index", "int64"})
+        or (type_.kind == "scalar" and dtype == "index")
+    ):
+        return "scalar", (), "int64"
+
+    return type_.kind, type_.shape, dtype
+
+
+def _verify_region_contract(
+    operation: Operation, location: str, visible: dict[str, Type]
+) -> None:
     if operation.opcode == "scf.for":
         if len(operation.regions) != 1:
             raise VerificationError(
@@ -184,6 +275,37 @@ def _verify_region_contract(operation: Operation, location: str) -> None:
             )
 
         expected = len(operation.results)
+
+        if len(operation.operands) != expected + 3:
+            raise VerificationError(
+                f"Operation `{location}` requires three bounds and {expected} "
+                "loop-carried operands."
+            )
+
+        for operand in operation.operands[:3]:
+            type_ = visible[operand]
+
+            if type_.kind != "index" and not (
+                type_.kind == "scalar"
+                and not type_.shape
+                and normalize_dtype(type_.dtype)
+                in {
+                    None,
+                    "index",
+                    "int8",
+                    "int16",
+                    "int32",
+                    "int64",
+                    "uint8",
+                    "uint16",
+                    "uint32",
+                    "uint64",
+                }
+            ):
+                raise VerificationError(
+                    f"Operation `{location}` requires integer scalar bounds."
+                )
+
         _verify_yield(operation.regions[0], expected, location)
 
         if len(operation.regions[0].args) != expected + 1:
@@ -191,19 +313,94 @@ def _verify_region_contract(operation: Operation, location: str) -> None:
                 f"Operation `{location}` requires one induction argument and {expected} "
                 "loop-carried arguments."
             )
+
+        if operation.regions[0].args[0].type.kind != "index":
+            raise VerificationError(
+                f"Operation `{location}` requires an index induction."
+            )
+
+        if operation.attrs.get("induction", "%iv") != operation.regions[0].args[0].name:
+            raise VerificationError(
+                f"Operation `{location}` has inconsistent induction."
+            )
+
+        bindings = operation.attrs.get("iter_args", ())
+        pairs = tuple(zip(operation.operands[3:], operation.regions[0].args[1:]))
+
+        if len(bindings) != len(pairs) or any(
+            binding.get("initial") != initial
+            or binding.get("block_arg") != argument.name
+            for binding, (initial, argument) in zip(bindings, pairs)
+        ):
+            raise VerificationError(
+                f"Operation `{location}` has inconsistent loop-carried bindings."
+            )
+
     elif operation.opcode == "scf.if":
+        if len(operation.operands) != 1 or len(operation.regions) not in (1, 2):
+            raise VerificationError(
+                f"Operation `{location}` requires one condition and one or two regions."
+            )
+
         if operation.results and len(operation.regions) != 2:
             raise VerificationError(
                 f"Result-producing `{location}` requires then and else regions."
             )
 
         for region in operation.regions:
+            if region.args:
+                raise VerificationError(
+                    f"Region of `{location}` cannot declare block arguments."
+                )
+
             if operation.results:
                 _verify_yield(region, len(operation.results), location)
-    elif operation.opcode == "scf.yield" and operation.regions:
+    elif operation.opcode != "scf.yield" and (
+        operation.regions or operation.opcode.startswith("scf.")
+    ):
         raise VerificationError(
-            f"Operation `{location}` cannot contain nested regions."
+            f"Operation `{location}` has no supported region contract."
         )
+
+
+def _verify_memory_contract(
+    operation: Operation, location: str, visible: dict[str, Type]
+) -> None:
+    if not operation.opcode.startswith("mem."):
+        return
+
+    signatures = {
+        "mem.store": (2, 0),
+        "mem.data_ptr": (1, 1),
+        "mem.load": (1, 1),
+        "mem.atomic_add": (2, 1),
+    }
+
+    if operation.opcode not in signatures:
+        raise VerificationError(f"Unknown memory effect at `{location}`.")
+
+    operands, results = signatures[operation.opcode]
+
+    if len(operation.operands) != operands or len(operation.results) != results:
+        raise VerificationError(
+            f"Operation `{location}` requires {operands} operands and {results} results."
+        )
+
+    target = operation.operands[1 if operation.opcode == "mem.store" else 0]
+    expected = (
+        {"pointer"}
+        if operation.opcode in {"mem.load", "mem.atomic_add"}
+        else {"tensor", "scalar"}
+    )
+
+    if visible[target].kind not in expected:
+        raise VerificationError(f"Invalid memory target `{target}` at `{location}`.")
+
+    if (
+        operation.opcode == "mem.data_ptr"
+        and operation.results[0].type.kind != "pointer"
+    ):
+        raise VerificationError(f"Operation `{location}` must produce a pointer.")
 
 
 def _verify_yield(block: Block, expected: int, location: str) -> None:
