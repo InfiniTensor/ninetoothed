@@ -70,6 +70,47 @@ class _FakeTensor:
         self._data_ptr = id(self) if data_ptr is None else data_ptr
         self._storage_offset = 0
 
+    def stride(self, dim=None):
+        if dim is None:
+            return self._stride
+
+        return self._stride[dim]
+
+    def data_ptr(self):
+        return self._data_ptr
+
+    def element_size(self):
+        return 4
+
+    def storage_offset(self):
+        return self._storage_offset
+
+    def numel(self):
+        result = 1
+
+        for size in self.shape:
+            result *= size
+        return result
+
+
+class _NonWeakrefTensor:
+    __slots__ = (
+        "shape",
+        "_stride",
+        "dtype",
+        "device",
+        "_data_ptr",
+        "_storage_offset",
+    )
+
+    def __init__(self, shape):
+        self.shape = tuple(shape)
+        self._stride = _contiguous_stride(shape)
+        self.dtype = "float32"
+        self.device = "cuda:0"
+        self._data_ptr = id(self)
+        self._storage_offset = 0
+
     def stride(self):
         return self._stride
 
@@ -272,6 +313,849 @@ def _verified_runtime_fixture(*, with_constexpr=False, outputs=()):
     )
 
     return runtime._verified_runtime_launch(wrapped), calls
+
+
+class _RebindableInvocation:
+    requires_values = False
+    structurally_rebindable = True
+
+    def __init__(self, calls):
+        self._calls = calls
+
+    def __call__(self, _values, args, kwargs):
+        if "output" in kwargs:
+            value = kwargs["output"]
+        elif len(args) > 1 and getattr(args[1], "shape", None) is not None:
+            value = args[1]
+        else:
+            value = args[0]
+
+        self._calls.append(weakref.ref(value))
+
+
+class _NonRebindableInvocation(_RebindableInvocation):
+    structurally_rebindable = False
+
+
+def _structural_key_builder(abi):
+    def build(args, kwargs, public, bound_public):
+        return runtime._runtime_structural_key(
+            abi,
+            args,
+            kwargs,
+            public,
+            bound_public=bound_public,
+            alias_signature=triton_materializer._runtime_alias_signature(abi, public),
+        )
+
+    return build
+
+
+def _rebindable_verified_fixture(*, with_output=False, with_constexpr=False, specs=()):
+    public_args = ["value"]
+    bindings = [LaunchBinding(name="value", kind="tensor", source="value")]
+
+    if with_output:
+        public_args.append("output")
+        bindings.append(LaunchBinding(name="output", kind="tensor", source="output"))
+
+    if with_constexpr:
+        public_args.append("scale")
+        bindings.append(LaunchBinding(name="scale", kind="constexpr", source="scale"))
+
+    abi = LaunchABI(
+        public_args=tuple(public_args),
+        kernel_args=tuple(bindings),
+        outputs=("output",) if with_output else (),
+    )
+    prepare_calls = []
+    invoked = []
+
+    def prepare_invocation(_values, _static_values, _call_sources):
+        prepare_calls.append(object())
+
+        return _RebindableInvocation(invoked)
+
+    wrapped = runtime._runtime_wrapper(
+        lambda *_values: None,
+        abi,
+        specs=specs,
+        prepare_invocation=prepare_invocation,
+        structural_key=_structural_key_builder(abi),
+    )
+
+    return runtime._verified_runtime_launch(wrapped), abi, prepare_calls, invoked
+
+
+def _observer_runtime_fixture(*, observer=None, validate_bindings=None):
+    abi = LaunchABI(
+        public_args=("value", "output", "scale"),
+        kernel_args=(
+            LaunchBinding(
+                name="value",
+                kind="tensor",
+                source="value",
+                access="read",
+            ),
+            LaunchBinding(name="value_size", kind="shape", source="value", dim=0),
+            LaunchBinding(
+                name="value_stride",
+                kind="stride",
+                source="value",
+                dim=0,
+            ),
+            LaunchBinding(
+                name="output",
+                kind="tensor",
+                source="output",
+                access="write",
+            ),
+            LaunchBinding(
+                name="output_size",
+                kind="shape",
+                source="output",
+                dim=0,
+            ),
+            LaunchBinding(
+                name="output_stride",
+                kind="stride",
+                source="output",
+                dim=0,
+            ),
+            LaunchBinding(name="scale", kind="constexpr", source="scale"),
+        ),
+        outputs=("output",),
+    )
+    prepare_calls = []
+
+    def prepare_invocation(_values, _static_values, _call_sources):
+        prepare_calls.append(object())
+
+        return _RebindableInvocation([])
+
+    if observer is None:
+        observer = triton_materializer._triton_structural_observer(
+            abi,
+            tensor_type=_FakeTensor,
+        )
+
+    wrapped = runtime._runtime_wrapper(
+        lambda *_values: None,
+        abi,
+        prepare_invocation=prepare_invocation,
+        validate_bindings=validate_bindings,
+        structural_key=_structural_key_builder(abi),
+        structural_observer=observer,
+    )
+
+    return runtime._verified_runtime_launch(wrapped), abi, prepare_calls
+
+
+def _observer_values(*, size=4, stride=1, dtype="float32", device="cuda:0"):
+    value = _FakeTensor(
+        (size,),
+        stride=(stride,),
+        dtype=dtype,
+        device=device,
+        data_ptr=1024,
+    )
+    output = _FakeTensor(
+        (size,),
+        stride=(stride,),
+        dtype=dtype,
+        device=device,
+        data_ptr=2048,
+    )
+
+    return value, output
+
+
+def test_triton_observer_key_equivalence_covers_layout_scalar_form_and_alias():
+    observer = triton_materializer._triton_structural_observer(
+        _observer_runtime_fixture()[1],
+        tensor_type=_FakeTensor,
+    )
+    first = _observer_values()
+    second = _observer_values()
+
+    assert observer((*first, 2), {}) == observer((*second, 2), {})
+
+    for changed in (
+        ("shape", _observer_values(size=8)),
+        ("stride", _observer_values(stride=2)),
+        ("dtype", _observer_values(dtype="float16")),
+        ("device", _observer_values(device="cuda:1")),
+    ):
+        assert observer((*first, 2), {}) != observer((*changed[1], 2), {})
+
+    zero_sized = _observer_values(size=0)
+    assert observer((*zero_sized, 2), {}) is not None
+
+    offset_value, offset_output = _observer_values()
+    offset_value._storage_offset = 1
+    assert observer((*first, 2), {}) != observer((offset_value, offset_output, 2), {})
+    assert observer((*first, 2), {}) != observer((*first, 3), {})
+    assert observer(
+        (
+            *first[:1],
+            first[1],
+        ),
+        {"scale": 2},
+    ) != observer((*first, 2), {})
+    assert observer((first[0], first[0], 2), {}) != observer((*first, 2), {})
+
+
+def test_verified_observer_hit_avoids_public_revalidation(monkeypatch):
+    validated = 0
+
+    def validate(_public):
+        nonlocal validated
+        validated += 1
+
+    validate._ninetoothed_observer_safe = True
+    original_public = runtime._public_values
+    public_calls = 0
+    observer_calls = 0
+
+    def public(*args, **kwargs):
+        nonlocal public_calls
+        public_calls += 1
+
+        return original_public(*args, **kwargs)
+
+    original_observer = triton_materializer._triton_structural_observer(
+        _observer_runtime_fixture()[1],
+        tensor_type=_FakeTensor,
+    )
+
+    def observed(*args, **kwargs):
+        nonlocal observer_calls
+        observer_calls += 1
+
+        return original_observer(*args, **kwargs)
+
+    # Rebuild with the counting observer so the wrapper captures it before
+    # monkeypatching the public-value helper.
+    launch, _abi, prepare_calls = _observer_runtime_fixture(
+        observer=observed,
+        validate_bindings=validate,
+    )
+    monkeypatch.setattr(runtime, "_public_values", public)
+    first = _observer_values()
+    replacement = _observer_values()
+
+    launch(*first, 2)
+    launch(*replacement, 2)
+
+    assert len(prepare_calls) == 1
+    assert observer_calls == 2
+    assert public_calls == 1
+    assert validated == 1
+
+
+def test_triton_observer_fails_closed_for_unknown_types_and_jagged_bindings():
+    abi = _observer_runtime_fixture()[1]
+    observer = triton_materializer._triton_structural_observer(
+        abi,
+        tensor_type=_FakeTensor,
+    )
+
+    class TensorSubclass(_FakeTensor):
+        pass
+
+    value, output = _observer_values()
+    subclass = TensorSubclass((4,), data_ptr=4096)
+    assert observer((subclass, output, 2), {}) is None
+
+    jagged = LaunchABI(
+        public_args=("value",),
+        kernel_args=(
+            LaunchBinding(name="value", kind="jagged_values", source="value"),
+        ),
+    )
+    assert (
+        triton_materializer._triton_structural_observer(
+            jagged,
+            tensor_type=_FakeTensor,
+        )
+        is None
+    )
+
+
+def test_runtime_custom_validator_disables_observer_and_uses_structural_fallback():
+    validated = []
+    observed = []
+
+    def validate(public):
+        validated.append(public["scale"])
+
+    def observer(*args, **kwargs):
+        observed.append((args, kwargs))
+
+        return ("must-not-be-used",)
+
+    launch, _abi, prepare_calls = _observer_runtime_fixture(
+        observer=observer,
+        validate_bindings=validate,
+    )
+    first = _observer_values()
+    replacement = _observer_values()
+
+    launch(*first, 2)
+    launch(*replacement, 2)
+
+    assert observed == []
+    assert len(prepare_calls) == 1
+    assert validated
+
+
+def test_verified_structural_cache_reuses_plan_with_current_output():
+    launch, _abi, prepare_calls, invoked = _rebindable_verified_fixture(
+        with_output=True
+    )
+    value = _FakeTensor((4,), data_ptr=1024)
+    output = _FakeTensor((4,), data_ptr=2048)
+    replacement_value = _FakeTensor((4,), data_ptr=4096)
+    replacement_output = _FakeTensor((4,), data_ptr=8192)
+
+    assert launch(value, output=output) is output
+    assert launch(replacement_value, output=replacement_output) is replacement_output
+    assert launch(replacement_value, output=replacement_output) is replacement_output
+
+    assert len(prepare_calls) == 1
+    assert [reference() for reference in invoked] == [
+        output,
+        replacement_output,
+        replacement_output,
+    ]
+
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    structural = nonlocals["structural_calls"]
+    prepared = next(iter(structural.values()))
+    assert prepared.binding_plan is None
+    assert prepared.owner_refs is None
+    assert prepared.cache_token is None
+    assert nonlocals["active_identity"] == runtime._runtime_call_identity(
+        (replacement_value,), {"output": replacement_output}
+    )
+    assert nonlocals["active"].matches(
+        (replacement_value,),
+        {"output": replacement_output},
+        identity_verified=True,
+    )
+    assert nonlocals["active"].owner_refs is not None
+
+    replacement_value_ref = weakref.ref(replacement_value)
+    replacement_output_ref = weakref.ref(replacement_output)
+    del replacement_value, replacement_output
+    gc.collect()
+
+    assert replacement_value_ref() is None
+    assert replacement_output_ref() is None
+    assert inspect.getclosurevars(launch).nonlocals["active"] is None
+
+
+def test_verified_structural_hit_promotes_only_after_persistent_replacement():
+    launch, _abi, prepare_calls, invoked = _rebindable_verified_fixture(
+        with_output=True
+    )
+    value = _FakeTensor((4,), data_ptr=1024)
+    output = _FakeTensor((4,), data_ptr=2048)
+    replacement_value = _FakeTensor((4,), data_ptr=4096)
+    replacement_output = _FakeTensor((4,), data_ptr=8192)
+
+    launch(value, output=output)
+    launch(replacement_value, output=replacement_output)
+
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert nonlocals["active"] is None
+    pending = nonlocals["pending_promotions"]
+    assert len(pending) == 1
+    pending_entry = next(iter(pending.values()))
+    assert pending_entry.identity == runtime._runtime_call_identity(
+        (replacement_value,), {"output": replacement_output}
+    )
+    assert [reference() for reference in pending_entry.owner_refs] == [
+        replacement_value,
+        replacement_output,
+    ]
+
+    launch(replacement_value, output=replacement_output)
+    assert len(prepare_calls) == 1
+    assert len(invoked) == 3
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert nonlocals["active"] is not None
+    assert nonlocals["active_identity"] == runtime._runtime_call_identity(
+        (replacement_value,), {"output": replacement_output}
+    )
+    assert nonlocals["pending_promotions"] == {}
+
+    launch(replacement_value, output=replacement_output)
+    assert len(prepare_calls) == 1
+    assert len(invoked) == 4
+
+
+def test_verified_structural_hit_requires_every_owner_to_persist():
+    launch, _abi, prepare_calls, _invoked = _rebindable_verified_fixture(
+        with_output=True
+    )
+    value = _FakeTensor((4,), data_ptr=1024)
+    output = _FakeTensor((4,), data_ptr=2048)
+    replacement_value = _FakeTensor((4,), data_ptr=4096)
+    first_output = _FakeTensor((4,), data_ptr=8192)
+    second_output = _FakeTensor((4,), data_ptr=16384)
+
+    launch(value, output=output)
+    launch(replacement_value, output=first_output)
+    launch(replacement_value, output=second_output)
+
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert nonlocals["active"] is None
+    assert len(prepare_calls) == 1
+    pending = next(iter(nonlocals["pending_promotions"].values()))
+    assert [reference() for reference in pending.owner_refs] == [
+        replacement_value,
+        second_output,
+    ]
+
+    launch(replacement_value, output=second_output)
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert nonlocals["active"] is not None
+
+
+def test_verified_structural_hit_does_not_promote_fresh_object_after_gc():
+    launch, _abi, _prepare_calls, _invoked = _rebindable_verified_fixture()
+    value = _FakeTensor((4,), data_ptr=1024)
+    launch(value)
+
+    temporary = _FakeTensor((4,), data_ptr=4096)
+    temporary_ref = weakref.ref(temporary)
+    launch(temporary)
+    pending_ref = next(
+        iter(inspect.getclosurevars(launch).nonlocals["pending_promotions"].values())
+    ).owner_refs[0]
+    del temporary
+    gc.collect()
+
+    assert temporary_ref() is None
+    assert pending_ref() is None
+
+    fresh = _FakeTensor((4,), data_ptr=8192)
+    launch(fresh)
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert nonlocals["active"] is None
+    assert nonlocals["pending_promotions"]
+    assert next(iter(nonlocals["pending_promotions"].values())).owner_refs[0]() is fresh
+
+
+def test_verified_structural_pending_owner_check_is_aba_safe():
+    launch, _abi, _prepare_calls, _invoked = _rebindable_verified_fixture()
+    value = _FakeTensor((4,), data_ptr=1024)
+    launch(value)
+    first = _FakeTensor((4,), data_ptr=4096)
+    launch(first)
+
+    pending_ref = next(
+        iter(inspect.getclosurevars(launch).nonlocals["pending_promotions"].values())
+    ).owner_refs[0]
+    first_ref = weakref.ref(first)
+    del first
+    gc.collect()
+
+    replacement = _FakeTensor((4,), data_ptr=8192)
+    assert first_ref() is None
+    assert pending_ref() is None
+    assert not runtime._runtime_owner_refs_match(
+        (pending_ref,),
+        (replacement,),
+        {},
+    )
+
+    launch(replacement)
+    assert inspect.getclosurevars(launch).nonlocals["active"] is None
+
+
+def test_verified_structural_pending_is_bounded_with_structural_lru():
+    launch, _abi, _prepare_calls, _invoked = _rebindable_verified_fixture()
+    evicted_key = None
+
+    for size in range(1, 10):
+        launch(_FakeTensor((size,), data_ptr=1000 + size))
+        launch(_FakeTensor((size,), data_ptr=2000 + size))
+
+        if size == 1:
+            evicted_key = next(
+                iter(inspect.getclosurevars(launch).nonlocals["structural_calls"])
+            )
+
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert len(nonlocals["structural_calls"]) == 8
+    assert len(nonlocals["pending_promotions"]) == 8
+    assert tuple(nonlocals["pending_promotions"]) == tuple(
+        nonlocals["structural_calls"]
+    )
+
+    # Simulate a structural hit racing with LRU eviction: a late pending
+    # insertion for the evicted entry must not create an orphan ninth item.
+    late = _FakeTensor((1,), data_ptr=9999)
+    nonlocals["remember_pending"](
+        runtime._runtime_call_identity((late,), {}),
+        evicted_key,
+        (late,),
+        {},
+    )
+    assert evicted_key not in nonlocals["pending_promotions"]
+    assert len(nonlocals["pending_promotions"]) == 8
+
+
+def test_verified_structural_hit_fails_safe_for_nonweakref_owner():
+    class RebindableNoopInvocation:
+        requires_values = False
+        structurally_rebindable = True
+
+        def __call__(self, _values, _args, _kwargs):
+            return None
+
+    abi = LaunchABI(
+        public_args=("value", "observer"),
+        kernel_args=(LaunchBinding(name="value", kind="tensor", source="value"),),
+        outputs=(),
+    )
+    prepare_calls = []
+
+    def prepare_invocation(_values, _static_values, _call_sources):
+        prepare_calls.append(object())
+
+        return RebindableNoopInvocation()
+
+    wrapped = runtime._runtime_wrapper(
+        lambda *_values: None,
+        abi,
+        prepare_invocation=prepare_invocation,
+        structural_key=_structural_key_builder(abi),
+    )
+    launch = runtime._verified_runtime_launch(wrapped)
+    first = _FakeTensor((4,))
+    first_observer = _NonWeakrefTensor((4,))
+    replacement = _FakeTensor((4,))
+    replacement_observer = _NonWeakrefTensor((4,))
+
+    launch(first, first_observer)
+    launch(replacement, replacement_observer)
+
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert len(prepare_calls) == 1
+    assert len(nonlocals["structural_calls"]) == 1
+    assert nonlocals["active"] is None
+    assert nonlocals["pending_promotions"] == {}
+
+
+def test_verified_structural_cache_rejects_call_form_changes():
+    launch, _abi, prepare_calls, _invoked = _rebindable_verified_fixture(
+        with_output=True
+    )
+    value = _FakeTensor((4,))
+    output = _FakeTensor((4,))
+    replacement_value = _FakeTensor((4,))
+    replacement_output = _FakeTensor((4,))
+
+    launch(value, output=output)
+    launch(replacement_value, replacement_output)
+
+    assert len(prepare_calls) == 2
+
+
+def test_verified_structural_cache_rejects_alias_changes():
+    launch, _abi, prepare_calls, _invoked = _rebindable_verified_fixture(
+        with_output=True
+    )
+    value = _FakeTensor((4,), data_ptr=1024)
+    output = _FakeTensor((4,), data_ptr=2048)
+    replacement = _FakeTensor((4,), data_ptr=4096)
+
+    launch(value, output=output)
+    launch(replacement, output=replacement)
+
+    assert len(prepare_calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("shape", (8,)),
+        ("_stride", (2,)),
+        ("dtype", "float16"),
+        ("device", "cuda:1"),
+    ),
+)
+def test_verified_structural_cache_rejects_tensor_contract_changes(field, value):
+    launch, _abi, prepare_calls, _invoked = _rebindable_verified_fixture()
+    first = _FakeTensor((4,))
+    replacement = _FakeTensor((4,))
+
+    launch(first)
+    setattr(replacement, field, value)
+    launch(replacement)
+
+    assert len(prepare_calls) == 2
+
+
+def test_verified_structural_cache_rejects_scalar_changes():
+    launch, _abi, prepare_calls, _invoked = _rebindable_verified_fixture(
+        with_constexpr=True
+    )
+    first = _FakeTensor((4,))
+    replacement = _FakeTensor((4,))
+
+    launch(first, 2)
+    launch(replacement, 3)
+
+    assert len(prepare_calls) == 2
+
+
+def test_verified_structural_cache_rejects_storage_offset_changes():
+    launch, _abi, prepare_calls, _invoked = _rebindable_verified_fixture()
+    first = _FakeTensor((4,))
+    replacement = _FakeTensor((4,))
+    replacement._storage_offset = 1
+
+    launch(first)
+    launch(replacement)
+
+    assert len(prepare_calls) == 2
+
+
+def test_verified_structural_cache_rejects_zero_dimensional_scalar_changes():
+    launch, _abi, prepare_calls, _invoked = _rebindable_verified_fixture(
+        with_constexpr=True
+    )
+    value = _FakeTensor((4,))
+    scale = torch.tensor(2)
+
+    launch(value, scale)
+    scale.fill_(3)
+    launch(value, scale)
+
+    assert len(prepare_calls) == 2
+
+
+def test_verified_structural_cache_requires_rebindable_invocation():
+    abi = LaunchABI(
+        public_args=("value",),
+        kernel_args=(LaunchBinding(name="value", kind="tensor", source="value"),),
+    )
+    prepare_calls = []
+
+    def prepare_invocation(_values, _static_values, _call_sources):
+        prepare_calls.append(object())
+
+        return _NonRebindableInvocation([])
+
+    wrapped = runtime._runtime_wrapper(
+        lambda *_values: None,
+        abi,
+        prepare_invocation=prepare_invocation,
+        structural_key=_structural_key_builder(abi),
+    )
+    launch = runtime._verified_runtime_launch(wrapped)
+
+    launch(_FakeTensor((4,)))
+    launch(_FakeTensor((4,)))
+
+    assert len(prepare_calls) == 2
+
+
+def test_verified_structural_cache_does_not_retain_tensors():
+    launch, _abi, _prepare_calls, invoked = _rebindable_verified_fixture(
+        with_output=True
+    )
+    value = _FakeTensor((4,))
+    output = _FakeTensor((4,))
+    value_ref = weakref.ref(value)
+    output_ref = weakref.ref(output)
+
+    launch(value, output=output)
+    del value, output
+    gc.collect()
+
+    assert value_ref() is None
+    assert output_ref() is None
+    assert invoked[0]() is None
+
+    structural = inspect.getclosurevars(launch).nonlocals["structural_calls"]
+    prepared = next(iter(structural.values()))
+    assert prepared.binding_plan is None
+    assert prepared.owner_refs is None
+
+
+def test_verified_structural_cache_preserves_invalid_argument_errors():
+    specs = (
+        SimpleNamespace(
+            name="value",
+            ndim=1,
+            dtype=None,
+            attrs={"source_ndim": 1},
+        ),
+    )
+    launch, _abi, _prepare_calls, _invoked = _rebindable_verified_fixture(specs=specs)
+    value = _FakeTensor((4,))
+
+    with pytest.raises(TypeError, match="Unknown kernel arguments"):
+        launch(value, unknown=True)
+
+    with pytest.raises(TypeError, match="rank 2"):
+        launch(_FakeTensor((2, 2)))
+
+
+def test_tuned_structural_cache_reuses_selected_plan_with_current_output():
+    abi = LaunchABI(
+        public_args=("value", "output"),
+        kernel_args=(
+            LaunchBinding(name="value", kind="tensor", source="value"),
+            LaunchBinding(name="output", kind="tensor", source="output"),
+        ),
+        outputs=("output",),
+    )
+    prepare_calls = []
+    invoked = []
+
+    def candidate():
+        def prepare_invocation(_values, _static_values, _call_sources):
+            prepare_calls.append(object())
+
+            return _RebindableInvocation(invoked)
+
+        return runtime._runtime_wrapper(
+            lambda *_values: None,
+            abi,
+            prepare_invocation=prepare_invocation,
+            structural_key=_structural_key_builder(abi),
+        )
+
+    candidates = (candidate(), candidate())
+    compilation = SimpleNamespace(
+        launch_abi=abi,
+        kernel=SimpleNamespace(tensors=()),
+    )
+    tuner = _FakeTuner(
+        candidates,
+        lambda args, kwargs: triton_materializer._triton_specialization_key(
+            compilation, args, kwargs
+        ),
+    )
+    handle = SimpleNamespace(_selected_tuning_candidate=None)
+    launch = triton_materializer._tuned_runtime_launch(
+        tuner,
+        dict(zip(candidates, ({"id": "first"}, {"id": "second"}))),
+        handle,
+        compilation,
+    )
+    value = _FakeTensor((4,), data_ptr=1024)
+    output = _FakeTensor((4,), data_ptr=2048)
+    replacement_value = _FakeTensor((4,), data_ptr=4096)
+    replacement_output = _FakeTensor((4,), data_ptr=8192)
+
+    assert launch(value, output=output) is output
+    handle._selected_tuning_candidate = None
+    assert launch(replacement_value, output=replacement_output) is replacement_output
+
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert nonlocals["active"] is None
+    assert handle._selected_tuning_candidate == {"id": "first"}
+    pending_promotions = inspect.getclosurevars(nonlocals["find_structural"]).nonlocals[
+        "pending_promotions"
+    ]
+    pending = next(iter(pending_promotions.values()))
+    assert [reference() for reference in pending.owner_refs] == [
+        replacement_value,
+        replacement_output,
+    ]
+
+    assert launch(replacement_value, output=replacement_output) is replacement_output
+
+    nonlocals = inspect.getclosurevars(launch).nonlocals
+    assert len(prepare_calls) == 1
+    assert [reference() for reference in invoked] == [
+        output,
+        replacement_output,
+        replacement_output,
+    ]
+    assert handle._selected_tuning_candidate == {"id": "first"}
+    assert nonlocals["active_identity"] == runtime._runtime_call_identity(
+        (replacement_value,), {"output": replacement_output}
+    )
+    promoted = nonlocals["active"][2]
+    assert promoted.matches(
+        (replacement_value,),
+        {"output": replacement_output},
+        identity_verified=True,
+    )
+    assert promoted.owner_refs is not None
+    assert pending_promotions == {}
+
+
+def test_tuned_structural_cache_validates_candidate_binding_overrides():
+    abi = LaunchABI(
+        public_args=("value", "output", "block"),
+        kernel_args=(
+            LaunchBinding(name="value", kind="tensor", source="value"),
+            LaunchBinding(name="output", kind="tensor", source="output"),
+            LaunchBinding(name="block", kind="meta", source="block"),
+        ),
+        outputs=("output",),
+    )
+    prepare_calls = []
+    invoked = []
+    validated_blocks = []
+
+    def validate(bound_public):
+        validated_blocks.append(bound_public["block"])
+
+        if bound_public["block"] != 64:
+            raise ValueError("Candidate binding override was not applied.")
+
+    def prepare_invocation(_values, _static_values, _call_sources):
+        prepare_calls.append(object())
+
+        return _RebindableInvocation(invoked)
+
+    candidate = runtime._runtime_wrapper(
+        lambda *_values: None,
+        abi,
+        binding_overrides={"block": 64},
+        prepare_invocation=prepare_invocation,
+        validate_bindings=validate,
+        structural_key=_structural_key_builder(abi),
+    )
+    compilation = SimpleNamespace(
+        launch_abi=abi,
+        kernel=SimpleNamespace(tensors=()),
+    )
+    tuner = _FakeTuner(
+        (candidate,),
+        lambda args, kwargs: triton_materializer._triton_specialization_key(
+            compilation, args, kwargs
+        ),
+    )
+    handle = SimpleNamespace(_selected_tuning_candidate=None)
+    launch = triton_materializer._tuned_runtime_launch(
+        tuner,
+        {candidate: {"id": "only"}},
+        handle,
+        compilation,
+        validate_bindings=validate,
+    )
+    value = _FakeTensor((4,), data_ptr=1024)
+    output = _FakeTensor((4,), data_ptr=2048)
+    replacement_value = _FakeTensor((4,), data_ptr=4096)
+    replacement_output = _FakeTensor((4,), data_ptr=8192)
+
+    assert launch(value, output, 32) is output
+    assert launch(replacement_value, replacement_output, 32) is replacement_output
+
+    assert len(prepare_calls) == 1
+    assert set(validated_blocks) == {64}
+    assert [reference() for reference in invoked] == [output, replacement_output]
 
 
 def test_verified_runtime_launch_rebinds_zero_dimensional_value(monkeypatch):
@@ -537,10 +1421,82 @@ def test_triton_prepared_invocation_caches_grid_without_launching(monkeypatch):
 
     assert unowned_invocation is not None
     assert not unowned_invocation.requires_values
+    assert unowned_invocation.structurally_rebindable
     assert value_ref() is None
 
     with pytest.raises(ValueError, match="positive"):
         prepare(("pointer", 0))
+
+
+def test_triton_prepared_invocation_rejects_ambiguous_call_refs(monkeypatch):
+    kernel_calls = []
+
+    class FakeKernel:
+        def __getitem__(self, _grid):
+            def launch(*args, **kwargs):
+                kernel_calls.append((args, kwargs))
+
+            return launch
+
+    kernel = FakeKernel()
+    monkeypatch.setitem(globals(), "_prepared_test_kernel", kernel)
+
+    def generated_launch(first, second, output):
+        _prepared_test_kernel[(1,)](first, second, output)
+
+    prepare = triton_materializer._triton_prepare_invocation(
+        generated_launch,
+        kernel,
+    )
+    shared = _FakeTensor((4,))
+    output = _FakeTensor((4,))
+
+    assert prepare is not None
+    assert (
+        prepare(
+            (shared, shared, output),
+            (None, None, None),
+            (("positional", 0), ("positional", 1), ("positional", 2)),
+        )
+        is None
+    )
+    assert kernel_calls == []
+
+
+def test_triton_prepared_invocation_literalizes_ambiguous_call_refs_for_scalars(
+    monkeypatch,
+):
+    kernel_calls = []
+
+    class FakeKernel:
+        def __getitem__(self, _grid):
+            def launch(*args, **kwargs):
+                kernel_calls.append((args, kwargs))
+
+            return launch
+
+    kernel = FakeKernel()
+    monkeypatch.setitem(globals(), "_prepared_test_kernel", kernel)
+
+    def generated_launch(value, first_size, second_size):
+        _prepared_test_kernel[(1,)](value, first_size, second_size)
+
+    prepare = triton_materializer._triton_prepare_invocation(
+        generated_launch,
+        kernel,
+    )
+    value = _FakeTensor((4,))
+    invocation = prepare(
+        (value, 64, 64),
+        (None, 64, 64),
+        (("positional", 0), ("positional", 1), ("positional", 2)),
+    )
+    replacement = _FakeTensor((4,))
+
+    assert invocation is not None
+    assert invocation.structurally_rebindable
+    invocation((), (replacement, 64, 64), {})
+    assert kernel_calls == [((replacement, 64, 64), {})]
 
 
 def test_triton_direct_winner_reuses_verified_binding_and_restores_aba(monkeypatch):
