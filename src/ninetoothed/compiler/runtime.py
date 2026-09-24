@@ -23,6 +23,7 @@ from ninetoothed.compiler.cache import (
 from ninetoothed.dtype import normalize_dtype
 from ninetoothed.ir import LaunchABI, LaunchBinding, ir_to_dict
 from ninetoothed.targets import (
+    resolve_launch_device_types,
     runtime_device_types,
     validate_artifact_materialization,
 )
@@ -1180,7 +1181,11 @@ def _public_values(
     if missing:
         raise TypeError(f"Missing kernel arguments: {', '.join(missing)}.")
 
-    _validate_runtime_values(values, specs, device_types=device_types)
+    _validate_runtime_values(
+        values,
+        specs,
+        device_types=resolve_launch_device_types(device_types, args, kwargs),
+    )
 
     return values
 
