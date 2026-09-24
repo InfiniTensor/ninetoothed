@@ -44,12 +44,19 @@ class Operation:
     results: tuple[Value, ...] = ()
     attrs: Mapping[str, Any] = field(default_factory=dict)
     regions: tuple["Block", ...] = ()
+    origins: tuple[str, ...] = field(default=(), compare=False)
 
     def __post_init__(self):
         object.__setattr__(self, "operands", tuple(self.operands))
         object.__setattr__(self, "results", tuple(self.results))
         object.__setattr__(self, "attrs", freeze(self.attrs))
         object.__setattr__(self, "regions", tuple(self.regions))
+        origins = tuple(self.origins)
+
+        if any(not isinstance(origin, str) or not origin for origin in origins):
+            raise ValueError("Operation origins must contain non-empty string IDs.")
+
+        object.__setattr__(self, "origins", tuple(dict.fromkeys(origins)))
 
 
 @dataclass(frozen=True, kw_only=True)
