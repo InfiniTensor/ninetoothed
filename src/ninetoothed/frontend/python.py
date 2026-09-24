@@ -1,9 +1,8 @@
 """SSA lowering from NineToothed application Python AST.
 
-This module deliberately lowers computation structure instead of recognizing
-whole operators.  Complex fused kernels are represented with ``scf`` regions,
-tensor operations, reductions, masks, scalar math, and stores rather than with
-operator-level SSA opcodes.
+This module lowers computation structure instead of recognizing whole operators.
+Complex fused kernels are represented with ``scf`` regions, tensor operations,
+reductions, masks, scalar math, and stores, not with operator-level SSA opcodes.
 """
 
 import ast
@@ -42,9 +41,9 @@ def from_application(
 ) -> ssa.Program | None:
     """Lower a NineToothed application function to generic SSA.
 
-    The pass is syntax-directed and target-neutral.  It is intentionally not a
-    semantic pattern matcher for named operators; it only sees Python AST and
-    emits generic operations.
+    The pass is syntax-directed and target-neutral.  It is not a semantic pattern
+    matcher for named operators; it only sees Python AST and emits generic
+    operations.
     """
     try:
         source = inspect.getsource(application)
@@ -490,6 +489,13 @@ class _ApplicationSSABuilder:
             handler(statement, operations, env)
 
     def _lower_expression_statement(self, statement, operations, env) -> None:
+        # A bare literal expression statement is a no-op in Python, so it must
+        # never reach the IR.  This is what stops a function docstring, which is
+        # an `ast.Expr` wrapping an `ast.Constant` string, from being lowered as
+        # a genuine `arith.constant` string that no target can represent.
+        if isinstance(statement.value, ast.Constant):
+            return
+
         self._lower_expr(statement.value, operations, env)
 
     def _lower_return_statement(self, statement, operations, env) -> None:
