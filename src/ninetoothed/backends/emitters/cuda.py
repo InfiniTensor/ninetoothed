@@ -52,6 +52,13 @@ class CudaTarget(EmitterTarget):
         return f"{name} = {value};"
 
     def literal(self, value: Any) -> str:
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value == -(1 << 63)
+        ):
+            return "(-9223372036854775807LL - 1LL)"
+
         if isinstance(value, bool):
             return "true" if value else "false"
 
@@ -79,6 +86,33 @@ class CudaTarget(EmitterTarget):
 
     def cast(self, dtype, value):
         return f"static_cast<{self.type_name(dtype)}>({value})"
+
+    def inline_constant(self, value, type_):
+        return f"static_cast<{self.type_name(type_.dtype, type_.kind)}>({self.literal(value)})"
+
+    def cast_like(self, value, reference):
+        return f"static_cast<{self.value_dtype(reference)}>({value})"
+
+    def value_dtype(self, value):
+        return f"std::remove_cv<std::remove_reference<decltype({value})>::type>::type"
+
+    def true_divide(self, lhs, rhs):
+        return f"_nt_true_divide({lhs}, {rhs})"
+
+    def reduction_identity(self, dtype, operator, shape):
+        del shape
+
+        if operator == "sum":
+            dtype = (
+                f"std::conditional<std::is_integral<{dtype}>::value && "
+                f"(sizeof({dtype}) < 4), int32_t, {dtype}>::type"
+            )
+
+            return f"static_cast<{dtype}>(0)"
+
+        bound = "low" if operator == "max" else "high"
+
+        return f"_nt_limits<{dtype}>::{bound}"
 
     def type_name(self, dtype, kind=None):
         return _cuda_type(dtype, kind)
@@ -165,7 +199,9 @@ class CudaTarget(EmitterTarget):
         return _emit_cuda_cooperative_reduction(local, operation, context)
 
     def local_decl(self, type_: ssa.Type, name: str, expr: str) -> str:
-        if type_.kind == "pointer":
+        if type_.kind == "pointer" or (
+            type_.dtype is None and type_.kind in {"scalar", "tensor"}
+        ):
             return f"auto {name} = {expr};"
         return f"{self.type_name(type_.dtype, type_.kind)} {name} = {expr};"
 
@@ -179,6 +215,17 @@ class CudaTarget(EmitterTarget):
         function = "fmaxf" if operator == "max" else "fminf"
 
         return f"{function}({acc}, {term})"
+
+    def reduce_update_typed(self, operator, acc, term, dtype):
+        if dtype is None:
+            term = self.cast_like(term, acc)
+
+            if operator == "sum":
+                return f"({acc} + {term})"
+            return f"_nt_reduce_{operator}({acc}, {term})"
+        return _cuda_reduction_update(
+            operator, acc, term, _cuda_reduction_accumulator_dtype(dtype, dtype)
+        )
 
     def arithmetic_result_type(self, operation, context) -> ssa.Type:
         return _cuda_arithmetic_result_type(operation, context)
@@ -303,11 +350,14 @@ class CudaTarget(EmitterTarget):
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 #include <mma.h>
-#include <stdint.h>{curand_header}
+#include <stdint.h>
+#include <type_traits>
+#include <limits>{curand_header}
 
 using namespace nvcuda;
 
 {curand_support}
+{_ARITHMETIC_SUPPORT if "_nt_" in body else ""}
 
 extern "C" __global__ void {kernel.kernel_name}_kernel(
 {kernel_params}
@@ -561,6 +611,15 @@ def _cuda_integer_expr(expr: str) -> str:
 def _cuda_arithmetic_result_type(op: ssa.Operation, ctx: _EmitContext) -> ssa.Type:
     result_type = op.results[0].type
 
+    if op.opcode.startswith("math."):
+        # CUDA math calls use the float32 intrinsics (sqrtf, expf, etc.).
+        return replace(result_type, dtype="float32")
+
+    dtype_source = ctx.tensor_infos.get(op.attrs.get("dtype_ref"))
+
+    if result_type.dtype is None and dtype_source is not None:
+        result_type = replace(result_type, dtype=dtype_source.dtype)
+
     if not op.opcode.startswith("arith."):
         return result_type
 
@@ -730,52 +789,28 @@ def _coerce_cuda_binary_args(
     ):
         return args
 
-    dtype = (
-        _normalize_dtype(result_type.dtype)
-        if result_type is not None and _normalize_dtype(result_type.dtype) != "bool"
-        else _cuda_common_operand_dtype(op.operands, ctx)
-    )
+    dtype = result_type.dtype if result_type is not None else None
 
-    if dtype is None:
-        return args
+    if dtype is None or dtype == "bool":
+        return tuple(
+            f"_nt_arithmetic({value})"
+            if (type_ := ctx.tensor_infos.get(operand) or ctx.value_types.get(operand))
+            is not None
+            and type_.dtype
+            in {None, "float8_e4m3fn", "float8_e5m2", "float16", "bfloat16"}
+            else value
+            for operand, value in zip(op.operands, args)
+        )
 
     if dtype in {"float8_e4m3fn", "float8_e5m2", "float16", "bfloat16"}:
         dtype = "float32"
-
-    coerced = []
-
-    for operand, value in zip(op.operands, args):
-        operand_type = ctx.value_types.get(operand)
-        operand_dtype = _normalize_dtype(
-            operand_type.dtype if operand_type is not None else None
-        )
-        coerced.append(
-            ctx.target.cast(dtype, value) if operand_dtype != dtype else value
-        )
-    return tuple(coerced)
-
-
-def _cuda_common_operand_dtype(
-    operands: tuple[str, ...], ctx: _EmitContext
-) -> str | None:
-    ranks = {
-        "bool": 0,
-        "int32": 1,
-        "int64": 2,
-        "float8_e4m3fn": 3,
-        "float8_e5m2": 3,
-        "float16": 4,
-        "bfloat16": 4,
-        "float32": 5,
-        "float64": 6,
-    }
-    dtypes = [
-        _normalize_dtype(type_.dtype)
-        for operand in operands
-        if (type_ := ctx.value_types.get(operand)) is not None
-    ]
-
-    return max(dtypes, key=lambda dtype: ranks.get(dtype, -1)) if dtypes else None
+    return tuple(
+        ctx.target.cast(dtype, value)
+        if ctx.value_types.get(operand) is None
+        or ctx.value_types[operand].dtype != dtype
+        else value
+        for operand, value in zip(op.operands, args)
+    )
 
 
 def _emit_cuda_wmma_reduction_loop(
@@ -944,3 +979,42 @@ def emit(kernel: Kernel):
 
 
 __all__ = ["CudaTarget", "TARGET", "emit"]
+
+
+_ARITHMETIC_SUPPORT = """
+template <class T> __device__ T _nt_reduce_max(T lhs, T rhs) {
+    return lhs > rhs ? lhs : rhs;
+}
+template <class T> __device__ T _nt_reduce_min(T lhs, T rhs) {
+    return lhs < rhs ? lhs : rhs;
+}
+__device__ inline float _nt_reduce_max(float lhs, float rhs) { return fmaxf(lhs, rhs); }
+__device__ inline float _nt_reduce_min(float lhs, float rhs) { return fminf(lhs, rhs); }
+__device__ inline double _nt_reduce_max(double lhs, double rhs) { return fmax(lhs, rhs); }
+__device__ inline double _nt_reduce_min(double lhs, double rhs) { return fmin(lhs, rhs); }
+
+template <class T>
+__device__ typename std::enable_if<std::is_arithmetic<T>::value, T>::type
+_nt_arithmetic(T value) { return value; }
+
+template <class T>
+__device__ typename std::enable_if<!std::is_arithmetic<T>::value, float>::type
+_nt_arithmetic(T value) { return static_cast<float>(value); }
+
+template <class T> struct _nt_limits {
+    using R = typename std::conditional<std::is_arithmetic<T>::value, T, float>::type;
+    static constexpr R low = std::numeric_limits<R>::has_infinity
+        ? -std::numeric_limits<R>::infinity() : std::numeric_limits<R>::lowest();
+    static constexpr R high = std::numeric_limits<R>::has_infinity
+        ? std::numeric_limits<R>::infinity() : std::numeric_limits<R>::max();
+};
+
+template <class A, class B>
+__device__ auto _nt_true_divide(A lhs, B rhs)
+    -> typename std::conditional<std::is_integral<decltype(_nt_arithmetic(lhs) + _nt_arithmetic(rhs))>::value,
+                                 float, decltype(_nt_arithmetic(lhs) + _nt_arithmetic(rhs))>::type {
+    using R = typename std::conditional<
+        std::is_integral<decltype(_nt_arithmetic(lhs) + _nt_arithmetic(rhs))>::value, float, decltype(_nt_arithmetic(lhs) + _nt_arithmetic(rhs))>::type;
+    return static_cast<R>(_nt_arithmetic(lhs)) / static_cast<R>(_nt_arithmetic(rhs));
+}
+"""

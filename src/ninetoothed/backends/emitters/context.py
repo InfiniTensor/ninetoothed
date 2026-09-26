@@ -32,6 +32,14 @@ class CooperativeDotPlan:
     store: ssa.Operation
 
 
+@dataclass(frozen=True, kw_only=True)
+class ValueType:
+    """The element type and a target-language type witness for one SSA value."""
+
+    dtype: str | None
+    sample: str
+
+
 @dataclass(kw_only=True)
 class EmitContext:
     """Mutable traversal state passed to backend rendering hooks."""
@@ -57,6 +65,9 @@ class EmitContext:
     reduce_index: str | None = None
     reduce_flattened: bool = False
     bindings: Mapping[str, str] | None = None
+    type_values: dict[str, ValueType | None] | None = None
+    type_initials: Mapping[str, str] | None = None
+    vector_bindings: frozenset[str] = frozenset()
     temp_counter: list[int] | None = None
     materialized: dict[tuple[str, str], str] | None = None
     parameter_names: frozenset[str] = frozenset()
@@ -101,6 +112,9 @@ class EmitContext:
             "reduce_index": self.reduce_index,
             "reduce_flattened": self.reduce_flattened,
             "bindings": self.bindings,
+            "type_values": self.type_values if lines is None else {},
+            "type_initials": self.type_initials,
+            "vector_bindings": self.vector_bindings,
             "temp_counter": self.temp_counter,
             "materialized": self.materialized if lines is None else {},
             "parameter_names": self.parameter_names,

@@ -110,16 +110,18 @@ def test_cast_updates_ssa_result_dtype():
     program = from_source(
         """
 def application(x, out):
-    out = x.to(float16)
+    alias = x.to(float16)
+    out = x.to(alias.dtype)
 """,
         (_tensor("x", ("n",)), _tensor("out", ("n",), "float16")),
     )
-    cast = next(
+    casts = [
         operation
         for operation in program.blocks[0].operations
         if operation.opcode == "tensor.cast"
-    )
-    assert cast.results[0].type.dtype == "float16"
+    ]
+    assert [cast.results[0].type.dtype for cast in casts] == ["float16", "float16"]
+    assert casts[1].operands[1] == casts[0].results[0].name
 
 
 def test_batched_matmul_type_preserves_broadcast_batch_domain():
