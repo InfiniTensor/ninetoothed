@@ -74,9 +74,13 @@ class TileLangTarget(EmitterTarget):
         return True
 
     def mutable_scalar_decl(self, type_: ssa.Type, name: str, init: str) -> list[str]:
-        dtype = common.normalize_dtype(type_.dtype)
+        dtype = (
+            f'"{common.normalize_dtype(type_.dtype)}"'
+            if type_.dtype is not None
+            else self.value_dtype(init)
+        )
 
-        return [f'{name} = T.alloc_var("{dtype}", {init})']
+        return [f"{name} = T.alloc_var({dtype}, {init})"]
 
     def literal(self, value: Any) -> str:
         if isinstance(value, float) and math.isinf(value):
@@ -101,6 +105,17 @@ class TileLangTarget(EmitterTarget):
 
     def cast(self, dtype, value):
         return f'T.Cast("{common.normalize_dtype(dtype)}", {value})'
+
+    def cast_like(self, value, reference):
+        return f"T.Cast({self.value_dtype(reference)}, {value})"
+
+    def value_dtype(self, value):
+        return f"_nt_dtype({value})"
+
+    def reduction_identity(self, dtype, operator, shape):
+        del shape
+
+        return f"_nt_identity({dtype}, {operator!r})"
 
     def where(self, cond, yes, no):
         return f"T.if_then_else({cond}, {yes}, {no})"
@@ -353,6 +368,8 @@ except ImportError:
     T = None
 
 
+{_TYPE_IDENTITY}
+
 def build_{kernel.kernel_name}():
     if tilelang is None:
         raise ImportError("TileLang is required to build this backend artifact.")
@@ -431,6 +448,8 @@ except ImportError:
     T = None
 
 
+{_TYPE_IDENTITY}
+
 def build_{kernel.kernel_name}():
     if tilelang is None:
         raise ImportError("TileLang is required to build this backend artifact.")
@@ -499,3 +518,20 @@ def _tile_scalar_abi_dtype(dtype: str | None) -> str:
     if dtype in {"float16", "bfloat16", "float8_e4m3fn", "float8_e5m2"}:
         return "T.float32"
     return _tile_dtype(dtype)
+
+
+_TYPE_IDENTITY = """
+
+def _nt_dtype(value):
+    return value.dtype if hasattr(value, "dtype") else T.const(value).dtype
+
+
+def _nt_identity(dtype, operator):
+    if operator == "sum":
+        if dtype.startswith(("int", "uint")) and int(dtype.lstrip("uint")) < 32:
+            dtype = "int32"
+        return T.Cast(dtype, 0)
+    if dtype.startswith(("float", "bfloat")) and dtype != "float8_e4m3fn":
+        return T.Cast(dtype, float("-inf" if operator == "max" else "inf"))
+    return T.min_value(dtype) if operator == "max" else T.max_value(dtype)
+"""
