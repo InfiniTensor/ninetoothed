@@ -1501,7 +1501,8 @@ def _emit_linalg_dot(
 
     if product_masks:
         product_mask = " && ".join(f"({mask})" for mask in product_masks)
-        product = f"(({product_mask}) ? ({product}) : 0.0)"
+        zero = ctx.target.literal(0.0)
+        product = f"(({product_mask}) ? ({product}) : {zero})"
 
     body_lines.append(
         _assign_scalar(
@@ -1767,7 +1768,7 @@ def _element_binary(
         )
         mask = " && ".join(f"({item})" for item in masks)
 
-        return f"(({mask}) ? ({result}) : 0.0)"
+        return f"(({mask}) ? ({result}) : {ctx.target.literal(0.0)})"
     return result
 
 
@@ -2695,7 +2696,7 @@ def _scf_if_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     if len(op.regions) == 1:
         then_value = _region_yield_expr(op.regions[0], ctx)
 
-        return ctx.target.where(condition, then_value, "0.0")
+        return ctx.target.where(condition, then_value, ctx.target.literal(0.0))
 
     then_region, else_region = op.regions[:2]
     then_value = _region_yield_expr(then_region, ctx)
@@ -2715,7 +2716,7 @@ def _scf_if_element(
     if len(op.regions) == 1:
         then_value = _region_yield_element(op.regions[0], coords, ctx)
 
-        return ctx.target.where(condition, then_value, "0.0")
+        return ctx.target.where(condition, then_value, ctx.target.literal(0.0))
 
     then_region, else_region = op.regions[:2]
     then_value = _region_yield_element(then_region, coords, ctx)

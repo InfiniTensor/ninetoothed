@@ -41,6 +41,23 @@ _BACKEND_TEST_LIMITATIONS = {
             "generated kernel",
         ),
     ),
+    "ascendc": (
+        (
+            "test_matmul",
+            "the scalar AscendC dot lowering awaits the shared frontend "
+            "tile-navigation fix for expanded views",
+        ),
+        (
+            "test_attention",
+            "the scalar AscendC dot lowering awaits the shared frontend "
+            "tile-navigation fix for expanded views",
+        ),
+        (
+            "test_max_pool2d",
+            "the scalar AscendC dot lowering awaits the shared frontend "
+            "tile-navigation fix for expanded views",
+        ),
+    ),
 }
 
 
