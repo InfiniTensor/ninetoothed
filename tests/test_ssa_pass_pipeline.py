@@ -154,6 +154,7 @@ class TestPipeline:
             "ssa.triton.block_reductions",
             "ssa.cuda.optimize_schedule",
             "ssa.tilelang.optimize_schedule",
+            "ssa.bangc.optimize_schedule",
         }
 
         platform_passes = {

@@ -15,6 +15,32 @@ from ninetoothed.backends.toolchain import cuda_compile_command
 from ninetoothed.frontend.python import from_source
 from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict
 from ninetoothed.targets import PlatformProfile, TargetContext
+from tests.utils import backend_platform_available, requires_backend
+
+# Shared emission checks iterate every backend whose toolchain platform is
+# reachable on this host.  Platform gating itself lives in
+# tests/utils.py::_BACKEND_PLATFORM_PROBES; new backends only add a fragment
+# entry below and (when platform-locked) a probe entry there.
+EMISSION_TEST_BACKENDS = tuple(
+    backend
+    for backend in ("triton", "cuda", "tilelang", "bangc")
+    if backend_platform_available(backend)
+)
+
+
+def _generic_target_context(backend):
+    """Build a generic-platform context so emission snapshots stay hermetic.
+
+    Without this, a pinned ``NINETOOTHED_PLATFORM`` in the environment would
+    change platform constraints (grid limits, config caps) and break
+    assertions that describe the generic lowering.
+    """
+    from ninetoothed.targets import default_platform_registry
+
+    return TargetContext(
+        backend=normalize_target(backend),
+        platform=default_platform_registry().get("generic"),
+    )
 
 
 def _source_only_kernel():
@@ -183,16 +209,17 @@ class TestRegistry:
         with pytest.raises(RuntimeError, match="Explicit CUDA compiler"):
             toolchain.find_nvcc()
 
-    def test_default_registry_reports_three_backends(self):
+    def test_default_registry_reports_builtin_backends(self):
         names = {capability.name for capability in backend_capabilities()}
         assert names == {
             Target.TRITON,
             Target.TILELANG,
             Target.CUDA,
+            Target.BANGC,
         }
 
     def test_backends_reject_source_only_kernel_without_ssa(self):
-        for backend in ("triton", "cuda", "tilelang"):
+        for backend in EMISSION_TEST_BACKENDS:
             with pytest.raises(ValueError, match="requires ssa.Program"):
                 emit(_source_only_kernel(), backend)
 
@@ -201,10 +228,17 @@ class TestRegistry:
             "triton": ("python/triton", "tl.store(out + index, v0, mask=mask)"),
             "cuda": ("cuda/c++", "out[index] = v0;"),
             "tilelang": ("python/tilelang", "out_buf[index] = v0"),
+            "bangc": (
+                "bangc/c++",
+                "__bang_add(nt_buf_out, nt_buf_x, nt_buf_y, nt_aligned);",
+            ),
         }
 
-        for backend, (language, fragment) in expected.items():
-            artifact = emit(_add_kernel(), backend)
+        for backend in EMISSION_TEST_BACKENDS:
+            language, fragment = expected[backend]
+            artifact = emit(
+                _add_kernel(), backend, target_context=_generic_target_context(backend)
+            )
             assert artifact.language == language
             assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["target"]["platform"] == "generic"
@@ -224,24 +258,40 @@ class TestRegistry:
 
         assert f"if {expected}:" in artifact.primary_source
 
+    @requires_backend("cuda")
     def test_cuda_backend_includes_fp16_header_for_half_artifacts(self):
         artifact = emit(_add_kernel("float16"), "cuda")
         assert "#include <cuda_fp16.h>" in artifact.primary_source
         assert "const half* __restrict__ x" in artifact.primary_source
         assert "half* __restrict__ out" in artifact.primary_source
 
+    @requires_backend("bangc")
+    def test_bangc_backend_maps_half_dtypes_to_bang_types(self):
+        artifact = emit(_add_kernel("float16"), "bangc")
+        assert "#include <bang.h>" in artifact.primary_source
+        assert "const half* __restrict__ x" in artifact.primary_source
+        assert "half* __restrict__ out" in artifact.primary_source
+        assert "__mlu_entry__" in artifact.primary_source
+        assert "cnrtQueue_t queue" in artifact.primary_source
+
     def test_linalg_matmul_is_decomposed_before_backend_emission(self):
         expected_fragments = {
             "triton": "for v10_i in range(0, k, 1):",
             "cuda": "for (int64_t v10_i = 0; v10_i < k; v10_i += 1)",
             "tilelang": "for v10_i in T.serial(k)",
+            "bangc": "for (int64_t v10_i = 0; v10_i < k; v10_i += 1)",
         }
 
-        for backend, fragment in expected_fragments.items():
-            artifact = emit(_matmul_kernel(), backend)
-            assert fragment in artifact.primary_source
+        for backend in EMISSION_TEST_BACKENDS:
+            artifact = emit(
+                _matmul_kernel(),
+                backend,
+                target_context=_generic_target_context(backend),
+            )
+            assert expected_fragments[backend] in artifact.primary_source
             assert "linalg.matmul" not in artifact.primary_source
 
+    @requires_backend("cuda")
     def test_cuda_exposes_only_materialized_wmma_schedule(self):
         artifact = emit(_matmul_kernel("float16"), "cuda")
         candidates = artifact.metadata["ssa_metadata"]["schedule_candidates"]
@@ -259,6 +309,7 @@ class TestRegistry:
         with pytest.raises(ValueError, match="Unknown schedule candidate"):
             emit(kernel, "cuda")
 
+    @requires_backend("cuda")
     def test_cuda_constraints_fall_back_to_generic_dot(self):
         kernel = replace(
             _matmul_kernel("float16"),
@@ -269,6 +320,7 @@ class TestRegistry:
         rejected = artifact.metadata["ssa_metadata"]["rejected_schedule_candidates"]
         assert "requires compute capability 7.0" in rejected[0]["reason"]
 
+    @requires_backend("cuda")
     def test_cuda_profile_can_disable_unverified_wmma(self):
         target = TargetContext(
             backend=Target.CUDA,
@@ -288,6 +340,7 @@ class TestRegistry:
         assert "wmma::" not in artifact.primary_source
         assert not artifact.metadata["ssa_metadata"]["schedule_candidates"]
 
+    @requires_backend("cuda")
     def test_optimization_metadata_contains_only_materialized_choices(self):
         forbidden_fields = {
             "input_precision",
@@ -306,12 +359,14 @@ class TestRegistry:
                 ir_to_dict(artifact.metadata["ssa"])
             )
 
+    @requires_backend("cuda")
     def test_generic_cuda_launch_matches_emitted_thread_count(self):
         artifact = emit(_add_kernel(), "cuda")
         assert "constexpr int threads = 256;" in artifact.primary_source
         assert "if (blocks <= 0)" in artifact.primary_source
         assert artifact.metadata["launch_block"] == ("256",)
 
+    @requires_backend("cuda")
     def test_artifact_can_write_all_sources(self, tmp_path):
         artifact = emit(_add_kernel(), "cuda")
         paths = artifact.write_to(tmp_path)
@@ -375,6 +430,7 @@ class TestRegistry:
         with pytest.raises(ValueError, match="does not support `dtype.fp8`"):
             emit(replace(kernel, ssa=reused), target_context=target)
 
+    @requires_backend("cuda")
     def test_manifest_and_in_memory_metadata_share_one_builder(self):
         artifact = emit(_add_kernel(), "cuda")
         manifest = next(
