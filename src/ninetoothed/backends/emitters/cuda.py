@@ -337,11 +337,52 @@ class CudaTarget(EmitterTarget):
                 )
                 blocks_expr = rows
             else:
-                kernel_prelude = f"""    int64_t {self.index_name} = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+                from ninetoothed.backends.emitters.staging import (
+                    flatten_tiled_accesses,
+                    split_stride_guard,
+                    staging_extent,
+                )
+
+                guard_pred, guarded_body = split_stride_guard(body)
+                flat_body = None
+
+                if guard_pred is not None:
+                    flat_body = flatten_tiled_accesses(guarded_body, context)
+
+                extent_expr = staging_extent(
+                    context,
+                    [(n, n) for n in (*context.variables, *context.outputs)],
+                )
+
+                if flat_body is not None and extent_expr is not None:
+                    extent_c = _cuda_integer_expr(extent_expr)
+                    flat_names = [
+                        n
+                        for n in (*context.variables, *context.outputs)
+                        if f"{n}[" in flat_body
+                    ]
+
+                    vectorized = _render_flat_vectorized(
+                        flat_body, extent_c, flat_names or None
+                    )
+
+                    if vectorized is not None:
+                        kernel_prelude = vectorized
+                        blocks_expr = (
+                            f"({extent_c} + threads * 16 - 1) / (threads * 16)"
+                        )
+                    else:
+                        kernel_prelude = f"""    int64_t {self.index_name} = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if ({self.index_name} < {extent_c}) {{
+{common.indent_block(flat_body, "        ")}
+    }}"""
+                        blocks_expr = f"({extent_c} + threads - 1) / threads"
+                else:
+                    kernel_prelude = f"""    int64_t {self.index_name} = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if ({self.index_name} < {total}) {{
 {common.indent_block(body, "        ")}
     }}"""
-                blocks_expr = f"({total} + threads - 1) / threads"
+                    blocks_expr = f"({total} + threads - 1) / threads"
 
         curand_header, curand_support = _curand_support(context)
 
@@ -463,6 +504,73 @@ def _render_shared_reduce_broadcast(operator, x_name, out_name, cols, scale, con
     ]
 
     return newline.join(lines)
+
+
+def _render_flat_vectorized(flat_body: str, extent: str, names) -> str | None:
+    """Emit an explicit ``float4`` vectorized flat elementwise body.
+
+    Every tensor is addressed as ``name[index]`` in the flattened body;
+    each access maps onto a ``float4`` component so one thread moves
+    128 bits per tensor, with a scalar tail covering the remainder.
+    """
+    import re
+
+    comp = ("x", "y", "z", "w")
+    groups = 4
+    copies = []
+
+    for g in range(groups):
+        group_lines = []
+
+        for k in range(4):
+            body_k = flat_body
+
+            for name in names:
+                body_k = body_k.replace(
+                    f"{name}[(nt_vi + {k})]", f"nt4_{name}_{g}.{comp[k]}"
+                )
+
+            if "[(nt_vi + " in body_k and re.search(r"\w+\[\(nt_vi \+ \d\)\]", body_k):
+                return None
+
+            group_lines.append(
+                "{" + chr(10) + common.indent_block(body_k, "    ") + chr(10) + "}"
+            )
+
+        copies.append(chr(10).join(group_lines))
+
+    loads = []
+
+    for g in range(groups):
+        loads.append(
+            chr(10).join(
+                f"        float4 nt4_{name}_{g} = "
+                f"*reinterpret_cast<const float4*>({name} + nt_vi + {g * 4});"
+                for name in names[:-1]
+            )
+        )
+
+    stores = chr(10).join(
+        f"        *reinterpret_cast<float4*>({names[-1]} + nt_vi + {g * 4}) = "
+        f"nt4_{names[-1]}_{g};"
+        for g in range(groups)
+    )
+    span = groups * 4
+
+    return f"""    const int64_t nt_extent = {extent};
+    int64_t nt_vi = ((int64_t)blockIdx.x * blockDim.x + threadIdx.x) * {span};
+    if (nt_vi + {span} <= nt_extent) {{
+{chr(10).join(loads)}
+{chr(10).join(common.indent_block(c, "        ") for c in copies)}
+{stores}
+    }} else {{
+        for (int nt_vk = 0; nt_vk < {span}; nt_vk++) {{
+            int64_t index = nt_vi + nt_vk;
+            if (index < nt_extent) {{
+{common.indent_block(flat_body, "                ")}
+            }}
+        }}
+    }}"""
 
 
 def _render_row_reduce(operator, x_name, out_name, cols, scale, context):
