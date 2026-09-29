@@ -190,8 +190,25 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
     specializations: dict[tuple[tuple[str, str], ...], Handle] = {}
     handle = None
 
+    dispatch_memo = {}
+
     def launch(*args, **kwargs):
         nonlocal handle
+
+        if not kwargs and args:
+            memo_key = tuple(_launch_arg_signature(arg) for arg in args)
+            memoized = dispatch_memo.get(memo_key)
+        else:
+            memo_key = None
+            memoized = None
+
+        if (
+            memoized is not None
+            and len(args) == len(memoized[1])
+            and all(arg is ref() for arg, ref in zip(args, memoized[1]))
+        ):
+            return memoized[0](*args)
+
         public = _public_values(
             compilation.launch_abi,
             args,
@@ -233,10 +250,19 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
             handle._pass_trace = specialized._pass_trace
             handle._launch_plan = specialized._launch_plan
             handle._built_artifact = specialized._built_artifact
-        return specialized(
+
+        result = specialized(
             *args,
             **_filter_runtime_kwargs(specialized._compilation.launch_abi, kwargs),
         )
+
+        if memo_key is not None and len(dispatch_memo) < 128:
+            dispatch_memo[memo_key] = (
+                specialized,
+                tuple(_launch_arg_weakref(arg) for arg in args),
+            )
+
+        return result
 
     handle = Handle(compilation, None, launch, source)
 
@@ -986,6 +1012,22 @@ def _verified_runtime_launch(launch):
     return verified
 
 
+def _launch_arg_weakref(arg):
+    """Weak reference for launch memo identity; None if not weakrefable."""
+    try:
+        return weakref.ref(arg)
+    except TypeError:
+        return None
+
+
+def _launch_arg_signature(arg):
+    """Pointer/shape/stride identity used to validate cached launches."""
+    data_ptr = arg.data_ptr() if hasattr(arg, "data_ptr") else arg
+    stride = arg.stride() if hasattr(arg, "stride") else None
+
+    return (data_ptr, getattr(arg, "shape", None), stride)
+
+
 def _runtime_wrapper(
     function,
     abi: LaunchABI,
@@ -1105,7 +1147,15 @@ def _runtime_wrapper(
             return result
         return _first_output_from_call(abi, args, kwargs)
 
-    def launch(*args, **kwargs):
+    launch_memo = {}
+    # Pointer-only launches can be memoized: value-carrying bindings
+    # (constexpr scalars, meta symbols) read argument contents that may
+    # mutate in place under a stable data pointer.
+    memo_eligible = low_level and all(
+        binding.kind in {"tensor", "shape", "stride"} for binding in abi.kernel_args
+    )
+
+    def _launch_slow(*args, **kwargs):
         public = _public_values(
             abi,
             args,
@@ -1137,6 +1187,63 @@ def _runtime_wrapper(
         if result is not None and not abi.outputs:
             return result
         return _first_output(abi, public)
+
+    def launch(*args, **kwargs):
+        if kwargs or not args or not memo_eligible:
+            return _launch_slow(*args, **kwargs)
+
+        memo_key = tuple(id(arg) for arg in args)
+        entry = launch_memo.get(memo_key)
+
+        if entry is not None:
+            values, ptr_sig, keepalive, public, original_refs = entry
+
+            still_same = len(args) == len(original_refs) and all(
+                arg is ref() for arg, ref in zip(args, original_refs)
+            )
+
+            if (
+                still_same
+                and tuple(_launch_arg_signature(arg) for arg in args) == ptr_sig
+            ):
+                result = function(*values)
+
+                if result is not None and not abi.outputs:
+                    return result
+
+                return _first_output(abi, public)
+
+        result = _launch_slow(*args)
+
+        if len(launch_memo) < 128:
+            public_fast = _public_values(
+                abi,
+                args,
+                {},
+                specs=specs,
+                device_types=device_types,
+            )
+            bound_public = dict(public_fast) | overrides
+            values, keepalive = _bound_values(
+                abi,
+                bound_public,
+                scalar_mode="value",
+            )
+
+            if low_level:
+                values, flattened = _flatten_ffi_tensor_args(abi.kernel_args, values)
+                keepalive.extend(flattened)
+
+            ptr_sig = tuple(_launch_arg_signature(arg) for arg in args)
+            launch_memo[memo_key] = (
+                values,
+                ptr_sig,
+                keepalive,
+                public_fast,
+                tuple(_launch_arg_weakref(arg) for arg in args),
+            )
+
+        return result
 
     launch._ninetoothed_prepare = prepare
     launch._ninetoothed_invoke_prepared = invoke
