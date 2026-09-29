@@ -1357,6 +1357,10 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     if opcode.startswith("arith."):
         operator = opcode[len("arith.") :]
         args = tuple(_emit_value(operand, ctx) for operand in op.operands)
+        specialized = target.arithmetic_expr(op, args, ctx)
+
+        if specialized is not None:
+            return specialized
 
         if operator in _UNARY:
             return f"({_UNARY[operator]}{args[0]})"
@@ -1423,6 +1427,11 @@ def _binary_expr(operator: str, op: ssa.Operation, ctx: _EmitContext) -> str:
 
     args = tuple(_emit_value(operand, ctx) for operand in op.operands)
     args = ctx.target.coerce_binary_args(op, args, ctx)
+    specialized = ctx.target.arithmetic_expr(op, args, ctx)
+
+    if specialized is not None:
+        return specialized
+
     symbol = _BINARY[operator]
 
     return f"({args[0]} {symbol} {args[1]})"
@@ -1605,6 +1614,9 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
                 op.results[0].type.attrs.get("dtype_level", _dtype_level(base, ctx))
             )
 
+            if level == _dtype_level(base, ctx):
+                coords = (*extract_indices, *coords)
+
             return _load_tensor_at(
                 base, coords, ctx, level=level, extract_indices=extract_indices
             )
@@ -1654,13 +1666,24 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
         operator = op.opcode[len("arith.") :]
 
         if operator in _UNARY:
-            return f"({_UNARY[operator]}{_emit_element(op.operands[0], coords, ctx)})"
+            operand = _emit_element(op.operands[0], coords, ctx)
+            specialized = ctx.target.arithmetic_expr(op, (operand,), ctx)
 
-        if operator in {"maximum", "max"}:
-            return ctx.target.call("maximum", _element_args(op, coords, ctx))
+            if specialized is not None:
+                return specialized
 
-        if operator in {"minimum", "min"}:
-            return ctx.target.call("minimum", _element_args(op, coords, ctx))
+            return f"({_UNARY[operator]}{operand})"
+
+        if operator in {"maximum", "max", "minimum", "min"}:
+            args = _element_args(op, coords, ctx)
+            specialized = ctx.target.arithmetic_expr(op, args, ctx)
+
+            if specialized is not None:
+                return specialized
+
+            function = "maximum" if operator in {"maximum", "max"} else "minimum"
+
+            return ctx.target.call(function, args)
 
         if operator == "pow":
             return ctx.target.call("pow", _element_args(op, coords, ctx))
@@ -1747,6 +1770,10 @@ def _element_binary(
         args = _element_args(op, coords, ctx)
 
     args = ctx.target.coerce_binary_args(op, args, ctx)
+    specialized = ctx.target.arithmetic_expr(op, args, ctx)
+
+    if specialized is not None:
+        return specialized
 
     if operator == "floordiv":
         return (
@@ -3364,6 +3391,11 @@ def _coords_from_linear(
 
 
 def _target_index_expr(target: _Target, expr: str) -> str:
+    specialized = target.render_index_expr(expr)
+
+    if specialized is not None:
+        return specialized
+
     rewritten = _rewrite_index_math(expr, c_style=target.c_style_syntax)
 
     return rewritten

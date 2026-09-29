@@ -101,12 +101,70 @@ def _elementwise_kernel(tensor_count: int) -> Kernel:
     )
 
 
+def test_rvne_options_are_explicit_without_probing_toolchain(tmp_path):
+    backend = default_registry().get(Target.RVNE)
+    toolchain_root = str(tmp_path / "not-installed")
+
+    assert backend.normalize_options({}) == {}
+    assert backend.normalize_options({"toolchain_root": toolchain_root}) == {
+        "toolchain_root": toolchain_root
+    }
+
+    for value in (None, "", "  ", 123):
+        with pytest.raises(TypeError, match="must be a non-empty string"):
+            backend.normalize_options({"toolchain_root": value})
+
+    with pytest.raises(TypeError, match="Unsupported rvne backend option"):
+        backend.normalize_options({"arch": "rv64gc"})
+
+
+@pytest.mark.parametrize("dtype", (None, "float16", "bfloat16", "float64", "int8"))
+def test_rvne_rejects_unsupported_input_dtypes_without_quantization(dtype):
+    with pytest.raises(TypeError, match="RVNE does not support dtype"):
+        default_registry().get(Target.RVNE).prepare_for_emission(_add_kernel(dtype))
+
+
+@pytest.mark.parametrize("operator", ("/", "//", "%", "**"))
+def test_rvne_rejects_unimplemented_arithmetic(operator):
+    kernel = _kernel_from_source(
+        f"\ndef calculate(x, y, out):\n    out = x {operator} y\n",
+        name="calculate",
+        tensors=_add_kernel("int32").tensors,
+    )
+
+    with pytest.raises(ValueError, match="RVNE does not support SSA operation"):
+        default_registry().get(Target.RVNE).prepare_for_emission(kernel)
+
+
+def test_rvne_validates_unsupported_operations_inside_control_flow():
+    kernel = _kernel_from_source(
+        "\ndef calculate(x, y, out):\n    for i in range(2):\n        out = x // y\n",
+        name="calculate",
+        tensors=_add_kernel("int32").tensors,
+    )
+
+    with pytest.raises(ValueError, match="arith.floordiv"):
+        default_registry().get(Target.RVNE).prepare_for_emission(kernel)
+
+
+def test_rvne_rejects_jagged_tensor_arguments():
+    kernel = _add_kernel("int32")
+    kernel = replace(
+        kernel,
+        tensors=(replace(kernel.tensors[0], jagged_dim=0), *kernel.tensors[1:]),
+    )
+
+    with pytest.raises(ValueError, match="does not support jagged"):
+        default_registry().get(Target.RVNE).prepare_for_emission(kernel)
+
+
 class TestRegistry:
     def test_backend_names_are_normalized_without_aliases(self):
         assert normalize_target(None) == Target.TRITON
         assert normalize_target("triton") == Target.TRITON
         assert normalize_target("tilelang") == Target.TILELANG
         assert normalize_target("cuda") == Target.CUDA
+        assert normalize_target("rvne") == Target.RVNE
 
         for alias in ("tl", "tile-lang", "tile_lang", "cu"):
             with pytest.raises(ValueError, match="Unsupported backend"):
@@ -183,16 +241,17 @@ class TestRegistry:
         with pytest.raises(RuntimeError, match="Explicit CUDA compiler"):
             toolchain.find_nvcc()
 
-    def test_default_registry_reports_three_backends(self):
+    def test_default_registry_reports_builtin_backends(self):
         names = {capability.name for capability in backend_capabilities()}
         assert names == {
             Target.TRITON,
             Target.TILELANG,
             Target.CUDA,
+            Target.RVNE,
         }
 
     def test_backends_reject_source_only_kernel_without_ssa(self):
-        for backend in ("triton", "cuda", "tilelang"):
+        for backend in ("triton", "cuda", "tilelang", "rvne"):
             with pytest.raises(ValueError, match="requires ssa.Program"):
                 emit(_source_only_kernel(), backend)
 
@@ -298,7 +357,8 @@ class TestRegistry:
         }
 
         for backend in Target:
-            artifact = emit(_matmul_kernel("float16"), backend)
+            dtype = "float32" if backend == Target.RVNE else "float16"
+            artifact = emit(_matmul_kernel(dtype), backend)
             optimization = artifact.metadata["ssa_optimization"]
             assert set(optimization) <= {"preserve_linalg", "schedule"}
             assert forbidden_fields.isdisjoint(optimization)
