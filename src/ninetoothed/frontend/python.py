@@ -428,6 +428,7 @@ class _ApplicationSSABuilder:
         self.operations: list[ssa.Operation] = []
         self.env: dict[str, ssa.Value] = {}
         self.constructor_dtype_refs: dict[str, str] = {}
+        self.precise_dtypes: dict[str, str] = {}
         self.temp_index = 0
         self.symbol_names = {
             name
@@ -1068,15 +1069,54 @@ class _ApplicationSSABuilder:
             if not node.args:
                 raise _lowering_error(node, "`to()` requires a destination dtype")
 
-            dtype = _unparse(node.args[0])
+            dtype_node = node.args[0]
+            dtype = _unparse(dtype_node)
+            dtype_ref = None
+            dtype_operand = None
 
-            return self._emit(
+            if isinstance(dtype_node, ast.Attribute) and dtype_node.attr == "dtype":
+                owner = dtype_node.value
+
+                while isinstance(owner, ast.Subscript) or (
+                    isinstance(owner, ast.Attribute) and owner.attr == "source"
+                ):
+                    owner = owner.value
+
+                source = self._lower_expr(owner, operations, env)
+                dtype_ref = self.constructor_dtype_refs.get(source.name)
+
+                if dtype_ref not in self.param_names:
+                    dtype_ref = None
+
+                if source.name in self.param_names:
+                    dtype_ref = source.name
+
+                dtype = source.type.dtype
+
+                if (
+                    dtype_ref is not None
+                    and self.tensor_types[dtype_ref].kind == "scalar"
+                ):
+                    dtype = None
+
+                if dtype_ref is None:
+                    dtype_operand = source.name
+                    dtype = self.precise_dtypes.get(source.name)
+
+            result = self._emit(
                 operations,
                 "tensor.cast",
-                operands=(receiver.name,),
-                attrs={"dtype": dtype},
+                operands=(receiver.name,)
+                if dtype_operand is None
+                else (receiver.name, dtype_operand),
+                attrs={"dtype": dtype, "dtype_ref": dtype_ref},
                 result_type=_cast_type(receiver.type, dtype),
             )
+
+            if dtype_ref is not None:
+                self.constructor_dtype_refs[result.name] = dtype_ref
+
+            return result
 
         if method == "offsets":
             dim = _literal_value(node.args[0]) if node.args else None
@@ -1137,7 +1177,9 @@ class _ApplicationSSABuilder:
             f"reduce.{method}",
             operands=(receiver.name,),
             attrs={"axis": axis},
-            result_type=_reduce_type(receiver.type, axis, strict=self.strict),
+            result_type=_reduce_type(
+                receiver.type, axis, operator=method, strict=self.strict
+            ),
         )
 
     def _lower_constructor_call(self, name, node, operations, env):
@@ -1242,6 +1284,7 @@ class _ApplicationSSABuilder:
                     result_type=_reduce_type(
                         operands[0].type,
                         axis,
+                        operator=operator,
                         strict=self.strict,
                     ),
                 )
@@ -1265,7 +1308,9 @@ class _ApplicationSSABuilder:
             f"reduce.{name}",
             operands=(operands[0].name,),
             attrs={"axis": axis},
-            result_type=_reduce_type(operands[0].type, axis, strict=self.strict),
+            result_type=_reduce_type(
+                operands[0].type, axis, operator=name, strict=self.strict
+            ),
         )
 
     def _lower_linalg_call(self, name, node, operands, operations):
@@ -1515,6 +1560,33 @@ class _ApplicationSSABuilder:
                 attrs=dict(attrs or {}),
             )
         )
+
+        if opcode == "tensor.cast":
+            if result.type.dtype is not None:
+                self.precise_dtypes[result.name] = result.type.dtype
+
+        if opcode.startswith("reduce.") and operands:
+            source = operands[0]
+
+            if source in self.precise_dtypes or source in self.param_names:
+                if result.type.dtype is not None:
+                    self.precise_dtypes[result.name] = result.type.dtype
+
+        if opcode in {"tensor.view", "tensor.extract", "linalg.transpose"} and operands:
+            # These operations preserve the source's element dtype.
+            source = operands[0]
+
+            if source in self.precise_dtypes:
+                self.precise_dtypes[result.name] = self.precise_dtypes[source]
+
+            dtype_ref = (
+                source
+                if source in self.param_names
+                else self.constructor_dtype_refs.get(source)
+            )
+
+            if dtype_ref is not None:
+                self.constructor_dtype_refs[result.name] = dtype_ref
 
         return result
 
@@ -1774,9 +1846,9 @@ def _resolved_constructor_dtype(
                 source = env[owner.id]
                 dtype_ref = constructor_dtype_refs.get(source.name, source.name)
 
-                return source.type.dtype or "float32", dtype_ref
+                return source.type.dtype, dtype_ref
         return _unparse(value), None
-    return None, None
+    return "float32", None
 
 
 def _literal_value(node: ast.AST) -> Any:

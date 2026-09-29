@@ -31,6 +31,7 @@ from ninetoothed.backends.emitters.context import (
 )
 from ninetoothed.backends.emitters.context import EmitContext as _EmitContext
 from ninetoothed.backends.emitters.context import TensorInfo as _TensorInfo
+from ninetoothed.backends.emitters.context import ValueType as _ValueType
 from ninetoothed.backends.emitters.expressions import (
     default_strides as _default_strides,
 )
@@ -823,6 +824,13 @@ def _render_body(
         else None,
         coordinate_exprs=coordinate_exprs,
         bindings={},
+        type_values={},
+        type_initials={
+            attr["block_arg"]: attr["initial"]
+            for op in {id(op): op for op in op_by_result.values()}.values()
+            if op.opcode == "scf.for"
+            for attr in op.attrs.get("iter_args", ())
+        },
         temp_counter=[0],
         materialized={},
         parameter_names=parameter_names,
@@ -1119,7 +1127,16 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
 
 def _emit_value(name: str, ctx: _EmitContext) -> str:
     if ctx.bindings and name in ctx.bindings:
-        return ctx.bindings[name]
+        bound = ctx.bindings[name]
+
+        if (
+            ctx.target.vector_value_semantics
+            and ctx.reduce_index is not None
+            and name in ctx.vector_bindings
+            and len(_value_axes(name, ctx)) == 1
+        ):
+            return _loop_bound_vector_element(name, bound, ctx.reduce_index, ctx)
+        return bound
 
     if name in ctx.memo:
         return ctx.memo[name]
@@ -1166,10 +1183,20 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
                 kind="scalar",
                 dtype=op.results[0].type.dtype if op.results else "float32",
             )
-            identity = _reduction_identity(operator, result_type, ctx.target)
 
-            if ctx.mask_expr is not None:
-                operand = ctx.target.where(ctx.mask_expr, operand, identity)
+            if result_type.dtype is None:
+                identity = ctx.target.reduction_identity(
+                    f"({operand}).dtype", operator, "()"
+                )
+            else:
+                identity = _reduction_identity(operator, result_type, ctx.target)
+
+            mask = _reduction_input_mask(
+                op.operands[0], _current_coords(operand_axes, ctx), ctx
+            )
+
+            if mask is not None:
+                operand = ctx.target.where(mask, operand, identity)
 
             expr = ctx.target.vector_reduce(operator, operand, 0)
             ctx.lines.append(ctx.target.local_decl(result_type, local, expr))
@@ -1324,12 +1351,14 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
         return _emit_value(op.operands[0], ctx)
 
     if opcode in {"tensor.zeros", "tensor.empty"}:
-        return "0.0"
+        return _constructor_value(op, "0.0", ctx)
 
     if opcode == "tensor.full":
         if op.operands:
-            return _emit_value(op.operands[0], ctx)
-        return target.literal(op.attrs.get("value", 0.0))
+            value = _emit_value(op.operands[0], ctx)
+        else:
+            value = target.literal(op.attrs.get("value", 0.0))
+        return _constructor_value(op, value, ctx)
 
     if opcode == "tensor.extract":
         tensor = op.operands[0]
@@ -1351,42 +1380,11 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
 
         return target.where(args[0], args[1], args[2])
 
-    if opcode.startswith("cmp."):
-        return _binary_expr(opcode[len("cmp.") :], op, ctx)
-
-    if opcode.startswith("arith."):
-        operator = opcode[len("arith.") :]
-        args = tuple(_emit_value(operand, ctx) for operand in op.operands)
-
-        if operator in _UNARY:
-            return f"({_UNARY[operator]}{args[0]})"
-
-        if operator == "floordiv":
-            return (
-                f"(({args[0]}) // ({args[1]}))"
-                if not target.c_style_syntax
-                else f"(({args[0]}) / ({args[1]}))"
-            )
-
-        if operator == "pow":
-            return target.call("pow", args)
-
-        if operator in {"maximum", "max"}:
-            return target.call("maximum", args)
-
-        if operator in {"minimum", "min"}:
-            return target.call("minimum", args)
-        return _binary_expr(operator, op, ctx)
-
-    if opcode.startswith(("math.", "call.")):
-        name = opcode.split(".", 1)[1]
-        callee = str(op.attrs.get("callee", ""))
-
-        if target.vector_value_semantics and "libdevice." in callee:
-            name = f"libdevice.{name}"
-        return target.call(
-            name,
-            tuple(_emit_value(operand, ctx) for operand in op.operands),
+    if opcode.startswith(("arith.", "cmp.", "math.", "call.")):
+        if opcode.split(".", 1)[1] in _BINARY:
+            return _binary_expr(opcode.split(".", 1)[1], op, ctx)
+        return _render_scalar_expr(
+            op, tuple(_emit_value(item, ctx) for item in op.operands), ctx
         )
 
     if opcode == "symbol.attr":
@@ -1406,6 +1404,34 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     raise ValueError(f"Unsupported SSA opcode `{opcode}` for unified backend emitter.")
 
 
+def _constructor_value(op: ssa.Operation, value: str, ctx: _EmitContext) -> str:
+    """Apply the constructor's explicit dtype to its actual emitted value."""
+    dtype = ctx.target.arithmetic_result_type(op, ctx).dtype
+
+    if dtype is None:
+        if ref := op.attrs.get("dtype_ref"):
+            if ctx.target.vector_value_semantics and not op.operands:
+                literal = op.attrs.get("value", 0.0)
+                source_dtype = (
+                    "bool"
+                    if isinstance(literal, bool)
+                    else "float64"
+                    if isinstance(literal, float)
+                    else "uint64"
+                    if isinstance(literal, int) and literal > (1 << 63) - 1
+                    else "int64"
+                    if isinstance(literal, int)
+                    else "float64"
+                )
+                value = ctx.target.vector_splat("()", value, source_dtype)
+            return ctx.target.cast_like(value, _resolve_dtype(ref, ctx).sample)
+        return value
+
+    if ctx.target.vector_value_semantics:
+        return ctx.target.vector_splat("()", value, dtype)
+    return ctx.target.cast(dtype, value)
+
+
 def _binary_expr(operator: str, op: ssa.Operation, ctx: _EmitContext) -> str:
     if (
         ctx.target.c_style_syntax
@@ -1422,10 +1448,8 @@ def _binary_expr(operator: str, op: ssa.Operation, ctx: _EmitContext) -> str:
         )
 
     args = tuple(_emit_value(operand, ctx) for operand in op.operands)
-    args = ctx.target.coerce_binary_args(op, args, ctx)
-    symbol = _BINARY[operator]
 
-    return f"({args[0]} {symbol} {args[1]})"
+    return _render_scalar_expr(op, args, ctx)
 
 
 def _emit_linalg_dot(
@@ -1561,8 +1585,20 @@ def _cast_dot_operand(
 
 
 def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
-    if ctx.bindings and name in ctx.bindings and not coords:
-        return ctx.bindings[name]
+    if ctx.bindings and name in ctx.bindings:
+        bound = ctx.bindings[name]
+
+        if (
+            ctx.target.vector_value_semantics
+            and ctx.reduce_index is not None
+            and coords == (ctx.reduce_index,)
+            and name in ctx.vector_bindings
+            and len(_value_axes(name, ctx)) == 1
+        ):
+            return _loop_bound_vector_element(name, bound, ctx.reduce_index, ctx)
+
+        if not coords:
+            return bound
 
     if name in ctx.memo and coords == _current_coords(_value_axes(name, ctx), ctx):
         return ctx.memo[name]
@@ -1581,15 +1617,19 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
         return _emit_value(name, ctx)
 
     if op.opcode == "arith.constant":
-        return ctx.target.literal(op.attrs.get("value"))
+        return ctx.target.inline_constant(
+            op.attrs.get("value"), ctx.target.arithmetic_result_type(op, ctx)
+        )
 
     if op.opcode in {"tensor.zeros", "tensor.empty"}:
-        return "0.0"
+        return _constructor_value(op, "0.0", ctx)
 
     if op.opcode == "tensor.full":
         if op.operands:
-            return _emit_element(op.operands[0], (), ctx)
-        return ctx.target.literal(op.attrs.get("value", 0.0))
+            value = _emit_element(op.operands[0], (), ctx)
+        else:
+            value = ctx.target.literal(op.attrs.get("value", 0.0))
+        return _constructor_value(op, value, ctx)
 
     if op.opcode == "tensor.extract":
         base = op.operands[0]
@@ -1647,37 +1687,12 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
 
         return ctx.target.where(args[0], args[1], args[2])
 
-    if op.opcode.startswith("cmp."):
-        return _element_binary(op.opcode[len("cmp.") :], op, coords, ctx)
-
-    if op.opcode.startswith("arith."):
-        operator = op.opcode[len("arith.") :]
-
-        if operator in _UNARY:
-            return f"({_UNARY[operator]}{_emit_element(op.operands[0], coords, ctx)})"
-
-        if operator in {"maximum", "max"}:
-            return ctx.target.call("maximum", _element_args(op, coords, ctx))
-
-        if operator in {"minimum", "min"}:
-            return ctx.target.call("minimum", _element_args(op, coords, ctx))
-
-        if operator == "pow":
-            return ctx.target.call("pow", _element_args(op, coords, ctx))
-        return _element_binary(operator, op, coords, ctx)
-
-    if op.opcode.startswith(("math.", "call.")):
+    if op.opcode.startswith(("arith.", "cmp.", "math.", "call.")):
         name = op.opcode.split(".", 1)[1]
-        callee = str(op.attrs.get("callee", ""))
 
-        if ctx.target.vector_value_semantics and "libdevice." in callee:
-            name = f"libdevice.{name}"
-        return ctx.target.call(
-            name,
-            tuple(
-                _emit_element_arg(op, operand, coords, ctx) for operand in op.operands
-            ),
-        )
+        if name in _BINARY or name == "floordiv":
+            return _element_binary(name, op, coords, ctx)
+        return _render_scalar_expr(op, _element_args(op, coords, ctx), ctx)
 
     if op.opcode.startswith("reduce."):
         if ctx.block_program or ctx.vector_program or ctx.cooperative_reduction_program:
@@ -1746,17 +1761,7 @@ def _element_binary(
     else:
         args = _element_args(op, coords, ctx)
 
-    args = ctx.target.coerce_binary_args(op, args, ctx)
-
-    if operator == "floordiv":
-        return (
-            f"(({args[0]}) // ({args[1]}))"
-            if not ctx.target.c_style_syntax
-            else f"(({args[0]}) / ({args[1]}))"
-        )
-
-    symbol = _BINARY[operator]
-    result = f"({args[0]} {symbol} {args[1]})"
+    result = _render_scalar_expr(op, args, ctx)
 
     if masks:
         result_type = ctx.target.arithmetic_result_type(op, ctx)
@@ -1826,6 +1831,350 @@ def _pointer_address(
     return base, f"({current_offset}) {operator} ({offset})"
 
 
+def _reduction_input_mask(
+    name: str,
+    coords: tuple[str, ...],
+    ctx: _EmitContext,
+    *,
+    extract_indices: tuple[str, ...] = (),
+    level: int | None = None,
+) -> str | None:
+    if name in ctx.tensor_infos:
+        info = ctx.tensor_infos[name]
+        level = _dtype_level(name, ctx) if level is None else level
+        axes = _access_axes(info, ctx, level, fallback=_value_axes(name, ctx))
+
+        return _combined_mask(
+            ctx.target,
+            ctx.mask_expr,
+            info,
+            _linearized_index(coords, axes) if coords else "0",
+            ctx=ctx,
+            value_coords=coords,
+            level=level,
+            extract_indices=extract_indices,
+        )
+
+    op = ctx.operations.get(name)
+
+    if op is not None:
+        if op.opcode == "tensor.cast":
+            return _reduction_input_mask(op.operands[0], coords, ctx)
+
+        if op.opcode == "tensor.view":
+            return _reduction_input_mask(
+                op.operands[0], _view_base_coords(op, coords, ctx), ctx
+            )
+
+        if op.opcode == "linalg.transpose":
+            return _reduction_input_mask(op.operands[0], tuple(reversed(coords)), ctx)
+
+        if op.opcode == "tensor.extract":
+            indices = tuple(_emit_index_value(index, ctx) for index in op.operands[1:])
+            base = op.operands[0]
+
+            if base not in ctx.tensor_infos:
+                return _reduction_input_mask(base, (*indices, *coords), ctx)
+
+            if op.attrs.get("source"):
+                return _source_bounds_mask(
+                    ctx.tensor_infos[base], (*indices, *coords), base_mask=ctx.mask_expr
+                )
+
+            return _reduction_input_mask(
+                base,
+                coords,
+                ctx,
+                extract_indices=indices,
+                level=int(
+                    op.results[0].type.attrs.get("dtype_level", _dtype_level(base, ctx))
+                ),
+            )
+
+    if op is not None and (
+        op.opcode.startswith(("arith.", "math.", "cmp.")) or op.opcode == "select.where"
+    ):
+        result_axes = _value_axes(name, ctx)
+        masks = [
+            _reduction_input_mask(
+                operand,
+                _broadcast_coords(coords, result_axes, _value_axes(operand, ctx)),
+                ctx,
+            )
+            for operand in op.operands
+        ]
+        masks = list(dict.fromkeys(mask for mask in masks if mask is not None))
+
+        return " & ".join(f"({mask})" for mask in masks) or None
+
+    return ctx.mask_expr
+
+
+def _probe_pointer_source(name: str, ctx: _EmitContext) -> str:
+    if name in ctx.tensor_infos and ctx.tensor_infos[name].ndim > 0:
+        return name
+
+    op = ctx.operations.get(name)
+
+    if op is not None and op.opcode in {"mem.data_ptr", "tensor.view"}:
+        return _probe_pointer_source(op.operands[0], ctx)
+
+    if op is not None and op.opcode in {"arith.add", "arith.sub"}:
+        for operand in op.operands:
+            type_ = ctx.value_types.get(operand)
+
+            if type_ is not None and type_.kind == "pointer":
+                return _probe_pointer_source(operand, ctx)
+
+    raise ValueError("Cannot determine loaded element dtype without a pointer source.")
+
+
+def _loop_bound_vector_element(
+    name: str, bound: str, index: str, ctx: _EmitContext
+) -> str:
+    if not (ctx.vector_program or ctx.block_program):
+        axes = _value_axes(name, ctx)
+        target = ctx.kernel.compiler_options.get("target", {})
+        profile = target.get("profile", {})
+        metadata = profile.get("metadata", {})
+        block_size = int(metadata.get("triton_block_size", 256))
+
+        try:
+            extent = int(axes[0])
+        except (IndexError, ValueError):
+            extent = None
+
+        if extent is None or extent > block_size:
+            raise ValueError(
+                "Serial reduction of a loop-carried vector requires its "
+                "extent to fit in one Triton block."
+            )
+
+    return ctx.target.vector_element(bound, index)
+
+
+def _render_scalar_expr(
+    op: ssa.Operation, args: tuple[str, ...], ctx: _EmitContext
+) -> str:
+    """Render pure operations once for both real values and type expressions."""
+    opcode = op.opcode
+    target = ctx.target
+
+    if opcode == "select.where":
+        return target.where(*args)
+
+    name = opcode.split(".", 1)[1]
+
+    if opcode.startswith(("math.", "call.")):
+        if target.vector_value_semantics and "libdevice." in str(
+            op.attrs.get("callee", "")
+        ):
+            name = f"libdevice.{name}"
+        return target.call(name, args)
+
+    args = target.coerce_binary_args(op, args, ctx)
+
+    if name in _UNARY:
+        return f"({_UNARY[name]}{args[0]})"
+
+    if name in {"maximum", "max", "minimum", "min", "pow"}:
+        return target.call(name, args)
+
+    if name == "floordiv":
+        symbol = "/" if target.c_style_syntax else "//"
+    else:
+        symbol = _BINARY[name]
+
+    if name in {"div", "truediv"} and op.results[0].type.dtype is None:
+        return target.true_divide(*args)
+    return f"({args[0]} {symbol} {args[1]})"
+
+
+def _resolve_dtype(name: str, ctx: _EmitContext) -> _ValueType:
+    """Resolve the type of the value that normal emission would declare."""
+    if ctx.type_values is None:
+        ctx.type_values = {}
+
+    if name in ctx.type_values:
+        result = ctx.type_values[name]
+
+        if result is None:
+            raise ValueError(f"Cyclic dtype source at {name}.")
+        return result
+
+    ctx.type_values[name] = None
+    result = _dtype_source(name, ctx)
+    ctx.type_values[name] = result
+
+    return result
+
+
+def _dtype_source(name: str, ctx: _EmitContext) -> _ValueType:
+    target = ctx.target
+    bound = (ctx.bindings or {}).get(name)
+    op = ctx.operations.get(name)
+
+    if bound is None and op is not None and op.opcode in {"scf.for", "scf.if"}:
+        bound = ctx.memo.get(name)
+
+    if bound is not None:
+        dtype = ctx.value_types.get(name)
+
+        return _ValueType(
+            dtype=dtype.dtype if dtype is not None and target.c_style_syntax else None,
+            sample=target.cast_like(target.dtype_sample("int32"), bound),
+        )
+
+    if name in ctx.tensor_infos:
+        info = ctx.tensor_infos[name]
+        declared = ctx.value_types.get(name)
+        spec = next(
+            (tensor for tensor in ctx.kernel.tensors if tensor.name == name), None
+        )
+        dtype = info.dtype
+
+        if target.vector_value_semantics:
+            dtype = (
+                spec.dtype
+                if spec is not None
+                else declared.dtype
+                if declared
+                else dtype
+            )
+
+        if spec is not None and spec.constexpr and spec.dtype is None:
+            dtype = None
+        return _ValueType(
+            dtype=dtype,
+            sample=target.parameter_sample(name, info),
+        )
+
+    if name in (ctx.type_initials or {}):
+        return _resolve_dtype(ctx.type_initials[name], ctx)
+
+    if op is None:
+        type_ = ctx.value_types.get(name)
+
+        if type_ is not None and type_.dtype is not None:
+            return _ValueType(
+                dtype=type_.dtype, sample=target.dtype_sample(type_.dtype)
+            )
+
+        raise ValueError(f"Cannot determine dtype source for {name}.")
+
+    opcode = op.opcode
+    declared = target.arithmetic_result_type(op, ctx)
+
+    if opcode == "arith.constant":
+        return _ValueType(
+            dtype=declared.dtype,
+            sample=target.inline_constant(op.attrs["value"], declared),
+        )
+
+    if opcode in {"linalg.dot", "linalg.matmul"} and not target.c_style_syntax:
+        dtype = _dot_accumulator_dtype(op, ctx)
+
+        return _ValueType(dtype=dtype, sample=target.dtype_sample(dtype))
+
+    if declared.dtype is not None and (
+        target.c_style_syntax
+        or opcode in {"tensor.cast", "tensor.zeros", "tensor.empty", "tensor.full"}
+    ):
+        return _ValueType(
+            dtype=declared.dtype, sample=target.dtype_sample(declared.dtype)
+        )
+
+    if opcode in {"tensor.view", "tensor.extract", "linalg.transpose"}:
+        return _resolve_dtype(op.operands[0], ctx)
+
+    if opcode == "tensor.cast":
+        sample = _cast_value(op, target.dtype_sample("int32"), ctx)
+    elif opcode in {"tensor.zeros", "tensor.empty", "tensor.full"}:
+        ref = op.attrs.get("dtype_ref")
+
+        if ref is None:
+            raise ValueError(f"Cannot determine dtype source for {name} ({opcode}).")
+        return _resolve_dtype(ref, ctx)
+    elif opcode == "mem.load":
+        return _resolve_dtype(_probe_pointer_source(op.operands[0], ctx), ctx)
+    elif opcode in {"shape.dim", "tensor.stride", "index.offset"}:
+        if not target.vector_value_semantics:
+            return _ValueType(dtype="int64", sample=target.dtype_sample("int64"))
+
+        if opcode == "index.offset":
+            coords = (target.dtype_sample("int32"),) * len(op.results[0].type.shape)
+            sample = _emit_offset_element(
+                op,
+                coords,
+                ctx,
+                index_value=lambda item: _resolve_dtype(item, ctx).sample,
+            )
+        else:
+            sample = _operation_expr(op, ctx)
+    elif opcode in {"scf.for", "scf.if"}:
+        slot = next(i for i, result in enumerate(op.results) if result.name == name)
+
+        if opcode == "scf.for":
+            source = op.operands[slot + 3]
+            sample = _resolve_dtype(source, ctx).sample
+        else:
+            sources = tuple(
+                region.operations[-1].operands[slot] for region in op.regions
+            )
+
+            if len(sources) != 2:
+                raise ValueError(
+                    f"Cannot determine dtype source for {name} ({opcode})."
+                )
+
+            sample = target.where(
+                target.literal(True),
+                *(_resolve_dtype(item, ctx).sample for item in sources),
+            )
+    elif opcode.startswith("reduce."):
+        source = _resolve_dtype(op.operands[0], ctx)
+        type_ = ctx.value_types.get(op.operands[0])
+
+        if type_ is not None and type_.kind == "scalar":
+            return source
+
+        sample = target.reduction_identity(
+            target.value_dtype(source.sample), opcode.split(".", 1)[1], "()"
+        )
+    elif (
+        opcode.startswith(("arith.", "cmp.", "math.", "call."))
+        or opcode == "select.where"
+    ):
+        sample = _render_scalar_expr(
+            op, tuple(_resolve_dtype(item, ctx).sample for item in op.operands), ctx
+        )
+    else:
+        raise ValueError(f"Cannot determine dtype source for {name} ({opcode}).")
+
+    witness = _fresh_temp(ctx, "nt_dtype")
+    ctx.lines.append(target.local_decl(declared, witness, sample))
+
+    return _ValueType(dtype=None, sample=witness)
+
+
+def _serial_reduction_init(
+    op: ssa.Operation, result_type: ssa.Type, ctx: _EmitContext, shape: str
+) -> tuple[ssa.Type, str]:
+    operator = op.opcode[len("reduce.") :]
+
+    if result_type.dtype is None or ctx.target.vector_value_semantics:
+        source = _resolve_dtype(op.operands[0], ctx)
+        dtype = ctx.target.value_dtype(source.sample)
+
+        return replace(result_type, dtype=None), ctx.target.reduction_identity(
+            dtype, operator, shape
+        )
+
+    init = _reduction_identity(operator, result_type, ctx.target)
+
+    return result_type, init
+
+
 def _reduction_identity(operator: str, type_: ssa.Type, target: _Target) -> str:
     dtype = _normalize_dtype(type_.dtype or "float32")
 
@@ -1891,11 +2240,12 @@ def _emit_reduce_element(
     result_type = ssa.Type(
         kind="scalar", dtype=op.results[0].type.dtype if op.results else "float32"
     )
-    init = _reduction_identity(operator, result_type, ctx.target)
-
-    if ctx.target.vector_value_semantics and ctx.mask_expr is not None:
-        dtype = _normalize_dtype(result_type.dtype or "float32")
-        init = ctx.target.vector_splat("(BLOCK,)", init, dtype)
+    shape = (
+        "(BLOCK,)"
+        if ctx.target.vector_value_semantics and ctx.mask_expr is not None
+        else "()"
+    )
+    result_type, init = _serial_reduction_init(op, result_type, ctx, shape)
 
     mutable = _uses_mutable_scalar_slots(ctx.target)
 
@@ -1926,11 +2276,16 @@ def _emit_reduce_element(
         operand_coords = coords[:axis] + (loop_var,) + coords[axis:]
 
     term = _emit_element(operand, operand_coords, body)
+    mask = _reduction_input_mask(operand, operand_coords, body)
+
+    if mask is not None:
+        term = ctx.target.where(mask, term, init)
+
     body_lines.append(
         _assign_scalar(
             ctx.target,
             local,
-            ctx.target.reduce_update(operator, acc_expr, term),
+            ctx.target.reduce_update_typed(operator, acc_expr, term, result_type.dtype),
             mutable=mutable,
         )
     )
@@ -1942,8 +2297,9 @@ def _emit_reduce_element(
 
 
 def _emit_offset_element(
-    op: ssa.Operation, coords: tuple[str, ...], ctx: _EmitContext
+    op: ssa.Operation, coords: tuple[str, ...], ctx: _EmitContext, *, index_value=None
 ) -> str:
+    index_value = index_value or (lambda name: _emit_index_value(name, ctx))
     operand = op.operands[0]
     dim = int(op.attrs.get("dim", 0) or 0)
 
@@ -1974,9 +2330,7 @@ def _emit_offset_element(
 
     if producer is not None and producer.opcode == "tensor.extract":
         base = producer.operands[0]
-        extract_indices = tuple(
-            _emit_index_value(item, ctx) for item in producer.operands[1:]
-        )
+        extract_indices = tuple(index_value(item) for item in producer.operands[1:])
         level = int(
             producer.results[0].type.attrs.get("dtype_level", _dtype_level(base, ctx))
         )
@@ -2004,7 +2358,8 @@ def _emit_offset_element(
             dim=dim,
             extract_indices=extract_indices,
         )
-    return _emit_value(op.results[0].name, ctx)
+
+    raise ValueError("Offsets require a tensor parameter or supported extraction.")
 
 
 def _load_tensor_at(
@@ -2121,10 +2476,14 @@ def _offset_from_template(
 
     if template is None:
         axes = _tensor_axes(info, fallback=ctx.output_axes)
+        axis = dim + len(axes) if dim < 0 else dim
 
-        if not axes:
+        if not 0 <= axis < len(axes):
             return "0"
-        return _axis_offset_expr(axes, dim, ctx.inner_index_expr, ctx.target)
+
+        if len(coords) == len(axes):
+            return coords[axis]
+        return _axis_offset_expr(axes, axis, ctx.inner_index_expr, ctx.target)
 
     offsets = tuple(str(offset) for offset in template.get("offsets", ()))
     source_ndim = len(offsets)
@@ -2413,11 +2772,10 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
         )
 
     result_type = op.results[0].type
-    init = _reduction_identity(operator, result_type, ctx.target)
-
-    if ctx.target.vector_value_semantics and axis is not None:
-        dtype = _normalize_dtype(result_type.dtype or "float32")
-        init = ctx.target.vector_splat("(BLOCK,)", init, dtype)
+    shape = (
+        "(BLOCK,)" if ctx.target.vector_value_semantics and axis is not None else "()"
+    )
+    result_type, init = _serial_reduction_init(op, result_type, ctx, shape)
 
     if _uses_mutable_scalar_slots(ctx.target):
         ctx.lines.extend(
@@ -2441,7 +2799,14 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
         local_suffix=_nested_local_suffix(ctx, local),
     )
     term = _emit_value(op.operands[0], inner)
-    update = ctx.target.reduce_update(operator, acc_expr, term)
+    mask = _reduction_input_mask(
+        op.operands[0], _reduction_value_coords(op.operands[0], inner), inner
+    )
+
+    if mask is not None:
+        term = ctx.target.where(mask, term, init)
+
+    update = ctx.target.reduce_update_typed(operator, acc_expr, term, result_type.dtype)
     inner_lines.append(
         _assign_scalar(
             ctx.target, local, update, mutable=_uses_mutable_scalar_slots(ctx.target)
@@ -2478,14 +2843,14 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
             and ctx.mask_expr is not None
             and ctx.target.needs_block_init(initial_name, value, ctx)
         ):
-            dtype = _loop_initializer_dtype(initial_name, value, ctx)
+            dtype = _loop_initializer_dtype(initial_name, ctx)
             init = ctx.target.loop_initializer("(BLOCK,)", init, dtype)
         elif (
             ctx.target.vector_value_semantics
             and ctx.block_program
             and ctx.target.needs_block_init(initial_name, value, ctx)
         ):
-            dtype = _loop_initializer_dtype(initial_name, value, ctx)
+            dtype = _loop_initializer_dtype(initial_name, ctx)
             shape = ctx.target.block_shape(tuple(str(dim) for dim in value.type.shape))
             init = ctx.target.loop_initializer(shape, init, dtype)
 
@@ -2510,12 +2875,28 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
     loop_bindings = dict(ctx.bindings or {})
     loop_bindings[induction] = loop_var
     loop_bindings.update(loop_locals)
+    vector_bindings = set(ctx.vector_bindings)
+
+    for attr, value in zip(iter_attrs, op.results):
+        block_arg = str(attr["block_arg"])
+
+        if (
+            ctx.target.vector_value_semantics
+            and ctx.reduce_index is None
+            and value.type.kind == "tensor"
+            and len(value.type.shape) == 1
+        ):
+            vector_bindings.add(block_arg)
+        else:
+            vector_bindings.discard(block_arg)
+
     ctx.lines.append(ctx.target.loop_header(loop_var, lower, upper, step))
     body_lines: list[str] = []
     body = ctx.child(
         lines=body_lines,
         memo=dict(ctx.memo),
         bindings=loop_bindings,
+        vector_bindings=frozenset(vector_bindings),
         local_suffix=_nested_local_suffix(ctx, local),
     )
     region = op.regions[0]
@@ -2555,30 +2936,8 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
     return ctx.memo.get(result_names[0]) if result_names else None
 
 
-def _loop_initializer_dtype(
-    initial_name: str, value: ssa.Value, ctx: _EmitContext
-) -> str:
-    producer = ctx.operations.get(initial_name)
-
-    if producer is not None and producer.opcode in {
-        "tensor.zeros",
-        "tensor.empty",
-        "tensor.full",
-    }:
-        dtype_ref = producer.attrs.get("dtype_ref")
-
-        if isinstance(dtype_ref, str):
-            info = ctx.tensor_infos.get(dtype_ref)
-
-            if info is not None and info.ndim > 0:
-                return f"{dtype_ref}.dtype"
-            return value.type.dtype or "float32"
-
-        dtype = producer.attrs.get("dtype")
-
-        if isinstance(dtype, str) and dtype:
-            return dtype
-    return value.type.dtype or "float32"
+def _loop_initializer_dtype(initial_name: str, ctx: _EmitContext) -> str:
+    return ctx.target.value_dtype(_resolve_dtype(initial_name, ctx).sample)
 
 
 def _emit_loop_bound(name: str, ctx: _EmitContext) -> str:
@@ -2636,6 +2995,9 @@ def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
         local = _local_symbol(result.name, ctx)
         result_locals[result.name] = local
         init = _zero_value(result.type, ctx.target)
+
+        if result.type.dtype is None:
+            init = ctx.target.cast_like("0", _resolve_dtype(result.name, ctx).sample)
 
         if _uses_mutable_scalar_slots(ctx.target):
             ctx.lines.extend(
@@ -2735,6 +3097,10 @@ def _scf_if_element_control_flow(
     result = op.results[0]
     local = f"{_local_symbol(result.name, ctx)}_if_{len(ctx.lines)}"
     init = _zero_value(result.type, ctx.target)
+
+    if result.type.dtype is None:
+        init = ctx.target.cast_like("0", _resolve_dtype(result.name, ctx).sample)
+
     mutable = _uses_mutable_scalar_slots(ctx.target)
 
     if mutable:
@@ -3984,60 +4350,28 @@ def _assign_scalar(
 
 
 def _resolved_cast_dtype(op: ssa.Operation, ctx: _EmitContext) -> str:
-    attr = op.attrs.get("dtype")
+    dtype = op.results[0].type.dtype
+    info = ctx.tensor_infos.get(op.attrs.get("dtype_ref"))
 
-    if isinstance(attr, str):
-        text = attr.strip().strip("'\"")
+    if dtype is None and info is not None:
+        dtype = info.dtype
 
-        if text.endswith(".dtype"):
-            base = text[: -len(".dtype")].split(".")[-1]
-            info = ctx.tensor_infos.get(base)
-
-            if info is not None:
-                return info.dtype
-
-            if op.operands:
-                operand_op = ctx.operations.get(op.operands[0])
-
-                if operand_op is not None and operand_op.results:
-                    return _normalize_dtype(operand_op.results[0].type.dtype)
-
-            if op.results:
-                return _normalize_dtype(op.results[0].type.dtype)
-
-        if text:
-            return _normalize_dtype(text)
-
-    if op.results:
-        dtype = op.results[0].type.dtype
-
-        if dtype:
-            return _normalize_dtype(dtype)
-
-    if op.operands:
-        operand_op = ctx.operations.get(op.operands[0])
-
-        if operand_op is not None and operand_op.results:
-            return _normalize_dtype(operand_op.results[0].type.dtype)
-
-        info = ctx.tensor_infos.get(op.operands[0])
-
-        if info is not None:
-            return info.dtype
-    return "float32"
+    if dtype is None:
+        raise ValueError("Cast dtype requires type specialization.")
+    return _normalize_dtype(dtype)
 
 
 def _cast_value(op: ssa.Operation, value: str, ctx: _EmitContext) -> str:
-    attr = op.attrs.get("dtype")
+    ref = op.operands[1] if len(op.operands) > 1 else op.attrs.get("dtype_ref")
 
-    if ctx.target.vector_value_semantics and isinstance(attr, str):
-        text = attr.strip().strip("'\"")
+    if ref is not None:
+        source = _resolve_dtype(ref, ctx)
 
-        if text.endswith(".dtype"):
-            match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", text)
-
-            if match and match.group(1) in ctx.tensor_infos:
-                return f"{value}.to({match.group(1)}.dtype.element_ty)"
+        return (
+            ctx.target.cast(source.dtype, value)
+            if source.dtype is not None
+            else ctx.target.cast_like(value, source.sample)
+        )
     return ctx.target.cast(_resolved_cast_dtype(op, ctx), value)
 
 

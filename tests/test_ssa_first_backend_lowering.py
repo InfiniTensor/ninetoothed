@@ -7,7 +7,7 @@ from ninetoothed import Symbol, Tensor, block_size
 from ninetoothed.backends import emit as emit_kernel
 from ninetoothed.compiler import lower as lower_application
 from ninetoothed.frontend.python import from_source
-from ninetoothed.ir import Kernel, TensorSpec
+from ninetoothed.ir import Kernel, TensorSpec, ssa
 
 
 def arrangement(x, out, BLOCK_SIZE=block_size()):
@@ -465,18 +465,18 @@ def random_application(seed, out):
                 "\ndef full_application(out):\n    out = full((n,), 2.5)\n",
                 (TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),),
                 {
-                    "triton": "v1 = v0",
-                    "cuda": "float v1 = v0;",
-                    "tilelang": "v1 = v0",
+                    "triton": "tl.full((), v0, tl.float32)",
+                    "cuda": "static_cast<float>(v0)",
+                    "tilelang": 'T.Cast("float32", v0)',
                 },
             ),
             "zeros": (
                 "\ndef zeros_application(out):\n    out = zeros((n,))\n",
                 (TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),),
                 {
-                    "triton": "v0 = 0.0",
-                    "cuda": "float v0 = 0.0;",
-                    "tilelang": "v0 = 0.0",
+                    "triton": "tl.full((), 0.0, tl.float32)",
+                    "cuda": "static_cast<float>(0.0)",
+                    "tilelang": 'T.Cast("float32", 0.0)',
                 },
             ),
             "view": (
@@ -919,8 +919,8 @@ def canonical_math_application(x, y, out):
                 "ssa-unified-cuda-emitter",
                 (
                     "float v0 = (x[index] * y[index]);",
-                    "float v2 = (v0 * v1);",
-                    "float v4 = (v2 + v3);",
+                    "auto v2 = (_nt_arithmetic(v0) * v1);",
+                    "auto v4 = (_nt_arithmetic(v2) + v3);",
                 ),
             ),
             "tilelang": (
@@ -948,6 +948,172 @@ def canonical_math_application(x, y, out):
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
+    def test_dtype_source_roles(self):
+        from ninetoothed.backends.emitters.context import EmitContext
+        from ninetoothed.backends.emitters.cuda import CudaTarget
+        from ninetoothed.backends.emitters.ssa import _resolve_dtype, _tensor_info
+        from ninetoothed.backends.emitters.tilelang import TileLangTarget
+        from ninetoothed.backends.emitters.triton import TritonTarget
+
+        def context(kernel, target):
+            operations = kernel.ssa.blocks[0].operations
+            ctx = EmitContext(
+                target=target,
+                kernel=kernel,
+                program=kernel.ssa,
+                operations={
+                    value.name: op for op in operations for value in op.results
+                },
+                value_types={
+                    value.name: value.type for op in operations for value in op.results
+                },
+                tensor_infos={
+                    tensor.name: _tensor_info(tensor) for tensor in kernel.tensors
+                },
+                lines=[],
+                memo={},
+                output="out",
+                output_axes=(),
+                index_expr="0",
+                outer_index_expr="0",
+                inner_index_expr="0",
+                mask_expr=None,
+            )
+
+            return ctx
+
+        kernel = _ssa_kernel(
+            "def app(x, u, s, scale, factor_i, factor_f, out):\n"
+            "    alias = x.to(int64)\n    c_float = 1.0\n    c_int = 1\n"
+            "    narrow = u + u\n    mixed = ntl.where(s > 0, s, u)\n"
+            "    reduced = u.sum()\n"
+            "    out = alias.to(scale.dtype) + narrow + mixed + reduced "
+            "+ factor_i + factor_f + c_float + c_int\n",
+            "dtype_roles",
+            (
+                TensorSpec(ndim=1, shape=(4,), name="x"),
+                TensorSpec(ndim=1, shape=(4,), dtype="uint8", name="u"),
+                TensorSpec(ndim=1, shape=(4,), dtype="int8", name="s"),
+                TensorSpec(ndim=0, dtype="float32", name="scale"),
+                TensorSpec(ndim=0, constexpr=True, name="factor_i"),
+                TensorSpec(ndim=0, constexpr=True, name="factor_f"),
+                TensorSpec(ndim=1, shape=(4,), name="out"),
+            ),
+        )
+        ops = kernel.ssa.blocks[0].operations
+
+        def result(opcode, *, operands=None, literal=None):
+            return next(
+                op.results[0].name
+                for op in ops
+                if op.opcode == opcode
+                and (operands is None or op.operands == operands)
+                and (literal is None or type(op.attrs["value"]) is literal)
+            )
+
+        # Ten source roles, each checked against all three target contracts.
+        rows = (
+            ("pointer", "x", ("float32", None, "float32")),
+            ("runtime scalar", "scale", ("float32",) * 3),
+            ("integer constexpr", "factor_i", (None,) * 3),
+            ("float constexpr", "factor_f", (None,) * 3),
+            ("cast", result("tensor.cast"), ("int64",) * 3),
+            (
+                "float constant",
+                result("arith.constant", literal=float),
+                ("float32",) * 3,
+            ),
+            ("integer constant", result("arith.constant", literal=int), ("int64",) * 3),
+            (
+                "narrow arithmetic",
+                result("arith.add", operands=("u", "u")),
+                ("uint8", None, None),
+            ),
+            ("mixed select", result("select.where"), ("int8", None, None)),
+            (
+                "narrow reduction",
+                result("reduce.sum", operands=("u",)),
+                ("uint32", None, None),
+            ),
+        )
+
+        for index, target in enumerate(
+            (CudaTarget(), TritonTarget(), TileLangTarget())
+        ):
+            ctx = context(kernel, target)
+
+            for label, name, dtypes in rows:
+                actual = _resolve_dtype(name, ctx)
+                assert actual.dtype == dtypes[index], (target.language, label)
+
+                if "constexpr" in label:
+                    assert actual.sample == name
+
+            if isinstance(target, TritonTarget):
+                assert "x.dtype.element_ty" in _resolve_dtype("x", ctx).sample
+
+        assert len(rows) == 10
+
+        dag = _ssa_kernel(
+            "def app(x, y, out):\n    z = x\n"
+            + "    z = z + z\n" * 12
+            + "    out = y.to(z.dtype)\n",
+            "dtype_shared_dag",
+            tuple(
+                TensorSpec(ndim=1, shape=(1,), name=name) for name in ("x", "y", "out")
+            ),
+        )
+        dag_ops = dag.ssa.blocks[0].operations
+        dag_ctx = context(dag, CudaTarget())
+        final = next(
+            op.results[0].name for op in reversed(dag_ops) if op.opcode == "arith.add"
+        )
+        assert _resolve_dtype(final, dag_ctx).sample.startswith("nt_dtype_")
+        assert len(dag_ctx.lines) == 12
+        _resolve_dtype(final, dag_ctx)
+        assert len(dag_ctx.lines) == 12
+
+    def test_serial_reduction_uses_loop_binding_and_rejects_cross_block(self):
+        source = (
+            "def app(x, out):\n    acc = x\n"
+            "    for i in range(2):\n        acc = acc + acc.sum()\n"
+            "    outside = acc.sum()\n"
+            "    chosen = x\n"
+            "    if outside > 0:\n        chosen = acc\n"
+            "    else:\n        chosen = x\n"
+            "    out = chosen.sum()\n"
+        )
+        emissions = 0
+
+        for dtype in ("float32", None):
+            tensors = (
+                TensorSpec(ndim=1, shape=(4,), dtype=dtype, name="x"),
+                TensorSpec(ndim=1, shape=(1,), dtype=dtype, name="out"),
+            )
+            kernel = _ssa_kernel(source, f"serial_binding_{dtype}", tensors)
+            assert ssa.verify_program(kernel.ssa) is kernel.ssa
+
+            for backend in ("triton", "cuda", "tilelang"):
+                assert emit_kernel(kernel, backend).primary_source
+                emissions += 1
+
+        assert emissions == 6
+        large = (
+            TensorSpec(ndim=1, shape=(300,), dtype="float32", name="x"),
+            TensorSpec(ndim=1, shape=(300,), dtype="float32", name="out"),
+        )
+        kernel = _ssa_kernel(
+            "def app(x, out):\n    acc = x\n"
+            "    for i in range(2):\n        acc = acc + acc.sum()\n"
+            "    out = acc\n",
+            "serial_cross_block",
+            large,
+        )
+        assert ssa.verify_program(kernel.ssa) is kernel.ssa
+
+        with pytest.raises(ValueError, match="fit in one Triton block"):
+            emit_kernel(kernel, "triton")
+
     def test_constructor_resolves_tensor_dtype_for_loop_carried_values(self):
         tensors = (Tensor(2, other=0), Tensor(2))
         artifacts = {
@@ -965,8 +1131,8 @@ def canonical_math_application(x, y, out):
         assert "y.dtype.element_ty" in triton_source
         assert "tl.dtype" not in triton_source
         assert "tl.broadcast_to(tl.cast(" in triton_source
-        assert "float vacc_" in artifacts["cuda"].primary_source
-        assert 'T.alloc_var("float32"' in artifacts["tilelang"].primary_source
+        assert "auto vacc_" in artifacts["cuda"].primary_source
+        assert "T.alloc_var(_nt_dtype(" in artifacts["tilelang"].primary_source
 
     def test_constructor_canonicalizes_aliased_and_chained_tensor_dtype(self):
         kernel = _ssa_kernel(
@@ -985,6 +1151,10 @@ def alias_dtype_application(x, y):
                 TensorSpec(ndim=1, shape=("rows",), name="y"),
             ),
         )
+        constructors = [
+            op for op in kernel.ssa.blocks[0].operations if op.opcode == "tensor.zeros"
+        ]
+        assert all(op.results[0].type.dtype is None for op in constructors)
         artifact = emit_kernel(kernel, "triton")
         source = artifact.primary_source
         assert "y.dtype.element_ty" in source
@@ -1402,6 +1572,50 @@ def application(x, out):
 
         result = ast.unparse(conditional.body[-1].targets[0])
         assert source.count(f"{result} = ") == 2
+
+
+def test_dynamic_integer_reduction_preserves_large_values_and_tail(tmp_path):
+    import importlib.util
+
+    import torch
+
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA GPU required")
+
+    source = (
+        "def app(x, dtype_source, out_max, out_min):\n"
+        "    y = x.to(dtype_source.dtype)\n"
+        "    out_max = y.max()\n"
+        "    out_min = y.min()\n"
+    )
+
+    for dtype, width, values in (
+        (torch.int32, 4, [2**24 + 1, -(2**24 + 1), 13, -5]),
+        (torch.int32, 5, [2**24 + 1, -(2**24 + 1), 13, -5, 7]),
+        (torch.int64, 4, [2**55 + 1, -(2**55 + 1), 2**24 + 1, -7]),
+        (torch.int64, 5, [2**55 + 1, -(2**55 + 1), 2**24 + 1, -7, -1]),
+    ):
+        dtype_name = str(dtype).split(".")[-1]
+        tensors = (
+            TensorSpec(ndim=1, shape=(width,), name="x"),
+            TensorSpec(ndim=1, shape=(width,), name="dtype_source"),
+            TensorSpec(ndim=1, shape=(1,), name="out_max"),
+            TensorSpec(ndim=1, shape=(1,), name="out_min"),
+        )
+        kernel = _ssa_kernel(source, f"dynamic_int_{width}_{dtype_name}", tensors)
+        artifact = emit_kernel(kernel, "triton")
+        path = tmp_path / f"dynamic_int_{width}_{dtype_name}.py"
+        path.write_text(artifact.primary_source)
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        x = torch.tensor(values, device="cuda", dtype=dtype)
+        out_max = torch.empty((1,), device="cuda", dtype=dtype)
+        out_min = torch.empty_like(out_max)
+        getattr(module, f"launch_{kernel.kernel_name}")(x, x, out_max, out_min)
+        torch.cuda.synchronize()
+        assert out_max.item() == max(values)
+        assert out_min.item() == min(values)
 
 
 def test_source_offset_emission_maps_compact_coordinates_to_template():

@@ -1,3 +1,5 @@
+import ast
+
 import pytest
 import torch
 
@@ -147,6 +149,19 @@ def test_reduction_domain_selects_triton_row_vector_schedule():
         candidate["num_warps"]
         for candidate in compilation.launch_plan.tuning_candidates
     ) == (4, 8, 1)
+    source_tree = ast.parse(compilation.artifact.primary_source)
+    maximum = next(
+        node
+        for node in ast.walk(source_tree)
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == "tl.max"
+    )
+    masked_value = maximum.args[0]
+    load_mask = next(
+        keyword.value
+        for keyword in masked_value.args[1].keywords
+        if keyword.arg == "mask"
+    )
+    assert ast.dump(masked_value.args[0]) == ast.dump(load_mask)
     assert "tl.max(" in compilation.artifact.primary_source
     assert "tl.sum(" in compilation.artifact.primary_source
     assert "for v" not in compilation.artifact.primary_source

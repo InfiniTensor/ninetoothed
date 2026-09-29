@@ -67,6 +67,21 @@ class TritonTarget(EmitterTarget):
     def vector_reduce(self, operator: str, operand: str, axis: int) -> str:
         return f"tl.{operator}({operand}, axis={axis})"
 
+    def dtype_sample(self, dtype: str) -> str:
+        return f"tl.full((), 1, tl.{common.normalize_dtype(dtype)})"
+
+    def parameter_sample(self, name, info):
+        return name if info.ndim == 0 else f"tl.full((), 1, {name}.dtype.element_ty)"
+
+    def value_dtype(self, value: str) -> str:
+        return f"(_nt_cast_like(tl.full((), 1, tl.int32), {value})).dtype"
+
+    def vector_element(self, value: str, index: str) -> str:
+        return f"_nt_vector_element({value}, {index})"
+
+    def reduction_identity(self, dtype: str, operator: str, shape: str) -> str:
+        return f"_nt_reduction_identity({dtype}, {operator!r}, {shape})"
+
     def vector_splat(self, shape: str, value: str, dtype: str) -> str:
         match = re.fullmatch(
             r"([A-Za-z_][A-Za-z0-9_]*)(?:\.source)?\.dtype", dtype.strip()
@@ -86,6 +101,8 @@ class TritonTarget(EmitterTarget):
         dtype_expr = (
             f"{match.group(1)}.dtype.element_ty"
             if match is not None
+            else dtype
+            if dtype.startswith("(") and dtype.endswith(".dtype")
             else f"tl.{common.normalize_dtype(dtype)}"
         )
 
@@ -116,6 +133,9 @@ class TritonTarget(EmitterTarget):
 
     def cast(self, dtype, value):
         return f"{value}.to(tl.{common.normalize_dtype(dtype)})"
+
+    def cast_like(self, value, reference):
+        return f"_nt_cast_like({value}, {reference})"
 
     def coerce_dot_args(self, operation, args, context):
         metadata = _target_metadata(context.kernel)
@@ -650,7 +670,9 @@ import triton
 import triton.language as tl
 from math import floor
 from triton.language.extra import libdevice
-
+{_RUNTIME_REDUCTION_IDENTITY if "_nt_reduction_identity(" in body else ""}
+{_CAST_LIKE if "_nt_cast_like(" in body else ""}
+{_VECTOR_ELEMENT if "_nt_vector_element(" in body else ""}
 
 @triton.jit
 def {kernel.kernel_name}_kernel(
@@ -691,3 +713,76 @@ def emit(kernel: Kernel):
 
 
 __all__ = ["TARGET", "TritonTarget", "emit"]
+
+
+_CAST_LIKE = """
+
+@triton.jit
+def _nt_cast_like(value, reference):
+    tensor_reference = reference
+    return value.to(tensor_reference.dtype)
+"""
+
+
+_VECTOR_ELEMENT = """
+
+@triton.jit
+def _nt_vector_element(value, index):
+    width: tl.constexpr = value.dtype.primitive_bitwidth
+    if width <= 8:
+        bit_dtype = tl.uint8
+    elif width == 16:
+        bit_dtype = tl.uint16
+    elif width == 32:
+        bit_dtype = tl.uint32
+    else:
+        bit_dtype = tl.uint64
+    if width == 1:
+        bits = value.to(bit_dtype)
+    else:
+        bits = value.to(bit_dtype, bitcast=True)
+    selected = tl.max(
+        tl.where(tl.arange(0, value.shape[0]) == index, bits, tl.full(value.shape, 0, bit_dtype)),
+        axis=0,
+    ).to(bit_dtype)
+    if value.dtype == tl.int1:
+        return selected.to(value.dtype)
+    return selected.to(value.dtype, bitcast=True)
+
+"""
+
+
+_RUNTIME_REDUCTION_IDENTITY = """
+
+@triton.jit
+def _nt_reduction_identity(dtype: tl.constexpr, operator: tl.constexpr, shape: tl.constexpr):
+    dtype = dtype.value
+    width: tl.constexpr = dtype.primitive_bitwidth
+    if operator == "sum":
+        if dtype.is_int():
+            if width < 32:
+                if dtype.is_int_signed():
+                    return tl.full(shape, 0, tl.int32)
+                return tl.full(shape, 0, tl.uint32)
+        return tl.full(shape, 0, dtype)
+    elif dtype == tl.float8e4nv:
+        if operator == "max":
+            return tl.full(shape, -448, dtype)
+        else:
+            return tl.full(shape, 448, dtype)
+    elif dtype.is_floating():
+        if operator == "max":
+            return tl.full(shape, float("-inf"), dtype)
+        else:
+            return tl.full(shape, float("inf"), dtype)
+    else:
+        if width == 1:
+            minimum, maximum = 0, 1
+        elif dtype.is_int_signed():
+            minimum, maximum = -(1 << (width - 1)), (1 << (width - 1)) - 1
+        else:
+            minimum, maximum = 0, (1 << width) - 1
+        if operator == "max":
+            return tl.full(shape, minimum, dtype)
+        return tl.full(shape, maximum, dtype)
+"""
