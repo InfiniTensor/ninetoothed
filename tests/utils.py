@@ -7,6 +7,27 @@ import pytest
 import torch
 
 
+def _npu_runtime_usable():
+    """Whether torch operators work on NPU, not just memory transfers.
+
+    Community CANN builds ship without the ``tbe`` operator compiler and
+    prebuilt aclnn binaries, so device-side references crash with ACL error
+    500001.  Probe with a tiny device addition before exposing the device.
+    """
+    try:
+        import torch
+
+        if not (hasattr(torch, "npu") and torch.npu.is_available()):
+            return False
+
+        lhs = torch.ones(4, device="npu")
+        rhs = torch.ones(4, device="npu")
+
+        return bool((lhs + rhs).cpu().min().item() == 2)
+    except Exception:
+        return False
+
+
 def get_available_devices():
     devices = []
 
@@ -15,6 +36,9 @@ def get_available_devices():
 
     if hasattr(torch, "mlu") and torch.mlu.is_available():
         devices.append("mlu")
+
+    if _npu_runtime_usable():
+        devices.append("npu")
 
     return tuple(devices)
 
@@ -53,6 +77,25 @@ def _cambricon_platform_available():
     return bool(os.environ.get("NINETOOTHED_BANGC_SSH"))
 
 
+def _ascend_platform_available():
+    """NPU device, local CANN toolchain, or a configured remote ccec host."""
+    try:
+        if hasattr(torch, "npu") and torch.npu.is_available():
+            return True
+    except Exception:
+        pass
+
+    if any(
+        os.environ.get(name) for name in ("ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME")
+    ):
+        return True
+
+    if os.environ.get("NINETOOTHED_ASCENDC_COMPILER") or shutil.which("ccec"):
+        return True
+
+    return bool(os.environ.get("NINETOOTHED_ASCENDC_SSH"))
+
+
 def _cuda_platform_available():
     """CUDA device or an nvcc/cucc toolchain.
 
@@ -78,6 +121,7 @@ def _cuda_platform_available():
 # at runtime.
 _BACKEND_PLATFORM_PROBES = {
     "bangc": _cambricon_platform_available,
+    "ascendc": _ascend_platform_available,
     "cuda": _cuda_platform_available,
 }
 
@@ -142,6 +186,7 @@ _BACKEND_RUNTIME_PROBES = {
         importlib.util.find_spec("triton") is not None and _nvcc_available()
     ),
     "tilelang": lambda: importlib.util.find_spec("tilelang") is not None,
+    "ascendc": lambda: importlib.util.find_spec("torch_npu") is not None,
 }
 
 
@@ -164,7 +209,7 @@ def detect_default_backend() -> str:
     actually run, so plain ``pytest`` invocations do not fail on unrelated
     platforms.
     """
-    for backend in ("triton", "cuda", "tilelang", "bangc"):
+    for backend in ("triton", "cuda", "tilelang", "bangc", "ascendc"):
         if backend_runtime_available(backend):
             return backend
     return "triton"

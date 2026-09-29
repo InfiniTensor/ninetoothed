@@ -149,6 +149,7 @@ class TestPipeline:
             "ssa.cuda.optimize_schedule",
             "ssa.tilelang.optimize_schedule",
             "ssa.bangc.optimize_schedule",
+            "ssa.ascendc.optimize_schedule",
         }
 
         platform_passes = {
