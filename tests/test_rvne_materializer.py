@@ -52,6 +52,14 @@ def _fake_toolchain(tmp_path):
     )
 
 
+def _mock_subprocess(monkeypatch, run):
+    monkeypatch.setattr(
+        rvne,
+        "subprocess",
+        SimpleNamespace(run=run, SubprocessError=subprocess.SubprocessError),
+    )
+
+
 @pytest.mark.parametrize(
     "dtype,value,error",
     (
@@ -84,7 +92,7 @@ def test_rvne_scalar_contract_rejects_casts_before_execution(
     def forbidden(*args, **kwargs):
         pytest.fail("Invalid scalar reached QEMU.")
 
-    monkeypatch.setattr(rvne.subprocess, "run", forbidden)
+    _mock_subprocess(monkeypatch, forbidden)
     launch = rvne._wrapper(
         tmp_path / "kernel.elf", abi, specs, _fake_toolchain(tmp_path)
     )
@@ -122,6 +130,7 @@ def test_rvne_wrapper_transports_arrays_and_shape_without_loading_library(
     x = np.arange(4, dtype=np.int32)
     out = np.full(4, -1, dtype=np.int32)
     observed = []
+    original_run = subprocess.run
 
     def run(command, **options):
         assert options["check"] and options["timeout"] == 120
@@ -133,7 +142,8 @@ def test_rvne_wrapper_transports_arrays_and_shape_without_loading_library(
 
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr(rvne.subprocess, "run", run)
+    _mock_subprocess(monkeypatch, run)
+    assert subprocess.run is original_run
     launch = rvne._wrapper(
         tmp_path / "kernel.elf", abi, specs, _fake_toolchain(tmp_path)
     )
@@ -165,7 +175,7 @@ def test_rvne_rejects_incompatible_arrays_before_execution(
     def forbidden(*args, **kwargs):
         pytest.fail("Invalid arguments reached QEMU.")
 
-    monkeypatch.setattr(rvne.subprocess, "run", forbidden)
+    _mock_subprocess(monkeypatch, forbidden)
     launch = rvne._wrapper(
         tmp_path / "kernel.elf", abi, specs, _fake_toolchain(tmp_path)
     )
@@ -183,7 +193,7 @@ def test_rvne_emulator_failure_preserves_host_output(monkeypatch, tmp_path):
         Path(command[5]).write_bytes(b"partial output")
         raise subprocess.CalledProcessError(1, command, stderr="illegal instruction")
 
-    monkeypatch.setattr(rvne.subprocess, "run", fail)
+    _mock_subprocess(monkeypatch, fail)
     launch = rvne._wrapper(
         tmp_path / "kernel.elf", abi, specs, _fake_toolchain(tmp_path)
     )
@@ -203,7 +213,7 @@ def test_rvne_compiler_failure_does_not_publish_partial_binary(monkeypatch, tmp_
             1, command, stderr="unsupported instruction"
         )
 
-    monkeypatch.setattr(rvne.subprocess, "run", fail)
+    _mock_subprocess(monkeypatch, fail)
 
     with pytest.raises(RuntimeError, match="unsupported instruction"):
         rvne._compile_executable(
