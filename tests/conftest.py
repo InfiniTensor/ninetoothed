@@ -4,6 +4,23 @@ import random
 import pytest
 import torch
 
+from tests.capabilities.runner import resolve_probe
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "requires_capability(reference): require an external test capability",
+    )
+
+
+def pytest_runtest_setup(item):
+    for marker in item.iter_markers(name="requires_capability"):
+        result = resolve_probe(marker.args[0])
+
+        if not result.supported:
+            pytest.skip(result.reason)
+
 
 def pytest_collectstart(collector):
     if isinstance(collector, pytest.Module):
