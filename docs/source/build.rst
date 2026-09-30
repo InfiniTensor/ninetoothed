@@ -8,7 +8,7 @@ For production deployments, just-in-time compilation has two drawbacks:
 - The first call is slow.
 - The compiled artifacts live only in the current Python process.
 
-``ninetoothed.build`` addresses both by compiling kernels **ahead of time**, emitting native ``.so`` artifacts to disk that can be loaded directly in later runs.
+``ninetoothed.build`` compiles configured variants ahead of time and emits native ``.so`` artifacts that Python can load in later runs. Supported Triton builds also export C++ sources and a public header for applications that run without Python.
 
 Basic Usage
 -----------
@@ -59,8 +59,8 @@ Compared with ``ninetoothed.make``, the shape of the code is the same—an arran
 
 Two practical notes about the call to ``ninetoothed.build``:
 
-- ``output_dir`` must exist. ``ninetoothed.build`` writes generated sources into it but does not create it.
-- ``lazy=True`` defers the actual build to the first kernel call. This is required when ``ninetoothed.build`` is invoked at module import time, because the ``ProcessPoolExecutor`` that drives the build uses ``spawn`` and cannot re-enter the importing module.
+- The build creates ``output_dir`` when needed.
+- ``lazy=True`` defers compilation to the first Python call. Use ``lazy=False`` when generating native artifacts for a separate C++ build.
 
 We can invoke ``kernel`` like this:
 
@@ -82,12 +82,12 @@ We can invoke ``kernel`` like this:
         reference = torch.tensor((5, 7, 9), dtype=dtype, device=device)
         assert torch.allclose(z, reference)
 
-The ``if __name__ == "__main__":`` guard is also required: the first call to ``kernel`` is what actually drives the build, and the build's child processes re-import the enclosing module. Without the guard, the children would try to call the kernel again on import and deadlock.
+The main guard keeps the example invocation separate from import-time setup.
 
 The ``premake`` Function
 ------------------------
 
-``premake`` builds everything ``ninetoothed.make`` needs—``arrangement``, ``application``, and the ``tensors``—for a single variant. ``ninetoothed.build`` calls ``premake`` once per variant and hands each result to ``ninetoothed.make`` under the hood.
+``premake`` builds everything ``ninetoothed.make`` needs—``arrangement``, ``application``, and the ``tensors``—for a single variant. ``ninetoothed.build`` calls ``premake`` once per variant and compiles each result through the SSA compiler.
 
 The intent is that anything that distinguishes one compiled variant from another (dtypes, concrete shapes, block-size choices, ...) appears as a parameter of ``premake``. Everything else stays hardcoded.
 
@@ -116,8 +116,8 @@ Some ``premake`` parameters do not change what the kernel *computes*—only how 
 
 Listing ``block_size`` in ``meta_parameters`` tells ``ninetoothed.build`` to treat it as auto-tunable:
 
-- At build time, ``ninetoothed.build`` benchmarks each meta variant against representative inputs and records the winner per non-meta configuration in a CSV file next to the ``.so``.
-- At runtime, the generated C++ dispatcher picks the best meta values from the CSV based on the actual input arguments, so the caller passes only the non-meta arguments.
+- The Python callable benchmarks candidates using actual runtime inputs and caches the selected candidate.
+- The C++ dispatcher selects the first configured candidate for each non-meta configuration. It does not run Python or read an auto-tuning CSV. Both callers pass only the non-meta arguments.
 
 Parameters not listed in ``meta_parameters`` are treated as true compile-time variants: each distinct value produces its own ``.so``, and the dispatcher routes runtime calls to the matching one.
 
@@ -214,34 +214,54 @@ Data types, block sizes, and compilation knobs like ``num_warps`` and ``num_stag
 
 Three kinds of variation show up in the ``configs`` comprehension:
 
-- ``dtype`` is a non-meta ``premake`` keyword. Each distinct value produces its own compiled ``.so``, and the generated dispatcher picks the matching one at runtime based on the tensor's dtype.
-- ``block_size_m``, ``block_size_n``, ``block_size_k`` are listed in ``meta_parameters``. For every ``(m, n, k, dtype)`` key, ``ninetoothed.build`` benchmarks the meta combinations at build time and records the winner in the CSV; the caller never passes these at runtime.
+- ``dtype`` is a non-meta ``premake`` keyword. Each distinct value produces its own compiled ``.so``, and the generated dispatcher picks the matching one at runtime based on the supplied dtype configuration argument.
+- ``block_size_m``, ``block_size_n``, ``block_size_k`` are listed in ``meta_parameters``. For every ``(m, n, k, dtype)`` key, the Python callable can benchmark the meta combinations at runtime; the C++ dispatcher uses the first candidate. The caller never passes the meta arguments.
 - ``num_warps`` and ``num_stages`` live in the third slot of each config tuple (``compilation_configs``). These are compilation knobs forwarded as keyword arguments to ``ninetoothed.make``. Each distinct ``(num_warps, num_stages)`` pair is another compile-time variant that participates in auto-tuning just like the meta parameters.
 
 Caching
 -------
 
-``ninetoothed.build`` writes all generated artifacts—generated C++ sources, ``.so``, and the auto-tuning CSV—into ``output_dir``. On a later invocation with the same ``output_dir``, if the ``.so`` already exists and the CSV has entries, ``ninetoothed.build`` loads them directly and skips the full build. This makes repeated imports of a ``build``-based kernel effectively free after the first run.
+Compiled libraries and their C++ source bundles are cached by source, IR, ABI,
+configuration, target, and toolchain. Repeated builds publish the cached artifacts
+to ``output_dir``, including the C++ files required by external builds.
 
-If you want to force a rebuild, delete ``output_dir``.
+Calling from C++
+----------------
 
-Sizing the Warm-Up Tensors
---------------------------
+For a supported Triton build, ``output_dir`` contains ``ninetoothed.h``,
+``<kernel_name>.h``, and ``*.cpp`` files with embedded device code. Compile all
+of those C++ files with C++17, the CUDA headers, pthread support, and the CUDA
+Driver library. For example:
 
-Auto-tuning needs concrete tensor shapes, but the tensor specs returned by ``premake`` may have symbolic dimensions. For each symbolic dimension, ``ninetoothed.build`` defaults to a preset size when materializing warm-up tensors.
+.. code-block:: bash
 
-For kernels with large fixed dimensions (such as a matmul with ``K`` or ``N`` in the hundreds of thousands), you can cap a particular symbolic dimension's warm-up size by setting ``upper_bound`` in ``shape_options``:
+    nvcc -std=c++17 -Xcompiler -pthread add_build/*.cpp app.cpp -Iadd_build -lcuda -o app
 
-.. code-block:: python
+The generated files can be moved together to another directory. They do not
+require the build machine's NineToothed cache, Python, or the generated ``.so``
+at runtime. Device code still targets the GPU architecture selected at build time.
 
-    def premake(k, n, dtype):
-        shape_options = ({"upper_bound": 4}, None, None)
-        tensors = (
-            Tensor(shape=(None, None, k), shape_options=shape_options, dtype=dtype),
-            Tensor(shape=(None, k, n), shape_options=shape_options, dtype=dtype),
-            Tensor(shape=(None, None, n), shape_options=shape_options, dtype=dtype),
-        )
+The public entry point is ``launch_<kernel_name>``. Its arguments are a
+``NineToothedStream`` followed by one ``NineToothedTensor`` per application
+argument, then the non-meta configuration arguments in ``premake`` signature
+order. The result is a CUDA Driver error code, with zero indicating success.
 
-        return arrangement, application, tensors
+``NineToothedTensor`` contains ``void *data``, ``uint64_t *shape``, and
+``int64_t *strides``. Shapes and strides describe the original tensor, with
+strides measured in elements. Tensor data points to device memory; scalar data
+points to host storage. Floating-point scalars use ``double`` storage, and
+integer scalars use their declared width and signedness. ``NineToothedStream``
+is a ``void *`` holding a CUDA stream; the caller must make its CUDA context
+current before launching.
 
-The ``upper_bound`` is a warm-up hint only—it does not constrain the kernel at runtime. Useful when a symbolic dimension is known to stay small in practice (for example, the batch dimension of a batched matmul) while other symbolic dimensions remain large.
+Configuration dtype arguments use the constants in ``ninetoothed.h``, such as
+``NINETOOTHED_FLOAT32``. Integer, boolean, and ``None`` configuration values use
+``int``; floating-point configuration values use ``double``. Empty outputs return
+success without launching, and unsupported configuration keys return an error.
+
+``export_cpp=None`` (the default) emits C++ files when every variant uses the
+supported Triton tensor ABI and configuration types. Python-only configurations,
+such as jagged tensors or arbitrary string keys, remain available through the
+returned callable. Set ``export_cpp=True`` to require native exports and receive
+an error for an unsupported configuration, or ``export_cpp=False`` to build only
+the Python-loadable artifacts.
