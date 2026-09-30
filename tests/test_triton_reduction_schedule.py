@@ -13,7 +13,7 @@ from ninetoothed.compiler import (
 )
 from ninetoothed.compiler.reductions import analyze_reductions
 from ninetoothed.ir import ssa
-from tests.utils import get_available_devices
+from tests.utils import get_available_devices, requires_effective_backend
 
 WIDTH = Symbol("WIDTH", constexpr=True)
 HEIGHT = Symbol("HEIGHT", constexpr=True)
@@ -273,6 +273,7 @@ def test_reduction_domain_selects_triton_row_vector_schedule():
 
 
 @pytest.mark.parametrize("device", get_available_devices())
+@requires_effective_backend("triton")
 def test_triton_row_vector_reduction_runtime(device, tmp_path):
     normalize = make(
         _row_arrangement,
@@ -430,6 +431,7 @@ def test_triton_row_vector_reduction_runtime(device, tmp_path):
 
 
 @pytest.mark.parametrize("device", get_available_devices())
+@requires_effective_backend("triton")
 def test_row_vector_only_vectorizes_scheduled_reductions_and_masks_source_store(
     device,
 ):
