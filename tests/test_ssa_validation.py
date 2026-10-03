@@ -317,15 +317,15 @@ def test_verifier_rejects_duplicate_outputs():
 
 
 @pytest.mark.parametrize(
-    "opcode, operands, message",
+    "opcode, operands, kind, message",
     (
-        ("mem.store", ("x",), "requires 2 operands"),
-        ("mem.load", ("x",), "Invalid memory target"),
-        ("mem.unknown_write", (), "Unknown memory effect"),
+        ("mem.store", ("x",), "tensor", "requires 2 operands"),
+        ("mem.load", ("x",), "scalar", "Invalid memory target"),
+        ("mem.unknown_write", (), "tensor", "Unknown memory effect"),
     ),
 )
-def test_verifier_checks_memory_contracts(opcode, operands, message):
-    value = ssa.Value(name="x", type=ssa.Type(kind="tensor", dtype="float32"))
+def test_verifier_checks_memory_contracts(opcode, operands, kind, message):
+    value = ssa.Value(name="x", type=ssa.Type(kind=kind, dtype="float32"))
     result = replace(value, name="%loaded")
     operation = ssa.Operation(
         opcode=opcode,

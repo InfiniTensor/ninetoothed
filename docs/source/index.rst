@@ -13,4 +13,5 @@ NineToothed Documentation
    installation
    basics
    build
+   cpu_interpreter
    python_api

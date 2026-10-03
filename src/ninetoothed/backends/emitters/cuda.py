@@ -41,6 +41,7 @@ class CudaTarget(EmitterTarget):
     suffix: str = "cu"
     source_route: str = "ssa-unified-cuda-emitter"
     c_style_syntax: bool = True
+    signed_division_rounds_to_zero: bool = True
     native_block_matmul: bool = True
 
     def index_cast(self, value: str) -> str:
