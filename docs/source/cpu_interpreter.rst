@@ -667,7 +667,21 @@ for complete sources, limitations, initial failures and reproducible records.
 This establishes correctness for the listed cases, not a full repository GPU
 suite or GPU performance. The earlier 0706213 GPU evidence retains its own scope.
 
-The final frozen computation source ``150f526`` fixes quoted dtype literals
+The 2026-10-03 compatibility maintenance source
+``960645200f8647dc2f62e992a41e65841642526e`` includes upstream  ``1f9f476``
+and preserves the September 20 submission snapshot. The NumPy-only selection
+passes 932 tests with 16 actual GPU cases deselected. A separate Torch CPU
+selection passes 97 tests, with six GPU conditions skipped, one actual CUDA
+input check deselected and one sparse-input warning. The selections overlap.
+All 70 Python files in the wheel and independent installation match the
+tested source; the installed debug demo and standalone replay pass.
+This maintenance preserves checked pointer writes, whole-view loads and boolean
+masks under strict SSA verification, and resolves dynamic dtype references from
+actual metadata without reading the type source. No new GPU run was performed;
+hardware results below retain their original source versions. See
+``docs/upstream_sync_20261003.md`` in the source repository.
+
+The September 20 computation source ``150f526`` fixes quoted dtype literals
 in interpreter ``tensor.cast`` after preserving dynamic dtype references.
 The new regression suite has 30 passing cases; 28 failed on the previous source.
 The NumPy-only suite passes 829 tests with 15 actual GPU cases deselected.

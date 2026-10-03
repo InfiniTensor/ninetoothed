@@ -127,6 +127,10 @@ This project is distributed under the Apache-2.0 license. See the included [LICE
 
 [同步说明与回归](docs/upstream_sync_20260920.md)：已合入官方整数dtype别名规范#218，三方合并保留解释器追踪逻辑。NumPy-only回归799通过，Torch CPU相关回归96通过（含新增40项别名测试）；GPU相关排除项和原A100证据的版本边界在报告中明确列出。
 
-## 提交冻结：2026-09-20
+## 截止前提交冻结：2026-09-20
 
 [最后一次针对性A100验收](docs/final_gpu_freeze_20260920.md)已完成：829项NumPy-only回归，15项正式GPU差分、3跟踪目标、64组整数别名JIT/AOT配置，以及127项实机相关回归全部通过。修复了字符串dtype字面量的CPU解释器解析缺陷，代码冻结为150f526；不同测试口径和历史全库结果在报告中分别列出。
+
+## 2026-10-03 上游兼容性维护
+
+[维护说明](docs/upstream_sync_20261003.md)：合入官方最新 SSA 修复，解决合并冲突并兼容严格访存契约和动态 dtype 来源。932 项 NumPy-only 回归、隔离 Torch CPU 检查、安装包与独立回放通过；历史截止前快照和 A100 结果保留原版本范围。

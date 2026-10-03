@@ -1,3 +1,14 @@
+UPSTREAM COMPATIBILITY MAINTENANCE — 2026-10-03
+Source: 960645200f8647dc2f62e992a41e65841642526e
+Upstream: 1f9f476fe4f7fc510abaaeff08ce6f00a3474e3c
+932 passed, 16 deselected in 27.65s (NumPy-only; Torch/Triton absent)
+97 passed, 6 skipped, 1 deselected, 1 warning in 2.35s (Torch CPU selection; overlaps the main scope)
+Ruff / format / contributing style passed; 70 wheel source files match; independent installed debug/replay passed.
+No new GPU run. September 20 cutoff snapshot and hardware evidence retain their original source scopes.
+Report: docs/upstream_sync_20261003.md
+
+HISTORICAL CHECKPOINTS FOLLOW
+
 FROZEN TARGETED GPU ACCEPTANCE — 2026-09-20
 Source: 150f5268977174164db383a75254f541aad14ffa
 829 passed, 15 deselected in 27.44s (NumPy-only)
