@@ -106,6 +106,7 @@ def test_changed_loop_count_does_not_claim_aligned_traces_after_bound_difference
     zero, one, bound, induction, carried, updated, output = map(
         _value, ("%zero", "%one", "%bound", "%i", "%acc", "%updated", "%output")
     )
+    induction = replace(induction, type=ssa.Type(kind="index", dtype="int32"))
     body = ssa.Block(
         name="loop",
         args=(induction, carried),
@@ -129,6 +130,10 @@ def test_changed_loop_count_does_not_claim_aligned_traces_after_bound_difference
                 opcode="scf.for",
                 operands=(zero.name, bound.name, one.name, zero.name),
                 results=(output,),
+                attrs={
+                    "induction": induction.name,
+                    "iter_args": ({"initial": zero.name, "block_arg": carried.name},),
+                },
                 regions=(body,),
             ),
         )

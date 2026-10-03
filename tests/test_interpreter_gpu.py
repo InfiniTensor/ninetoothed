@@ -599,6 +599,7 @@ def _jit_function(source):
         node
         for node in tree.body
         if isinstance(node, ast.FunctionDef)
+        and node.name.endswith("_kernel")
         and any(
             isinstance(decorator, ast.Attribute)
             and isinstance(decorator.value, ast.Name)

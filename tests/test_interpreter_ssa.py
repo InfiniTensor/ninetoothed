@@ -261,7 +261,7 @@ def test_handwritten_loop_handles_negative_step_and_zero_iterations(
     lower, upper, step, expected
 ):
     lo, hi, increment, zero, induction, accumulator, updated, result = (
-        _value(name, dtype="int32")
+        _value(name, dtype="int32", kind="index" if name == "%i" else "scalar")
         for name in (
             "%lo",
             "%hi",

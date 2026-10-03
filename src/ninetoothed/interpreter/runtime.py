@@ -34,6 +34,13 @@ class UnsupportedOperationError(InterpretationError):
     """An operation has no implemented CPU semantics."""
 
 
+def _runtime_dtype(value):
+    """Inspect dtype metadata without loading a referenced tensor or pointer."""
+    if isinstance(value, (TensorRef, Pointer)):
+        return value.array.dtype
+    return np.asarray(value).dtype
+
+
 def _adapt_inputs(inputs):
     """Expose already-loaded Torch CPU buffers as zero-copy NumPy views.
 
@@ -712,7 +719,7 @@ class _Execution:
                 "shape.dim",
                 "tensor.stride",
                 "index.offset",
-            } or (op.opcode == "mem.store" and index == 1)
+            } or (op.opcode in {"mem.store", "tensor.cast"} and index == 1)
 
             if name not in snapshots or not reference_only:
                 snapshots[name] = _snapshot(env[name], reference_only=reference_only)
@@ -1034,14 +1041,14 @@ class _Execution:
 
         if code == "tensor.cast":
             dtype = op.attrs.get("dtype", op.results[0].type.dtype)
+            reference = (
+                op.operands[1] if len(op.operands) > 1 else op.attrs.get("dtype_ref")
+            )
 
-            if isinstance(dtype, str) and dtype.endswith(".dtype"):
-                reference = env[dtype[:-6]]
-                dtype = (
-                    reference.array.dtype
-                    if isinstance(reference, TensorRef)
-                    else np.asarray(reference).dtype
-                )
+            if reference is not None:
+                dtype = _runtime_dtype(env[reference])
+            elif isinstance(dtype, str) and dtype.endswith(".dtype"):
+                dtype = _runtime_dtype(env[dtype[:-6]])
             elif (
                 isinstance(dtype, str)
                 and len(dtype) >= 2
@@ -1054,7 +1061,12 @@ class _Execution:
 
         if code in {"tensor.zeros", "tensor.empty", "tensor.full"}:
             shape = shape_value(op.results[0].type.shape, self.symbols | env)
-            dtype = numpy_dtype(op.results[0].type.dtype, "float32")
+            reference = op.attrs.get("dtype_ref")
+            dtype = (
+                _runtime_dtype(env[reference])
+                if reference is not None
+                else numpy_dtype(op.results[0].type.dtype, "float32")
+            )
             value = materialize(args[0]) if args else op.attrs.get("value", 0)
 
             return np.full(shape, value if code == "tensor.full" else 0, dtype=dtype)

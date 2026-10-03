@@ -1,3 +1,5 @@
+import ast
+
 import pytest
 import torch
 
@@ -147,6 +149,19 @@ def test_reduction_domain_selects_triton_row_vector_schedule():
         candidate["num_warps"]
         for candidate in compilation.launch_plan.tuning_candidates
     ) == (4, 8, 1)
+    source_tree = ast.parse(compilation.artifact.primary_source)
+    maximum = next(
+        node
+        for node in ast.walk(source_tree)
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == "tl.max"
+    )
+    masked_value = maximum.args[0]
+    load_mask = next(
+        keyword.value
+        for keyword in masked_value.args[1].keywords
+        if keyword.arg == "mask"
+    )
+    assert ast.dump(masked_value.args[0]) == ast.dump(load_mask)
     assert "tl.max(" in compilation.artifact.primary_source
     assert "tl.sum(" in compilation.artifact.primary_source
     assert "for v" not in compilation.artifact.primary_source
@@ -434,3 +449,24 @@ def test_row_vector_only_vectorizes_scheduled_reductions_and_masks_source_store(
         output = torch.empty(2, device=device)
         kernel(x, output, WIDTH=3)
         torch.testing.assert_close(output, expected)
+
+
+def test_broadcast_load_pointer_matches_reduction_mask():
+    def arrangement(x, weight, out):
+        x = x[:, None].expand((-1, weight.shape[1]))
+
+        return x.tile((1, 32)), weight.tile((1, 32)), out.tile((1,))
+
+    compilation = DEFAULT_COMPILER.compile(
+        CompileRequest(
+            arrangement=arrangement,
+            application=_row_product_sum,
+            tensors=(Tensor(1), Tensor(2), Tensor(1)),
+            backend="triton",
+            max_num_configs=1,
+        )
+    )
+    load = compilation.artifact.primary_source.split("tl.load(x +", 1)[1]
+    pointer, masked_load = load.split(", mask=", 1)
+    assert "0 * (offsets)" in pointer
+    assert "offsets" in masked_load.split(", other=", 1)[0]

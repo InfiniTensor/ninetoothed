@@ -132,7 +132,7 @@ def test_cuda_signed_division_source_matches_python_integer_semantics(tmp_path):
     if compiler is None:
         pytest.skip("C++ compiler is required to evaluate generated CUDA scalar syntax")
 
-    context = SimpleNamespace(target=CudaTarget())
+    context = SimpleNamespace(target=CudaTarget(), tensor_infos={})
     expressions = []
 
     for operator in ("floordiv", "mod"):

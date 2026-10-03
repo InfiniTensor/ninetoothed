@@ -57,7 +57,8 @@ def main():
         "--tb=short",
         *(str(path.relative_to(ROOT)) for path in tests),
         "-k",
-        "not test_cpu_interpreter_matches_actual_triton_gpu",
+        "not (test_cpu_interpreter_matches_actual_triton_gpu or "
+        "test_dynamic_integer_reduction_preserves_large_values_and_tail)",
     ]
 
     if args.junitxml is not None:

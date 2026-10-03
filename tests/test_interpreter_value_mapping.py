@@ -332,6 +332,7 @@ def _loop_program():
             "%result",
         ),
     )
+    induction = replace(induction, type=ssa.Type(kind="index", dtype="int32"))
     constants = tuple(
         ssa.Operation(
             opcode="arith.constant", results=(value,), attrs={"value": number}
@@ -342,6 +343,10 @@ def _loop_program():
         opcode="scf.for",
         operands=(zero.name, stop.name, step.name, zero.name),
         results=(result,),
+        attrs={
+            "induction": induction.name,
+            "iter_args": ({"initial": zero.name, "block_arg": carried.name},),
+        },
         regions=(
             ssa.Block(
                 args=(induction, carried),
