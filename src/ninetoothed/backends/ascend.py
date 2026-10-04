@@ -12,8 +12,6 @@ class AscendOptimizeSchedule(OptimizeSchedule):
         self,
         analysis: Mapping[str, Any],
     ):
-        # 如果目前尚未针对 Ascend 编写特殊的调度分析逻辑，
-        # 可以先直接返回空列表/默认逻辑（参照 tilelang 或 triton 中的基础实现）
         return []
 
 def register_ssa_passes(registry: "Registry") -> None:
@@ -26,7 +24,7 @@ def register_ssa_passes(registry: "Registry") -> None:
     )
 
 class AscendBackend(Backend):
-    target = Target.ASCEND  # 请确保 core.py 中有 ASCEND 枚举，没有的话需补充定义
+    target = Target.ASCEND  
 
     def normalize_options(self, options: dict) -> dict:
         return options
