@@ -1,23 +1,31 @@
 import os
+from pathlib import Path
+from typing import Any
+
 from ninetoothed.backends.core import Target
 from ninetoothed.backends.materializers.base import Materializer
-from ninetoothed.compiler.cache import TRITON_CACHE_DIR, compilation_cache_key, write_source
+from ninetoothed.compiler.cache import (
+    TRITON_CACHE_DIR,
+    compilation_cache_key,
+    write_source,
+)
+
 
 class AscendMaterializer(Materializer):
     target = Target.ASCEND
 
-    def jit_materialize(self, compilation, *, output_dir=None):
+    def jit_materialize(self, compilation: Any, *, output_dir: Path | str | None = None):
         del output_dir
         return _materialize_ascend(compilation)
 
-    def aot_build(self, compilation, *, output_dir):
+    def aot_build(self, compilation: Any, *, output_dir: Path | str):
         raise NotImplementedError("Ascend AOT materialization is not yet implemented.")
 
-    def load_built_artifact(self, built):
+    def load_built_artifact(self, built: Any):
         raise NotImplementedError("Ascend AOT artifact loading is not yet implemented.")
 
 
-def _materialize_ascend(compilation):
+def _materialize_ascend(compilation: Any):
     from ninetoothed.compiler.runtime import (
         Handle,
         _runtime_wrapper,
@@ -30,7 +38,7 @@ def _materialize_ascend(compilation):
     cache_key = compilation_cache_key(compilation)
 
     # 1. 写入替换/转换后的源码（标明后缀或驱动）
-    source = write_source(
+    source_path = write_source(
         artifact.kernel_name,
         artifact.primary_source,
         "ascend_triton.py",
@@ -41,7 +49,7 @@ def _materialize_ascend(compilation):
     os.environ.setdefault("TRITON_CACHE_DIR", str(TRITON_CACHE_DIR))
 
     # 2. 动态加载 Python 模块并获取入口 launch 函数与 kernel
-    module = import_python_module(source)
+    module = import_python_module(str(source_path))
     launch = getattr(module, artifact.entrypoint)
     kernel = getattr(module, f"{artifact.kernel_name}_kernel", None)
 
@@ -56,4 +64,4 @@ def _materialize_ascend(compilation):
     )
 
     # 4. 返回包含模块与句柄的 Handle 对象
-    return Handle(compilation, kernel, wrapped, source)
+    return Handle(compilation, kernel, wrapped, source_path)
