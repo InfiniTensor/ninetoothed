@@ -1,7 +1,7 @@
 """Fan out backend-specific SSA pass registrations."""
 
 from typing import TYPE_CHECKING
-
+from ninetoothed.backends.ascend import register_ssa_passes as register_ascend
 from ninetoothed.backends.core import Target
 
 if TYPE_CHECKING:
@@ -29,6 +29,7 @@ def register_passes(registry: "Registry") -> None:
     register_triton(registry)
     register_cuda(registry)
     register_tilelang(registry)
+    register_ascend(registry)
     _validate_backend_pass_contracts(registry)
 
 

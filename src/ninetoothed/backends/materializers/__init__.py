@@ -8,11 +8,14 @@ def create_default_registry() -> MaterializerRegistry:
     from ninetoothed.backends.materializers.cuda import CudaMaterializer
     from ninetoothed.backends.materializers.tilelang import TileLangMaterializer
     from ninetoothed.backends.materializers.triton import TritonMaterializer
+    from ninetoothed.backends.materializers.ascend import AscendMaterializer
 
     registry = MaterializerRegistry()
     registry.register(TritonMaterializer())
     registry.register(CudaMaterializer())
     registry.register(TileLangMaterializer())
+    registry.register(AscendMaterializer())
+    
 
     return registry
 
