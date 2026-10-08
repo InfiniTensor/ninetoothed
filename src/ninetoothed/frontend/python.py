@@ -24,6 +24,7 @@ from ninetoothed.frontend.types import (
     _load_type,
     _math_result_type,
     _matmul_type,
+    _next_dtype_shape,
     _offset_type,
     _reduce_type,
     _shape_dim_from_type,
@@ -1018,6 +1019,17 @@ class _ApplicationSSABuilder:
             return method
 
         name = _call_leaf_name(node.func)
+
+        if name == "cast":
+            if len(node.args) != 2 or node.keywords:
+                raise _lowering_error(
+                    node, "`cast()` requires an input value and a destination dtype"
+                )
+
+            value = self._lower_expr(node.args[0], operations, env)
+
+            return self._lower_cast(value, node.args[1], operations, env)
+
         constructor = self._lower_constructor_call(name, node, operations, env)
 
         if constructor is not None:
@@ -1069,54 +1081,7 @@ class _ApplicationSSABuilder:
             if not node.args:
                 raise _lowering_error(node, "`to()` requires a destination dtype")
 
-            dtype_node = node.args[0]
-            dtype = _unparse(dtype_node)
-            dtype_ref = None
-            dtype_operand = None
-
-            if isinstance(dtype_node, ast.Attribute) and dtype_node.attr == "dtype":
-                owner = dtype_node.value
-
-                while isinstance(owner, ast.Subscript) or (
-                    isinstance(owner, ast.Attribute) and owner.attr == "source"
-                ):
-                    owner = owner.value
-
-                source = self._lower_expr(owner, operations, env)
-                dtype_ref = self.constructor_dtype_refs.get(source.name)
-
-                if dtype_ref not in self.param_names:
-                    dtype_ref = None
-
-                if source.name in self.param_names:
-                    dtype_ref = source.name
-
-                dtype = source.type.dtype
-
-                if (
-                    dtype_ref is not None
-                    and self.tensor_types[dtype_ref].kind == "scalar"
-                ):
-                    dtype = None
-
-                if dtype_ref is None:
-                    dtype_operand = source.name
-                    dtype = self.precise_dtypes.get(source.name)
-
-            result = self._emit(
-                operations,
-                "tensor.cast",
-                operands=(receiver.name,)
-                if dtype_operand is None
-                else (receiver.name, dtype_operand),
-                attrs={"dtype": dtype, "dtype_ref": dtype_ref},
-                result_type=_cast_type(receiver.type, dtype),
-            )
-
-            if dtype_ref is not None:
-                self.constructor_dtype_refs[result.name] = dtype_ref
-
-            return result
+            return self._lower_cast(receiver, node.args[0], operations, env)
 
         if method == "offsets":
             dim = _literal_value(node.args[0]) if node.args else None
@@ -1153,6 +1118,52 @@ class _ApplicationSSABuilder:
                 result_type=receiver.type,
             )
         return None
+
+    def _lower_cast(self, receiver, dtype_node, operations, env):
+        dtype = _unparse(dtype_node)
+        dtype_ref = None
+        dtype_operand = None
+
+        if isinstance(dtype_node, ast.Attribute) and dtype_node.attr == "dtype":
+            owner = dtype_node.value
+
+            while isinstance(owner, ast.Subscript) or (
+                isinstance(owner, ast.Attribute) and owner.attr == "source"
+            ):
+                owner = owner.value
+
+            source = self._lower_expr(owner, operations, env)
+            dtype_ref = self.constructor_dtype_refs.get(source.name)
+
+            if dtype_ref not in self.param_names:
+                dtype_ref = None
+
+            if source.name in self.param_names:
+                dtype_ref = source.name
+
+            dtype = source.type.dtype
+
+            if dtype_ref is not None and self.tensor_types[dtype_ref].kind == "scalar":
+                dtype = None
+
+            if dtype_ref is None:
+                dtype_operand = source.name
+                dtype = self.precise_dtypes.get(source.name)
+
+        result = self._emit(
+            operations,
+            "tensor.cast",
+            operands=(receiver.name,)
+            if dtype_operand is None
+            else (receiver.name, dtype_operand),
+            attrs={"dtype": dtype, "dtype_ref": dtype_ref},
+            result_type=_cast_type(receiver.type, dtype),
+        )
+
+        if dtype_ref is not None:
+            self.constructor_dtype_refs[result.name] = dtype_ref
+
+        return result
 
     def _lower_stride_method(self, node, receiver, operations):
         dim = _literal_value(node.args[0]) if node.args else 0
@@ -1767,6 +1778,27 @@ def _value_for_shape_node(
 ) -> ssa.Value | None:
     if isinstance(node, ast.Name):
         return env.get(node.id) or builder.values.get(node.id)
+
+    if isinstance(node, ast.Attribute) and node.attr == "dtype":
+        base = _value_for_shape_node(node.value, env, builder)
+
+        if base is None:
+            return None
+
+        shape = _next_dtype_shape(base.type)
+
+        if shape is None:
+            return None
+
+        attrs = dict(base.type.attrs)
+        attrs["dtype_level"] = int(attrs.get("dtype_level", 0)) + 1
+
+        return ssa.Value(
+            name="<shape-proxy>",
+            type=ssa.Type(
+                kind="tensor", shape=shape, dtype=base.type.dtype, attrs=attrs
+            ),
+        )
 
     if isinstance(node, ast.Subscript):
         base = _value_for_shape_node(node.value, env, builder)
