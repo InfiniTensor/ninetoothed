@@ -406,7 +406,7 @@
 <li><p>The first call is slow.</p></li>
 <li><p>The compiled artifacts live only in the current Python process.</p></li>
 </ul>
-<p><code class="docutils literal notranslate"><span class="pre">ninetoothed.build</span></code> addresses both by compiling kernels <strong>ahead of time</strong>, emitting native <code class="docutils literal notranslate"><span class="pre">.so</span></code> artifacts to disk that can be loaded directly in later runs.</p>
+<p><code class="docutils literal notranslate"><span class="pre">ninetoothed.build</span></code> compiles configured variants ahead of time and emits native <code class="docutils literal notranslate"><span class="pre">.so</span></code> artifacts that Python can load in later runs. Supported Triton builds also export C++ sources and a public header for applications that run without Python.</p>
 <section id="basic-usage">
 <h2>Basic Usage<a class="headerlink" href="#basic-usage" title="Link to this heading">#</a></h2>
 <p>Let’s start with the vector addition kernel from the Basics tutorial and port it to <code class="docutils literal notranslate"><span class="pre">ninetoothed.build</span></code>:</p>
@@ -452,8 +452,8 @@
 <p>Compared with <code class="docutils literal notranslate"><span class="pre">ninetoothed.make</span></code>, the shape of the code is the same—an arrangement function and an application function—but we now wrap the kernel-specific setup in a <code class="docutils literal notranslate"><span class="pre">premake</span></code> function and enumerate the variants to compile in <code class="docutils literal notranslate"><span class="pre">configs</span></code>.</p>
 <p>Two practical notes about the call to <code class="docutils literal notranslate"><span class="pre">ninetoothed.build</span></code>:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">output_dir</span></code> must exist. <code class="docutils literal notranslate"><span class="pre">ninetoothed.build</span></code> writes generated sources into it but does not create it.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">lazy=True</span></code> defers the actual build to the first kernel call. This is required when <code class="docutils literal notranslate"><span class="pre">ninetoothed.build</span></code> is invoked at module import time, because the <code class="docutils literal notranslate"><span class="pre">ProcessPoolExecutor</span></code> that drives the build uses <code class="docutils literal notranslate"><span class="pre">spawn</span></code> and cannot re-enter the importing module.</p></li>
+<li><p>The build creates <code class="docutils literal notranslate"><span class="pre">output_dir</span></code> when needed.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">lazy=True</span></code> defers compilation to the first Python call. Use <code class="docutils literal notranslate"><span class="pre">lazy=False</span></code> when generating native artifacts for a separate C++ build.</p></li>
 </ul>
 <p>We can invoke <code class="docutils literal notranslate"><span class="pre">kernel</span></code> like this:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
@@ -473,11 +473,11 @@
     <span class="k">assert</span> <span class="n">torch</span><span class="o">.</span><span class="n">allclose</span><span class="p">(</span><span class="n">z</span><span class="p">,</span> <span class="n">reference</span><span class="p">)</span>
 </pre></div>
 </div>
-<p>The <code class="docutils literal notranslate"><span class="pre">if</span> <span class="pre">__name__</span> <span class="pre">==</span> <span class="pre">&quot;__main__&quot;:</span></code> guard is also required: the first call to <code class="docutils literal notranslate"><span class="pre">kernel</span></code> is what actually drives the build, and the build’s child processes re-import the enclosing module. Without the guard, the children would try to call the kernel again on import and deadlock.</p>
+<p>The main guard keeps the example invocation separate from import-time setup.</p>
 </section>
 <section id="the-premake-function">
 <h2>The <code class="docutils literal notranslate"><span class="pre">premake</span></code> Function<a class="headerlink" href="#the-premake-function" title="Link to this heading">#</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">premake</span></code> builds everything <code class="docutils literal notranslate"><span class="pre">ninetoothed.make</span></code> needs—<code class="docutils literal notranslate"><span class="pre">arrangement</span></code>, <code class="docutils literal notranslate"><span class="pre">application</span></code>, and the <code class="docutils literal notranslate"><span class="pre">tensors</span></code>—for a single variant. <code class="docutils literal notranslate"><span class="pre">ninetoothed.build</span></code> calls <code class="docutils literal notranslate"><span class="pre">premake</span></code> once per variant and hands each result to <code class="docutils literal notranslate"><span class="pre">ninetoothed.make</span></code> under the hood.</p>
+<p><code class="docutils literal notranslate"><span class="pre">premake</span></code> builds everything <code class="docutils literal notranslate"><span class="pre">ninetoothed.make</span></code> needs—<code class="docutils literal notranslate"><span class="pre">arrangement</span></code>, <code class="docutils literal notranslate"><span class="pre">application</span></code>, and the <code class="docutils literal notranslate"><span class="pre">tensors</span></code>—for a single variant. <code class="docutils literal notranslate"><span class="pre">ninetoothed.build</span></code> calls <code class="docutils literal notranslate"><span class="pre">premake</span></code> once per variant and compiles each result through the SSA compiler.</p>
 <p>The intent is that anything that distinguishes one compiled variant from another (dtypes, concrete shapes, block-size choices, …) appears as a parameter of <code class="docutils literal notranslate"><span class="pre">premake</span></code>. Everything else stays hardcoded.</p>
 </section>
 <section id="configurations">
@@ -500,8 +500,8 @@
 <p>Some <code class="docutils literal notranslate"><span class="pre">premake</span></code> parameters do not change what the kernel <em>computes</em>—only how fast it runs. <code class="docutils literal notranslate"><span class="pre">block_size</span></code> in the example is one: any value in <code class="docutils literal notranslate"><span class="pre">(512,</span> <span class="pre">1024,</span> <span class="pre">2048)</span></code> produces a functionally equivalent kernel.</p>
 <p>Listing <code class="docutils literal notranslate"><span class="pre">block_size</span></code> in <code class="docutils literal notranslate"><span class="pre">meta_parameters</span></code> tells <code class="docutils literal notranslate"><span class="pre">ninetoothed.build</span></code> to treat it as auto-tunable:</p>
 <ul class="simple">
-<li><p>At build time, <code class="docutils literal notranslate"><span class="pre">ninetoothed.build</span></code> benchmarks each meta variant against representative inputs and records the winner per non-meta configuration in a CSV file next to the <code class="docutils literal notranslate"><span class="pre">.so</span></code>.</p></li>
-<li><p>At runtime, the generated C++ dispatcher picks the best meta values from the CSV based on the actual input arguments, so the caller passes only the non-meta arguments.</p></li>
+<li><p>The Python callable benchmarks candidates using actual runtime inputs and caches the selected candidate.</p></li>
+<li><p>The C++ dispatcher selects the first configured candidate for each non-meta configuration. It does not run Python or read an auto-tuning CSV. Both callers pass only the non-meta arguments.</p></li>
 </ul>
 <p>Parameters not listed in <code class="docutils literal notranslate"><span class="pre">meta_parameters</span></code> are treated as true compile-time variants: each distinct value produces its own <code class="docutils literal notranslate"><span class="pre">.so</span></code>, and the dispatcher routes runtime calls to the matching one.</p>
 </section>
@@ -595,32 +595,47 @@
 </div>
 <p>Three kinds of variation show up in the <code class="docutils literal notranslate"><span class="pre">configs</span></code> comprehension:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">dtype</span></code> is a non-meta <code class="docutils literal notranslate"><span class="pre">premake</span></code> keyword. Each distinct value produces its own compiled <code class="docutils literal notranslate"><span class="pre">.so</span></code>, and the generated dispatcher picks the matching one at runtime based on the tensor’s dtype.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">block_size_m</span></code>, <code class="docutils literal notranslate"><span class="pre">block_size_n</span></code>, <code class="docutils literal notranslate"><span class="pre">block_size_k</span></code> are listed in <code class="docutils literal notranslate"><span class="pre">meta_parameters</span></code>. For every <code class="docutils literal notranslate"><span class="pre">(m,</span> <span class="pre">n,</span> <span class="pre">k,</span> <span class="pre">dtype)</span></code> key, <code class="docutils literal notranslate"><span class="pre">ninetoothed.build</span></code> benchmarks the meta combinations at build time and records the winner in the CSV; the caller never passes these at runtime.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">dtype</span></code> is a non-meta <code class="docutils literal notranslate"><span class="pre">premake</span></code> keyword. Each distinct value produces its own compiled <code class="docutils literal notranslate"><span class="pre">.so</span></code>, and the generated dispatcher picks the matching one at runtime based on the supplied dtype configuration argument.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">block_size_m</span></code>, <code class="docutils literal notranslate"><span class="pre">block_size_n</span></code>, <code class="docutils literal notranslate"><span class="pre">block_size_k</span></code> are listed in <code class="docutils literal notranslate"><span class="pre">meta_parameters</span></code>. For every <code class="docutils literal notranslate"><span class="pre">(m,</span> <span class="pre">n,</span> <span class="pre">k,</span> <span class="pre">dtype)</span></code> key, the Python callable can benchmark the meta combinations at runtime; the C++ dispatcher uses the first candidate. The caller never passes the meta arguments.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">num_warps</span></code> and <code class="docutils literal notranslate"><span class="pre">num_stages</span></code> live in the third slot of each config tuple (<code class="docutils literal notranslate"><span class="pre">compilation_configs</span></code>). These are compilation knobs forwarded as keyword arguments to <code class="docutils literal notranslate"><span class="pre">ninetoothed.make</span></code>. Each distinct <code class="docutils literal notranslate"><span class="pre">(num_warps,</span> <span class="pre">num_stages)</span></code> pair is another compile-time variant that participates in auto-tuning just like the meta parameters.</p></li>
 </ul>
 </section>
 <section id="caching">
 <h2>Caching<a class="headerlink" href="#caching" title="Link to this heading">#</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">ninetoothed.build</span></code> writes all generated artifacts—generated C++ sources, <code class="docutils literal notranslate"><span class="pre">.so</span></code>, and the auto-tuning CSV—into <code class="docutils literal notranslate"><span class="pre">output_dir</span></code>. On a later invocation with the same <code class="docutils literal notranslate"><span class="pre">output_dir</span></code>, if the <code class="docutils literal notranslate"><span class="pre">.so</span></code> already exists and the CSV has entries, <code class="docutils literal notranslate"><span class="pre">ninetoothed.build</span></code> loads them directly and skips the full build. This makes repeated imports of a <code class="docutils literal notranslate"><span class="pre">build</span></code>-based kernel effectively free after the first run.</p>
-<p>If you want to force a rebuild, delete <code class="docutils literal notranslate"><span class="pre">output_dir</span></code>.</p>
+<p>Compiled libraries and their C++ source bundles are cached by source, IR, ABI,
+configuration, target, and toolchain. Repeated builds publish the cached artifacts
+to <code class="docutils literal notranslate"><span class="pre">output_dir</span></code>, including the C++ files required by external builds.</p>
 </section>
-<section id="sizing-the-warm-up-tensors">
-<h2>Sizing the Warm-Up Tensors<a class="headerlink" href="#sizing-the-warm-up-tensors" title="Link to this heading">#</a></h2>
-<p>Auto-tuning needs concrete tensor shapes, but the tensor specs returned by <code class="docutils literal notranslate"><span class="pre">premake</span></code> may have symbolic dimensions. For each symbolic dimension, <code class="docutils literal notranslate"><span class="pre">ninetoothed.build</span></code> defaults to a preset size when materializing warm-up tensors.</p>
-<p>For kernels with large fixed dimensions (such as a matmul with <code class="docutils literal notranslate"><span class="pre">K</span></code> or <code class="docutils literal notranslate"><span class="pre">N</span></code> in the hundreds of thousands), you can cap a particular symbolic dimension’s warm-up size by setting <code class="docutils literal notranslate"><span class="pre">upper_bound</span></code> in <code class="docutils literal notranslate"><span class="pre">shape_options</span></code>:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">premake</span><span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="p">):</span>
-    <span class="n">shape_options</span> <span class="o">=</span> <span class="p">({</span><span class="s2">"upper_bound"</span><span class="p">:</span> <span class="mi">4</span><span class="p">},</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
-    <span class="n">tensors</span> <span class="o">=</span> <span class="p">(</span>
-        <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">k</span><span class="p">),</span> <span class="n">shape_options</span><span class="o">=</span><span class="n">shape_options</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">),</span>
-        <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">n</span><span class="p">),</span> <span class="n">shape_options</span><span class="o">=</span><span class="n">shape_options</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">),</span>
-        <span class="n">Tensor</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">n</span><span class="p">),</span> <span class="n">shape_options</span><span class="o">=</span><span class="n">shape_options</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">),</span>
-    <span class="p">)</span>
-
-    <span class="k">return</span> <span class="n">arrangement</span><span class="p">,</span> <span class="n">application</span><span class="p">,</span> <span class="n">tensors</span>
+<section id="calling-from-c">
+<h2>Calling from C++<a class="headerlink" href="#calling-from-c" title="Link to this heading">#</a></h2>
+<p>For a supported Triton build, <code class="docutils literal notranslate"><span class="pre">output_dir</span></code> contains <code class="docutils literal notranslate"><span class="pre">ninetoothed.h</span></code>,
+<code class="docutils literal notranslate"><span class="pre">&lt;kernel_name&gt;.h</span></code>, and <code class="docutils literal notranslate"><span class="pre">*.cpp</span></code> files with embedded device code. Compile all
+of those C++ files with C++17, the CUDA headers, pthread support, and the CUDA
+Driver library. For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>nvcc<span class="w"> </span>-std<span class="o">=</span>c++17<span class="w"> </span>-Xcompiler<span class="w"> </span>-pthread<span class="w"> </span>add_build/*.cpp<span class="w"> </span>app.cpp<span class="w"> </span>-Iadd_build<span class="w"> </span>-lcuda<span class="w"> </span>-o<span class="w"> </span>app
 </pre></div>
 </div>
-<p>The <code class="docutils literal notranslate"><span class="pre">upper_bound</span></code> is a warm-up hint only—it does not constrain the kernel at runtime. Useful when a symbolic dimension is known to stay small in practice (for example, the batch dimension of a batched matmul) while other symbolic dimensions remain large.</p>
+<p>The generated files can be moved together to another directory. They do not
+require the build machine’s NineToothed cache, Python, or the generated <code class="docutils literal notranslate"><span class="pre">.so</span></code>
+at runtime. Device code still targets the GPU architecture selected at build time.</p>
+<p>The public entry point is <code class="docutils literal notranslate"><span class="pre">launch_&lt;kernel_name&gt;</span></code>. Its arguments are a
+<code class="docutils literal notranslate"><span class="pre">NineToothedStream</span></code> followed by one <code class="docutils literal notranslate"><span class="pre">NineToothedTensor</span></code> per application
+argument, then the non-meta configuration arguments in <code class="docutils literal notranslate"><span class="pre">premake</span></code> signature
+order. The result is a CUDA Driver error code, with zero indicating success.</p>
+<p><code class="docutils literal notranslate"><span class="pre">NineToothedTensor</span></code> contains <code class="docutils literal notranslate"><span class="pre">void</span> <span class="pre">*data</span></code>, <code class="docutils literal notranslate"><span class="pre">uint64_t</span> <span class="pre">*shape</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">int64_t</span> <span class="pre">*strides</span></code>. Shapes and strides describe the original tensor, with
+strides measured in elements. Tensor data points to device memory; scalar data
+points to host storage. Floating-point scalars use <code class="docutils literal notranslate"><span class="pre">double</span></code> storage, and
+integer scalars use their declared width and signedness. <code class="docutils literal notranslate"><span class="pre">NineToothedStream</span></code>
+is a <code class="docutils literal notranslate"><span class="pre">void</span> <span class="pre">*</span></code> holding a CUDA stream; the caller must make its CUDA context
+current before launching.</p>
+<p>Configuration dtype arguments use the constants in <code class="docutils literal notranslate"><span class="pre">ninetoothed.h</span></code>, such as
+<code class="docutils literal notranslate"><span class="pre">NINETOOTHED_FLOAT32</span></code>. Integer, boolean, and <code class="docutils literal notranslate"><span class="pre">None</span></code> configuration values use
+<code class="docutils literal notranslate"><span class="pre">int</span></code>; floating-point configuration values use <code class="docutils literal notranslate"><span class="pre">double</span></code>. Empty outputs return
+success without launching, and unsupported configuration keys return an error.</p>
+<p>C++ files are emitted when every variant uses the supported Triton tensor ABI
+and configuration types. Python-only configurations, such as jagged tensors or
+arbitrary string keys, remain available through the returned callable.</p>
 </section>
 </section>
 
@@ -677,7 +692,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#meta-parameters-and-auto-tuning">Meta-Parameters and Auto-Tuning</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#combining-configuration-axes">Combining Configuration Axes</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#caching">Caching</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sizing-the-warm-up-tensors">Sizing the Warm-Up Tensors</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#calling-from-c">Calling from C++</a></li>
 </ul>
   </nav></div>
 
