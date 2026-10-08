@@ -81,6 +81,10 @@ def _row_min(x, out):
     out = ntl.min(x, axis=1)  # noqa: F841
 
 
+def _full_sum(x, out):
+    out = ntl.sum(x)  # noqa: F841
+
+
 def _row_product_sum(x, y, out):
     out = ntl.sum(x * y, axis=1)  # noqa: F841
 
@@ -129,6 +133,33 @@ def _request():
         backend="triton",
         tensor_dtypes={"x": "float32", "out": "float32"},
     )
+
+
+@pytest.mark.parametrize("backend", ("rvne", "cuda", "triton"))
+@pytest.mark.parametrize("full", (False, True), ids=("rows", "full"))
+def test_untiled_reduction_uses_one_global_value_domain(backend, full):
+    compilation = DEFAULT_COMPILER.compile(
+        CompileRequest(
+            arrangement=lambda x, out: (x, out),
+            application=_full_sum if full else _row_min,
+            tensors=(
+                Tensor(shape=(15,) if full else (3, 5), dtype="float32"),
+                Tensor(shape=(1,) if full else (3,), dtype="float32"),
+            ),
+            backend=backend,
+        )
+    )
+    analysis = compilation.artifact.metadata["ssa_metadata"]["analysis"]
+    domain = analysis["reduction_domains"][0]
+    assert domain["program_compatible"]
+    assert domain["program_shapes"] == ((),)
+    assert domain["program_constraints"] == (((), ()),)
+
+    if full:
+        assert analysis["reduction_schedule"]["emittable"]
+    else:
+        assert analysis["reduction_schedule"]["program_shape"] == ()
+        assert analysis["reduction_schedule"]["parallel_shape"] == ("3",)
 
 
 def test_reduction_domain_selects_triton_row_vector_schedule():

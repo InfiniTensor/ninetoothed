@@ -412,14 +412,17 @@ def _program_contract(
     producer_targets = _producer_targets(operand, definitions, tensor_specs)
     producer_specs = tuple(tensor_specs[target] for target in producer_targets)
     store_specs = tuple(tensor_specs.get(target) for target, _shape in stores)
-    legacy_global_domain = (
+    global_domain = (
         producer_specs
-        and all(tensor.layout is None for tensor in producer_specs)
+        and all(_has_global_value_domain(tensor) for tensor in producer_specs)
         and store_specs
-        and all(tensor is not None and tensor.layout is None for tensor in store_specs)
+        and all(
+            tensor is not None and _has_global_value_domain(tensor)
+            for tensor in store_specs
+        )
     )
 
-    if legacy_global_domain:
+    if global_domain:
         return ((),), (((), ()),), True, None
 
     if not producer_specs or any(tensor.layout is None for tensor in producer_specs):
@@ -483,6 +486,11 @@ def _program_contract(
         compatible,
         reason,
     )
+
+
+def _has_global_value_domain(tensor):
+    # Untiled tensor axes belong to the value, not a separate outer program grid.
+    return tensor.layout is None or not tensor.layout.levels
 
 
 def _producer_targets(value, definitions, tensor_specs):

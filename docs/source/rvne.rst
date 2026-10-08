@@ -144,10 +144,40 @@ tests:
 
 .. code-block:: bash
 
-   python -m pytest tests/test_rvne_lowering.py tests/test_rvne_materializer.py tests/test_rvne_snn.py
+   python -m pytest tests/test_rvne_lowering.py tests/test_rvne_materializer.py tests/test_rvne_operators.py tests/test_rvne_snn.py
 
-These cover signed INT4 packing, masked tails, accumulated dot products larger
-than 1024 inputs, explicit LIF state across time steps, failure handling and
-artifact reload. QEMU validation does not establish support or timing on a
-physical chip. Dedicated LIF instructions, hardware launch/context management,
-and register-resident batching remain separate optimization work.
+These cover ordinary addition, dense matrix multiplication, sum/min/max,
+signed INT4 packing, masked tails, accumulated dot products larger than 1024
+inputs, explicit LIF state across time steps, failure handling and artifact
+reload. QEMU validation does not establish support or timing on a physical
+chip. Dedicated LIF instructions, hardware launch/context management, and
+register-resident batching remain separate optimization work.
+
+Ordinary operator tests on QEMU
+------------------------------
+
+``tests/test_rvne_operators.py`` runs ordinary operators through the complete
+NineToothed Python application, SSA, RVNE source generation, SDK compilation
+and QEMU execution path. Each case compares the output against NumPy and
+checks that compilation produced a RISC-V ELF executable. The tests require
+``NINETOOTHED_RVNE_TOOLCHAIN`` and skip if it is unset.
+
+The cases cover ``int32`` and ``float32`` addition, rectangular matrix
+multiplication, and both full-vector and row-wise sum/min/max reductions.
+Inputs include negative values, zeros and fractional floating-point values.
+The matrix shapes include odd dimensions. These operators use ordinary
+RISC-V arithmetic; the packed spike accumulator is tested separately.
+
+.. code-block:: bash
+
+   # Run all ordinary operator cases through the real SDK and QEMU.
+   python -m pytest -vv -ra tests/test_rvne_operators.py
+
+   # Select one operator family.
+   python -m pytest -vv tests/test_rvne_operators.py -k add
+   python -m pytest -vv tests/test_rvne_operators.py -k matmul
+   python -m pytest -vv tests/test_rvne_operators.py -k reduction
+
+Every selected case must report ``PASSED`` to establish QEMU coverage.
+The host-compiled tests in ``test_rvne_lowering.py`` remain useful for checking
+source generation on machines without the SDK.

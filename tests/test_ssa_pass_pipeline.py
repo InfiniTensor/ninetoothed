@@ -123,6 +123,40 @@ class TestPipeline:
         assert "arith.mul" in opcodes
         assert "arith.add" in opcodes
 
+    @pytest.mark.parametrize("backend", tuple(Target))
+    @pytest.mark.parametrize("inner", ("0", "5", "2 * k"))
+    def test_matmul_decomposition_defines_concrete_and_computed_bounds(
+        self, backend, inner
+    ):
+        program = _program(
+            "\ndef matmul(a, b, out):\n    out = a @ b\n",
+            (
+                TensorSpec(ndim=2, shape=("3", inner), dtype="int32", name="a"),
+                TensorSpec(ndim=2, shape=(inner, "7"), dtype="int32", name="b"),
+                TensorSpec(ndim=2, shape=("3", "7"), dtype="int32", name="out"),
+            ),
+            "matmul",
+        )
+        lowered = lower_for_target(program, backend=backend)
+        operations = lowered.blocks[0].operations
+        loop = next(op for op in operations if op.opcode == "scf.for")
+        definitions = {value.name: op for op in operations for value in op.results}
+        upper_bound = definitions[loop.operands[1]]
+
+        assert (loop.attrs["m"], loop.attrs["n"], loop.attrs["k"]) == (
+            "3",
+            "7",
+            inner,
+        )
+
+        if inner.isdecimal():
+            assert upper_bound.opcode == "arith.constant"
+            assert upper_bound.attrs["value"] == int(inner)
+        else:
+            assert upper_bound.opcode == "shape.dim"
+            assert upper_bound.operands == ("a",)
+            assert upper_bound.attrs["dim"] == -1
+
     def test_pass_registry_classifies_and_registers_backend_contracts(self):
         independent = {
             descriptor.name for descriptor in registered(category=HARDWARE_INDEPENDENT)

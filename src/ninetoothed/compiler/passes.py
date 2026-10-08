@@ -1289,9 +1289,38 @@ def _decompose_matmul_store(
     product, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
     acc_next, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
     acc_result, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
+    upper_bound = k
+    bound_operations = ()
+
+    if not k.isidentifier() and k not in value_types:
+        bound, temp_index = _fresh_value(
+            existing_names, temp_index, ssa.Type(kind="index")
+        )
+        upper_bound = bound.name
+
+        try:
+            extent = int(k)
+        except ValueError:
+            bound_operations = (
+                ssa.Operation(
+                    opcode="shape.dim",
+                    operands=(lhs,),
+                    results=(bound,),
+                    attrs={"dim": -1, "decomposition": "matmul"},
+                ),
+            )
+        else:
+            bound_operations = (
+                ssa.Operation(
+                    opcode="arith.constant",
+                    results=(bound,),
+                    attrs={"value": extent, "decomposition": "matmul"},
+                ),
+            )
+
     loop = ssa.Operation(
         opcode="scf.for",
-        operands=(zero.name, k, one.name, acc_init.name),
+        operands=(zero.name, upper_bound, one.name, acc_init.name),
         results=(acc_result,),
         attrs={
             "induction": kk.name,
@@ -1371,6 +1400,7 @@ def _decompose_matmul_store(
                 results=(acc_init,),
                 attrs={"value": 0.0, "decomposition": "matmul"},
             ),
+            *bound_operations,
             loop,
             ssa.Operation(
                 opcode="mem.store",
@@ -1424,19 +1454,19 @@ def _infer_matmul_symbols(
     output_shape = tuple(
         str(dim) for dim in value_types.get(output, ssa.Type(kind="tensor")).shape
     )
-    m = _first_symbol(
+    m = _first_extent(
         operation.attrs.get("m"),
         _shape_dim(output_shape, 0),
         _shape_dim(lhs_shape, 0),
         "m",
     )
-    n = _first_symbol(
+    n = _first_extent(
         operation.attrs.get("n"),
         _shape_dim(output_shape, 1),
         _shape_dim(rhs_shape, 1),
         "n",
     )
-    k = _first_symbol(
+    k = _first_extent(
         operation.attrs.get("k"),
         _shape_dim(lhs_shape, -1),
         _shape_dim(rhs_shape, 0),
@@ -1456,14 +1486,14 @@ def _shape_dim(shape: tuple[str, ...], index: int) -> str | None:
         return None
 
 
-def _first_symbol(*candidates: object) -> str:
+def _first_extent(*candidates: object) -> str:
     for candidate in candidates:
         if candidate is None:
             continue
 
         text = str(candidate)
 
-        if text.isidentifier():
+        if text:
             return text
     return str(candidates[-1])
 
