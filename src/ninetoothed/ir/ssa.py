@@ -44,12 +44,19 @@ class Operation:
     results: tuple[Value, ...] = ()
     attrs: Mapping[str, Any] = field(default_factory=dict)
     regions: tuple["Block", ...] = ()
+    origins: tuple[str, ...] = field(default=(), compare=False)
 
     def __post_init__(self):
         object.__setattr__(self, "operands", tuple(self.operands))
         object.__setattr__(self, "results", tuple(self.results))
         object.__setattr__(self, "attrs", freeze(self.attrs))
         object.__setattr__(self, "regions", tuple(self.regions))
+        origins = tuple(self.origins)
+
+        if any(not isinstance(origin, str) or not origin for origin in origins):
+            raise ValueError("Operation origins must contain non-empty string IDs.")
+
+        object.__setattr__(self, "origins", tuple(dict.fromkeys(origins)))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -370,10 +377,10 @@ def _verify_memory_contract(
         return
 
     signatures = {
-        "mem.store": (2, 0),
-        "mem.data_ptr": (1, 1),
-        "mem.load": (1, 1),
-        "mem.atomic_add": (2, 1),
+        "mem.store": ((2, 3), 0),
+        "mem.data_ptr": ((1,), 1),
+        "mem.load": ((1, 2, 3), 1),
+        "mem.atomic_add": ((2,), 1),
     }
 
     if operation.opcode not in signatures:
@@ -381,20 +388,38 @@ def _verify_memory_contract(
 
     operands, results = signatures[operation.opcode]
 
-    if len(operation.operands) != operands or len(operation.results) != results:
+    if len(operation.operands) not in operands or len(operation.results) != results:
+        optional = {
+            "mem.store": ", optionally followed by a mask",
+            "mem.load": ", optionally followed by a mask and fallback value",
+        }.get(operation.opcode, "")
         raise VerificationError(
-            f"Operation `{location}` requires {operands} operands and {results} results."
+            f"Operation `{location}` requires {operands[0]} operands{optional} "
+            f"and {results} results."
         )
 
     target = operation.operands[1 if operation.opcode == "mem.store" else 0]
-    expected = (
-        {"pointer"}
-        if operation.opcode in {"mem.load", "mem.atomic_add"}
-        else {"tensor", "scalar"}
-    )
+    # Checked pointer writes and whole-view reads are public interpreter forms.
+    expected = {
+        "mem.store": {"pointer", "tensor", "scalar"},
+        "mem.data_ptr": {"tensor", "scalar"},
+        "mem.load": {"pointer", "tensor"},
+        "mem.atomic_add": {"pointer"},
+    }[operation.opcode]
 
     if visible[target].kind not in expected:
         raise VerificationError(f"Invalid memory target `{target}` at `{location}`.")
+
+    mask_index = {"mem.load": 1, "mem.store": 2}.get(operation.opcode)
+
+    if mask_index is not None and len(operation.operands) > mask_index:
+        mask = visible[operation.operands[mask_index]]
+
+        if (
+            mask.kind not in {"scalar", "tensor"}
+            or normalize_dtype(mask.dtype) != "bool"
+        ):
+            raise VerificationError(f"Operation `{location}` requires a boolean mask.")
 
     if (
         operation.opcode == "mem.data_ptr"
