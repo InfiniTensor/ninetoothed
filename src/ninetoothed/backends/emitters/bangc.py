@@ -20,6 +20,7 @@ from ninetoothed.backends.emitters.patterns import (
     constant_value,
     match_binary_chain,
     match_reduce_broadcast,
+    match_row_reduce,
     match_softmax,
 )
 from ninetoothed.backends.emitters.staging import (
@@ -413,15 +414,22 @@ class BangCTarget(EmitterTarget):
             tasks_expr = f"({total} + nt_chunk - 1) / nt_chunk"
             chunk_decl = f"    const int64_t nt_chunk = {chunk};\n"
         else:
-            kernel_prelude = f"""    const int64_t nt_chunk = {chunk};
+            row_collapse = match_row_reduce(context)
+
+            if row_collapse is not None:
+                kernel_prelude = _render_row_collapse(row_collapse)
+                tasks_expr = row_collapse[3]
+                chunk_decl = ""
+            else:
+                kernel_prelude = f"""    const int64_t nt_chunk = {chunk};
     for (int64_t nt_lane = 0; nt_lane < nt_chunk; nt_lane++) {{
         int64_t {self.index_name} = (int64_t)(taskIdX) * nt_chunk + nt_lane;
         if ({self.index_name} < {total}) {{
 {common.indent_block(body, "            ")}
         }}
     }}"""
-            tasks_expr = f"({total} + nt_chunk - 1) / nt_chunk"
-            chunk_decl = f"    const int64_t nt_chunk = {chunk};\n"
+                tasks_expr = f"({total} + nt_chunk - 1) / nt_chunk"
+                chunk_decl = f"    const int64_t nt_chunk = {chunk};\n"
 
         support = _bangc_support(context)
 
@@ -525,6 +533,75 @@ class _StagingPlan:
 
 
 _NRAM_BUDGET_BYTES = 192 * 1024
+
+
+def _render_row_collapse(match):
+    """Emit an NRAM row reduce writing one scalar per row via GDRAM store."""
+    operator, name, output, rows, cols = match[:5]
+    scale = match[5] if len(match) > 5 else ""
+    chunk = _SOFTMAX_MAX_COLS
+    newline = chr(10)
+    lines = [
+        "    const int64_t nt_cols = " + cols + ";",
+        "    if (nt_cols > " + str(chunk) + ") {",
+        "        return;",
+        "    }",
+        "    const int64_t nt_padded = (nt_cols + 127) & ~127LL;",
+        "    __nram__ float nt_buf[" + str(chunk) + "];",
+        "    __nram__ float nt_wrk[" + str(chunk) + "];",
+        "    const float* nt_row_in = " + name + " + (int64_t)(taskIdX) * nt_cols;",
+        "    __memcpy(nt_buf, nt_row_in, (uint32_t)(nt_cols * sizeof(float)), GDRAM2NRAM);",
+    ]
+
+    if operator in {"sum", "sum_sq"}:
+        lines += [
+            "    for (int64_t nt_j = nt_cols; nt_j < nt_padded; nt_j++) {",
+            "        nt_buf[nt_j] = 0.0f;",
+            "    }",
+        ]
+
+        if operator == "sum_sq":
+            lines.append("    __bang_mul(nt_buf, nt_buf, nt_buf, (uint32_t)nt_padded);")
+
+        lines += [
+            "    __bang_reduce_sum(nt_wrk, nt_buf, (uint32_t)nt_padded);",
+            "    float nt_result = 0.0f;",
+            "    for (int64_t nt_j = 0; nt_j < nt_padded; nt_j += 32) {",
+            "        nt_result += nt_wrk[nt_j];",
+            "    }",
+        ]
+
+        if scale:
+            lines.append("    nt_result = nt_result" + scale + ";")
+
+        if operator == "sum_sq":
+            lines.append("    nt_result = sqrtf(nt_result);")
+    else:
+        pad = "-3.4e38f" if operator == "max" else "3.4e38f"
+        cmp_op = "__bang_maximum" if operator == "max" else "__bang_minimum"
+        cmp_sign = ">" if operator == "max" else "<"
+        lines += [
+            "    for (int64_t nt_j = nt_cols; nt_j < nt_padded; nt_j++) {",
+            "        nt_buf[nt_j] = " + pad + ";",
+            "    }",
+            "    __memcpy(nt_wrk, nt_buf, (uint32_t)(nt_padded * sizeof(float)), NRAM2NRAM);",
+            "    int64_t nt_len = nt_padded;",
+            "    while (nt_len >= 64) {",
+            "        int64_t nt_h = nt_len / 2;",
+            "        if (nt_h % 8 != 0) { nt_h &= ~7LL; }",
+            "        if (nt_h < 32) { break; }",
+            f"        {cmp_op}(nt_wrk, nt_wrk, nt_wrk + nt_h, (uint32_t)nt_h);",
+            "        nt_len = nt_h;",
+            "    }",
+            "    float nt_result = nt_wrk[0];",
+            "    for (int64_t nt_j = 1; nt_j < nt_len; nt_j++) {",
+            f"        if (nt_wrk[nt_j] {cmp_sign} nt_result) {{ nt_result = nt_wrk[nt_j]; }}",
+            "    }",
+        ]
+
+    lines.append("    " + output + "[(int64_t)(taskIdX)] = nt_result;")
+
+    return newline.join(lines)
 
 
 def _render_nram_reduce_broadcast(match, context):
