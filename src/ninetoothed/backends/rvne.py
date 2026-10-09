@@ -232,10 +232,20 @@ def _validate_spike_accumulators(program: ssa.Program) -> None:
                     "RVNE spike_accumulate must return the current's int32 shape."
                 )
 
-            if any(type_.shape not in ((), result.shape) for type_ in types):
+            if any(not _broadcasts_to(type_.shape, result.shape) for type_ in types):
                 raise ValueError(
-                    "RVNE spike_accumulate operands must have matching shapes or be scalar."
+                    "RVNE spike_accumulate operands must broadcast to the current shape."
                 )
+
+
+def _broadcasts_to(shape, target_shape):
+    if len(shape) > len(target_shape):
+        return False
+
+    return all(
+        str(size) == "1" or str(size) == str(target)
+        for size, target in zip(reversed(shape), reversed(target_shape))
+    )
 
 
 def _validate_block(block: ssa.Block) -> None:

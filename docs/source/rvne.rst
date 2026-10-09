@@ -75,8 +75,9 @@ Packed spike accumulation
 * ``weight_low`` and ``weight_high``: ``uint64`` holding sixteen signed INT4
   weights each, with weight zero in the least significant nibble.
 
-Operands must share the current tensor's shape or be scalars. The result has
-the current tensor's shape and ``int32`` dtype. The helper initializes its
+Operands must broadcast to the current tensor's shape. This permits shared
+spike rows and weight columns without copying them for every output element.
+The result has the current tensor's shape and ``int32`` dtype. The helper initializes its
 temporary register operands on every call, reads NCR using
 ``get_ncr_64``, and does not use the SDK's unsupported ``save_nc_32`` operation.
 It clobbers its temporary RVNE registers; it does not preserve an external
@@ -209,3 +210,74 @@ emitter uses serial RISC-V floating-point arithmetic and libm ``exp2f``;
 it does not provide the GPU memory scheduling or performance of an optimized
 GPU FlashAttention kernel. FP16/BF16 tensors remain unsupported by this
 backend. Physical-chip performance has not been validated.
+
+SConvLif model verification
+--------------------------
+
+``examples/rvne/sconv_lif.py`` runs the supplied SConvLif reference model's
+complete four-step graph using NineToothed AOT operators and QEMU. The
+external model directory must contain ``yolo_origin.py`` with the supported
+``SConvLifOrigin`` model. Its source and weights are not distributed with
+NineToothed. This is an adapter for that model, not an ONNX model importer.
+
+The adapter uses the reference fixture's seed ``20260830`` and projects the
+initial weights to zero and one, as its ``check_models.py`` specifies. The
+input is ``[4,3,64,64]`` and the final output is ``[1,3,2,2,9]``. There is no
+trained checkpoint in this fixture, so it measures numerical correctness,
+not object-detection accuracy.
+
+.. code-block:: bash
+
+   export NINETOOTHED_RVNE_TOOLCHAIN=/path/to/toolchain
+   export NINETOOTHED_SCONVLIF_MODEL_DIR=/path/to/SConvLif
+   export PYTHONPATH="$PWD/src"
+
+   python examples/rvne/sconv_lif.py \
+     --model-dir "$NINETOOTHED_SCONVLIF_MODEL_DIR" \
+     --output-dir build/rvne-sconv-lif
+
+The model executes 40 convolutions, 12 max pools, and 36 LIF updates through
+QEMU, for 88 calls. Python handles scheduling, data layout, packing and the
+Detect output reshape. Convolutions use the RVNE spike accumulator; pooling
+and LIF use generated RISC-V integer arithmetic. The nine LIF layers retain
+independent voltage/current state across all four time steps.
+
+Each layer consumes the previous QEMU result. A separate CPU PyTorch model
+provides comparison values, never replacement activations. The verifier
+compares every convolution, pool, spike output, voltage/current state and
+Detect reshape, then the final output: 165 exact comparisons. Success prints:
+
+.. code-block:: text
+
+   PASS: 88 QEMU launches, 165 exact comparisons, 108 nonzero output values.
+
+The output directory contains:
+
+* ``report.json``: pass/fail status, all comparisons, reference source hash,
+  compiler identity, launch counts and artifact paths.
+* ``reference.npz``: input sequence and reference final output.
+* ``qemu_output.npz``: QEMU final output and all final LIF states.
+* ``kernels/``: generated C++, RISC-V ELF executables and ABI manifests.
+
+The report is reset to ``running`` at startup and records ``failed`` if
+compilation, execution or comparison raises an exception. Successful
+completion requires all 88 QEMU calls. The command exits with an error when
+validation fails.
+
+Packed weights are reused across time steps. Packed input windows and weights
+are stored separately and broadcast inside the generated kernel, avoiding
+copies of the weights for every output position. Reported staging bytes
+estimate explicit operator buffers and exclude model/reference storage,
+serialization temporaries and process RSS. Wall times include compilation,
+file transport and simulation, and do not measure physical-chip performance.
+
+To run the corresponding integration test with both environment variables
+set:
+
+.. code-block:: bash
+
+   python -m pytest -vv -ra tests/test_rvne_model.py
+
+Without the external model directory, only the full-model case skips. With
+the SDK configured, the remaining cases still run real QEMU checks for signed
+convolution, non-square kernels, stride/padding, pooling and LIF state.

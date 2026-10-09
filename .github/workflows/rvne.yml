@@ -4,12 +4,14 @@ on:
     paths:
       - "src/**"
       - "tests/**"
+      - "examples/rvne/**"
       - "pyproject.toml"
       - ".github/workflows/rvne.yml"
   pull_request:
     paths:
       - "src/**"
       - "tests/**"
+      - "examples/rvne/**"
       - "pyproject.toml"
       - ".github/workflows/rvne.yml"
 
