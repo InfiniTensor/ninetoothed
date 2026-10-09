@@ -1,10 +1,12 @@
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
-from ninetoothed.backends.core import Artifact, Backend, Target
+from ninetoothed.backends.core import Artifact, Backend, Capability, Target
 from ninetoothed.backends.emitters.ascend import AscendEmitter
-from ninetoothed.compiler.passes import OptimizeSchedule
+from ninetoothed.compiler.passes import Context, OptimizeSchedule, ScheduleCandidate
 from ninetoothed.ir import Kernel
-from ninetoothed.registry import Registry
+
+if TYPE_CHECKING:
+    from ninetoothed.compiler.passes import Registry
 
 
 class AscendOptimizeSchedule(OptimizeSchedule):
@@ -14,8 +16,18 @@ class AscendOptimizeSchedule(OptimizeSchedule):
     def schedule_candidates(
         self,
         analysis: Mapping[str, Any],
-    ):
-        return []
+        schedule: Mapping[str, Any],
+        context: Context,
+    ) -> tuple[ScheduleCandidate, ...]:
+        return ()
+
+    def optimization_policy(
+        self,
+        backend: Target,
+        analysis: Mapping[str, Any],
+        schedule: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        return {}
 
 
 def register_ssa_passes(registry: "Registry") -> None:
@@ -29,10 +41,14 @@ def register_ssa_passes(registry: "Registry") -> None:
 
 
 class AscendBackend(Backend):
-    target = Target.ASCEND
-
-    def normalize_options(self, options: dict) -> dict:
-        return options
+    name = Target.ASCEND
+    capability = Capability(
+        name=name,
+        emits_source=True,
+        can_execute=True,
+        requires_external_compiler=True,
+        notes=("Python/Triton source for the Ascend Triton runtime; JIT and AOT.",),
+    )
 
     def prepare_for_emission(self, kernel: Kernel) -> Kernel:
         return kernel

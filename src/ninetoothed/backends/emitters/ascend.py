@@ -1,35 +1,31 @@
-from typing import Any
+"""Ascend source emission using the shared Triton syntax hooks."""
+
+from dataclasses import dataclass, replace
 
 from ninetoothed.ascendifier import Ascendifier
 from ninetoothed.backends.core import Artifact, Target
-from ninetoothed.backends.emitters.base import EmitterTarget
+from ninetoothed.backends.emitters import ssa as common
 from ninetoothed.backends.emitters.triton import TritonTarget
 from ninetoothed.ir import Kernel
 
 
-class AscendEmitter(EmitterTarget):
-    target = Target.ASCEND
-
-    def __init__(self, target_context: Any = None):
-        self.target_context = target_context
+@dataclass(frozen=True, kw_only=True)
+class AscendEmitter(TritonTarget):
+    backend: Target = Target.ASCEND
+    suffix: str = "ascend_triton.py"
+    source_route: str = "ssa-unified-ascend-emitter"
 
     def emit(self, kernel: Kernel) -> Artifact:
-        # 1. 复用 TritonEmitter 生成基础 Triton 源码与元数据
-        triton_emitter = TritonTarget(target_context=self.target_context)
-        base_artifact = triton_emitter.emit(kernel)
-
-        # 2. 实例化 Ascendifier 并对生成的源码进行改写
-        ascendifier = Ascendifier()
-        ascend_source = ascendifier.transform(base_artifact.primary_source)
-
-        # 3. 构建并返回封装了 Ascend 源码的 Artifact 对象
-        primary_filename = f"{base_artifact.kernel_name}.cpp"
-
-        return Artifact(
-            backend=Target.ASCEND,
-            kernel_name=base_artifact.kernel_name,
-            language="cpp",
-            sources={primary_filename: ascend_source},
-            entrypoint=base_artifact.entrypoint,
-            metadata=dict(base_artifact.metadata) | {"target": Target.ASCEND},
+        artifact = common.emit(kernel, self)
+        transformer = Ascendifier()
+        return replace(
+            artifact,
+            sources={
+                name: (
+                    transformer.transform(source)
+                    if name == artifact.primary_source_name
+                    else source
+                )
+                for name, source in artifact.sources.items()
+            },
         )

@@ -183,12 +183,13 @@ class TestRegistry:
         with pytest.raises(RuntimeError, match="Explicit CUDA compiler"):
             toolchain.find_nvcc()
 
-    def test_default_registry_reports_three_backends(self):
+    def test_default_registry_reports_four_backends(self):
         names = {capability.name for capability in backend_capabilities()}
         assert names == {
             Target.TRITON,
             Target.TILELANG,
             Target.CUDA,
+            Target.ASCEND,
         }
 
     def test_backends_reject_source_only_kernel_without_ssa(self):

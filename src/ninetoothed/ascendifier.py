@@ -12,9 +12,13 @@ class Ascendifier(ast.NodeTransformer):
         except ImportError:
             pass
 
+    def transform(self, source: str) -> str:
+        tree = self.visit(ast.parse(source))
+        return ast.unparse(ast.fix_missing_locations(tree)) + "\n"
+
     @staticmethod
     def _is_triton_language_name(node):
-        return isinstance(node, ast.Name) and node.id == "triton.language"
+        return isinstance(node, ast.Name) and node.id in ("triton.language", "tl")
 
     @staticmethod
     def _is_triton_language(node):
@@ -95,10 +99,6 @@ class Ascendifier(ast.NodeTransformer):
 
     @classmethod
     def _rewrite_autotune_keyword(cls, keyword, max_axes):
-        if keyword.arg == "configs" and cls._is_sequence_literal(keyword.value):
-            cls._rewrite_square_block_autotune_configs(keyword.value.elts)
-            return
-
         if keyword.arg == "key" and cls._is_sequence_literal(keyword.value):
             keyword.value.elts = cls._filter_autotune_keys(keyword.value.elts, max_axes)
 
@@ -149,7 +149,7 @@ class Ascendifier(ast.NodeTransformer):
         if node.module == "triton.language.extra":
             for alias in node.names:
                 if alias.name == "libdevice":
-                    node.module = "triton.language.extra.cann"
+                    node.module = "triton.language.extra.ascend"
 
         return node
 
@@ -161,10 +161,3 @@ class Ascendifier(ast.NodeTransformer):
 
         type(self)._rewrite_load_call(node)
         return type(self)._rewrite_clamp_call(node)
-
-    def visit_Module(self, node):
-        self.generic_visit(node)
-
-        node = type(self)._rewrite_tail_key_boundary_masks(node)
-
-        return node
