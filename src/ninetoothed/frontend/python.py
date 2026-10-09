@@ -15,6 +15,7 @@ from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from typing import Any
 
+from ninetoothed.dtype import normalize_dtype
 from ninetoothed.frontend.errors import LoweringError
 from ninetoothed.frontend.types import (
     _binary_type,
@@ -430,6 +431,9 @@ class _ApplicationSSABuilder:
         self.env: dict[str, ssa.Value] = {}
         self.constructor_dtype_refs: dict[str, str] = {}
         self.precise_dtypes: dict[str, str] = {}
+        self.dtype_refs: dict[str, str] = {}
+        self.dtype_conditions: set[str] = set()
+        self.constant_values: dict[str, Any] = {}
         self.temp_index = 0
         self.symbol_names = {
             name
@@ -728,6 +732,13 @@ class _ApplicationSSABuilder:
         condition = self._ensure_bool_condition(
             self._lower_expr(stmt.test, operations, env), env
         )
+        known = self.constant_values.get(condition.name)
+
+        if isinstance(known, bool):
+            self._lower_statements(stmt.body if known else stmt.orelse, operations, env)
+
+            return
+
         assigned = tuple(
             name for name in _assigned_names(stmt.body + stmt.orelse) if name in env
         )
@@ -775,6 +786,42 @@ class _ApplicationSSABuilder:
                 operands=tuple(else_env[name].name for name in assigned),
             )
         )
+
+        if any(
+            then_env[name].type.kind == "dtype" or else_env[name].type.kind == "dtype"
+            for name in assigned
+        ):
+            if not self._is_dtype_condition(condition) or any(
+                value.type.kind != "dtype"
+                for name in assigned
+                for value in (then_env[name], else_env[name])
+            ):
+                raise LoweringError("Dtype selection cannot depend on runtime data.")
+
+            branch_ops = then_ops[:-1] + else_ops[:-1]
+
+            if any(
+                op.opcode != "arith.constant"
+                and not op.opcode.startswith("dtype.")
+                and not (
+                    op.results
+                    and all(
+                        result.name in self.dtype_conditions for result in op.results
+                    )
+                )
+                for op in branch_ops
+            ):
+                raise LoweringError(
+                    "Conditional dtype assignments require type-only branches."
+                )
+
+            operations.extend(branch_ops)
+
+            for name in assigned:
+                env[name] = self._select_dtype(
+                    condition, then_env[name], else_env[name], operations
+                )
+            return
 
         results = tuple(self._temp(env[name].type, hint=name) for name in assigned)
         operations.append(
@@ -850,13 +897,16 @@ class _ApplicationSSABuilder:
     def _lower_constant_expr(self, node, operations, env) -> ssa.Value:
         del env
 
+        if isinstance(node.value, str) and normalize_dtype(node.value) in _DTYPE_NAMES:
+            return self._dtype_constant(node.value, operations)
         return self._constant(operations, node.value)
 
     def _lower_name_expr(self, node, operations, env) -> ssa.Value:
-        del operations
-
         if node.id in env:
             return env[node.id]
+
+        if normalize_dtype(node.id) in _DTYPE_NAMES:
+            return self._dtype_constant(node.id, operations)
 
         if node.id in self.symbol_names:
             return self._named_value(node.id, ssa.Type(kind="index", dtype="index"))
@@ -872,16 +922,24 @@ class _ApplicationSSABuilder:
 
         operand = self._lower_expr(node.operand, operations, env)
 
-        return self._emit(
+        result = self._emit(
             operations,
             f"arith.{_unaryop_name(node.op)}",
             operands=(operand.name,),
             result_type=operand.type,
         )
 
+        if isinstance(node.op, ast.Not) and self._is_dtype_condition(operand):
+            self.dtype_conditions.add(result.name)
+        return result
+
     def _lower_binary_expr(self, node, operations, env) -> ssa.Value:
         lhs = self._lower_expr(node.left, operations, env)
         rhs = self._lower_expr(node.right, operations, env)
+
+        if lhs.type.kind == "dtype" or rhs.type.kind == "dtype":
+            raise _lowering_error(node, "Dtype values cannot be used in arithmetic")
+
         opcode = (
             "linalg.matmul"
             if isinstance(node.op, ast.MatMult)
@@ -904,12 +962,20 @@ class _ApplicationSSABuilder:
         result = values[0]
 
         for rhs in values[1:]:
+            is_dtype = self._is_dtype_condition(result) and self._is_dtype_condition(
+                rhs
+            )
             result = self._emit(
                 operations,
                 f"arith.{_boolop_name(node.op)}",
                 operands=(result.name, rhs.name),
-                result_type=ssa.Type(kind="tensor", dtype="bool"),
+                result_type=ssa.Type(
+                    kind="scalar" if is_dtype else "tensor", dtype="bool"
+                ),
             )
+
+            if is_dtype:
+                self.dtype_conditions.add(result.name)
         return result
 
     def _lower_compare_expr(self, node, operations, env) -> ssa.Value:
@@ -918,14 +984,33 @@ class _ApplicationSSABuilder:
 
         for operator, comparator in zip(node.ops, node.comparators):
             rhs = self._lower_expr(comparator, operations, env)
-            comparisons.append(
-                self._emit(
+            is_dtype = lhs.type.kind == "dtype" or rhs.type.kind == "dtype"
+
+            if is_dtype and (
+                lhs.type.kind != rhs.type.kind
+                or not isinstance(operator, (ast.Eq, ast.NotEq))
+            ):
+                raise _lowering_error(
+                    node, "Dtypes support only equality comparisons with other dtypes"
+                )
+
+            if is_dtype and lhs.type.dtype is not None and rhs.type.dtype is not None:
+                equal = lhs.type.dtype == rhs.type.dtype
+                result = self._constant(
+                    operations, equal if isinstance(operator, ast.Eq) else not equal
+                )
+            else:
+                result = self._emit(
                     operations,
                     f"cmp.{_cmpop_name(operator)}",
                     operands=(lhs.name, rhs.name),
                     result_type=_bool_type(lhs, rhs),
                 )
-            )
+
+            if is_dtype:
+                self.dtype_conditions.add(result.name)
+
+            comparisons.append(result)
             lhs = rhs
 
         if not comparisons:
@@ -934,18 +1019,34 @@ class _ApplicationSSABuilder:
         result = comparisons[0]
 
         for rhs in comparisons[1:]:
+            is_dtype = self._is_dtype_condition(result) and self._is_dtype_condition(
+                rhs
+            )
             result = self._emit(
                 operations,
                 "arith.and",
                 operands=(result.name, rhs.name),
                 result_type=_bool_type(result, rhs),
             )
+
+            if is_dtype:
+                self.dtype_conditions.add(result.name)
         return result
 
     def _lower_if_expr(self, node, operations, env) -> ssa.Value:
         condition = self._lower_expr(node.test, operations, env)
+        known = self.constant_values.get(condition.name)
+
+        if isinstance(known, bool):
+            return self._lower_expr(
+                node.body if known else node.orelse, operations, env
+            )
+
         body = self._lower_expr(node.body, operations, env)
         orelse = self._lower_expr(node.orelse, operations, env)
+
+        if body.type.kind == "dtype" or orelse.type.kind == "dtype":
+            return self._select_dtype(condition, body, orelse, operations)
 
         return self._emit(
             operations,
@@ -976,6 +1077,12 @@ class _ApplicationSSABuilder:
         )
 
     def _lower_attribute_expr(self, node, operations, env) -> ssa.Value:
+        if _is_namespace_ref(node.value) and normalize_dtype(node.attr) in _DTYPE_NAMES:
+            return self._dtype_constant(node.attr, operations)
+
+        if node.attr == "dtype":
+            return self._dtype_of(node, operations, env)
+
         if node.attr == "T":
             value = self._lower_expr(node.value, operations, env)
 
@@ -1119,50 +1226,102 @@ class _ApplicationSSABuilder:
             )
         return None
 
+    def _dtype_constant(self, dtype, operations):
+        dtype = normalize_dtype(dtype)
+
+        return self._emit(
+            operations,
+            "dtype.constant",
+            attrs={"value": dtype},
+            result_type=ssa.Type(kind="dtype", dtype=dtype),
+        )
+
+    def _dtype_of(self, node, operations, env):
+        owner = node.value
+
+        while isinstance(owner, ast.Subscript) or (
+            isinstance(owner, ast.Attribute) and owner.attr in {"source", "dtype"}
+        ):
+            owner = owner.value
+
+        source = self._lower_expr(owner, operations, env)
+
+        if source.type.kind == "dtype":
+            return source
+
+        ref = self.constructor_dtype_refs.get(source.name)
+
+        if source.name in self.param_names:
+            ref = source.name
+
+        if ref not in self.param_names:
+            ref = None
+
+        dtype = (
+            self.tensor_types[ref].dtype
+            if ref is not None and self.tensor_types[ref].kind != "scalar"
+            else self.precise_dtypes.get(source.name)
+        )
+        result = self._emit(
+            operations,
+            "dtype.of",
+            operands=(source.name,),
+            result_type=ssa.Type(kind="dtype", dtype=normalize_dtype(dtype)),
+        )
+
+        if ref is not None:
+            self.dtype_refs[result.name] = ref
+        return result
+
+    def _is_dtype_condition(self, value):
+        return value.name in self.dtype_conditions or isinstance(
+            self.constant_values.get(value.name), bool
+        )
+
+    def _select_dtype(self, condition, yes, no, operations):
+        if yes.type.kind != "dtype" or no.type.kind != "dtype":
+            raise LoweringError(
+                "Dtype selection requires dtype values in both branches."
+            )
+
+        if not self._is_dtype_condition(condition):
+            raise LoweringError("Dtype selection cannot depend on runtime data.")
+
+        known = self.constant_values.get(condition.name)
+
+        if isinstance(known, bool):
+            return yes if known else no
+
+        if yes.name == no.name:
+            return yes
+
+        return self._emit(
+            operations,
+            "dtype.select",
+            operands=(condition.name, yes.name, no.name),
+            result_type=ssa.Type(
+                kind="dtype",
+                dtype=yes.type.dtype if yes.type.dtype == no.type.dtype else None,
+            ),
+        )
+
     def _lower_cast(self, receiver, dtype_node, operations, env):
-        dtype = _unparse(dtype_node)
-        dtype_ref = None
-        dtype_operand = None
+        target = self._lower_expr(dtype_node, operations, env)
 
-        if isinstance(dtype_node, ast.Attribute) and dtype_node.attr == "dtype":
-            owner = dtype_node.value
+        if target.type.kind != "dtype":
+            raise _lowering_error(dtype_node, "Expected a dtype expression")
 
-            while isinstance(owner, ast.Subscript) or (
-                isinstance(owner, ast.Attribute) and owner.attr == "source"
-            ):
-                owner = owner.value
-
-            source = self._lower_expr(owner, operations, env)
-            dtype_ref = self.constructor_dtype_refs.get(source.name)
-
-            if dtype_ref not in self.param_names:
-                dtype_ref = None
-
-            if source.name in self.param_names:
-                dtype_ref = source.name
-
-            dtype = source.type.dtype
-
-            if dtype_ref is not None and self.tensor_types[dtype_ref].kind == "scalar":
-                dtype = None
-
-            if dtype_ref is None:
-                dtype_operand = source.name
-                dtype = self.precise_dtypes.get(source.name)
-
+        ref = self.dtype_refs.get(target.name)
         result = self._emit(
             operations,
             "tensor.cast",
-            operands=(receiver.name,)
-            if dtype_operand is None
-            else (receiver.name, dtype_operand),
-            attrs={"dtype": dtype, "dtype_ref": dtype_ref},
-            result_type=_cast_type(receiver.type, dtype),
+            operands=(receiver.name, target.name),
+            attrs={"dtype": target.type.dtype, "dtype_ref": ref},
+            result_type=_cast_type(receiver.type, target.type.dtype),
         )
 
-        if dtype_ref is not None:
-            self.constructor_dtype_refs[result.name] = dtype_ref
-
+        if ref is not None:
+            self.constructor_dtype_refs[result.name] = ref
         return result
 
     def _lower_stride_method(self, node, receiver, operations):
@@ -1202,31 +1361,49 @@ class _ApplicationSSABuilder:
             if node.args
             else ()
         )
-        dtype = _keyword_text(node, "dtype")
-        result_dtype, dtype_ref = _resolved_constructor_dtype(
-            node, env, self.constructor_dtype_refs
+        operands = (
+            tuple(
+                self._lower_expr(argument, operations, env)
+                for argument in node.args[1:]
+            )
+            if name == "full"
+            else ()
         )
+        dtype_node = next(
+            (keyword.value for keyword in node.keywords if keyword.arg == "dtype"),
+            None,
+        )
+        target = (
+            self._dtype_constant("float32", operations)
+            if dtype_node is None
+            else self._lower_expr(dtype_node, operations, env)
+        )
+
+        if target.type.kind != "dtype":
+            raise _lowering_error(node, "Expected a dtype expression")
+
+        result_dtype = target.type.dtype
+        dtype_ref = self.dtype_refs.get(target.name)
+        dtype = result_dtype
 
         if name in {"zeros", "empty"}:
             result = self._emit(
                 operations,
                 "tensor.zeros",
+                operands=(target.name,),
                 attrs={
                     "shape": _unparse(node.args[0]) if node.args else None,
                     "dtype": dtype,
                     "dtype_ref": dtype_ref,
+                    "dtype_operand": target.name,
                 },
                 result_type=ssa.Type(kind="tensor", shape=shape, dtype=result_dtype),
             )
         else:
-            operands = tuple(
-                self._lower_expr(argument, operations, env)
-                for argument in node.args[1:]
-            )
             result = self._emit(
                 operations,
                 "tensor.full",
-                operands=tuple(value.name for value in operands),
+                operands=(*(value.name for value in operands), target.name),
                 attrs={
                     "shape": _unparse(node.args[0]) if node.args else None,
                     "value": (
@@ -1234,6 +1411,7 @@ class _ApplicationSSABuilder:
                     ),
                     "dtype": dtype,
                     "dtype_ref": dtype_ref,
+                    "dtype_operand": target.name,
                 },
                 result_type=ssa.Type(kind="tensor", shape=shape, dtype=result_dtype),
             )
@@ -1546,12 +1724,16 @@ class _ApplicationSSABuilder:
 
         if isinstance(value, float) and not math.isfinite(value):
             attr_value = "-inf" if value < 0 else "inf"
-        return self._emit(
+
+        result = self._emit(
             operations,
             "arith.constant",
             attrs={"value": attr_value},
             result_type=ssa.Type(kind="scalar", dtype=dtype),
         )
+        self.constant_values[result.name] = value
+
+        return result
 
     def _emit(
         self,
@@ -1811,6 +1993,25 @@ def _value_for_shape_node(
     return None
 
 
+_DTYPE_NAMES = {
+    "bool",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+    "float16",
+    "bfloat16",
+    "float32",
+    "float64",
+    "float8_e4m3fn",
+    "float8_e5m2",
+}
+
+
 _SUPPORTED_MATH_CALLS = {
     "abs",
     "acos",
@@ -1855,32 +2056,6 @@ def _keyword_text(node: ast.Call, name: str) -> str | None:
         if keyword.arg == name:
             return _unparse(keyword.value)
     return None
-
-
-def _resolved_constructor_dtype(
-    node: ast.Call,
-    env: Mapping[str, ssa.Value],
-    constructor_dtype_refs: Mapping[str, str],
-) -> tuple[str | None, str | None]:
-    for keyword in node.keywords:
-        if keyword.arg != "dtype":
-            continue
-
-        value = keyword.value
-
-        if isinstance(value, ast.Attribute) and value.attr == "dtype":
-            owner = value.value
-
-            if isinstance(owner, ast.Attribute) and owner.attr == "source":
-                owner = owner.value
-
-            if isinstance(owner, ast.Name) and owner.id in env:
-                source = env[owner.id]
-                dtype_ref = constructor_dtype_refs.get(source.name, source.name)
-
-                return source.type.dtype, dtype_ref
-        return _unparse(value), None
-    return "float32", None
 
 
 def _literal_value(node: ast.AST) -> Any:

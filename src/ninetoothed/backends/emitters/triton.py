@@ -241,6 +241,9 @@ class TritonTarget(EmitterTarget):
         if name == "expm1":
             return f"({self.call('exp', args)} - 1.0)"
 
+        if name in {"exp", "exp2"}:
+            return f"tl.{name}(_nt_exp_input({args[0]}))"
+
         functions = {
             "abs": "tl.abs",
             "acos": "tl.acos",
@@ -300,7 +303,7 @@ class TritonTarget(EmitterTarget):
 
         function = "tl.maximum" if operator == "max" else "tl.minimum"
 
-        return f"{function}({acc}, {term})"
+        return self.cast_like(f"{function}({acc}, {term})", acc)
 
     def block_coords(self, axes: tuple[str, ...]) -> tuple[str, ...]:
         if not axes:
@@ -671,7 +674,8 @@ import triton.language as tl
 from math import floor
 from triton.language.extra import libdevice
 {_RUNTIME_REDUCTION_IDENTITY if "_nt_reduction_identity(" in body else ""}
-{_CAST_LIKE if "_nt_cast_like(" in body else ""}
+{_CAST_LIKE if "_nt_cast_like(" in body or "_nt_exp_input(" in body else ""}
+{_EXP_INPUT if "_nt_exp_input(" in body else ""}
 {_VECTOR_ELEMENT if "_nt_vector_element(" in body else ""}
 
 @triton.jit
@@ -721,6 +725,18 @@ _CAST_LIKE = """
 def _nt_cast_like(value, reference):
     tensor_reference = reference
     return value.to(tensor_reference.dtype)
+"""
+
+
+_EXP_INPUT = """
+
+@triton.jit
+def _nt_exp_input(value):
+    tensor_value = _nt_cast_like(value, value)
+    if tensor_value.dtype == tl.float16 or tensor_value.dtype == tl.bfloat16:
+        return tensor_value.to(tl.float32)
+    else:
+        return tensor_value
 """
 
 

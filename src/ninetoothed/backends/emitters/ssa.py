@@ -1151,6 +1151,14 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
     op = ctx.operations[name]
     local = _local_symbol(name, ctx)
 
+    if op.opcode.startswith("dtype."):
+        return _resolve_dtype(name, ctx).sample
+
+    dtype_condition = _dtype_condition(name, ctx)
+
+    if dtype_condition is not None:
+        return dtype_condition
+
     if op.opcode.startswith("reduce."):
         operand_type = ctx.value_types.get(op.operands[0]) if op.operands else None
 
@@ -1226,8 +1234,7 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
         return expr
 
     if op.opcode == "scf.for":
-        expr = _emit_scf_for(local, op, ctx)
-        ctx.memo[name] = expr or local
+        _emit_scf_for(local, op, ctx)
 
         return ctx.memo[name]
 
@@ -1407,10 +1414,17 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
 def _constructor_value(op: ssa.Operation, value: str, ctx: _EmitContext) -> str:
     """Apply the constructor's explicit dtype to its actual emitted value."""
     dtype = ctx.target.arithmetic_result_type(op, ctx).dtype
+    ref = op.attrs.get("dtype_operand") or op.attrs.get("dtype_ref")
+    source = _resolve_dtype(ref, ctx) if dtype is None and ref else None
+
+    if source is not None:
+        dtype = source.dtype
 
     if dtype is None:
-        if ref := op.attrs.get("dtype_ref"):
-            if ctx.target.vector_value_semantics and not op.operands:
+        if source is not None:
+            if ctx.target.vector_value_semantics and (
+                op.opcode != "tensor.full" or not op.operands
+            ):
                 literal = op.attrs.get("value", 0.0)
                 source_dtype = (
                     "bool"
@@ -1424,7 +1438,7 @@ def _constructor_value(op: ssa.Operation, value: str, ctx: _EmitContext) -> str:
                     else "float64"
                 )
                 value = ctx.target.vector_splat("()", value, source_dtype)
-            return ctx.target.cast_like(value, _resolve_dtype(ref, ctx).sample)
+            return ctx.target.cast_like(value, source.sample)
         return value
 
     if ctx.target.vector_value_semantics:
@@ -1615,6 +1629,14 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
 
     if op is None:
         return _emit_value(name, ctx)
+
+    if op.opcode.startswith("dtype."):
+        return _resolve_dtype(name, ctx).sample
+
+    dtype_condition = _dtype_condition(name, ctx)
+
+    if dtype_condition is not None:
+        return dtype_condition
 
     if op.opcode == "arith.constant":
         return ctx.target.inline_constant(
@@ -1990,6 +2012,55 @@ def _render_scalar_expr(
     return f"({args[0]} {symbol} {args[1]})"
 
 
+def _dtype_condition(name: str, ctx: _EmitContext) -> str | None:
+    """Render type predicates without turning them into runtime tensor values."""
+    op = ctx.operations.get(name)
+
+    if op is None:
+        return None
+
+    if op.opcode == "arith.constant" and isinstance(op.attrs.get("value"), bool):
+        return ctx.target.literal(op.attrs["value"])
+
+    if op.opcode in {"cmp.eq", "cmp.ne"} and all(
+        ctx.value_types[operand].kind == "dtype" for operand in op.operands
+    ):
+        lhs, rhs = (_resolve_dtype(operand, ctx) for operand in op.operands)
+
+        if lhs.dtype is not None and rhs.dtype is not None:
+            equal = _normalize_dtype(lhs.dtype) == _normalize_dtype(rhs.dtype)
+
+            return ctx.target.literal(equal if op.opcode == "cmp.eq" else not equal)
+
+        expression = ctx.target.dtype_equal(lhs.sample, rhs.sample)
+
+        if op.opcode == "cmp.ne":
+            negate = "!" if ctx.target.c_style_syntax else "not "
+            expression = f"({negate}{expression})"
+
+        return expression
+
+    if op.opcode in {"arith.and", "arith.or", "arith.not"}:
+        args = tuple(_dtype_condition(operand, ctx) for operand in op.operands)
+
+        if any(arg is None for arg in args):
+            return None
+
+        if op.opcode == "arith.not":
+            negate = "!" if ctx.target.c_style_syntax else "not "
+
+            return f"({negate}{args[0]})"
+
+        operator = "and" if op.opcode == "arith.and" else "or"
+
+        if ctx.target.c_style_syntax:
+            operator = "&&" if op.opcode == "arith.and" else "||"
+
+        return f"({args[0]} {operator} {args[1]})"
+
+    return None
+
+
 def _resolve_dtype(name: str, ctx: _EmitContext) -> _ValueType:
     """Resolve the type of the value that normal emission would declare."""
     if ctx.type_values is None:
@@ -2065,6 +2136,33 @@ def _dtype_source(name: str, ctx: _EmitContext) -> _ValueType:
     opcode = op.opcode
     declared = target.arithmetic_result_type(op, ctx)
 
+    if opcode == "dtype.constant":
+        dtype = _normalize_dtype(op.attrs["value"])
+
+        return _ValueType(dtype=dtype, sample=target.dtype_sample(dtype))
+
+    if opcode == "dtype.of":
+        return _resolve_dtype(op.operands[0], ctx)
+
+    if opcode == "dtype.select":
+        condition = _dtype_condition(op.operands[0], ctx)
+
+        if condition is None:
+            raise ValueError("Dtype selection requires a compile-time type condition.")
+
+        yes, no = (_resolve_dtype(operand, ctx) for operand in op.operands[1:])
+
+        if condition == target.literal(True):
+            return yes
+
+        if condition == target.literal(False):
+            return no
+
+        return _ValueType(
+            dtype=yes.dtype if yes.dtype == no.dtype else None,
+            sample=target.select_dtype_sample(condition, yes.sample, no.sample),
+        )
+
     if opcode == "arith.constant":
         return _ValueType(
             dtype=declared.dtype,
@@ -2090,7 +2188,7 @@ def _dtype_source(name: str, ctx: _EmitContext) -> _ValueType:
     if opcode == "tensor.cast":
         sample = _cast_value(op, target.dtype_sample("int32"), ctx)
     elif opcode in {"tensor.zeros", "tensor.empty", "tensor.full"}:
-        ref = op.attrs.get("dtype_ref")
+        ref = op.attrs.get("dtype_operand") or op.attrs.get("dtype_ref")
 
         if ref is None:
             raise ValueError(f"Cannot determine dtype source for {name} ({opcode}).")
@@ -2773,7 +2871,10 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
 
     result_type = op.results[0].type
     shape = (
-        "(BLOCK,)" if ctx.target.vector_value_semantics and axis is not None else "()"
+        "(BLOCK,)"
+        if ctx.target.vector_value_semantics
+        and (axis is not None or _index_expr_is_vector(ctx.outer_index_expr, ctx))
+        else "()"
     )
     result_type, init = _serial_reduction_init(op, result_type, ctx, shape)
 
@@ -4352,6 +4453,9 @@ def _assign_scalar(
 def _resolved_cast_dtype(op: ssa.Operation, ctx: _EmitContext) -> str:
     dtype = op.results[0].type.dtype
     info = ctx.tensor_infos.get(op.attrs.get("dtype_ref"))
+
+    if dtype is None and len(op.operands) > 1:
+        dtype = _resolve_dtype(op.operands[1], ctx).dtype
 
     if dtype is None and info is not None:
         dtype = info.dtype
