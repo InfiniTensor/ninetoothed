@@ -79,6 +79,7 @@ Pass 注册示例：
 ```python
 from ninetoothed.backends.registry import register_pass_bundle
 
+
 @register_pass_bundle("ssa.ascend.optimize_schedule", backend="ascend")
 def optimize_ascend_schedule(graph, target):
     # 1. 自动注入 Tiling 切块
@@ -181,12 +182,14 @@ Ascend 运行时（`compiler/runtime.py`）提供以下能力：
 import torch
 import ninetoothed
 
+
 @ninetoothed.jit(
     backend="ascend",
     platform="ascend-910b4",
 )
 def add_kernel(x, y, out):
     out = x + y
+
 
 x = torch.randn(1024, device="npu")
 y = torch.randn_like(x)
@@ -243,9 +246,7 @@ handle = ninetoothed.aot(
     output_dir="./build",
 )
 
-reloaded = ninetoothed.load_built_artifact(
-    handle._built_artifact
-)
+reloaded = ninetoothed.load_built_artifact(handle._built_artifact)
 ```
 
 ---
@@ -345,8 +346,25 @@ reloaded = ninetoothed.load_built_artifact(
 git clone <your-repo-url>
 cd <your-repo>
 git checkout xcy-ascend-new
-pip install -e .
+# 已安装其余项目依赖的 Ascend 环境，避免拉取标准 Triton 覆盖 Ascend 版本
+python3 -m pip install -e . --no-deps
 ```
+
+标准 `triton` 与 `triton-ascend` 使用同一个 Python 包目录，不能混装。
+如果 `triton.backends.backends` 只有 `amd`、`nvidia`，或出现
+`No module named 'triton.language.extra.ascend'`，可在上述验证环境中修复：
+
+```bash
+python3 -m pip uninstall -y triton
+python3 -m pip install --force-reinstall --no-deps triton-ascend==3.2.0
+python3 -c 'from triton.backends import backends; print(backends.keys())'
+```
+
+最后一条命令应包含 `ascend`。CANN 9.0 下，若编译 `npu_utils.cpp`
+报 `RT_LIMIT_TYPE_SIMT_WARP_STACK_SIZE` 不存在，需先备份已安装的
+`triton/backends/ascend/npu_utils.cpp`，再将该枚举名称替换为当前 CANN
+头文件中的 `RT_LIMIT_TYPE_SIMT_DVG_WARP_STACK_SIZE`。这是对
+`triton-ascend==3.2.0` 的本地兼容补丁，重装该依赖后需要重新应用。
 
 ### 11.3 使用
 
@@ -356,12 +374,14 @@ pip install -e .
 import torch
 import ninetoothed
 
+
 @ninetoothed.jit(
     backend="ascend",
     platform="ascend-910b4",
 )
 def add_kernel(x, y, out):
     out = x + y
+
 
 x = torch.randn(1024, device="npu")
 y = torch.randn_like(x)

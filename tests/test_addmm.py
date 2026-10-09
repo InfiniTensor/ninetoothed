@@ -1,3 +1,4 @@
+import functools
 import random
 
 import pytest
@@ -43,10 +44,17 @@ def addmm(input, mat1, mat2, beta=1, alpha=1):
         (mat1.shape[0], mat2.shape[1]), device=mat1.device, dtype=torch.float16
     )
 
+    is_npu = input.device.type == "npu"
+    tile = (
+        {"BLOCK_SIZE_M": 32, "BLOCK_SIZE_N": 32, "BLOCK_SIZE_K": 32} if is_npu else {}
+    )
     addmm_kernel = ninetoothed.make(
-        arrangement,
+        functools.partial(arrangement, **tile),
         application,
-        (Tensor(2), Tensor(2), Tensor(2), Tensor(0), Tensor(0), Tensor(2)),
+        tuple(
+            Tensor(rank, shape_options={"constexpr": is_npu})
+            for rank in (2, 2, 2, 0, 0, 2)
+        ),
     )
 
     addmm_kernel(input, mat1, mat2, beta, alpha, output)
@@ -61,7 +69,21 @@ def addmm(input, mat1, mat2, beta=1, alpha=1):
 @pytest.mark.parametrize("k", (512,))
 @pytest.mark.parametrize("n", (512,))
 @pytest.mark.parametrize("m", (512,))
-def test(m, n, k, dtype, device, atol):
+def test(m, n, k, dtype, device, atol, request):
+    if device == "npu" and dtype == torch.float8_e5m2:
+        pytest.skip("Ascend 910B does not support float8_e5m2 tensors")
+
+    if device == "npu":
+        from triton.compiler.errors import MLIRCompilationError
+
+        request.node.add_marker(
+            pytest.mark.xfail(
+                strict=True,
+                raises=MLIRCompilationError,
+                reason="triton-ascend 3.2.0 crashes lowering this matmul loop (SIGSEGV)",
+            )
+        )
+
     randn_dtype = dtype if dtype != torch.float8_e5m2 else torch.float16
 
     input = torch.randn((m, n), dtype=randn_dtype, device=device)

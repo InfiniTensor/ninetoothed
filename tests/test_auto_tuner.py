@@ -6,13 +6,11 @@ import pytest
 import torch
 
 from ninetoothed.auto_tuner import AutoTuner, _default_benchmark
-from tests.utils import get_available_devices
 
 
-@pytest.mark.parametrize("_", get_available_devices())
 @pytest.mark.parametrize("kwargs", ({"a": 2, "b": 4}, {"a": 2, "b": 4, "c": 6, "d": 8}))
 @pytest.mark.parametrize("args", ((1,), (1, 3, 5)))
-def test_auto_tuner(args, kwargs, _):
+def test_auto_tuner(args, kwargs):
     benchmark_calls = []
 
     def benchmark(function, candidate_args, candidate_kwargs):
@@ -70,8 +68,7 @@ def test_auto_tuner(args, kwargs, _):
         assert best_func is _bar
 
 
-@pytest.mark.parametrize("_", get_available_devices())
-def test_auto_tuner_reports_every_failed_candidate(_):
+def test_auto_tuner_reports_every_failed_candidate():
     def fail(function, args, kwargs):
         del args, kwargs
         raise RuntimeError(f"Candidate {function.__name__} failed.")

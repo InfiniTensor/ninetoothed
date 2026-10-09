@@ -5,6 +5,7 @@ class Ascendifier(ast.NodeTransformer):
     def __init__(self):
         super().__init__()
         self.max_axes = None
+
         try:
             from triton.backends.ascend.runtime.utils import valid_axis_names
 
@@ -14,6 +15,7 @@ class Ascendifier(ast.NodeTransformer):
 
     def transform(self, source: str) -> str:
         tree = self.visit(ast.parse(source))
+
         return ast.unparse(ast.fix_missing_locations(tree)) + "\n"
 
     @staticmethod
@@ -74,6 +76,7 @@ class Ascendifier(ast.NodeTransformer):
     def _autotune_key_priority(item):
         index, key_node = item
         value = str(key_node.value)
+
         if "next_power_of_2" in value:
             priority = 2
         elif "constexpr" in value:
@@ -90,6 +93,7 @@ class Ascendifier(ast.NodeTransformer):
             for key_node in key_nodes
             if isinstance(key_node, ast.Constant) and "size" in str(key_node.value)
         ]
+
         return [
             key_node
             for _, key_node in sorted(
@@ -133,6 +137,7 @@ class Ascendifier(ast.NodeTransformer):
         maximum = cls._make_member_call(
             node.func.value, "maximum", node.args[0], node.args[1]
         )
+
         return cls._make_member_call(node.func.value, "minimum", maximum, node.args[2])
 
     def visit_Attribute(self, node):
@@ -160,4 +165,5 @@ class Ascendifier(ast.NodeTransformer):
             type(self)._rewrite_autotune_call(node, self.max_axes)
 
         type(self)._rewrite_load_call(node)
+
         return type(self)._rewrite_clamp_call(node)

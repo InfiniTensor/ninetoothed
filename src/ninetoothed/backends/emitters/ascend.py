@@ -18,6 +18,7 @@ class AscendEmitter(TritonTarget):
     def emit(self, kernel: Kernel) -> Artifact:
         artifact = common.emit(kernel, self)
         transformer = Ascendifier()
+
         return replace(
             artifact,
             sources={
