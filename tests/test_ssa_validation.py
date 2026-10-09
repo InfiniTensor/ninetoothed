@@ -121,7 +121,13 @@ def application(x, out):
         if operation.opcode == "tensor.cast"
     ]
     assert [cast.results[0].type.dtype for cast in casts] == ["float16", "float16"]
-    assert casts[1].operands[1] == casts[0].results[0].name
+    dtype_source = next(
+        operation
+        for operation in program.blocks[0].operations
+        if operation.opcode == "dtype.of"
+    )
+    assert dtype_source.operands == (casts[0].results[0].name,)
+    assert casts[1].operands[1] == dtype_source.results[0].name
 
 
 def test_batched_matmul_type_preserves_broadcast_batch_domain():

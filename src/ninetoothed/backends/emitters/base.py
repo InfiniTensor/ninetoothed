@@ -220,6 +220,12 @@ class EmitterTarget(ABC):
     def value_dtype(self, value: str) -> str:
         raise NotImplementedError("Runtime value dtype is not supported.")
 
+    def dtype_equal(self, lhs: str, rhs: str) -> str:
+        return f"({self.value_dtype(lhs)} == {self.value_dtype(rhs)})"
+
+    def select_dtype_sample(self, condition: str, yes: str, no: str) -> str:
+        return f"({yes} if {condition} else {no})"
+
     def vector_element(self, value: str, index: str) -> str:
         raise NotImplementedError("Vector element extraction is not supported.")
 

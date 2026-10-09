@@ -96,6 +96,17 @@ class CudaTarget(EmitterTarget):
     def value_dtype(self, value):
         return f"std::remove_cv<std::remove_reference<decltype({value})>::type>::type"
 
+    def dtype_equal(self, lhs, rhs):
+        return f"std::is_same<{self.value_dtype(lhs)}, {self.value_dtype(rhs)}>::value"
+
+    def select_dtype_sample(self, condition, yes, no):
+        dtype = (
+            f"std::conditional<({condition}), {self.value_dtype(yes)}, "
+            f"{self.value_dtype(no)}>::type"
+        )
+
+        return f"static_cast<{dtype}>(1)"
+
     def true_divide(self, lhs, rhs):
         return f"_nt_true_divide({lhs}, {rhs})"
 
