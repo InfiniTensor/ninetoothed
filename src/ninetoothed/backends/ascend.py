@@ -55,4 +55,5 @@ class AscendBackend(Backend):
 
     def emit(self, kernel: Kernel) -> Artifact:
         emitter = AscendEmitter()
+
         return emitter.emit(kernel)

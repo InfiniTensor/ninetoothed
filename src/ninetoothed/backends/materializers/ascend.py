@@ -18,6 +18,7 @@ class AscendMaterializer(Materializer):
         self, compilation: Any, *, output_dir: Path | str | None = None
     ):
         del output_dir
+
         return _materialize_ascend(compilation)
 
     def aot_build(self, compilation: Any, *, output_dir: Path | str):
@@ -43,7 +44,7 @@ def _materialize_ascend(compilation: Any):
     artifact = compilation.artifact
     cache_key = compilation_cache_key(compilation)
 
-    # 1. 写入替换/转换后的源码（标明后缀或驱动）
+    # 1. 写入替换/转换后的源码（标明后缀或驱动）.
     source_path = write_source(
         artifact.kernel_name,
         artifact.primary_source,
@@ -54,12 +55,12 @@ def _materialize_ascend(compilation: Any):
     TRITON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("TRITON_CACHE_DIR", str(TRITON_CACHE_DIR))
 
-    # 2. 动态加载 Python 模块并获取入口 launch 函数与 kernel
+    # 2. 动态加载 Python 模块并获取入口 launch 函数与 kernel.
     module = import_python_module(str(source_path))
     launch = getattr(module, artifact.entrypoint)
     kernel = getattr(module, f"{artifact.kernel_name}_kernel", None)
 
-    # 3. 封装 Python 运行时 Launch
+    # 3. 封装 Python 运行时 Launch.
     wrapped = _verified_runtime_launch(
         _runtime_wrapper(
             launch,
@@ -69,5 +70,5 @@ def _materialize_ascend(compilation: Any):
         )
     )
 
-    # 4. 返回包含模块与句柄的 Handle 对象
+    # 4. 返回包含模块与句柄的 Handle 对象.
     return Handle(compilation, kernel, wrapped, source_path)

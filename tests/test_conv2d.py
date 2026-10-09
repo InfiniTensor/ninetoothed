@@ -102,10 +102,17 @@ def conv2d(input, filter, padding=0):
 
     output = torch.empty((n, k, p, q), device=input.device, dtype=input.dtype)
 
+    is_npu = input.device.type == "npu"
+    tile = (
+        {"BLOCK_SIZE_M": 32, "BLOCK_SIZE_N": 32, "BLOCK_SIZE_K": 32} if is_npu else {}
+    )
     conv2d_kernel = ninetoothed.make(
-        functools.partial(arrangement, enable_padding=True),
+        functools.partial(arrangement, enable_padding=True, **tile),
         matmul.application,
-        (Tensor(4), Tensor(4, shape_options={"constexpr": True}), Tensor(4)),
+        tuple(
+            Tensor(4, shape_options={"constexpr": is_npu or index == 1})
+            for index in range(3)
+        ),
         max_num_configs=(
             50 if os.environ.get("NINETOOTHED_BACKEND", "triton") == "triton" else 1
         ),

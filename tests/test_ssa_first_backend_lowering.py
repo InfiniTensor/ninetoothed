@@ -1622,8 +1622,10 @@ def test_dynamic_integer_reduction_preserves_large_values_and_tail(tmp_path):
         device, backend, platform = "cuda", "triton", "generic"
     else:
         pytest.importorskip("torch_npu")
+
         if not torch.npu.is_available():
             pytest.skip("CUDA GPU or Ascend NPU required")
+
         device, backend, platform = "npu", "ascend", "ascend-910b4"
 
     from ninetoothed.targets import resolve_target_context

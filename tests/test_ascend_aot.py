@@ -19,8 +19,10 @@ from tests.test_ascend_runtime import _add, _arrangement, _fused
 @pytest.mark.parametrize("dtype", ("float32", "float16"))
 def test_aot_build_reload_without_compiler(application, dtype, tmp_path):
     pytest.importorskip("torch_npu")
+
     if not torch.npu.is_available():
         pytest.skip("Ascend NPU required")
+
     compilation = DEFAULT_COMPILER.compile(
         CompileRequest(
             arrangement=_arrangement,
@@ -38,6 +40,7 @@ def test_aot_build_reload_without_compiler(application, dtype, tmp_path):
     relocated = tmp_path / "relocated"
     shutil.copytree(Path(built.binary_path).parent, relocated)
     built = replace(built, binary_path=str(relocated / "kernel.bin"))
+
     for launch in (handle, load_built_artifact(built)):
         for size in (1, 513, 98432):
             x = torch.randn(size, device="npu", dtype=getattr(torch, dtype))
@@ -47,6 +50,7 @@ def test_aot_build_reload_without_compiler(application, dtype, tmp_path):
             torch.npu.synchronize()
             expected = x + y if application is _add else (x + y) * (x - y)
             torch.testing.assert_close(out, expected)
+
     path = tmp_path / "built.pkl"
     path.write_bytes(pickle.dumps(built))
     env = dict(os.environ, TRITON_CACHE_DIR=str(tmp_path / "empty-cache"))
@@ -56,10 +60,13 @@ def test_aot_build_reload_without_compiler(application, dtype, tmp_path):
         env=env,
     )
     wrong = torch.ones(513, device="npu", dtype=torch.int32)
+
     with pytest.raises((TypeError, ValueError), match="dtype"):
         load_built_artifact(built)(wrong, wrong, wrong)
+
     binary = Path(built.binary_path)
     binary.write_bytes(binary.read_bytes() + b"corrupt")
+
     with pytest.raises(ValueError, match="checksum mismatch"):
         load_built_artifact(built)
 
@@ -74,6 +81,7 @@ def test_aot_rejects_unspecified_dtypes(tmp_path):
             platform="ascend-910b4",
         )
     )
+
     with pytest.raises(ValueError, match="explicit tensor dtypes"):
         DEFAULT_COMPILER.materialize(compilation, output_dir=tmp_path, mode="aot")
 

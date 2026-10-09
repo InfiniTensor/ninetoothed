@@ -22,8 +22,10 @@ def _fused(x, y, out):
 @pytest.mark.parametrize("size", (1, 513, 98432))
 def test_ascend_jit_matches_torch(application, dtype, size):
     pytest.importorskip("torch_npu")
+
     if not torch.npu.is_available():
         pytest.skip("Ascend NPU required")
+
     kernel = ninetoothed.make(
         _arrangement,
         application,
@@ -35,6 +37,7 @@ def test_ascend_jit_matches_torch(application, dtype, size):
     y = torch.randn_like(x)
     out = torch.empty_like(x)
     expected = x + y if application is _add else (x + y) * (x - y)
+
     for _ in range(2):
         kernel(x, y, out)
         torch.npu.synchronize()

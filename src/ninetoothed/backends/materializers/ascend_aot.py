@@ -18,6 +18,7 @@ def _extension(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+
     return module
 
 
@@ -28,6 +29,7 @@ def _launch_source(source, entrypoint, block):
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == entrypoint
     )
+
     for node in ast.walk(function):
         if isinstance(node, ast.Assign) and any(
             isinstance(target, ast.Name) and target.id == "block"
@@ -51,6 +53,7 @@ def build(compilation, *, output_dir):
 
     if any(spec.dtype is None for spec in compilation.kernel.tensors):
         raise ValueError("Ascend AOT requires explicit tensor dtypes at build time.")
+
     artifact = compilation.artifact
     key = compilation_cache_key(compilation)
     output = Path(output_dir).resolve() / key
@@ -60,14 +63,18 @@ def build(compilation, *, output_dir):
     module = import_python_module(source_path)
     kernel = getattr(module, f"{artifact.kernel_name}_kernel")
     entries = _compile_signature(compilation).split(",")
+
     if len(entries) != len(kernel.arg_names):
         raise ValueError("Ascend AOT kernel signature does not match the launch ABI.")
+
     signature, constants = {}, {}
+
     for name, value in zip(kernel.arg_names, entries):
         try:
             constants[name] = ast.literal_eval(value)
         except (ValueError, SyntaxError):
             signature[name] = value
+
     warps, stages = _compile_schedule(compilation)
     compiled = triton.compile(
         triton.compiler.ASTSource(kernel, signature=signature, constants=constants),
@@ -107,6 +114,7 @@ def build(compilation, *, output_dir):
         abi=artifact.metadata["launch_abi"],
     )
     launch = load(built)
+
     return Handle(compilation, compiled, launch, source_path, binary)
 
 
@@ -124,16 +132,20 @@ def load(built):
 
     if built.binary_path is None:
         raise ValueError("Ascend AOT artifact has no device binary.")
+
     output = Path(built.binary_path).parent
     info = json.loads((output / "bundle.json").read_text(encoding="utf-8"))
+
     if info["schema"] != 1 or info["python"] != list(sys.version_info[:2]):
         raise ValueError("Incompatible Ascend AOT bundle or Python ABI.")
+
     for name in ("kernel.bin", "launcher.so", "npu_utils.so", "launch.py"):
         if (
             hashlib.sha256((output / name).read_bytes()).hexdigest()
             != info["files"][name]
         ):
             raise ValueError(f"Ascend AOT bundle checksum mismatch: {name}.")
+
     utils = _extension(output / "npu_utils.so", "npu_utils")
     launcher = _extension(output / "launcher.so", "__triton_launcher")
     binary = (output / "kernel.bin").read_bytes()
@@ -144,23 +156,29 @@ def load(built):
         def __getitem__(self, grid):
             def invoke(*args, **kwargs):
                 values = dict(zip(info["arg_names"], args)) | kwargs
+
                 for name, value in info["constants"].items():
                     if values.get(name) != value:
                         raise ValueError(
                             f"Ascend AOT constant `{name}` must equal {value}."
                         )
+
                 device = torch.npu.current_device()
+
                 if torch.npu.get_device_name(device) != info["device_name"]:
                     raise ValueError(
                         "Ascend AOT device does not match the build device."
                     )
+
                 with lock:
                     if device not in handles:
                         name, mix_mode = info["name"].split()
                         handles[device] = utils.load_kernel_binary(
                             name, binary, info["shared"], device, mix_mode
                         )
+
                     function = handles[device][1]
+
                 dimensions = tuple(grid) + (1,) * (3 - len(grid))
                 stream = torch.npu.current_stream(device).npu_stream
                 launcher.launch(
@@ -185,6 +203,7 @@ def load(built):
         compile((output / "launch.py").read_text(), str(output / "launch.py"), "exec"),
         namespace,
     )
+
     return _verified_runtime_launch(
         _runtime_wrapper(
             namespace[built.source.entrypoint],

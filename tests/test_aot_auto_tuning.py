@@ -39,7 +39,7 @@ def premake(size=None, dtype=None, block_size=None):
     return arrangement_, application, tensors
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 @pytest.mark.parametrize(
     "dtype, ninetoothed_dtype, rtol, atol",
     (

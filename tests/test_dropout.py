@@ -44,4 +44,5 @@ def test(size, dtype, device):
 
     assert abs(non_zero_ratio - (1 - p)) < 0.05
 
-    assert torch.allclose(output[output != 0], input[output != 0] / (1 - p))
+    # Use dtype-aware tolerances: division may round differently in float16.
+    torch.testing.assert_close(output[output != 0], input[output != 0] / (1 - p))
