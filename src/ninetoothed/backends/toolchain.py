@@ -422,7 +422,343 @@ def _cncc_identity(path: str, size: int, mtime_ns: int) -> dict[str, Any]:
     }
 
 
+_ASCENDC_ARCH_ALIASES = {
+    "dav-c220": "dav-c220",
+    "dav_c220": "dav-c220",
+    "ascend910b": "dav-c220",
+    "910b": "dav-c220",
+    "ascend910b1": "dav-c220",
+    "ascend910b2": "dav-c220",
+    "ascend910b2c": "dav-c220",
+    "ascend910b3": "dav-c220",
+    "ascend910b4": "dav-c220",
+}
+
+
+def normalize_ascendc_arch(value: Any) -> str:
+    """Return a validated ccec ``--cce-aicore-arch`` value."""
+    if not isinstance(value, str):
+        raise TypeError("The AscendC `arch` backend option must be a string.")
+
+    arch = value.strip().lower()
+
+    if arch == "native":
+        return arch
+
+    resolved = _ASCENDC_ARCH_ALIASES.get(arch)
+
+    if resolved is None:
+        raise ValueError(
+            "The AscendC `arch` backend option must be `native` or an "
+            "Ascend 910B family name (`dav-c220`, `ascend910b`, ...)."
+        )
+
+    return resolved
+
+
+def resolve_ascendc_arch(arch: str) -> str:
+    """Resolve `native` to a concrete ccec architecture value."""
+    arch = normalize_ascendc_arch(arch)
+
+    if arch != "native":
+        return arch
+
+    explicit = os.environ.get("NINETOOTHED_ASCENDC_ARCH")
+
+    if explicit:
+        return normalize_ascendc_arch(explicit)
+
+    home = _ascend_home_path()
+
+    if home is not None:
+        soc_file = home / "compiler" / "ascendc" / "soc_version.info"
+
+        try:
+            soc = soc_file.read_text(encoding="utf-8").strip().splitlines()[0]
+
+            return normalize_ascendc_arch(soc)
+        except (OSError, IndexError):
+            pass
+
+    return "dav-c220"
+
+
+def _ascend_home_path() -> Path | None:
+    for variable in ("ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME"):
+        value = os.environ.get(variable)
+
+        if value:
+            return Path(value)
+    return None
+
+
+def _ccec_include_dirs(home: Path) -> tuple[str, ...]:
+    tikcpp = home / "compiler" / "tikcpp"
+
+    return (
+        str(tikcpp),
+        str(tikcpp / "tikcfw"),
+        str(tikcpp / "tikcfw" / "impl"),
+        str(tikcpp / "tikcfw" / "interface"),
+        str(home / "include"),
+    )
+
+
+def _cxx_system_include_dirs() -> tuple[str, ...]:
+    include_root = Path("/usr/include/c++")
+
+    if not include_root.is_dir():
+        return ()
+
+    version_dirs = sorted(
+        (entry for entry in include_root.iterdir() if entry.is_dir()),
+        key=lambda entry: entry.name,
+        reverse=True,
+    )
+
+    if not version_dirs:
+        return ()
+
+    cxx = version_dirs[0]
+    triplet = Path("/usr/include/x86_64-linux-gnu/c++") / cxx.name
+
+    dirs = [str(cxx)]
+
+    if triplet.is_dir():
+        dirs.append(str(triplet))
+    return tuple(dirs)
+
+
+def find_ccec() -> str:
+    """Locate the CANN AscendC compiler (ccec)."""
+    explicit = os.environ.get("NINETOOTHED_ASCENDC_COMPILER")
+
+    if explicit is not None:
+        return _validated_compiler(explicit, explicit=True)
+
+    home = _ascend_home_path()
+    candidates = [shutil.which("ccec")]
+
+    if home is not None:
+        candidates += [
+            str(home / "x86_64-linux" / "ccec_compiler" / "bin" / "ccec"),
+            str(home / "compiler" / "ccec_compiler" / "bin" / "ccec"),
+        ]
+
+    candidates += [
+        "/usr/local/Ascend/ascend-toolkit/latest/x86_64-linux/ccec_compiler/bin/ccec",
+        "/usr/local/Ascend/ascend-toolkit/latest/compiler/ccec_compiler/bin/ccec",
+    ]
+
+    for candidate in candidates:
+        if candidate:
+            try:
+                return _validated_compiler(candidate, explicit=False)
+            except RuntimeError:
+                continue
+
+    if ascendc_remote_spec() is not None:
+        raise RuntimeError(
+            "The AscendC compiler ccec is not installed locally; the remote "
+            "toolchain will be used instead."
+        )
+
+    raise RuntimeError(
+        "AscendC backend requires the CANN ccec compiler; set "
+        "NINETOOTHED_ASCENDC_COMPILER, ASCEND_HOME_PATH, or install the "
+        "Ascend toolkit."
+    )
+
+
+def _ascend_home_for(compiler: str) -> Path:
+    candidate = Path(compiler).resolve()
+
+    for _ in range(8):
+        if (candidate / "compiler" / "tikcpp").is_dir() and (
+            candidate / "include" / "ascendc"
+        ).is_dir():
+            return candidate
+
+        if candidate.parent == candidate:
+            break
+
+        candidate = candidate.parent
+
+    return _ascend_home_path() or Path("/usr/local/Ascend/ascend-toolkit/latest")
+
+
+def ascendc_compile_command(
+    source: str | Path,
+    output: str | Path,
+    *,
+    arch: str,
+    ccec: str | None = None,
+) -> tuple[str, ...]:
+    """Construct the shared-library command used by the AscendC materializer."""
+    compiler = ccec or find_ccec()
+    home = _ascend_home_for(compiler)
+    command = [
+        compiler,
+        "-O2",
+        "-std=c++17",
+        "-xcce",
+        f"--cce-aicore-arch={normalize_ascendc_arch(arch)}",
+        "--cce-auto-sync",
+        "-DL2_CACHE_HINT",
+    ]
+    command += [f"-I{directory}" for directory in _ccec_include_dirs(home)]
+
+    for directory in _cxx_system_include_dirs():
+        command += ["-isystem", directory]
+
+    command += [
+        "-Wno-macro-redefined",
+        "-shared",
+        "-fPIC",
+        str(source),
+        "-o",
+        str(output),
+        f"-L{home / 'lib64'}",
+        "-lruntime",
+        "-lascendcl",
+        "-l:libstdc++.so.6",
+    ]
+
+    return tuple(command)
+
+
+def ascendc_remote_spec() -> dict[str, Any] | None:
+    """Return the remote AscendC toolchain configuration, if any."""
+    ssh = os.environ.get("NINETOOTHED_ASCENDC_SSH")
+
+    if not ssh:
+        return None
+
+    user_host, separator, port = ssh.rpartition(":")
+
+    if not separator:
+        user_host, port = ssh, "22"
+
+    return {
+        "user_host": user_host,
+        "port": port,
+        "remote_dir": os.environ.get(
+            "NINETOOTHED_ASCENDC_REMOTE_DIR", "/tmp/ninetoothed-ascendc"
+        ),
+    }
+
+
+def ascendc_remote_base_command(spec: dict[str, Any]) -> tuple[str, ...]:
+    """Build the SSH prefix that lands a shell on the CANN host.
+
+    ``bash -s`` over the ssh stdin channel keeps the streaming exchange
+    stable across platforms (arguments passed through argv can be dropped
+    by some Windows OpenSSH builds).
+    """
+    return ("ssh", "-p", str(spec["port"]), str(spec["user_host"]), "bash", "-s")
+
+
+def ascendc_compiler_identity(*, required: bool = False) -> dict[str, Any]:
+    """Return the resolved AscendC compiler identity used in cache keys."""
+    spec = ascendc_remote_spec()
+
+    if spec is not None:
+        return _ascendc_remote_compiler_identity(
+            str(spec["user_host"]), str(spec["port"])
+        )
+
+    try:
+        compiler = find_ccec()
+    except RuntimeError:
+        if required or os.environ.get("NINETOOTHED_ASCENDC_COMPILER") is not None:
+            raise
+        return {"available": False}
+
+    path = Path(compiler).resolve(strict=True)
+    stat = path.stat()
+
+    return _ccec_identity(str(path), stat.st_size, stat.st_mtime_ns)
+
+
+def _ascendc_remote_compiler_identity(user_host: str, port: str) -> dict[str, Any]:
+    spec = {
+        "user_host": user_host,
+        "port": port,
+        "remote_dir": os.environ.get(
+            "NINETOOTHED_ASCENDC_REMOTE_DIR", "/tmp/ninetoothed-ascendc"
+        ),
+    }
+    command = ascendc_remote_base_command(spec)
+    script = (
+        "NT_ASC=${ASCEND_HOME_PATH:-/usr/local/Ascend/ascend-toolkit/latest}\n"
+        'ccec=$(ls "$NT_ASC"/x86_64-linux/ccec_compiler/bin/ccec '
+        '"$NT_ASC"/compiler/ccec_compiler/bin/ccec 2>/dev/null | head -1)\n'
+        '[ -n "$ccec" ] && "$ccec" --version 2>&1 | grep -m1 ccec\n'
+    )
+
+    try:
+        result = subprocess.run(
+            command,
+            input=script.encode("utf-8"),
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+        version_lines = [
+            line.strip()
+            for line in result.stdout.decode("utf-8", errors="replace").splitlines()
+            + result.stderr.decode("utf-8", errors="replace").splitlines()
+            if line.strip() and ("ccec" in line or "clang" in line)
+        ]
+        version_text = version_lines[0] if version_lines else ""
+    except (OSError, subprocess.SubprocessError):
+        version_text = ""
+
+    return {
+        "available": True,
+        "remote": f"{user_host}:{port}",
+        "version": version_text or "unavailable",
+    }
+
+
+@lru_cache(maxsize=32)
+def _ccec_identity(path: str, size: int, mtime_ns: int) -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            (path, "--version"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            f"Failed to query AscendC compiler identity from `{path}`."
+        ) from exc
+
+    version_text = "\n".join(
+        value.strip() for value in (result.stdout, result.stderr) if value.strip()
+    )
+
+    if result.returncode != 0 or not version_text:
+        raise RuntimeError(
+            f"AscendC compiler `{path}` did not provide a usable --version result."
+        )
+
+    return {
+        "available": True,
+        "path": path,
+        "size": size,
+        "mtime_ns": mtime_ns,
+        "version": version_text,
+    }
+
+
 __all__ = [
+    "ascendc_compile_command",
+    "ascendc_compiler_identity",
+    "ascendc_remote_base_command",
+    "ascendc_remote_spec",
     "bangc_compile_command",
     "bangc_compiler_identity",
     "bangc_remote_base_command",
@@ -430,8 +766,11 @@ __all__ = [
     "cuda_compiler_identity",
     "cuda_compile_command",
     "cuda_compute_capability",
+    "find_ccec",
     "find_cncc",
     "find_nvcc",
+    "normalize_ascendc_arch",
     "normalize_bangc_arch",
     "normalize_cuda_arch",
+    "resolve_ascendc_arch",
 ]
