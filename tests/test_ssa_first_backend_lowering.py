@@ -948,6 +948,45 @@ def canonical_math_application(x, y, out):
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
 
+    @pytest.mark.parametrize(
+        "expression", ("x.to(dtype_source.dtype)", "ntl.cast(x, dtype_source.dtype)")
+    )
+    def test_cast_preserves_tensor_dtype_source(self, expression):
+        kernel = _ssa_kernel(
+            f"def app(x, dtype_source, out):\n    out = {expression}\n",
+            "cast_tensor_dtype",
+            (
+                TensorSpec(ndim=1, shape=(4,), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=(4,), name="dtype_source"),
+                TensorSpec(ndim=1, shape=(4,), name="out"),
+            ),
+        )
+        source = emit_kernel(kernel, "triton").primary_source
+        assert "dtype_source.dtype.element_ty" in source
+
+    @pytest.mark.parametrize(
+        "expression", ("x.to(reduced.dtype)", "ntl.cast(x, reduced.dtype)")
+    )
+    def test_cast_uses_promoted_reduction_dtype(self, expression):
+        kernel = _ssa_kernel(
+            "def app(x, dtype_source, out):\n    reduced = dtype_source.sum()\n"
+            f"    out = {expression}\n",
+            "cast_reduction_dtype",
+            (
+                TensorSpec(ndim=1, shape=(4,), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=(4,), dtype="uint8", name="dtype_source"),
+                TensorSpec(ndim=1, shape=(4,), dtype="uint32", name="out"),
+            ),
+        )
+        cast = next(
+            operation
+            for operation in kernel.ssa.blocks[0].operations
+            if operation.opcode == "tensor.cast"
+        )
+        assert cast.results[0].type.dtype == "uint32"
+        source = emit_kernel(kernel, "triton").primary_source
+        assert "tl.uint32" in source
+
     def test_dtype_source_roles(self):
         from ninetoothed.backends.emitters.context import EmitContext
         from ninetoothed.backends.emitters.cuda import CudaTarget
