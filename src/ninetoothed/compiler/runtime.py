@@ -105,7 +105,10 @@ def materialize(
     validate_artifact_materialization(compilation.artifact, mode=mode)
     compilation.target.validate_materialization(mode)
 
-    if target != Target.TRITON and _requires_runtime_specialization(compilation):
+    if target not in (
+        Target.TRITON,
+        Target.ASCEND,
+    ) and _requires_runtime_specialization(compilation):
         return _materialize_lazy(compilation, output_dir=output_dir, mode=mode)
 
     from ninetoothed.backends.materializers import materializer_for

@@ -24,7 +24,7 @@ def _application(input, other, output):
     output = input + other  # noqa: F841
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 @pytest.mark.parametrize("backend", ("triton", "cuda", "tilelang"))
 def test_aot_built_artifact_can_be_reloaded(backend, device, tmp_path):
     tensors = tuple(Tensor(shape=(257,), dtype=ninetoothed.float32) for _ in range(3))
@@ -113,7 +113,7 @@ def test_triton_aot_handle_is_reusable_across_cuda_contexts(tmp_path):
         check_launch(reloaded, device)
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 @pytest.mark.parametrize("mode", ("jit", "aot"))
 def test_cuda_empty_tensor_is_a_no_op(mode, device, tmp_path):
     tensors = tuple(Tensor(1, dtype=ninetoothed.float32) for _ in range(3))

@@ -12,14 +12,13 @@ from ninetoothed import Tensor
 from tests.utils import get_available_devices
 
 
-@pytest.mark.parametrize("_device", get_available_devices())
 @pytest.mark.parametrize("num_stages", (None, 3, (1, 3)))
 @pytest.mark.parametrize("num_warps", (None, 4, (4, 8)))
 @pytest.mark.parametrize("block_size_k", (ninetoothed.block_size(), 64))
 @pytest.mark.parametrize("block_size_n", (ninetoothed.block_size(), 64))
 @pytest.mark.parametrize("block_size_m", (ninetoothed.block_size(), 64))
 def test_auto_tuning_generation(
-    block_size_m, block_size_n, block_size_k, num_warps, num_stages, _device
+    block_size_m, block_size_n, block_size_k, num_warps, num_stages
 ):
     arrangement = functools.partial(
         matmul.arrangement,
@@ -73,8 +72,7 @@ def test_auto_tuning_generation(
         assert not candidates
 
 
-@pytest.mark.parametrize("_device", get_available_devices())
-def test_arrangement_returning_a_single_tensor(_device):
+def test_arrangement_returning_a_single_tensor():
     def arrangement(x):
         return x.tile((ninetoothed.block_size(),))
 

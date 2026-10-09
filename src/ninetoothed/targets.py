@@ -502,12 +502,21 @@ def create_default_platform_registry() -> PlatformRegistry:
             accelerator_name="910b3",
             compute_arch="ascend910b3",
             device_types=("npu",),
-            backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
+            backend_modes=(
+                _backend_modes((Target.TRITON,), modes=("jit",))
+                | _backend_modes((Target.ASCEND,))
+            ),
             unsupported_capabilities=frozenset({"math.pow"}),
             backend_unsupported_capabilities={
-                Target.TRITON.value: frozenset({"dtype.fp8"})
+                Target.TRITON.value: frozenset({"dtype.fp8"}),
+                Target.ASCEND.value: frozenset({"dtype.fp8"}),
             },
-            constraints={"compiler_options": {"triton": {"max_num_configs": 1}}},
+            constraints={
+                "compiler_options": {
+                    "triton": {"max_num_configs": 1},
+                    "ascend": {"max_num_configs": 1},
+                }
+            },
             metadata={"triton_block_size": 512},
         ),
         PlatformProfile(
@@ -516,9 +525,17 @@ def create_default_platform_registry() -> PlatformRegistry:
             accelerator_name="910b4",
             compute_arch="ascend910b4",
             device_types=("npu",),
-            backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
+            backend_modes=(
+                _backend_modes((Target.TRITON,), modes=("jit",))
+                | _backend_modes((Target.ASCEND,))
+            ),
             unsupported_capabilities=frozenset({"math.pow"}),
-            constraints={"compiler_options": {"triton": {"max_num_configs": 1}}},
+            constraints={
+                "compiler_options": {
+                    "triton": {"max_num_configs": 1},
+                    "ascend": {"max_num_configs": 1},
+                }
+            },
             metadata={"triton_block_size": 512},
         ),
         PlatformProfile(
@@ -754,16 +771,24 @@ def target_device_types(value: Any) -> tuple[str, ...]:
 
 
 def runtime_device_types(value: Any) -> tuple[str, ...]:
-    """Use profile device aliases only for the portable Triton JIT path."""
+    """Use profile device aliases for Triton-based JIT backends."""
     context = getattr(value, "target", None)
 
     if isinstance(context, TargetContext):
-        return context.device_types if context.backend == Target.TRITON else ("cuda",)
+        return (
+            context.device_types
+            if context.backend in (Target.TRITON, Target.ASCEND)
+            else ("cuda",)
+        )
 
     artifact = getattr(value, "artifact", value)
     backend = getattr(getattr(artifact, "backend", None), "value", None)
 
-    return target_device_types(value) if backend == Target.TRITON.value else ("cuda",)
+    return (
+        target_device_types(value)
+        if backend in (Target.TRITON.value, Target.ASCEND.value)
+        else ("cuda",)
+    )
 
 
 def validate_artifact_materialization(value: Any, *, mode: str) -> None:

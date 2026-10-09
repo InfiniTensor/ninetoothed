@@ -10,7 +10,7 @@ from ninetoothed.debugging import simulate_arrangement
 from tests.utils import get_available_devices
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 def test_addmm(device):
     if device != "cuda":
         pytest.skip("`ninetoothed.debugging` only supports CUDA")

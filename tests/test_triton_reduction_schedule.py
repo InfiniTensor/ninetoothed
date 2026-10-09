@@ -272,7 +272,7 @@ def test_reduction_domain_selects_triton_row_vector_schedule():
         analyze_reductions(unsupported)
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 def test_triton_row_vector_reduction_runtime(device, tmp_path):
     normalize = make(
         _row_arrangement,
@@ -429,7 +429,7 @@ def test_triton_row_vector_reduction_runtime(device, tmp_path):
             launch(invalid_x, invalid_output)
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 def test_row_vector_only_vectorizes_scheduled_reductions_and_masks_source_store(
     device,
 ):
