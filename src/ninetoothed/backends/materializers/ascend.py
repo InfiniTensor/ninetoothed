@@ -21,10 +21,14 @@ class AscendMaterializer(Materializer):
         return _materialize_ascend(compilation)
 
     def aot_build(self, compilation: Any, *, output_dir: Path | str):
-        raise NotImplementedError("Ascend AOT materialization is not yet implemented.")
+        from ninetoothed.backends.materializers.ascend_aot import build
+
+        return build(compilation, output_dir=output_dir)
 
     def load_built_artifact(self, built: Any):
-        raise NotImplementedError("Ascend AOT artifact loading is not yet implemented.")
+        from ninetoothed.backends.materializers.ascend_aot import load
+
+        return load(built)
 
 
 def _materialize_ascend(compilation: Any):

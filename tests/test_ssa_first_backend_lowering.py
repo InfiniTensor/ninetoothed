@@ -1579,8 +1579,15 @@ def test_dynamic_integer_reduction_preserves_large_values_and_tail(tmp_path):
 
     import torch
 
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA GPU required")
+    if torch.cuda.is_available():
+        device, backend, platform = "cuda", "triton", "generic"
+    else:
+        pytest.importorskip("torch_npu")
+        if not torch.npu.is_available():
+            pytest.skip("CUDA GPU or Ascend NPU required")
+        device, backend, platform = "npu", "ascend", "ascend-910b4"
+
+    from ninetoothed.targets import resolve_target_context
 
     source = (
         "def app(x, dtype_source, out_max, out_min):\n"
@@ -1603,17 +1610,21 @@ def test_dynamic_integer_reduction_preserves_large_values_and_tail(tmp_path):
             TensorSpec(ndim=1, shape=(1,), name="out_min"),
         )
         kernel = _ssa_kernel(source, f"dynamic_int_{width}_{dtype_name}", tensors)
-        artifact = emit_kernel(kernel, "triton")
+        artifact = emit_kernel(
+            kernel,
+            backend,
+            target_context=resolve_target_context(backend, platform=platform),
+        )
         path = tmp_path / f"dynamic_int_{width}_{dtype_name}.py"
         path.write_text(artifact.primary_source)
         spec = importlib.util.spec_from_file_location(path.stem, path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        x = torch.tensor(values, device="cuda", dtype=dtype)
-        out_max = torch.empty((1,), device="cuda", dtype=dtype)
+        x = torch.tensor(values, device=device, dtype=dtype)
+        out_max = torch.empty((1,), device=device, dtype=dtype)
         out_min = torch.empty_like(out_max)
         getattr(module, f"launch_{kernel.kernel_name}")(x, x, out_max, out_min)
-        torch.cuda.synchronize()
+        getattr(torch, device).synchronize()
         assert out_max.item() == max(values)
         assert out_min.item() == min(values)
 
