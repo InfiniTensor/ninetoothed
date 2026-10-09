@@ -111,6 +111,7 @@ Ascend 后端完全遵循 ninetoothed 标准的 **4 阶段算子编译管线**�
 ```python
 from ninetoothed.backends.registry import register_pass_bundle
 
+
 @register_pass_bundle("ssa.ascend.optimize_schedule", backend="ascend")
 def optimize_ascend_schedule(graph, target):
     # 1. 自动注入 Tiling 切块
@@ -125,6 +126,7 @@ def optimize_ascend_schedule(graph, target):
 
 ```python
 from ninetoothed.backends.emitters.base import EmitterTarget
+
 
 class AscendEmitter(EmitterTarget):
     target_name = "ascend"

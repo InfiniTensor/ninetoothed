@@ -1,8 +1,11 @@
-from ninetoothed.backends.core import Backend, Target, Artifact
+from typing import Any, Mapping
+
+from ninetoothed.backends.core import Artifact, Backend, Target
 from ninetoothed.backends.emitters.ascend import AscendEmitter
-from ninetoothed.ir import Kernel
-from typing import Mapping, Any
 from ninetoothed.compiler.passes import OptimizeSchedule
+from ninetoothed.ir import Kernel
+from ninetoothed.registry import Registry
+
 
 class AscendOptimizeSchedule(OptimizeSchedule):
     name = "ssa.ascend.optimize_schedule"
@@ -14,6 +17,7 @@ class AscendOptimizeSchedule(OptimizeSchedule):
     ):
         return []
 
+
 def register_ssa_passes(registry: "Registry") -> None:
     from ninetoothed.backends.registry import register_pass_bundle
 
@@ -23,8 +27,9 @@ def register_ssa_passes(registry: "Registry") -> None:
         optimize_schedule=AscendOptimizeSchedule,
     )
 
+
 class AscendBackend(Backend):
-    target = Target.ASCEND  
+    target = Target.ASCEND
 
     def normalize_options(self, options: dict) -> dict:
         return options
