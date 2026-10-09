@@ -1045,6 +1045,41 @@ def _configuration_values(value, scheduled, *, default: int) -> tuple[int, ...]:
     return normalized
 
 
+def _row_span_meta_binding(name, arranged, specs):
+    """Bind a ``(1, meta)`` tile's meta symbol to the source row extent.
+
+    Row-vector tiles such as ``input.tile((1, BLOCK_SIZE))`` intend one
+    tile to span the full reduction axis; deriving the meta value from
+    the runtime shape keeps row reductions and broadcasts correct when
+    the caller does not pass the meta parameter explicitly (the static
+    default of 256 would otherwise silently truncate the axis).
+    """
+    for tensor, spec in zip(arranged, specs):
+        source = tensor.source if tensor.source is not tensor else None
+
+        if source is None:
+            continue
+
+        tile = tuple(str(dim) for dim in tensor.innermost().shape)
+
+        if len(tile) != 2 or tile[0] != "1" or tile[1] != name:
+            continue
+
+        attrs = spec.attrs if hasattr(spec, "attrs") else {}
+
+        if not attrs.get("source_shape"):
+            continue
+
+        return LaunchBinding(
+            name=name,
+            kind="shape",
+            source=spec.name,
+            dim=1,
+        )
+
+    return None
+
+
 def _derived_binding(name: str, specs, constexpr_values):
     for spec in specs:
         attrs = spec.attrs

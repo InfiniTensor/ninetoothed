@@ -128,10 +128,26 @@ def match_row_reduce(context) -> tuple | None:
     out_attrs = output_info.attrs or {}
     out_shape = out_attrs.get("source_shape") or output_info.shape
 
-    if not out_shape or len(out_shape) != 2 or str(out_shape[1]) != "1":
+    if not out_shape or len(out_shape) != 2:
         return None
 
-    return (operator, x_name, output, str(shape[0]), str(shape[1]), scale)
+    cols_str = str(shape[1])
+
+    try:
+        cols_literal = int(cols_str)
+    except ValueError:
+        return None
+
+    if str(out_shape[1]) != "1":
+        # A symbolic output width can still be a collapsed (rows, 1) store
+        # when the input tile spans the full row: the reduce + x*0
+        # broadcast shape then forces one output element per row.
+        in_tile_width = str(input_info.shape[1]) if input_info.shape else ""
+
+        if f"// {cols_literal} + 1" not in in_tile_width:
+            return None
+
+    return (operator, x_name, output, str(shape[0]), cols_str, scale)
 
 
 def _extract_reduce_chain(value: str, context) -> tuple | None:
