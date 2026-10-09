@@ -14,7 +14,9 @@ from ninetoothed.compiler.cache import (
 class AscendMaterializer(Materializer):
     target = Target.ASCEND
 
-    def jit_materialize(self, compilation: Any, *, output_dir: Path | str | None = None):
+    def jit_materialize(
+        self, compilation: Any, *, output_dir: Path | str | None = None
+    ):
         del output_dir
         return _materialize_ascend(compilation)
 
