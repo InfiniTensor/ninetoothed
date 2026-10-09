@@ -105,6 +105,9 @@ class RvneTarget(EmitterTarget):
         if name == "load" and len(args) == 1:
             return f"*({args[0]})"
 
+        if name == "exp2" and len(args) == 1:
+            return f"exp2f({self.cast('float32', args[0])})"
+
         if name in {"dot", "block_dot"} and len(args) == 2:
             return f"(({args[0]}) * ({args[1]}))"
 
@@ -191,6 +194,11 @@ class RvneTarget(EmitterTarget):
     def arithmetic_expr(self, operation, args, context):
         opcode = operation.opcode
         dtype = common.normalize_dtype(operation.results[0].type.dtype)
+
+        if opcode in {"arith.div", "arith.truediv"}:
+            return (
+                f"({self.cast('float32', args[0])} / {self.cast('float32', args[1])})"
+            )
 
         if opcode == "arith.invert" and dtype == "bool":
             return f"(!({args[0]}))"

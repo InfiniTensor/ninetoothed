@@ -134,9 +134,10 @@ compile-time constants.
 Supported element types are ``bool``, ``int32``, ``uint32``, ``int64``,
 ``uint64`` and ``float32``. The initial arithmetic set includes addition,
 subtraction, multiplication, comparisons, bitwise operations, selection and
-sum/min/max reductions. Tensor arithmetic division, floor division and
-remainder are currently rejected; index calculations have separate integer
-floor/modulo handling.
+sum/min/max reductions. FP32 ``exp2`` and division are supported; floating
+division also accepts an integer scalar operand. Integer division, floor
+division and remainder are currently rejected; index calculations have
+separate integer floor/modulo handling.
 
 CPU tests validate source generation and ABI handling without the SDK.
 Configuring the SDK additionally enables real cross-compilation and QEMU
@@ -144,14 +145,14 @@ tests:
 
 .. code-block:: bash
 
-   python -m pytest tests/test_rvne_lowering.py tests/test_rvne_materializer.py tests/test_rvne_operators.py tests/test_rvne_snn.py
+   python -m pytest tests/test_rvne_*.py
 
 These cover ordinary addition, dense matrix multiplication, sum/min/max,
 signed INT4 packing, masked tails, accumulated dot products larger than 1024
-inputs, explicit LIF state across time steps, failure handling and artifact
-reload. QEMU validation does not establish support or timing on a physical
-chip. Dedicated LIF instructions, hardware launch/context management, and
-register-resident batching remain separate optimization work.
+inputs, explicit LIF state across time steps, blocked attention, failure
+handling and artifact reload. QEMU validation does not establish support or
+timing on a physical chip. Dedicated LIF instructions, hardware launch/context
+management, and register-resident batching remain separate optimization work.
 
 Ordinary operator tests on QEMU
 ------------------------------
@@ -181,3 +182,30 @@ RISC-V arithmetic; the packed spike accumulator is tested separately.
 Every selected case must report ``PASSED`` to establish QEMU coverage.
 The host-compiled tests in ``test_rvne_lowering.py`` remain useful for checking
 source generation on machines without the SDK.
+
+Blocked attention on QEMU
+------------------------
+
+``tests/test_rvne_attention.py`` reuses the unchanged arrangement and
+application from ``tests/test_attention.py``. It compiles the blocked online
+softmax algorithm through the RVNE backend and runs its RISC-V ELF in QEMU.
+The kernel retains the key/value block loop and the running maximum,
+normalizer and output accumulator. It does not allocate a score tensor
+spanning the complete sequence in both dimensions.
+
+The FP32 cases cover causal and noncausal attention, two batches and two heads,
+sequence lengths 1, 5 and 7, head dimensions 4 and 64, and query/key block sizes
+2-by-4 and 4-by-2. Nondivisible sequence lengths exercise tail masks. The
+independent reference is CPU PyTorch ``scaled_dot_product_attention`` with
+``scale=1.0`` and ``dropout_p=0.0``, matching the existing NineToothed application.
+Results must be finite and agree within ``rtol=2e-5`` and ``atol=2e-5``.
+
+.. code-block:: bash
+
+   python -m pytest -vv -ra tests/test_rvne_attention.py
+
+This verifies the algorithm's FP32 correctness on the tested shapes. The RVNE
+emitter uses serial RISC-V floating-point arithmetic and libm ``exp2f``;
+it does not provide the GPU memory scheduling or performance of an optimized
+GPU FlashAttention kernel. FP16/BF16 tensors remain unsupported by this
+backend. Physical-chip performance has not been validated.

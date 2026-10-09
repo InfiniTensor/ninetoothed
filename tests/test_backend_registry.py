@@ -124,15 +124,23 @@ def test_rvne_rejects_unsupported_input_dtypes_without_quantization(dtype):
         default_registry().get(Target.RVNE).prepare_for_emission(_add_kernel(dtype))
 
 
-@pytest.mark.parametrize("operator", ("/", "//", "%", "**"))
-def test_rvne_rejects_unimplemented_arithmetic(operator):
+@pytest.mark.parametrize(
+    "operator,error,message",
+    (
+        ("/", TypeError, "requires FP32"),
+        ("//", ValueError, "RVNE does not support SSA operation"),
+        ("%", ValueError, "RVNE does not support SSA operation"),
+        ("**", ValueError, "RVNE does not support SSA operation"),
+    ),
+)
+def test_rvne_rejects_unsupported_integer_arithmetic(operator, error, message):
     kernel = _kernel_from_source(
         f"\ndef calculate(x, y, out):\n    out = x {operator} y\n",
         name="calculate",
         tensors=_add_kernel("int32").tensors,
     )
 
-    with pytest.raises(ValueError, match="RVNE does not support SSA operation"):
+    with pytest.raises(error, match=message):
         default_registry().get(Target.RVNE).prepare_for_emission(kernel)
 
 

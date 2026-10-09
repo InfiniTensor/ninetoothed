@@ -1,5 +1,7 @@
+import os
 import shutil
 import subprocess
+from dataclasses import replace
 
 import pytest
 
@@ -22,22 +24,52 @@ def _kernel(source, tensors, name="rvne_test"):
     )
 
 
-def _compile_and_run(tmp_path, source, main):
-    compiler = shutil.which("clang++") or shutil.which("g++")
-
-    if compiler is None:
-        pytest.skip("host C++ compiler is unavailable")
-
+def _compile_and_run(tmp_path, source, main, *, execution="host"):
     path = tmp_path / "kernel.cpp"
     executable = tmp_path / "kernel_test"
+    run_command = [str(executable)]
+
+    if execution == "qemu":
+        if not os.environ.get("NINETOOTHED_RVNE_TOOLCHAIN"):
+            pytest.skip("RVNE SDK is not configured")
+
+        from ninetoothed.backends.rvne_toolchain import (
+            find_rvne_toolchain,
+            rvne_compile_command,
+        )
+
+        toolchain = find_rvne_toolchain()
+        command = rvne_compile_command(toolchain, path, executable)
+        run_command = [
+            str(toolchain.emulator),
+            "-L",
+            str(toolchain.sysroot),
+            str(executable),
+        ]
+    else:
+        compiler = shutil.which("clang++") or shutil.which("g++")
+
+        if compiler is None:
+            pytest.skip("host C++ compiler is unavailable")
+
+        command = [
+            compiler,
+            "-std=c++11",
+            "-O2",
+            "-fwrapv",
+            str(path),
+            "-o",
+            str(executable),
+        ]
+
     path.write_text(source + "\n" + main, encoding="utf-8")
     subprocess.run(
-        [compiler, "-std=c++11", "-O2", "-fwrapv", str(path), "-o", str(executable)],
+        command,
         check=True,
         capture_output=True,
         text=True,
     )
-    subprocess.run([str(executable)], check=True, capture_output=True, text=True)
+    subprocess.run(run_command, check=True, capture_output=True, text=True)
 
 
 def test_rvne_serial_abi_and_integer_arithmetic(tmp_path):
@@ -174,9 +206,7 @@ def test_rvne_rejects_unsupported_dtypes(dtype):
         emit(kernel)
 
 
-@pytest.mark.parametrize(
-    "expression", ["ntl.exp(x)", "x / x", "x // x", "x % x", "x ** 2"]
-)
+@pytest.mark.parametrize("expression", ["ntl.exp(x)", "x // x", "x % x", "x ** 2"])
 def test_rvne_rejects_unsupported_arithmetic(expression):
     kernel = _kernel(
         f"def application(x, out):\n    out = {expression}\n",
@@ -326,4 +356,123 @@ def test_rvne_rejects_invalid_or_dynamic_shifts(count, operator):
     )
 
     with pytest.raises(ValueError, match="constant count within its bit width"):
+        emit(kernel)
+
+
+@pytest.mark.parametrize("execution", ["host", "qemu"])
+def test_rvne_float_exp2_preserves_fractions_and_ieee_limits(tmp_path, execution):
+    kernel = _kernel(
+        "def application(x, out):\n    out = ntl.exp2(x)\n",
+        tuple(
+            TensorSpec(ndim=1, shape=("13",), dtype="float32", name=name)
+            for name in ("x", "out")
+        ),
+    )
+    _compile_and_run(
+        tmp_path,
+        emit(kernel).primary_source,
+        """int main() {
+    float x[] = {-INFINITY, -150, -149, -126, -3.5f, -1, 0, 0.5f, 10, 127, 128, INFINITY, NAN};
+    float expected[] = {0, 0, 1.401298464324817e-45f, 1.1754943508222875e-38f,
+                        0.08838834764831844f, 0.5f, 1, 1.4142135623730951f,
+                        1024, 1.7014118346046923e38f, INFINITY, INFINITY, NAN};
+    float out[13] = {};
+    if (launch_rvne_test(x, out)) return 1;
+    for (int i = 0; i < 13; ++i) {
+        if (isnan(expected[i])) {
+            if (!isnan(out[i])) return 2;
+        } else if (isinf(expected[i]) || expected[i] == 0) {
+            if (out[i] != expected[i]) return 3;
+        } else if (!isfinite(out[i]) || fabsf(out[i] / expected[i] - 1) > 2e-6f) {
+            return 4;
+        }
+    }
+    return 0;
+}
+""",
+        execution=execution,
+    )
+
+
+@pytest.mark.parametrize("execution", ["host", "qemu"])
+@pytest.mark.parametrize("opcode", ["arith.div", "arith.truediv"])
+def test_rvne_float_division_preserves_fractions_and_ieee_limits(
+    tmp_path, execution, opcode
+):
+    kernel = _kernel(
+        "def application(x, y, out):\n    out = x / y\n",
+        tuple(
+            TensorSpec(ndim=1, shape=("14",), dtype="float32", name=name)
+            for name in ("x", "y", "out")
+        ),
+    )
+    block = kernel.ssa.blocks[0]
+    block = replace(
+        block,
+        operations=tuple(
+            replace(op, opcode=opcode)
+            if op.opcode in {"arith.div", "arith.truediv"}
+            else op
+            for op in block.operations
+        ),
+    )
+    kernel = replace(kernel, ssa=replace(kernel.ssa, blocks=(block,)))
+    _compile_and_run(
+        tmp_path,
+        emit(kernel).primary_source,
+        """int main() {
+    float x[] = {-3, 3, -1, 0, -0.0f, 1, -1, INFINITY, -INFINITY, INFINITY, NAN, 1, 0, -0.0f};
+    float y[] = {2, -2, 4, 2, 2, 0, 0, 2, 2, INFINITY, 1, NAN, 0, -2};
+    float expected[] = {-1.5f, -1.5f, -0.25f, 0, -0.0f, INFINITY, -INFINITY,
+                        INFINITY, -INFINITY, NAN, NAN, NAN, NAN, 0};
+    float out[14] = {};
+    if (launch_rvne_test(x, y, out)) return 1;
+    for (int i = 0; i < 14; ++i) {
+        if (isnan(expected[i])) {
+            if (!isnan(out[i])) return 2;
+        } else if (out[i] != expected[i] || !!signbit(out[i]) != !!signbit(expected[i])) {
+            return 3;
+        }
+    }
+    return 0;
+}
+""",
+        execution=execution,
+    )
+
+
+def test_rvne_float_division_converts_integer_scalar_operand(tmp_path):
+    kernel = _kernel(
+        "def application(x, divisor, out):\n    out = x / divisor\n",
+        (
+            TensorSpec(ndim=1, shape=("3",), dtype="float32", name="x"),
+            TensorSpec(ndim=0, dtype="int32", name="divisor"),
+            TensorSpec(ndim=1, shape=("3",), dtype="float32", name="out"),
+        ),
+    )
+    _compile_and_run(
+        tmp_path,
+        emit(kernel).primary_source,
+        """int main() {
+    float x[] = {-3, 0, 5};
+    float out[3] = {};
+    if (launch_rvne_test(x, 2, out)) return 1;
+    return out[0] != -1.5f || out[1] != 0 || out[2] != 2.5f;
+}
+""",
+    )
+
+
+@pytest.mark.parametrize("expression", ["x / x", "ntl.exp2(x)"])
+@pytest.mark.parametrize("dtype", ["int32", "uint32", "int64", "uint64", "bool"])
+def test_rvne_rejects_integer_float_math(expression, dtype):
+    kernel = _kernel(
+        f"def application(x, out):\n    out = {expression}\n",
+        tuple(
+            TensorSpec(ndim=1, shape=("4",), dtype=dtype, name=name)
+            for name in ("x", "out")
+        ),
+    )
+
+    with pytest.raises(TypeError, match="requires FP32"):
         emit(kernel)

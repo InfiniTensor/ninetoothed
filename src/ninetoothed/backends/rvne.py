@@ -20,6 +20,8 @@ _SUPPORTED_OPCODES = frozenset(
         "arith.subtract",
         "arith.mul",
         "arith.multiply",
+        "arith.div",
+        "arith.truediv",
         "arith.and",
         "arith.or",
         "arith.bitwise_and",
@@ -64,6 +66,7 @@ _SUPPORTED_OPCODES = frozenset(
         "linalg.transpose",
         "linalg.dot",
         "linalg.matmul",
+        "math.exp2",
         "call.spike_accumulate",
     }
 )
@@ -146,6 +149,50 @@ def validate_kernel(kernel: Kernel) -> None:
         _validate_block(block)
 
     _validate_spike_accumulators(kernel.ssa)
+    _validate_float_math(kernel.ssa)
+
+
+def _validate_float_math(program: ssa.Program) -> None:
+    from ninetoothed.backends.emitters.analysis import program_value_types, walk_ops
+
+    value_types = program_value_types(program)
+
+    for block in program.blocks:
+        for operation in walk_ops(block.operations):
+            if operation.opcode not in {"math.exp2", "arith.div", "arith.truediv"}:
+                continue
+
+            arity = 1 if operation.opcode == "math.exp2" else 2
+
+            if len(operation.operands) != arity or len(operation.results) != 1:
+                raise ValueError(
+                    f"Malformed RVNE floating operation `{operation.opcode}`."
+                )
+
+            types = tuple(value_types[name] for name in operation.operands)
+            result = operation.results[0].type
+            dtypes = tuple(normalize_dtype(type_.dtype) for type_ in types)
+            valid = (
+                result.kind in {"scalar", "tensor"}
+                and normalize_dtype(result.dtype) == "float32"
+                and "float32" in dtypes
+            )
+
+            for type_, dtype in zip(types, dtypes):
+                valid = valid and (
+                    (type_.kind in {"scalar", "tensor"} and dtype == "float32")
+                    or (
+                        operation.opcode != "math.exp2"
+                        and type_.kind in {"scalar", "index"}
+                        and dtype in {"index", "int32", "uint32", "int64", "uint64"}
+                    )
+                )
+
+            if not valid:
+                raise TypeError(
+                    f"RVNE `{operation.opcode}` requires FP32 operands and result; "
+                    "floating division also accepts an integer scalar operand."
+                )
 
 
 def _validate_spike_accumulators(program: ssa.Program) -> None:
@@ -209,7 +256,7 @@ def _validate_block(block: ssa.Block) -> None:
 
 
 def _validate_value(value: ssa.Value) -> None:
-    if value.type.kind == "index" and value.type.dtype == "index":
+    if value.type.kind in {"index", "scalar", "tensor"} and value.type.dtype == "index":
         return
 
     if value.type.dtype is not None:
