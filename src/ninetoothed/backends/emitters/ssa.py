@@ -917,7 +917,9 @@ def _emit_cooperative_full_store(
         )
     )
     ctx.lines.extend(_indent_lines(body_lines, ctx.target))
-    ctx.lines.append("}")
+
+    if ctx.target.c_style_syntax:
+        ctx.lines.append("}")
 
 
 def _emit_cooperative_scalar_store(
@@ -929,8 +931,12 @@ def _emit_cooperative_scalar_store(
     coordinates = tuple(
         coordinate for dim, coordinate in enumerate(ctx.coordinate_exprs) if dim != axis
     )
-    linear = _target_index_expr(
-        ctx.target, _linearized_index(coordinates, result_shape)
+    linear = (
+        "0"
+        if not coordinates
+        else _target_index_expr(
+            ctx.target, _linearized_index(coordinates, result_shape)
+        )
     )
     body_lines: list[str] = []
     body = ctx.child(
@@ -941,9 +947,11 @@ def _emit_cooperative_scalar_store(
         local_suffix=_nested_local_suffix(ctx, "reduced_store"),
     )
     _emit_operation(operation, body)
-    ctx.lines.append(f"if ({ctx.target.thread_id()} == 0) {{")
+    ctx.lines.append(_if_header(f"{ctx.target.thread_id()} == 0", ctx.target))
     ctx.lines.extend(_indent_lines(body_lines, ctx.target))
-    ctx.lines.append("}")
+
+    if ctx.target.c_style_syntax:
+        ctx.lines.append("}")
 
 
 def _is_top_level_effect(op: ssa.Operation) -> bool:
@@ -4026,6 +4034,8 @@ resolved_dot_operand_dtype = _resolved_dot_operand_dtype
 rewrite_index_math = _rewrite_index_math
 schedule_int = _schedule_int
 source_index_for_value = _source_index_for_value
+source_strides = _source_strides
+replace_symbols = _replace_symbols
 target_index_expr = _target_index_expr
 value_axes = _value_axes
 value_axes_from_types = _value_axes_from_types
@@ -4062,6 +4072,8 @@ __all__ = [
     "rewrite_index_math",
     "schedule_int",
     "source_index_for_value",
+    "source_strides",
+    "replace_symbols",
     "target_index_expr",
     "value_axes",
     "value_axes_from_types",

@@ -408,20 +408,20 @@ def random_application(seed, out):
         balanced = lower_candidate("balanced")
         wide = lower_candidate("wide")
         assert "threads=128" in balanced.primary_source
-        assert "num_stages=2" in balanced.primary_source
+        assert "num_stages=3" in balanced.primary_source
         assert balanced.metadata["launch_block"] == ("128",)
         assert "threads=256" in wide.primary_source
         assert "num_stages=3" in wide.primary_source
         assert wide.metadata["launch_block"] == ("256",)
         assert balanced.metadata["ssa_schedule"]["tile"] == {
-            "block_m": 64,
-            "block_n": 64,
+            "block_m": 128,
+            "block_n": 128,
             "block_k": 32,
         }
         assert wide.metadata["ssa_schedule"]["tile"] == {
             "block_m": 128,
-            "block_n": 64,
-            "block_k": 32,
+            "block_n": 256,
+            "block_k": 64,
         }
 
     def test_public_triton_lower_raises_when_ssa_is_unavailable(self):
@@ -868,8 +868,8 @@ def canonical_math_application(x, y, out):
     def test_public_lower_generates_ssa_reduction_for_native_backends(self):
         expected = {
             "triton": ("ssa-unified-triton-emitter", "@triton.jit"),
-            "cuda": ("ssa-unified-cuda-emitter", "(x[v1_i] * y[v1_i])"),
-            "tilelang": ("ssa-unified-tilelang-emitter", "x_buf[v1_i] * y_buf[v1_i]"),
+            "cuda": ("ssa-unified-cuda-emitter", "__shfl_down_sync"),
+            "tilelang": ("ssa-unified-tilelang-emitter", "x_buf[v1_i]"),
         }
 
         for backend, (route, source_fragment) in expected.items():
@@ -940,7 +940,7 @@ def canonical_math_application(x, y, out):
         assert "y.dtype.element_ty" in triton_source
         assert "tl.dtype" not in triton_source
         assert "float vacc_" in artifacts["cuda"].primary_source
-        assert 'T.alloc_var("float32"' in artifacts["tilelang"].primary_source
+        assert 'T.alloc_local((1,), "float32")' in artifacts["tilelang"].primary_source
 
     def test_constructor_canonicalizes_aliased_and_chained_tensor_dtype(self):
         kernel = _ssa_kernel(

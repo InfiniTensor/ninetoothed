@@ -283,7 +283,9 @@ def _consumer_contract(
                 if (
                     stored_type is not None
                     and target_type is not None
-                    and stored_type.shape != target_type.shape
+                    and tuple(str(dim) for dim in stored_type.shape)
+                    != tuple(str(dim) for dim in target_type.shape)
+                    and tuple(str(dim) for dim in stored_type.shape) != result_shape
                 ):
                     return False, (
                         "store target does not match the reduction value domain"

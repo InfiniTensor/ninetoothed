@@ -188,10 +188,35 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
         cache_key=cache_key,
     )
     specializations: dict[tuple[tuple[str, str], ...], Handle] = {}
+    identity_cache: dict[tuple, Handle] = {}
     handle = None
+
+    def update_handle(source_handle) -> None:
+        if handle is not None:
+            handle._artifact = source_handle._artifact
+            handle._kernel = source_handle._kernel
+            handle._source = source_handle._source
+            handle._library = source_handle._library
+            handle._ssa = source_handle._ssa
+            handle._pass_trace = source_handle._pass_trace
+            handle._launch_plan = source_handle._launch_plan
+            handle._built_artifact = source_handle._built_artifact
 
     def launch(*args, **kwargs):
         nonlocal handle
+
+        identity = _lazy_specialization_identity(args, kwargs)
+
+        if identity is not None:
+            cached = identity_cache.get(identity)
+
+            if cached is not None:
+                update_handle(cached)
+                return cached(
+                    *args,
+                    **_filter_runtime_kwargs(cached._compilation.launch_abi, kwargs),
+                )
+
         public = _public_values(
             compilation.launch_abi,
             args,
@@ -224,15 +249,10 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
 
         specialized = specializations[key]
 
-        if handle is not None:
-            handle._artifact = specialized._artifact
-            handle._kernel = specialized._kernel
-            handle._source = specialized._source
-            handle._library = specialized._library
-            handle._ssa = specialized._ssa
-            handle._pass_trace = specialized._pass_trace
-            handle._launch_plan = specialized._launch_plan
-            handle._built_artifact = specialized._built_artifact
+        if identity is not None:
+            identity_cache[identity] = specialized
+
+        update_handle(specialized)
         return specialized(
             *args,
             **_filter_runtime_kwargs(specialized._compilation.launch_abi, kwargs),
@@ -241,6 +261,41 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
     handle = Handle(compilation, None, launch, source)
 
     return handle
+
+
+def _lazy_specialization_identity(args, kwargs):
+    """Return a cheap semantic identity for lazy specialization caching.
+
+    The identity captures every argument property that influences runtime
+    specialization (tensor shape/strides/dtype/device and scalar values) so
+    that repeated launches with matching arguments can skip re-validating and
+    re-deriving the specialization.  Returns ``None`` when an argument cannot
+    be summarized, in which case the caller falls back to the full path.
+    """
+    parts = [len(args)]
+
+    for value in (*args, *kwargs.values()):
+        shape = getattr(value, "shape", None)
+
+        if shape is not None and hasattr(value, "dtype"):
+            try:
+                strides = tuple(value.stride())
+            except (TypeError, RuntimeError):
+                return None
+
+            parts.append(
+                (
+                    tuple(shape),
+                    str(getattr(value, "dtype", None)),
+                    str(getattr(value, "device", None)),
+                    strides,
+                )
+            )
+        elif _is_cacheable_runtime_literal(value):
+            parts.append(value)
+        else:
+            return None
+    return tuple(parts)
 
 
 def _runtime_specialization_values(compilation, public) -> dict[str, Any]:
