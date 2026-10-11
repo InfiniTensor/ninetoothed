@@ -538,6 +538,7 @@ def random_application(seed, out):
             "mem.store",
         ]
         assert operations[0].attrs["dim"] == 0
+        assert operations[0].results[0].type.dtype == "index"
         expected = {
             "triton": (
                 "ssa-unified-triton-emitter",

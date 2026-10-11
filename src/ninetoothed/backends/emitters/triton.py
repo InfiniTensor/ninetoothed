@@ -245,6 +245,7 @@ class TritonTarget(EmitterTarget):
             return f"tl.{name}(_nt_exp_input({args[0]}))"
 
         functions = {
+            "transpose": "tl.trans",
             "abs": "tl.abs",
             "acos": "tl.acos",
             "asin": "tl.asin",

@@ -39,6 +39,8 @@ _OPERATIONS = frozenset(
         "math.sqrt",
         "math.rsqrt",
         "tensor.view",
+        "linalg.transpose",
+        "shape.dim",
         "tensor.cast",
         "reduce.sum",
         "reduce.max",
