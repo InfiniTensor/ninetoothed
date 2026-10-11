@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ZhaoJunkai — 中期报告</title>
+<style>
+  @media print { body { font-size: 10pt; } }
+  body { font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, sans-serif; font-size: 12pt; line-height: 1.7; color: #333; max-width: 900px; margin: 0 auto; padding: 20px; }
+  h1 { font-size: 20pt; border-bottom: 2px solid #333; padding-bottom: 8px; }
+  h2 { font-size: 15pt; border-bottom: 1px solid #999; padding-bottom: 5px; margin-top: 28px; }
+  h3 { font-size: 12pt; margin-top: 18px; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 9pt; }
+  th, td { border: 1px solid #999; padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background-color: #f0f0f0; font-weight: bold; }
+  code { font-family: "SF Mono", monospace; font-size: 9pt; background: #f5f5f5; padding: 1px 4px; }
+  pre { background: #f5f5f5; padding: 12px; border: 1px solid #ddd; font-size: 8.5pt; white-space: pre-wrap; }
+  blockquote { border-left: 3px solid #ddd; margin: 14px 0; padding: 6px 18px; color: #555; background: #fafafa; }
+  strong { color: #222; }
+</style>
+</head>
+<body>
+<h1>NineToothed .skill 创新挑战赛 — 中期报告</h1>
+<p><strong>赛题</strong>: 2026 春季 AI 竞赛 — NineToothed .skill 创新挑战赛<br />
+<strong>赛道编号</strong>: T3-1-1<br />
+<strong>参赛者</strong>: Zhao Junkai<br />
+<strong>GitHub ID</strong>: junkai-kay<br />
+<strong>Skill 名称</strong>: ninetoothed-operator-skill<br />
+<strong>报告时段</strong>: 2026-07-03 至 2026-07-11</p>
+<hr />
+<h2>1. 已完成工作</h2>
+<h3>1.1 仓库调研</h3>
+<ul>
+<li>通读 NineToothed 官方仓库 (README、CONTRIBUTING.md、tests/)</li>
+<li>分析了官方 test_softmax.py 和 test_add.py 的 API 使用模式</li>
+<li>输出仓库地图与开发备忘录</li>
+</ul>
+<h3>1.2 Skill 骨架搭建</h3>
+<ul>
+<li>创建 <code>skills/competition/ninetoothed-operator-skill/</code> 目录结构</li>
+<li>编写 SKILL.md（含 YAML 头、9 阶段 SOP、失败诊断 6 步协议）</li>
+<li>编写 README.md（含四类算子声明、状态表、红线圈）</li>
+<li>编写 references/index.md（仓库地图、5 种模式、6 项陷阱、代码风格清单）</li>
+</ul>
+<h3>1.3 四个自测任务设计</h3>
+<table>
+<thead>
+<tr>
+<th>任务</th>
+<th>类型</th>
+<th>算子</th>
+<th>文件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>T1</td>
+<td>逐元素/广播</td>
+<td>Masked Add with Broadcast</td>
+<td>operator_impl.py + test + benchmark</td>
+</tr>
+<tr>
+<td>T2</td>
+<td>归约/分块</td>
+<td>Tiled Softmax with Numerical Stability</td>
+<td>operator_impl.py + test + benchmark</td>
+</tr>
+<tr>
+<td>T3</td>
+<td>布局敏感</td>
+<td>Non-Contiguous GELU</td>
+<td>operator_impl.py + test + benchmark</td>
+</tr>
+<tr>
+<td>T4</td>
+<td>性能/诊断</td>
+<td>API 诊断 + Benchmark 矩阵</td>
+<td>benchmark_multisize.py + buggy_operator.py + diagnosis_record.md</td>
+</tr>
+</tbody>
+</table>
+<h3>1.4 GPU 实测结果</h3>
+<p>环境: Tesla T4, CUDA 12.8, PyTorch 2.11.0, NineToothed 0.26.0</p>
+<table>
+<thead>
+<tr>
+<th>任务</th>
+<th>测试结果</th>
+<th>Benchmark</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>T1</td>
+<td>12/12 PASSED (122s)</td>
+<td>5 配置，大矩阵反超 PyTorch (0.44x)</td>
+</tr>
+<tr>
+<td>T2</td>
+<td>13/13 PASSED (8.0s)</td>
+<td>6 配置，多数优于 PyTorch</td>
+</tr>
+<tr>
+<td>T3</td>
+<td>12/12 PASSED (7.7s)</td>
+<td>3 布局，transposed 慢 4.35x</td>
+</tr>
+<tr>
+<td>T4</td>
+<td>benchmark 就位，诊断记录完成</td>
+<td>8 形状矩阵已完成</td>
+</tr>
+</tbody>
+</table>
+<h3>1.5 辅助工具</h3>
+<ul>
+<li>scripts/env_check.py — 环境依赖检查</li>
+<li>scripts/run_selftests.py — 自动化测试运行器</li>
+<li>tests/test_skill_structure.py — 结构验证 + 占位符检查 + 红线检查</li>
+</ul>
+<hr />
+<h2>2. 关键技术发现</h2>
+<h3>2.1 NineToothed 0.26 API 实际情况</h3>
+<p>与网络上的文档不同，当前版本的重要差异：</p>
+<ul>
+<li><code>ntl.max()</code> / <code>ntl.sum()</code> 不支持 <code>dim=</code>、<code>axis=</code>、<code>keepdims=</code> 参数，对整个 tile 归约为标量</li>
+<li><code>ntl.tanh()</code> 不存在，需用 <code>exp</code> 手动实现</li>
+<li>主推 <code>@ninetoothed.jit</code> + <code>Symbol(constexpr=True)</code> 模式</li>
+<li>PyPI 的 <code>ninetoothed</code> 包是空壳，必须 <code>git clone</code> + <code>pip install -e .</code></li>
+</ul>
+<h3>2.2 布局敏感性验证</h3>
+<p>在同一 4096×4096 矩阵上：
+- contiguous: NineToothed 与 PyTorch 持平 (1.00x)
+- transposed: NineToothed 慢 4.35x（非合并内存访问）
+- sliced (stride=2): 几乎无影响 (1.01x)</p>
+<p>这直接证明了布局影响着 GPU kernel 性能，skill 必须强制测试非连续输入。</p>
+<hr />
+<h2>3. 遇到的问题与解决</h2>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>解决</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>初版代码使用错误 API，T2/T3 全部 CompilationError</td>
+<td>Colab 中 <code>dir(ntl)</code> 查看实际 API，参照官方 test_softmax.py 重写</td>
+</tr>
+<tr>
+<td><code>pip install ninetoothed</code> 安装空壳包</td>
+<td>改用 <code>git clone</code> + <code>pip install -e .</code></td>
+</tr>
+<tr>
+<td>1D tile 用于 2D tensor 导致编译错误</td>
+<td>Tiling 维度必须与 tensor rank 匹配</td>
+</tr>
+<tr>
+<td>本地 Mac 无 GPU，无法运行测试</td>
+<td>使用 Google Colab 免费 T4 GPU</td>
+</tr>
+<tr>
+<td>Git 无法连接 GitHub</td>
+<td>配置 SSH key + SOCKS 代理</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>4. 剩余工作</h2>
+<table>
+<thead>
+<tr>
+<th>任务</th>
+<th>状态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Proposal 文档</td>
+<td>✅ 已完成</td>
+</tr>
+<tr>
+<td>中期报告（本文档）</td>
+<td>✅ 已完成</td>
+</tr>
+<tr>
+<td>T4 子任务 4A（源码导出）和 4C（bug 完整复现记录）</td>
+<td>✅ 诊断记录已完成，4A 源码导出待 GPU 环境执行</td>
+</tr>
+<tr>
+<td>最终报告 PDF</td>
+<td>✅ 已完成</td>
+</tr>
+<tr>
+<td>合规审查与 PR 提交</td>
+<td>🔄 进行中</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>5. 个人总结</h2>
+<p>作为准大二学生，这次比赛是我第一次接触 GPU 算子和 AI 工程化工具链。最大的收获是学会了"以仓库为准"的工作习惯——最初凭直觉和网络搜索写的代码在真实环境中全部编译失败，直到逐行对照官方测试代码才理解正确的 API 模式。这让我意识到在底层开发中，版本差异和实际 API 远比文档重要。Colab + SSH 的环境搭建、ruff 格式化和 Git hook 的合规流程，也是课堂上学不到的实战经验。虽然过程比预期曲折，但拿到 T1/T2/T3 全部 PASSED 的那一刻，感觉一切努力都值得。</p>
+</body>
+</html>
