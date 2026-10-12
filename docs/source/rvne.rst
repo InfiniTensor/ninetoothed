@@ -281,3 +281,95 @@ set:
 Without the external model directory, only the full-model case skips. With
 the SDK configured, the remaining cases still run real QEMU checks for signed
 convolution, non-square kernels, stride/padding, pooling and LIF state.
+
+Native single-executable model
+------------------------------
+
+``examples/rvne/sconv_lif_native.py`` builds the same model as one statically
+linked RV64 ELF. Python prepares the fixture, generates NineToothed kernels
+and checks results. During inference, the target C++ program owns all four
+time steps, intermediate buffers and the nine independent voltage/current
+states. Packing, pooling gathers and the Detect layout conversion also run
+inside that program. One QEMU invocation completes all 88 operator calls.
+
+.. code-block:: bash
+
+   export PYTHONPATH="$PWD/src"
+   export NINETOOTHED_RVNE_TOOLCHAIN=/path/to/toolchain
+   export NINETOOTHED_SCONVLIF_MODEL_DIR=/path/to/SConvLif
+
+   python -m examples.rvne.sconv_lif_native \
+     --model-dir "$NINETOOTHED_SCONVLIF_MODEL_DIR" \
+     --output-dir build/rvne-sconv-lif-native
+
+Success requires 164 trace records containing every layer output and LIF
+state, plus the final output comparison:
+
+.. code-block:: text
+
+   PASS: one QEMU invocation, 88 native operator calls, 165 exact comparisons.
+
+To generate the executable and fixture without running QEMU, add
+``--build-only``. After building, inference can run directly from a shell
+without activating Python or importing PyTorch:
+
+.. code-block:: bash
+
+   "$NINETOOTHED_RVNE_TOOLCHAIN/qemu/bin/qemu-riscv64" \
+     -L "$NINETOOTHED_RVNE_TOOLCHAIN/xuantie-gnu-toolchain/sysroot" \
+     build/rvne-sconv-lif-native/bundle/sconv_lif.elf \
+     build/rvne-sconv-lif-native/input.bin \
+     build/rvne-sconv-lif-native/output.bin
+
+   cmp build/rvne-sconv-lif-native/output.bin \
+       build/rvne-sconv-lif-native/expected.bin
+
+The input and output files contain raw little-endian float32 values, with
+shapes ``[4,3,64,64]`` and ``[1,3,2,2,9]``. An optional third filename after
+the executable's output argument enables the binary stage trace. Weights
+are embedded in the ELF; ``weights.bin`` is a build input and is not needed
+when deploying the executable.
+
+The bundle preserves separate kernel translation units and ABI wrappers,
+then links them with ``native_runtime.cpp`` and the model driver. Its
+``native_manifest.json`` records source hashes, launch ABIs, embedded-weight
+hashes, compiler identity and ELF identity. External C files are compiled as
+GNU C11, including legacy ``asm`` extensions, and linked with C++17 code.
+
+The model driver exports the original ``main_graph`` C ABI. Defining
+``NINETOOTHED_NO_MAIN`` removes its command-line entry so an existing C
+``main`` can be linked instead. This driver is a native adaptation of the
+supplied graph; it is not a rebuilt output of the original ONNX/MLIR compiler.
+
+Compatibility with the original convolution ABI
+----------------------------------------------
+
+``native_runtime.h`` also exports the original square and non-square
+``conv_compute_currents_from_f32_ptr_defaultNP_f32out`` entrypoints. They
+accept caller-owned NCHW/OIHW float32 buffers and element counts, convert
+nonzero input to spikes, round finite weights halfway away from zero and
+clip to signed INT4, then call the matching NineToothed kernel. Caller-provided
+weights are used on each call. Count errors, non-finite weights and shapes
+without a compiled registry entry return an error without changing output.
+
+These adapters preserve the function interface for the shapes compiled into
+the bundle; they do not compile new shapes at inference time. Convolution
+resets RVNE neuron registers and parameters, matching the old SConv runtime's
+defaults. Persistent LIF state must stay in memory, and users must serialize
+access to the RVNE register file. The model driver satisfies this contract
+with separate input/output state buffers.
+
+.. code-block:: bash
+
+   python -m pytest -vv -ra tests/test_rvne_standalone.py
+
+The tests use a real GNU C caller, SDK compilation and QEMU to check the old
+ABI, fractional weights, nonbinary input, malformed arguments, register
+configuration left by previous calls, pooling and multi-step LIF. With the
+external model directory configured, they also verify the complete native
+model in one QEMU invocation and link the unchanged supplied ``main_test.c``
+against the new ``main_graph``. The latter runs from a directory containing
+only the executable and its input/reference data, with strict output checks.
+The original generated graph code can reuse
+the convolution ABI, but replacing its inlined pooling/LIF regions still
+requires corresponding graph-lowering changes.
