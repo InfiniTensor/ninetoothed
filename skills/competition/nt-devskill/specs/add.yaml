@@ -1,0 +1,40 @@
+name: add
+family: elementwise_binary
+pattern: 1d_tile_elementwise
+
+description: 逐元素向量加法 c = a + b
+
+formula: "output = input + other"
+
+inputs:
+  - name: input
+    ndim: 1
+    dtype: float16
+  - name: other
+    ndim: 1
+    dtype: float16
+
+outputs:
+  - name: output
+    ndim: 1
+    dtype: float16
+
+template: examples/add/kernel.py
+torch_wrapper: examples/add/torch_impl.py
+
+tile_strategy:
+  type: 1d
+  block_size: 1024
+  symbol: "Symbol('BLOCK_SIZE', constexpr=True)"
+
+reference: "torch.add(a, b)"
+
+acceptance:
+  correctness:
+    shapes: [[98432]]
+    atol: 0
+    rtol: 0
+  benchmark:
+    shapes: [[98432]]
+    warmup: 10
+    trials: 50

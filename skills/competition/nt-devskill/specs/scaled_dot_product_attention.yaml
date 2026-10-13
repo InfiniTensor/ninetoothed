@@ -1,0 +1,58 @@
+name: scaled_dot_product_attention
+family: attention
+pattern: 4d_tile_flash_attention2
+
+description: Flash Attention-2 风格的 SDPA，使用 online softmax
+
+formula: |
+  scale_factor = scale * log2(e)
+  for each KV block:
+    qk = dot(Q, K^T) * scale_factor
+    m_new = max(m_old, max(qk))
+    correction = exp2(m_old - m_new)
+    p = exp2(qk - m_new)
+    l_new = l_old * correction + sum(p)
+    acc = acc * correction + dot(p, V)
+    m_old, l_old = m_new, l_new
+  output = acc / l
+
+inputs:
+  - name: q
+    ndim: 4
+    dtype: float16
+  - name: k
+    ndim: 4
+    dtype: float16
+  - name: v
+    ndim: 4
+    dtype: float16
+  - name: scale
+    ndim: 0
+    type: scalar
+    default: "1/sqrt(head_dim)"
+
+outputs:
+  - name: output
+    ndim: 4
+    dtype: float16
+
+template: examples/scaled_dot_product_attention/kernel.py
+torch_wrapper: examples/scaled_dot_product_attention/torch_impl.py
+
+tile_strategy:
+  type: 4d_flash
+  shape_options: "constexpr=True, upper_bound=128"
+  exp_base: 2
+  boundary: "ntl.where + .offsets(-2) + .source.shape[-2]"
+
+reference: "torch.nn.functional.scaled_dot_product_attention(q, k, v)"
+
+acceptance:
+  correctness:
+    shapes: [[2, 8, 1024, 64]]
+    atol: 0.01
+    rtol: 0
+  benchmark:
+    shapes: [[2, 8, 1024, 64]]
+    warmup: 10
+    trials: 50

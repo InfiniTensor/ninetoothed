@@ -1,0 +1,48 @@
+name: matmul
+family: matmul
+pattern: 3level_tile_matmul
+
+description: 2D 矩阵乘法 C = A @ B
+
+formula: |
+  acc = zeros(M, N, float32)
+  for k in range(K):
+    acc += dot(A_tile[k], B_tile[k])
+  output = acc
+
+inputs:
+  - name: input
+    ndim: 2
+    dtype: float16
+  - name: other
+    ndim: 2
+    dtype: float16
+
+outputs:
+  - name: output
+    ndim: 2
+    dtype: float16
+
+template: examples/matmul/kernel.py
+torch_wrapper: examples/matmul/torch_impl.py
+
+tile_strategy:
+  type: 3level
+  block_m: block_size()
+  block_n: block_size()
+  block_k: block_size()
+  accumulator: float32
+
+reference: "torch.mm(a, b)"
+
+acceptance:
+  correctness:
+    shapes: [[512, 512]]
+    atol: 0.01
+    rtol: 0
+  benchmark:
+    shapes: [[1024, 1024]]
+    warmup: 10
+    trials: 50
+
+composed_by: [bmm, addmm, conv2d]

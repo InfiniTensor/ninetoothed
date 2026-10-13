@@ -1,0 +1,14 @@
+[project]
+name = "remote-gpu-server-mcp"
+version = "1.0.0"
+description = "MCP server for remote MetaX GPU operations: upload code, run tests, monitor GPU via SSH"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.27.2",
+    "paramiko>=5.0.0",
+]
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple"
+default = true

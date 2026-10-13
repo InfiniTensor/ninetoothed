@@ -1,0 +1,49 @@
+name: rotary_position_embedding
+family: attention
+pattern: 4d_tile_rotary
+
+description: 旋转位置编码 (RoPE)，支持 interleaved 和 non-interleaved 两种模式
+
+formula: |
+  x_rot[0] = x[0] * cos - x[1] * sin
+  x_rot[1] = x[0] * sin + x[1] * cos
+
+inputs:
+  - name: input
+    ndim: 4
+    dtype: float16
+  - name: sin_table
+    ndim: 4
+    dtype: float16
+  - name: cos_table
+    ndim: 4
+    dtype: float16
+  - name: interleaved
+    type: bool
+    default: true
+
+outputs:
+  - name: output
+    ndim: 4
+    dtype: float16
+
+template: examples/rotary_position_embedding/kernel.py
+torch_wrapper: examples/rotary_position_embedding/torch_impl.py
+
+tile_strategy:
+  type: 4d_rotary
+  tile_shape: "(1, 1, 1, emb_dim // 2)"
+  dilation: "(1, 1, 1, 2) for interleaved"
+  multi_kernel: "functools.partial for interleaved/non-interleaved variants"
+
+reference: "手动实现（无 torch 内置）"
+
+acceptance:
+  correctness:
+    shapes: [[2, 128, 8, 64]]
+    atol: 0.001
+    rtol: 0.001
+  benchmark:
+    shapes: [[2, 1024, 8, 64]]
+    warmup: 10
+    trials: 50
