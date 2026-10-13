@@ -1,0 +1,15 @@
+label=perf-aot-skill-enabled
+expected_revision=d2758a5c3b28c70edb3743ca8cdb5cdbd97d237c
+actual_revision=d2758a5c3b28c70edb3743ca8cdb5cdbd97d237c
+repo_clean=true
+patch_sha256=b22316cd537e89fb07686b3804c97a55b66d543957cf6a00e5abe2518ac854d1
+patch_crlf_count=0
+changed_files=python/infinicore/nn/functional/silu.py
+command=git apply --check PATCH
+returncode=0
+stdout=
+stderr=
+strict_command=git apply --check --whitespace=error-all PATCH
+strict_returncode=0
+strict_stdout=
+strict_stderr=

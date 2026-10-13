@@ -1,0 +1,6 @@
+platform linux -- Python 3.12.3, pytest-8.1.1, pluggy-1.5.0
+collected 117 items
+Running 117 items in this shard
+tests/test_max_pool2d.py ......ssssssssssss......ssssssssssss......sssss [ 40%]
+sssssss............ssssss............ssssss............ssssss........X   [100%]
+================== 62 passed, 54 skipped, 1 xpassed in 35.81s ==================

@@ -1,0 +1,30 @@
+{
+  "positive": [
+    "Implement an ntops GELU operator with dtype-aware correctness tests.",
+    "Fix softmax negative-axis handling and rerun the focused NineToothed tests.",
+    "Add broadcast coverage for an ntops binary operator and produce a minimal patch.",
+    "Diagnose a max_pool2d stride and storage-offset failure in the NineToothed operator repository.",
+    "Benchmark the ntops add kernel against PyTorch after checking correctness.",
+    "Inspect generated source for the NineToothed relu operator and verify the artifact is consumed.",
+    "Repair an AOT build configuration for one NineToothed operator.",
+    "Verify whether InfiniCore SiLU dispatch actually selects the ntops path.",
+    "Add a public wrapper and export for a new ntops operator.",
+    "Investigate a failing NineToothed reduction test, apply the smallest fix, and rerun it.",
+    "Validate that this ntops patch applies to the recorded clean revision and has LF line endings.",
+    "Add a non-contiguous slice case to an ntops operator only if its contract supports that layout."
+  ],
+  "negative": [
+    "What will the weather be tomorrow?",
+    "Write a sales email for a coffee shop.",
+    "Create a generic Python function that reverses a string in an unrelated repository.",
+    "Build a React landing page for a travel agency.",
+    "Summarize this history essay.",
+    "Design a SQL schema for a bookstore.",
+    "Generate a product logo image.",
+    "Explain the quadratic formula without changing code.",
+    "Debug a Django authentication view that has no accelerator-operator dependency.",
+    "Optimize a NumPy script in a separate data-analysis project.",
+    "Prepare meeting notes from this transcript.",
+    "Rename a Git branch in an unrelated repository."
+  ]
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "NineToothed Operator Development"
+  short_description: "Implement and verify NineToothed operators"
+  default_prompt: "Use $ninetoothed-operator-dev-skill to implement the requested operator change, add focused correctness coverage, and verify a minimal applicable patch."

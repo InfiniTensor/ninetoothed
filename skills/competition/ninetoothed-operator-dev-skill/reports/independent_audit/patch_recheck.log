@@ -1,0 +1,124 @@
+CASE=layout_baseline
+HEAD=6bc90d5aba29146a8757fe0b67e7e1966b92bb5f
+CLEAN_BEFORE=true
+STRICT_APPLY_CHECK=PASS
+APPLY=PASS
+DIFF_CHECK=PASS
+CASE=layout_skill
+HEAD=6bc90d5aba29146a8757fe0b67e7e1966b92bb5f
+CLEAN_BEFORE=true
+STRICT_APPLY_CHECK=PASS
+APPLY=PASS
+DIFF_CHECK=PASS
+CASE=implementation
+HEAD=6bc90d5aba29146a8757fe0b67e7e1966b92bb5f
+CLEAN_BEFORE=true
+STRICT_APPLY_CHECK=PASS
+APPLY=PASS
+DIFF_CHECK=PASS
+CASE=perf_baseline
+HEAD=d2758a5c3b28c70edb3743ca8cdb5cdbd97d237c
+CLEAN_BEFORE=true
+STRICT_APPLY_CHECK=PASS
+APPLY=PASS
+DIFF_CHECK=PASS
+CASE=perf_skill
+HEAD=d2758a5c3b28c70edb3743ca8cdb5cdbd97d237c
+CLEAN_BEFORE=true
+STRICT_APPLY_CHECK=PASS
+APPLY=PASS
+DIFF_CHECK=PASS
+TEST=layout_skill
+Running 152 items in this shard
+......ssssssssssss......ssssssssssss......ssssssssssss............ssssss [ 47%]
+............ssssss............ssssss...F..ssss..ssss..ssss....ss....ss.. [ 94%]
+..ss...F                                                                 [100%]
+=================================== FAILURES ===================================
+_ test_max_pool2d_layout_sensitive_cases[non-contiguous-source-view-dtype1-0.001-0.001-cuda] _
+
+case = {'dilation': (2, 1), 'kernel_size': (3, 2), 'non_contiguous': True, 'padding': (1, 0), ...}
+dtype = torch.float16, device = 'cuda', rtol = 0.001, atol = 0.001
+
+    @skip_if_cuda_not_available
+    @pytest.mark.parametrize("device", ("cuda",))
+    @pytest.mark.parametrize(
+        "dtype, rtol, atol", ((torch.float32, 1e-5, 1e-5), (torch.float16, 1e-3, 1e-3))
+    )
+    @pytest.mark.parametrize(
+        "case",
+        (
+            {
+                "shape": (1, 2, 5, 7),
+                "kernel_size": (2, 3),
+                "stride": (2, 1),
+                "padding": (1, 1),
+                "dilation": (1, 2),
+                "non_contiguous": False,
+            },
+            {
+                "shape": (1, 1, 6, 5),
+                "kernel_size": (3, 2),
+                "stride": (1, 2),
+                "padding": (1, 0),
+                "dilation": (2, 1),
+                "non_contiguous": True,
+            },
+        ),
+        ids=("padded-dilated-boundary", "non-contiguous-source-view"),
+    )
+    def test_max_pool2d_layout_sensitive_cases(case, dtype, device, rtol, atol):
+        n, c, h, w = case["shape"]
+        input = _make_pool_input(n, c, h, w, dtype, device, case["non_contiguous"])
+    
+        assert input.shape == case["shape"]
+>       assert input.is_contiguous() == (not case["non_contiguous"])
+E       AssertionError: assert True == not True
+E        +  where True = <built-in method is_contiguous of Tensor object at 0x7f2a4a8ed310>()
+E        +    where <built-in method is_contiguous of Tensor object at 0x7f2a4a8ed310> = tensor([[[[-1.5713, -1.2861, -1.0000, -0.7144, -0.4285],\n          [-0.1428,  0.1428,  0.4285,  0.7144,  1.0000],\n    ...713, -1.2861],\n          [-1.0000, -0.7144, -0.4285, -0.1428,  0.1428]]]], device='cuda:0',\n       dtype=torch.float16).is_contiguous
+
+tests/test_max_pool2d.py:96: AssertionError
+_ test_avg_pool2d_layout_sensitive_cases[non-contiguous-source-view-dtype1-0.001-0.001-cuda] _
+
+case = {'kernel_size': (3, 3), 'non_contiguous': True, 'padding': (1, 0), 'shape': (1, 1, 4, 7), ...}
+dtype = torch.float16, device = 'cuda', rtol = 0.001, atol = 0.001
+
+    @skip_if_cuda_not_available
+    @pytest.mark.parametrize("device", ("cuda",))
+    @pytest.mark.parametrize(
+        "dtype, rtol, atol", ((torch.float32, 1e-5, 1e-5), (torch.float16, 1e-3, 1e-3))
+    )
+    @pytest.mark.parametrize(
+        "case",
+        (
+            {
+                "shape": (1, 2, 5, 6),
+                "kernel_size": (2, 3),
+                "stride": (2, 1),
+                "padding": (1, 1),
+                "non_contiguous": False,
+            },
+            {
+                "shape": (1, 1, 4, 7),
+                "kernel_size": (3, 3),
+                "stride": (1, 2),
+                "padding": (1, 0),
+                "non_contiguous": True,
+            },
+        ),
+        ids=("padded-strided-boundary", "non-contiguous-source-view"),
+    )
+    def test_avg_pool2d_layout_sensitive_cases(case, dtype, device, rtol, atol):
+        n, c, h, w = case["shape"]
+        input = _make_pool_input(n, c, h, w, dtype, device, case["non_contiguous"])
+    
+        assert input.shape == case["shape"]
+>       assert input.is_contiguous() == (not case["non_contiguous"])
+E       AssertionError: assert True == not True
+E        +  where True = <built-in method is_contiguous of Tensor object at 0x7f287e04de50>()
+E        +    where <built-in method is_contiguous of Tensor object at 0x7f287e04de50> = tensor([[[[-1.5557, -1.3330, -1.1113, -0.8887, -0.6665, -0.4443, -0.2222],\n          [ 0.0000,  0.2222,  0.4443,  0.66...       [-0.1111,  0.1111,  0.3333,  0.5557,  0.7778,  1.0000,  1.2227]]]],\n       device='cuda:0', dtype=torch.float16).is_contiguous
+
+tests/test_avg_pool2d.py:93: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_max_pool2d.py::test_max_pool2d_layout_sensitive_cases[non-contiguous-source-view-dtype1-0.001-0.001-cuda]
+FAILED tests/test_avg_pool2d.py::test_avg_pool2d_layout_sensitive_cases[non-contiguous-source-view-dtype1-0.001-0.001-cuda]
+2 failed, 78 passed, 72 skipped in 146.24s (0:02:26)

@@ -1,0 +1,22 @@
+CASE=layout_skill_fixed
+HEAD=6bc90d5aba29146a8757fe0b67e7e1966b92bb5f
+CLEAN_BEFORE=true
+STRICT_APPLY_CHECK=PASS
+DIFF_CHECK=PASS
+Running 152 items in this shard
+......ssssssssssss......ssssssssssss......ssssssssssss............ssssss [ 47%]
+............ssssss............ssssss......ssss..ssss..ssss....ss....ss.. [ 94%]
+..ss....                                                                 [100%]
+80 passed, 72 skipped in 29.26s
+LAYOUT_SKILL_TEST=PASS
+CASE=implementation
+HEAD=6bc90d5aba29146a8757fe0b67e7e1966b92bb5f
+CLEAN_BEFORE=true
+STRICT_APPLY_CHECK=PASS
+DIFF_CHECK=PASS
+Running 162 items in this shard
+......ssssssssssss......ssssssssssss......ssssssssssss............ssssss [ 44%]
+............ssssss............ssssss........X..ssss..ssss..ssss....ss... [ 88%]
+.ss....ss........X                                                       [100%]
+88 passed, 72 skipped, 2 xpassed in 59.79s
+IMPLEMENTATION_TEST=PASS

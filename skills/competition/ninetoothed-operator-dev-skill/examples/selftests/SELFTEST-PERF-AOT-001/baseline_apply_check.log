@@ -1,0 +1,15 @@
+label=perf-aot-baseline
+expected_revision=d2758a5c3b28c70edb3743ca8cdb5cdbd97d237c
+actual_revision=d2758a5c3b28c70edb3743ca8cdb5cdbd97d237c
+repo_clean=true
+patch_sha256=0fc0446769db049bd25df658371c3bb3235a42441f17e5a8b7f02e8cee35f83e
+patch_crlf_count=0
+changed_files=docs/perf_aot_integration_notes.md
+command=git apply --check PATCH
+returncode=0
+stdout=
+stderr=
+strict_command=git apply --check --whitespace=error-all PATCH
+strict_returncode=0
+strict_stdout=
+strict_stderr=

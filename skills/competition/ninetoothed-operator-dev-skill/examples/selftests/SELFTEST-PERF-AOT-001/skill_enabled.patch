@@ -1,0 +1,23 @@
+diff --git a/python/infinicore/nn/functional/silu.py b/python/infinicore/nn/functional/silu.py
+index 36c7e4e3..0a22eba4 100644
+--- a/python/infinicore/nn/functional/silu.py
++++ b/python/infinicore/nn/functional/silu.py
+@@ -6,8 +6,16 @@ from infinicore.tensor import Tensor
+ def silu(input: Tensor, inplace: bool = False, *, out=None) -> Tensor:
+     r"""Apply the Sigmoid Linear Unit (SiLU) function, element-wise."""
+ 
+-    if infinicore.use_ntops and input.device.type in ("cuda", "musa") and out is None:
+-        return infinicore.ntops.torch.silu(input, inplace=inplace)
++    if (
++        infinicore.use_ntops
++        and input.device.type in ("cuda", "musa")
++        and out is None
++        and hasattr(infinicore.ntops.torch, "silu")
++    ):
++        try:
++            return infinicore.ntops.torch.silu(input, inplace=inplace)
++        except AttributeError:
++            pass
+ 
+     if inplace:
+         _infinicore.silu_(input._underlying, input._underlying)

@@ -1,0 +1,2 @@
+[VERIFIED] add: status=PASS, pytest_returncode=0; ============================== 8 passed in 8.65s ===============================
+[VERIFIED] relu: status=PASS, pytest_returncode=0; ============================== 16 passed in 7.66s ==============================
