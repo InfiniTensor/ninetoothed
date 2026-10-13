@@ -33,6 +33,7 @@ class AscendMaterializer(Materializer):
 
 
 def _materialize_ascend(compilation: Any):
+    from ninetoothed.backends.ascend import activate_triton_backend
     from ninetoothed.compiler.runtime import (
         Handle,
         _runtime_wrapper,
@@ -41,6 +42,7 @@ def _materialize_ascend(compilation: Any):
     )
     from ninetoothed.targets import runtime_device_types
 
+    activate_triton_backend()
     artifact = compilation.artifact
     cache_key = compilation_cache_key(compilation)
 

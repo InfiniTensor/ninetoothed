@@ -3,6 +3,7 @@
 import ast
 import hashlib
 import importlib.util
+import inspect
 import json
 import math
 import shutil
@@ -40,6 +41,12 @@ def _launch_source(source, entrypoint, block):
 
 
 def build(compilation, *, output_dir):
+    if any(spec.dtype is None for spec in compilation.kernel.tensors):
+        raise ValueError("Ascend AOT requires explicit tensor dtypes at build time.")
+
+    from ninetoothed.backends.ascend import activate_triton_backend
+
+    activate_triton_backend()
     import torch
     import triton
     from triton.runtime import driver
@@ -50,9 +57,6 @@ def build(compilation, *, output_dir):
         _compile_signature,
     )
     from ninetoothed.compiler.runtime import Handle, import_python_module
-
-    if any(spec.dtype is None for spec in compilation.kernel.tensors):
-        raise ValueError("Ascend AOT requires explicit tensor dtypes at build time.")
 
     artifact = compilation.artifact
     key = compilation_cache_key(compilation)
@@ -76,8 +80,14 @@ def build(compilation, *, output_dir):
             signature[name] = value
 
     warps, stages = _compile_schedule(compilation)
+    source_parameters = inspect.signature(triton.compiler.ASTSource).parameters
+    constant_parameter = (
+        "constexprs" if "constexprs" in source_parameters else "constants"
+    )
     compiled = triton.compile(
-        triton.compiler.ASTSource(kernel, signature=signature, constants=constants),
+        triton.compiler.ASTSource(
+            kernel, signature=signature, **{constant_parameter: constants}
+        ),
         options={"num_warps": warps, "num_stages": stages},
     )
     # Materialize both native host extensions now, never on artifact reload.

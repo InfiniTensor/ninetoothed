@@ -529,7 +529,6 @@ def create_default_platform_registry() -> PlatformRegistry:
                 _backend_modes((Target.TRITON,), modes=("jit",))
                 | _backend_modes((Target.ASCEND,))
             ),
-            unsupported_capabilities=frozenset({"math.pow"}),
             constraints={
                 "compiler_options": {
                     "triton": {"max_num_configs": 1},

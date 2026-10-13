@@ -57,3 +57,26 @@ class AscendBackend(Backend):
         emitter = AscendEmitter()
 
         return emitter.emit(kernel)
+
+
+def activate_triton_backend() -> None:
+    """Make an installed Ascend Triton plugin visible to Triton's driver registry."""
+    import importlib
+
+    import torch_npu  # noqa: F401  Register the NPU device with PyTorch.
+    from triton.backends import Backend as TritonBackend
+    from triton.backends import backends
+
+    if "ascend" in backends:
+        return
+
+    try:
+        compiler = importlib.import_module("triton.backends.ascend.compiler")
+        driver = importlib.import_module("triton.backends.ascend.driver")
+    except ImportError as error:
+        raise RuntimeError(
+            "The installed Triton and triton-ascend packages are incompatible; "
+            "install matching versions to execute Ascend kernels."
+        ) from error
+
+    backends["ascend"] = TritonBackend(compiler.AscendBackend, driver.NPUDriver)

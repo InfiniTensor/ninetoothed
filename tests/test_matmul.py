@@ -56,7 +56,7 @@ def matmul(lhs, rhs):
 
     is_npu = lhs.device.type == "npu"
     tile = (
-        {"BLOCK_SIZE_M": 32, "BLOCK_SIZE_N": 32, "BLOCK_SIZE_K": 32} if is_npu else {}
+        {"BLOCK_SIZE_M": 32, "BLOCK_SIZE_N": 32, "BLOCK_SIZE_K": 512} if is_npu else {}
     )
     tensors = tuple(Tensor(2, shape_options={"constexpr": is_npu}) for _ in range(3))
     matmul_kernel = ninetoothed.make(
@@ -78,20 +78,9 @@ _FLOAT8_E5M2_CONFIG = (
 @pytest.mark.parametrize("k", (512,))
 @pytest.mark.parametrize("n", (512,))
 @pytest.mark.parametrize("m", (512,))
-def test(m, n, k, dtype, device, atol, request):
+def test(m, n, k, dtype, device, atol):
     if device == "npu" and dtype == torch.float8_e5m2:
         pytest.skip("Ascend 910B does not support float8_e5m2 tensors")
-
-    if device == "npu":
-        from triton.compiler.errors import MLIRCompilationError
-
-        request.node.add_marker(
-            pytest.mark.xfail(
-                strict=True,
-                raises=MLIRCompilationError,
-                reason="triton-ascend 3.2.0 crashes lowering this matmul loop (SIGSEGV)",
-            )
-        )
 
     randn_dtype = dtype if dtype != torch.float8_e5m2 else torch.float16
 
