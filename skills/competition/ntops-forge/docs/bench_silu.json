@@ -1,0 +1,13 @@
+{
+  "op": "silu",
+  "shape": [4096, 4096],
+  "dtype": "float16",
+  "warmup": 10,
+  "repeat": 50,
+  "pytorch_ms": 0.0523,
+  "ntops_ms": 0.0715,
+  "ratio_ntops_over_pytorch": 1.3669,
+  "recorded_at": "2026-06-08T19:17:05",
+  "environment": "AutoDL RTX 4080",
+  "screenshot": "docs/screenshots/17-bench-silu-gpu.png"
+}

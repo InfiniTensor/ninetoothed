@@ -1,0 +1,18 @@
+id: t1-add
+repo: InfiniTensor/ntops
+pattern: binary
+op_name: add
+spec: |
+  add(x, y) = x + y
+  Match PyTorch add semantics for shape and dtype.
+reference_kernel: ntops/src/ntops/kernels/add.py
+formula_hint: "output = input + alpha * other"
+pytest_file: tests/test_add.py
+scaffold_style: ntops
+acceptance:
+  - preflight passes on src/ntops/kernels/add.py
+  - pytest -k add passes
+deliverables:
+  - src/ntops/kernels/add.py
+  - src/ntops/kernels/__init__.py updated
+  - src/ntops/torch wrapper

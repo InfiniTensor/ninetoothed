@@ -1,0 +1,17 @@
+id: t1-gelu
+repo: InfiniTensor/ntops
+pattern: unary
+op_name: gelu
+spec: |
+  gelu(x) using default PyTorch approximation.
+reference_kernel: ntops/src/ntops/kernels/gelu.py
+formula_hint: "output = input * 0.5 * (1 + ntl.erf(input / ntl.sqrt(2.0)))"
+pytest_file: tests/test_gelu.py
+scaffold_style: ntops
+acceptance:
+  - preflight passes on src/ntops/kernels/gelu.py
+  - pytest -k gelu passes
+deliverables:
+  - src/ntops/kernels/gelu.py
+  - src/ntops/kernels/__init__.py updated
+  - src/ntops/torch wrapper

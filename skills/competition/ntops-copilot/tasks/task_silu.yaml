@@ -1,0 +1,18 @@
+id: t1-silu
+repo: InfiniTensor/ntops
+pattern: unary
+op_name: silu
+spec: |
+  silu(x) = x * sigmoid(x)
+  Match PyTorch silu semantics and dtype behavior.
+reference_kernel: ntops/src/ntops/kernels/silu.py
+formula_hint: "output = input / (1 + ntl.exp(-ntl.cast(input, ntl.float32)))"
+pytest_file: tests/test_silu.py
+scaffold_style: ntops
+acceptance:
+  - preflight passes on src/ntops/kernels/silu.py
+  - pytest -k silu passes
+deliverables:
+  - src/ntops/kernels/silu.py
+  - src/ntops/kernels/__init__.py updated
+  - src/ntops/torch wrapper

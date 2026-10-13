@@ -1,0 +1,15 @@
+id: forge-add
+op: add
+family: elementwise_binary
+pattern: binary
+spec: |
+  add(x, y) = x + y (with alpha scaling like PyTorch)
+formula: "output = input + alpha * other"
+reference: src/ntops/kernels/add.py
+pytest: tests/test_add.py
+contest_id: T1-1-1
+github_id: hongwei-2026
+acceptance:
+  preflight_strict: true
+  compare_ref: true
+  pytest: true

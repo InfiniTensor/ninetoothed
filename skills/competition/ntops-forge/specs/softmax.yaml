@@ -1,0 +1,19 @@
+id: forge-softmax
+op: softmax
+family: reduction
+pattern: reduce
+status: planned_final
+spec: |
+  softmax along dim; read ntops reference before CODEGEN.
+reference: src/ntops/kernels/softmax.py
+pytest: tests/test_softmax.py
+contest_id: T3-1-1
+github_id: hongwei-2026
+notes: |
+  决赛自测任务 #2：归约/分块类算子。
+  forge 对 reduction family 默认 PLAN-only（先读 reference，禁止公式硬注入）。
+acceptance:
+  preflight_strict: true
+  compare_ref: true
+  pytest: true
+  benchmark: true
