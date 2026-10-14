@@ -169,10 +169,89 @@ def cuda_compile_command(
     )
 
 
+_BANG_ARCH_PATTERN = re.compile(r"mtp_[0-9]{3}")
+_DEFAULT_BANG_ARCH = "mtp_592"
+
+
+def normalize_bang_arch(value: Any) -> str:
+    """Return a validated cncc architecture value."""
+    if not isinstance(value, str):
+        raise TypeError("The BANG `arch` backend option must be a string.")
+
+    arch = value.strip().lower()
+
+    if arch == "native":
+        # cncc has no native probe; this default tracks the MLU590 fleet
+        # this backend is developed against until a runtime query exists.
+        return _DEFAULT_BANG_ARCH
+
+    if _BANG_ARCH_PATTERN.fullmatch(arch) is None:
+        raise ValueError(
+            "The BANG `arch` backend option must be `native` or `mtp_<version>`."
+        )
+
+    return arch
+
+
+def find_cncc() -> str:
+    """Locate the Cambricon BANG compiler without hiding vendor executables."""
+    explicit = os.environ.get("NINETOOTHED_BANG_COMPILER")
+
+    if explicit is not None:
+        return _validated_compiler(explicit, explicit=True)
+
+    neuware_root = os.environ.get("NEUWARE_HOME")
+    candidates = (
+        shutil.which("cncc"),
+        *(
+            str(Path(neuware_root) / "bin" / "cncc")
+            for value in (neuware_root,)
+            if value
+        ),
+        "/usr/local/neuware/bin/cncc",
+    )
+
+    for candidate in candidates:
+        if candidate:
+            try:
+                return _validated_compiler(candidate, explicit=False)
+            except RuntimeError:
+                continue
+
+    raise RuntimeError(
+        "BANG backend requires cncc; set NINETOOTHED_BANG_COMPILER or "
+        "NEUWARE_HOME, or add cncc to PATH."
+    )
+
+
+def bang_compile_command(
+    source: str | Path,
+    output: str | Path,
+    *,
+    arch: str,
+    cncc: str | None = None,
+) -> tuple[str, ...]:
+    """Construct the shared-library command used by the BANG materializer."""
+    return (
+        cncc or find_cncc(),
+        "-shared",
+        "-fPIC",
+        "-std=c++14",
+        "-O3",
+        f"--bang-mlu-arch={normalize_bang_arch(arch)}",
+        str(source),
+        "-o",
+        str(output),
+    )
+
+
 __all__ = [
+    "bang_compile_command",
     "cuda_compiler_identity",
     "cuda_compile_command",
     "cuda_compute_capability",
+    "find_cncc",
     "find_nvcc",
+    "normalize_bang_arch",
     "normalize_cuda_arch",
 ]

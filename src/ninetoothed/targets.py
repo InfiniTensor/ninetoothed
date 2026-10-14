@@ -504,7 +504,7 @@ def create_default_platform_registry() -> PlatformRegistry:
             accelerator_name="mlu590",
             compute_arch="mlu590",
             device_types=("mlu",),
-            backend_modes=_backend_modes((Target.TRITON,)),
+            backend_modes=_backend_modes((Target.TRITON, Target.BANG)),
             constraints={"compiler_options": {"triton": {"max_num_configs": 1}}},
             metadata={"triton_grid_limit": 65535},
         ),
