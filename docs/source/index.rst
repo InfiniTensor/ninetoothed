@@ -12,5 +12,6 @@ NineToothed Documentation
 
    installation
    basics
+   project_overview_zh
    build
    python_api

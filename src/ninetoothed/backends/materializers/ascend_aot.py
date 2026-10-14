@@ -6,13 +6,19 @@ import importlib.util
 import inspect
 import json
 import math
+import os
 import shutil
 import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-from ninetoothed.compiler.cache import compilation_cache_key, write_manifest
+from ninetoothed.compiler.cache import (
+    TRITON_CACHE_DIR,
+    compilation_cache_key,
+    triton_cache_directory,
+    write_manifest,
+)
 
 
 def _extension(path, name):
@@ -47,6 +53,9 @@ def build(compilation, *, output_dir):
     from ninetoothed.backends.ascend import activate_triton_backend
 
     activate_triton_backend()
+    cache_directory = triton_cache_directory(TRITON_CACHE_DIR)
+    cache_directory.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("TRITON_CACHE_DIR", str(cache_directory))
     import torch
     import triton
     from triton.runtime import driver

@@ -7,6 +7,7 @@ from ninetoothed.backends.materializers.base import Materializer
 from ninetoothed.compiler.cache import (
     TRITON_CACHE_DIR,
     compilation_cache_key,
+    triton_cache_directory,
     write_source,
 )
 
@@ -54,8 +55,9 @@ def _materialize_ascend(compilation: Any):
         cache_key=cache_key,
     )
 
-    TRITON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("TRITON_CACHE_DIR", str(TRITON_CACHE_DIR))
+    cache_directory = triton_cache_directory(TRITON_CACHE_DIR)
+    cache_directory.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("TRITON_CACHE_DIR", str(cache_directory))
 
     # 2. 动态加载 Python 模块并获取入口 launch 函数与 kernel.
     module = import_python_module(str(source_path))
