@@ -1131,31 +1131,31 @@ def test_triton_prepared_cache_releases_gpu_tensor_storage(device):
     warm_other = torch.randn_like(warm_input)
     warm_output = torch.empty_like(warm_input)
     handle(warm_input, warm_other, warm_output)
-    torch.cuda.synchronize(device)
+    getattr(torch, device).synchronize(device)
     del warm_input, warm_other, warm_output
     gc.collect()
-    baseline = torch.cuda.memory_allocated(device)
+    baseline = getattr(torch, device).memory_allocated(device)
 
     input = torch.randn(1 << 20, device=device)
     other = torch.randn_like(input)
     output = torch.empty_like(input)
     references = tuple(weakref.ref(value) for value in (input, other, output))
     handle(input, other, output)
-    torch.cuda.synchronize(device)
-    allocated = torch.cuda.memory_allocated(device)
+    getattr(torch, device).synchronize(device)
+    allocated = getattr(torch, device).memory_allocated(device)
     del input, other, output
     gc.collect()
-    torch.cuda.synchronize(device)
+    getattr(torch, device).synchronize(device)
 
     assert allocated > baseline
     assert all(reference() is None for reference in references)
-    assert torch.cuda.memory_allocated(device) <= baseline
+    assert getattr(torch, device).memory_allocated(device) <= baseline
 
     replacement_input = torch.randn(1 << 20, device=device)
     replacement_other = torch.randn_like(replacement_input)
     replacement_output = torch.empty_like(replacement_input)
     handle(replacement_input, replacement_other, replacement_output)
-    torch.cuda.synchronize(device)
+    getattr(torch, device).synchronize(device)
 
     assert torch.allclose(replacement_output, replacement_input + replacement_other)
 

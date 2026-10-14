@@ -572,10 +572,10 @@ class TritonTarget(EmitterTarget):
         has_explicit_program_grid = bool(
             context.vector_program or context.block_program or context.scalar_program
         )
-        uses_grid_stride_loop = grid_limit is not None and (
-            not has_explicit_program_grid
-            or schedule.get("granularity") == "layout-transfer"
-        )
+        # A grid-stride loop keeps physical launches within the target's grid
+        # limit regardless of the logical program count, so any target that
+        # declares a limit wraps every kernel in one.
+        uses_grid_stride_loop = grid_limit is not None
         program_id = (
             "ninetoothed_program_id" if uses_grid_stride_loop else "tl.program_id(0)"
         )

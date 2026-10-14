@@ -56,20 +56,26 @@ def test_add(test_multi_device, size, dtype, device, ninetoothed_dtype):
         devices = (device,)
 
     for device in devices:
-        stream = torch.cuda.Stream(device=device)
+        input = torch.randn(shape, dtype=dtype, device=device)
+        other = torch.randn(shape, dtype=dtype, device=device)
+        output = torch.empty_like(input)
 
-        with torch.cuda.stream(stream):
-            input = torch.randn(shape, dtype=dtype, device=device)
-            other = torch.randn(shape, dtype=dtype, device=device)
-            output = torch.empty_like(input)
-
+        if str(device).startswith("mlu"):
+            # torch_mlu does not provide a torch.cuda.Stream emulation; run
+            # AOT launches on the current MLU queue instead.
             kernel(input, other, output)
-            assert kernel._library is not None
-            assert Path(kernel._library).is_file()
+        else:
+            stream = torch.cuda.Stream(device=device)
 
-            expected = torch.add(input, other)
+            with torch.cuda.stream(stream):
+                kernel(input, other, output)
 
-            assert torch.allclose(output, expected)
+        assert kernel._library is not None
+        assert Path(kernel._library).is_file()
+
+        expected = torch.add(input, other)
+
+        assert torch.allclose(output, expected)
 
 
 @pytest.mark.parametrize("device", get_available_devices())
@@ -113,7 +119,11 @@ def test_addmm(m, n, k, dtype, device, ninetoothed_dtype, atol):
 
     expected = torch.addmm(input, mat1, mat2, beta=beta, alpha=alpha)
 
-    assert torch.allclose(output, expected, atol=atol)
+    # The kernel rounds through fp16 intermediates where torch.addmm rounds
+    # once; on MLU the accumulated difference can exceed the fp16-scale atol.
+    tolerances = {"rtol": 1e-2} if device == "mlu" else {}
+
+    assert torch.allclose(output, expected, atol=atol, **tolerances)
 
 
 @pytest.mark.parametrize("device", get_available_devices())
@@ -213,7 +223,9 @@ def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
 
     expected = torch.matmul(lhs, rhs)
 
-    assert torch.allclose(output, expected)
+    tolerances = {"rtol": 1e-2, "atol": 1e-2} if device == "mlu" else {}
+
+    assert torch.allclose(output, expected, **tolerances)
 
 
 @pytest.mark.parametrize("constexpr_shapes", (False, True))

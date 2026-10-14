@@ -13,7 +13,7 @@ from ninetoothed.compiler import (
     CompileRequest,
     load_built_artifact,
 )
-from tests.utils import get_available_devices
+from tests.utils import cuda_compiler_available, get_available_devices
 
 
 def _arrangement(input, other, output):
@@ -27,6 +27,9 @@ def _application(input, other, output):
 @pytest.mark.parametrize("device", get_available_devices())
 @pytest.mark.parametrize("backend", ("triton", "cuda", "tilelang"))
 def test_aot_built_artifact_can_be_reloaded(backend, device, tmp_path):
+    if backend in {"cuda", "tilelang"} and not cuda_compiler_available():
+        pytest.skip(f"{backend} materialization requires an NVIDIA toolchain.")
+
     tensors = tuple(Tensor(shape=(257,), dtype=ninetoothed.float32) for _ in range(3))
     compilation = DEFAULT_COMPILER.compile(
         CompileRequest(
@@ -116,6 +119,9 @@ def test_triton_aot_handle_is_reusable_across_cuda_contexts(tmp_path):
 @pytest.mark.parametrize("device", get_available_devices())
 @pytest.mark.parametrize("mode", ("jit", "aot"))
 def test_cuda_empty_tensor_is_a_no_op(mode, device, tmp_path):
+    if not cuda_compiler_available():
+        pytest.skip("The CUDA materializer requires an NVIDIA toolchain.")
+
     tensors = tuple(Tensor(1, dtype=ninetoothed.float32) for _ in range(3))
     compilation = DEFAULT_COMPILER.compile(
         CompileRequest(
@@ -136,13 +142,13 @@ def test_cuda_empty_tensor_is_a_no_op(mode, device, tmp_path):
     output = torch.empty_like(input)
 
     assert handle(input, other, output) is output
-    torch.cuda.synchronize()
+    getattr(torch, device).synchronize()
 
     if mode == "aot":
         reloaded = load_built_artifact(handle._built_artifact)
         reloaded_output = torch.empty_like(input)
         assert reloaded(input, other, reloaded_output) is reloaded_output
-        torch.cuda.synchronize()
+        getattr(torch, device).synchronize()
 
 
 _RELOAD_IN_SUBPROCESS = """
@@ -159,7 +165,7 @@ input = torch.randn(257, device=sys.argv[2])
 other = torch.randn_like(input)
 output = torch.empty_like(input)
 launch(input, other, output)
-torch.cuda.synchronize()
+getattr(torch, sys.argv[2]).synchronize()
 if not torch.allclose(output, input + other):
     raise SystemExit("reloaded kernel produced an incorrect result")
 """
