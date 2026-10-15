@@ -17,7 +17,7 @@ class AscendEmitter(TritonTarget):
 
     def emit(self, kernel: Kernel) -> Artifact:
         artifact = common.emit(kernel, self)
-        transformer = Ascendifier()
+        transformer = Ascendifier(omit_static_bounds=_has_static_tensor_shapes(kernel))
 
         return replace(
             artifact,
@@ -30,3 +30,29 @@ class AscendEmitter(TritonTarget):
                 for name, source in artifact.sources.items()
             },
         )
+
+
+def _has_static_tensor_shapes(kernel: Kernel) -> bool:
+    saw_tensor = False
+
+    for tensor in kernel.tensors:
+        source_shape = tensor.attrs.get("source_shape", ())
+
+        if not source_shape:
+            continue
+
+        saw_tensor = True
+
+        if any(_static_positive_integer(value) is None for value in source_shape):
+            return False
+
+    return saw_tensor
+
+
+def _static_positive_integer(value) -> int | None:
+    try:
+        extent = int(value)
+    except (TypeError, ValueError):
+        return None
+
+    return extent if extent > 0 else None

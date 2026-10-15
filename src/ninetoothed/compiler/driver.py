@@ -687,7 +687,7 @@ def _launch_plan(
     )
     candidates = (
         _triton_tuning_candidates(metadata, request, arranged)
-        if artifact.backend == Target.TRITON
+        if artifact.backend in {Target.TRITON, Target.ASCEND}
         else ()
     )
 

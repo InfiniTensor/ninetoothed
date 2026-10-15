@@ -46,7 +46,7 @@ def test_ascendifier_transforms_generated_triton_syntax(namespace):
     source = f"""
 from triton.language.extra import libdevice
 x = {namespace}.load(ptr, other=None)
-y = {namespace}.clamp(x, 0, 1).to({namespace}.float64)
+y = {namespace}.clamp(x, 0, 1).to({namespace}.float32)
 """
     result = Ascendifier().transform(source)
     compile(result, "ascend.py", "exec")
@@ -65,3 +65,86 @@ def kernel(x):
     result = Ascendifier().transform(source)
     assert "triton.Config({'BLOCK_SIZE': 512})" in result
     compile(result, "ascend.py", "exec")
+
+
+def test_ascendifier_rejects_float64():
+    source = "x = tl.float64"
+
+    with pytest.raises(ValueError, match="float64"):
+        Ascendifier().transform(source)
+
+
+def test_ascendifier_omits_only_provable_static_bounds():
+    source = "x = tl.load(ptr, mask=tl.arange(0, 64) < 64, other=0.0)"
+
+    result = Ascendifier(omit_static_bounds=True).transform(source)
+
+    assert "mask=" not in result
+    assert "other=" not in result
+
+
+def test_ascendifier_preserves_static_tail_bounds():
+    source = "x = tl.load(ptr, mask=tl.arange(0, 64) < 1, other=0.0)"
+
+    result = Ascendifier(omit_static_bounds=True).transform(source)
+
+    assert "mask=tl.arange(0, 64) < 1" in result
+    assert "other=0.0" in result
+
+
+def test_ascendifier_rewrites_boolean_operators():
+    source = "x = left or other\ny = left and other\n"
+
+    result = Ascendifier().transform(source)
+
+    assert "left | other" in result
+    assert "left & other" in result
+    assert " or " not in result
+    assert " and " not in result
+
+
+def test_ascendifier_substitutes_runtime_scalar_bounds():
+    source = "x = tl.load(ptr, mask=index < size, other=0.0)"
+
+    result = Ascendifier(
+        omit_static_bounds=True,
+        scalar_values={"index": 3, "size": 4},
+    ).transform(source)
+
+    assert "mask=" not in result
+    assert "other=" not in result
+
+
+def test_ascend_attention_selects_validated_tile_candidate():
+    from ninetoothed import Tensor
+    from ninetoothed.compiler import DEFAULT_COMPILER, CompileRequest
+    from tests.test_attention import application, arrangement
+
+    shape = (
+        None,
+        None,
+        {"constexpr": True},
+        {"constexpr": True, "upper_bound": 128},
+    )
+    tensors = (
+        Tensor(4, shape_options=shape),
+        Tensor(4, shape_options=shape),
+        Tensor(4, shape_options=shape),
+        Tensor(0, constexpr=True),
+        Tensor(4, shape_options=shape),
+    )
+    compilation = DEFAULT_COMPILER.compile(
+        CompileRequest(
+            arrangement=arrangement,
+            application=application,
+            tensors=tensors,
+            backend="ascend",
+            platform="ascend-910b4",
+        )
+    )
+    candidate = compilation.launch_plan.tuning_candidates[0]
+
+    assert candidate["meta_parameters"] == {
+        "ninetoothed_meta_prefix_ninetoothed_BLOCK_SIZE_0": 64,
+        "ninetoothed_meta_prefix_ninetoothed_BLOCK_SIZE_1": 32,
+    }
