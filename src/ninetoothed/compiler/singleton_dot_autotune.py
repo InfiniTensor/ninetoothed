@@ -5,15 +5,9 @@ tile versus an N=1 reduction tile), but must have the same public tensors.
 The default compiler pipeline is unaffected.
 """
 
-from dataclasses import fields, replace
-from dis import get_instructions
+from dataclasses import replace
 from functools import partial
-from hashlib import sha256
-from inspect import getclosurevars, getsourcefile, isfunction
 from math import isinf, log2, prod, sqrt
-from pathlib import Path
-from statistics import median
-from types import ModuleType
 
 _PASS = "ssa.triton.singleton_dot"
 
@@ -43,13 +37,40 @@ class TunedSingletonDot:
         self._resolve = resolve
         self._variants = {}
 
+        import torch
+
+        from ninetoothed.compiler.runtime import dispatch_handles
+
+        self._launch = dispatch_handles(self._select_handle)
+
+        if torch.cuda.device_count() > 1:
+            dispatch = self._launch
+
+            def launch(*args, **kwargs):
+                device = args[0].device if args else None
+
+                if (
+                    device is not None
+                    and device.type == "cuda"
+                    and torch.cuda.current_device() != device.index
+                ):
+                    with torch.cuda.device(device):
+                        return dispatch(*args, **kwargs)
+
+                return dispatch(*args, **kwargs)
+
+            self._launch = launch
+
     def __call__(self, *args, **kwargs):
+        return self._launch(*args, **kwargs)
+
+    def _select_handle(self, args, kwargs):
         if kwargs:
             raise ValueError("Singleton-dot tuning requires positional arguments.")
 
         from ninetoothed.auto_tuner import AutoTuner
 
-        key = AutoTuner._make_arg_key(args, {})
+        key = AutoTuner.argument_key(args, {})
 
         if len(args) > self._output_index:
             _check_output(args, self._output_index)
@@ -58,20 +79,15 @@ class TunedSingletonDot:
             if key not in self._variants:
                 self._variants[key] = self._resolve(args)
 
-                return args[self._output_index]
+            return self._variants[key].selected(*args)["handle"]
 
-            return self._variants[key](*args)
-
-        import torch
-
-        with torch.cuda.device(args[0].device):
-            return self._chosen["handle"](*args)
+        return self._chosen["handle"]
 
     def selected(self, *args, **kwargs):
         """Return the selected candidate after a call with this signature."""
         from ninetoothed.auto_tuner import AutoTuner
 
-        key = AutoTuner._make_arg_key(args, kwargs)
+        key = AutoTuner.argument_key(args, kwargs)
 
         if key != self._signature:
             variant = self._variants.get(key)
@@ -86,9 +102,19 @@ def autotune_singleton_dot(base_request, a09_request, example_args, *, min_gain=
 
     ``example_args`` is a full positional invocation, including its output.
     Tuning happens eagerly and writes that output once. A09 must beat the
-    original path by ``min_gain`` to be selected. The result is cached by the
-    existing AutoTuner for the tensor signature and device.
+    original path by a speedup increment of ``min_gain`` to be selected:
+    ``original_time / candidate_time - 1 > min_gain``. For example, 100 to
+    65 us is a 53.8% speedup increment and a 35% latency reduction. The result
+    is cached for the tensor signature and device.
     """
+    return _autotune_on_device(
+        base_request, a09_request, example_args, min_gain=min_gain, run_final=True
+    )
+
+
+def _autotune_on_device(
+    base_request, a09_request, example_args, *, min_gain, run_final
+):
     import torch
 
     args = tuple(example_args)
@@ -103,14 +129,17 @@ def autotune_singleton_dot(base_request, a09_request, example_args, *, min_gain=
 
     with torch.cuda.device(device):
         return _autotune_singleton_dot_impl(
-            base_request, a09_request, args, min_gain=min_gain
+            base_request, a09_request, args, min_gain=min_gain, run_final=run_final
         )
 
 
-def _autotune_singleton_dot_impl(base_request, a09_request, args, *, min_gain):
+def _autotune_singleton_dot_impl(
+    base_request, a09_request, args, *, min_gain, run_final
+):
     import torch
 
-    from ninetoothed.auto_tuner import AutoTuner
+    from ninetoothed.auto_tuner import AutoTuner, cuda_graph_benchmark
+    from ninetoothed.backends.triton_singleton_dot import singleton_dot_shape
     from ninetoothed.compiler.cache import (
         CACHE_DIR,
         compilation_cache_key,
@@ -143,25 +172,18 @@ def _autotune_singleton_dot_impl(base_request, a09_request, args, *, min_gain):
         "uuid": str(getattr(props, "uuid", device)),
         "multiprocessors": props.multi_processor_count,
         "warp_size": int(warp_size or 32),
-        "max_threads_per_block": int(block_limit or 4 * (warp_size or 32)),
-        "max_threads_per_sm": int(sm_limit or block_limit or 4 * (warp_size or 32)),
+        "max_threads_per_block": int(block_limit) if block_limit is not None else None,
+        "max_threads_per_sm": int(sm_limit) if sm_limit is not None else None,
         "incomplete": any(
             value is None for value in (warp_size, block_limit, sm_limit)
         ),
     }
-    legal_warps = _legal_warps(hardware)
     requested_warps = base_request.num_warps
-
-    if requested_warps is not None and (
-        not isinstance(requested_warps, int)
-        or isinstance(requested_warps, bool)
-        or requested_warps not in legal_warps
-    ):
-        raise ValueError("The original request must have one legal warp count.")
+    legal_warps = _legal_warps(hardware, requested=requested_warps)
 
     base_request = _with_pipeline(base_request, enable=False)
     a09_request = _with_pipeline(a09_request, enable=True)
-    signature = AutoTuner._make_arg_key(args, {})
+    signature = AutoTuner.argument_key(args, {})
 
     def make_candidate(kind, warp, compilation, key=None):
         return {
@@ -179,72 +201,89 @@ def _autotune_singleton_dot_impl(base_request, a09_request, args, *, min_gain):
             hardware,
             signature,
             output_index,
-            lambda new_args: autotune_singleton_dot(
-                base_request, a09_request, new_args, min_gain=min_gain
+            lambda new_args: _autotune_on_device(
+                base_request, a09_request, new_args, min_gain=min_gain, run_final=False
             ),
             cache_hit=cache_hit,
             search=search,
         )
 
+    def restore(saved):
+        selected = saved.get("selected", {})
+
+        if saved.get("schema") != 1 or not isinstance(selected, dict):
+            return None
+
+        kind, warp = selected.get("kind"), selected.get("warps")
+
+        output_index = saved.get("output_index")
+
+        if (
+            kind not in {"original", "a09"}
+            or not isinstance(output_index, int)
+            or not 0 <= output_index < len(args)
+        ):
+            return None
+
+        try:
+            _legal_warps(hardware, requested=warp)
+
+            if warp is None:
+                return None
+
+            request = base_request if kind == "original" else a09_request
+
+            if kind == "original" and saved.get("baseline"):
+                candidate_request = replace(request, max_num_configs=1)
+            else:
+                candidate_request = replace(request, num_warps=warp, max_num_configs=1)
+
+            compilation = DEFAULT_COMPILER.compile(candidate_request)
+
+            abi = compilation.launch_abi
+
+            if (
+                len(args) != len(abi.public_args)
+                or len(abi.outputs) != 1
+                or abi.public_args.index(abi.outputs[0]) != output_index
+                or compilation_cache_key(compilation) != selected.get("key")
+                or not args[output_index].is_floating_point()
+            ):
+                return None
+
+            chosen = make_candidate(kind, warp, compilation, selected["key"])
+
+        except (RuntimeError, ValueError, OSError, TypeError):
+            return None
+
+        _check_output(args, output_index)
+        result = result_for(
+            chosen,
+            (chosen,),
+            output_index,
+            cache_hit=True,
+            search=dict(saved.get("search", {})),
+        )
+
+        if run_final:
+            result(*args)
+
+        return result
+
     quick_key = _quick_selection_key(
         base_request, a09_request, signature, hardware, min_gain, stable_digest
     )
+    cache_path = (
+        CACHE_DIR / "singleton_dot_selection" / f"{quick_key}.json"
+        if quick_key is not None
+        else None
+    )
 
-    if quick_key is not None:
-        quick_path = CACHE_DIR / "singleton_dot_quick" / f"{quick_key}.json"
-        saved_quick = read_manifest(quick_path) or {}
-        selected_quick = saved_quick.get("selected", {})
-
-        if saved_quick.get("schema") == 1 and isinstance(selected_quick, dict):
-            kind, warp = selected_quick.get("kind"), selected_quick.get("warps")
-            output_index = saved_quick.get("output_index")
-
-            if (
-                kind in {"original", "a09"}
-                and warp in legal_warps
-                and isinstance(output_index, int)
-                and 0 <= output_index < len(args)
-            ):
-                output = args[output_index]
-
-                if output.is_floating_point():
-                    _check_output(args, output_index)
-
-                    try:
-                        request = base_request if kind == "original" else a09_request
-
-                        if kind == "original" and saved_quick.get("baseline"):
-                            candidate_request = replace(request, max_num_configs=1)
-                        else:
-                            candidate_request = replace(
-                                request, num_warps=warp, max_num_configs=1
-                            )
-
-                        compilation = DEFAULT_COMPILER.compile(candidate_request)
-                        abi = compilation.launch_abi
-
-                        if (
-                            len(args) == len(abi.public_args)
-                            and len(abi.outputs) == 1
-                            and abi.public_args.index(abi.outputs[0]) == output_index
-                            and compilation_cache_key(compilation)
-                            == selected_quick.get("key")
-                        ):
-                            chosen = make_candidate(
-                                kind, warp, compilation, selected_quick["key"]
-                            )
-                            result = result_for(
-                                chosen,
-                                (chosen,),
-                                output_index,
-                                cache_hit=True,
-                                search=dict(saved_quick.get("search", {})),
-                            )
-                            result(*args)
-
-                            return result
-                    except (RuntimeError, ValueError, OSError, TypeError):
-                        pass
+    if (
+        cache_path is not None
+        and (cached := restore(read_manifest(cache_path) or {})) is not None
+    ):
+        return cached
 
     base_probe = DEFAULT_COMPILER.compile(replace(base_request, max_num_configs=1))
     tuning_candidates = base_probe.launch_plan.tuning_candidates
@@ -254,8 +293,7 @@ def _autotune_singleton_dot_impl(base_request, a09_request, args, *, min_gain):
 
     base_warps = tuning_candidates[0]["num_warps"]
 
-    if base_warps not in legal_warps:
-        raise ValueError("The original request must have one legal warp count.")
+    legal_warps = _legal_warps(hardware, requested=base_warps)
 
     probe = DEFAULT_COMPILER.compile(
         replace(a09_request, num_warps=base_warps, max_num_configs=1)
@@ -264,11 +302,16 @@ def _autotune_singleton_dot_impl(base_request, a09_request, args, *, min_gain):
     if base_probe.target.as_metadata() != probe.target.as_metadata():
         raise ValueError("Original and A09 requests must target the same device.")
 
-    dots = _singleton_dots(probe.kernel.ssa)
+    values = {v.name: v for v in probe.kernel.ssa.inputs}
+    operations = probe.kernel.ssa.blocks[0].operations
+    values.update((v.name, v) for op in operations for v in op.results)
+    dots = tuple(
+        shape for op in operations if (shape := singleton_dot_shape(op, values))
+    )
     enabled = bool(
         probe.artifact.metadata.get("ssa_metadata", {})
         .get("schedule", {})
-        .get("block_reductions", {})
+        .get("singleton_dot", {})
         .get("enabled", False)
     )
 
@@ -321,62 +364,50 @@ def _autotune_singleton_dot_impl(base_request, a09_request, args, *, min_gain):
 
         return candidates_by_id[identity]
 
-    cache_identity = stable_digest(
-        {
-            "policy": "singleton-dot-model-v15",
-            "original": compilation_cache_key(base_probe),
-            "a09": compilation_cache_key(probe),
-            "signature": signature,
-            "hardware": hardware,
-            "min_gain": min_gain,
-            "tolerance": tolerance,
-        }
-    )
-    cache_path = CACHE_DIR / "singleton_dot_selection" / f"{cache_identity}.json"
-    saved = read_manifest(cache_path) or {}
-    selected = saved.get("selected", {})
+    if cache_path is None:
+        cache_identity = stable_digest(
+            {
+                "policy": "singleton-dot-model-v16",
+                "original": compilation_cache_key(base_probe),
+                "a09": compilation_cache_key(probe),
+                "signature": signature,
+                "hardware": hardware,
+                "min_gain": min_gain,
+                "tolerance": tolerance,
+            }
+        )
+        cache_path = CACHE_DIR / "singleton_dot_selection" / f"{cache_identity}.json"
+        cached = restore(read_manifest(cache_path) or {})
 
-    if saved.get("schema") == 1 and isinstance(selected, dict):
-        kind, warp = selected.get("kind"), selected.get("warps")
-
-        if (
-            kind in ({"original", "a09"} if enabled else {"original"})
-            and warp in legal_warps
-        ):
-            try:
-                chosen = candidate_for(kind, warp)
-
-                if chosen["key"] == selected.get("key"):
-                    result = result_for(
-                        chosen,
-                        (chosen,),
-                        output_index,
-                        cache_hit=True,
-                        search=dict(saved.get("search", {})),
-                    )
-                    result(*args)
-
-                    return result
-            except (RuntimeError, ValueError, OSError):
-                pass
+        if cached is not None:
+            return cached
 
     reference = candidate_for("original", base_warps)["handle"]
     timing_namespace = stable_digest(
         {
-            "policy": "singleton-dot-candidate-graph-v9",
+            "policy": "singleton-dot-candidate-graph-v10",
             "hardware": hardware,
             "reference": compilation_cache_key(base_probe),
+            "a09": compilation_cache_key(probe),
             "tolerance": tolerance,
         }
     )
     measured = {}
     graphs = {}
-    search = {"initial": [], "expanded": [], "failures": {}}
+    search = {
+        "initial": [],
+        "expanded": [],
+        "failures": {},
+        "pass": probe.artifact.metadata.get("ssa_metadata", {})
+        .get("schedule", {})
+        .get("singleton_dot", {}),
+    }
 
     def benchmark(function, call_args, call_kwargs):
         if call_kwargs:
             raise ValueError("Singleton-dot tuning requires positional arguments.")
 
+        function = candidate_for(*function.args[0])["handle"]
         trial_args = _scratch_output(call_args, output_index, torch)
 
         if function is not reference:
@@ -388,180 +419,192 @@ def _autotune_singleton_dot_impl(base_request, a09_request, args, *, min_gain):
                 trial_args[output_index], reference_args[output_index], **tolerance
             )
 
-        return _graph_time(function, trial_args, torch, min_total_ms=8, graphs=graphs)
-
-    def score(kind, warp):
-        identity = (kind, warp)
-
-        if identity not in measured:
-            try:
-                candidate = candidate_for(kind, warp)
-                timer = AutoTuner(
-                    (candidate["handle"],),
-                    ((kind, warp, candidate["key"]),),
-                    benchmark=benchmark,
-                    cache_namespace=timing_namespace,
-                )
-                measured[identity] = timer._get_timings(args, {})[0]
-
-                if isinf(measured[identity]):
-                    manifest = (
-                        read_manifest(timer._get_func_cache_path(candidate["handle"]))
-                        or {}
-                    )
-                    reason = manifest.get("failures", {}).get(
-                        signature, "benchmark returned an infinite timing"
-                    )
-                    search["failures"][f"{kind}/{warp}"] = reason
-            except Exception as exc:  # noqa: BLE001
-                measured[identity] = float("inf")
-                search["failures"][f"{kind}/{warp}"] = f"{type(exc).__name__}: {exc}"
-
-        return measured[identity]
-
-    features = _model_features(base_probe, probe, args, output_index, hardware, dots)
-    ranked = {
-        kind: _rank_warps(features[kind], kind, legal_warps, hardware)
-        for kind in ("original", "a09")
-    }
-    initial = [("original", base_warps)]
-
-    if enabled:
-        best_a09 = ranked["a09"][0]
-        initial.append(("a09", best_a09))
-        neighbor = _adjacent_ranked(best_a09, ranked["a09"], legal_warps)
-
-        if neighbor is not None:
-            initial.append(("a09", neighbor))
-
-    search["initial"] = [list(identity) for identity in initial]
-
-    for kind, warp in initial:
-        score(kind, warp)
-
-    def a09_clearly_ahead():
-        if not enabled or any(path["uncertain"] for path in features.values()):
-            return False
-
-        a09_times = [
-            value
-            for (kind, _), value in measured.items()
-            if kind == "a09" and not isinf(value)
-        ]
-        original_times = [
-            value
-            for (kind, _), value in measured.items()
-            if kind == "original" and not isinf(value)
-        ]
-
-        return (
-            len(a09_times) >= 2
-            and bool(original_times)
-            and min(a09_times) * 1.10 < min(original_times)
+        return cuda_graph_benchmark(
+            function, trial_args, {}, min_total_ms=8, graphs=graphs
         )
 
-    if enabled and not a09_clearly_ahead():
-        baseline_index = legal_warps.index(base_warps)
-        first_window = legal_warps[max(0, baseline_index - 1) : baseline_index + 2]
-        recommended = min(first_window, key=ranked["original"].index)
+    identities = tuple(
+        (kind, warp) for kind in ("original", "a09") for warp in legal_warps
+    )
 
-        if recommended != base_warps:
-            search["expanded"].append(["original", recommended])
-            score("original", recommended)
+    def invoke(identity, *call_args):
+        return candidate_for(*identity)["handle"](*call_args)
 
-    def weighted(identity):
-        return measured[identity] * (1 + min_gain if identity[0] == "a09" else 1)
+    timer = AutoTuner(
+        tuple(partial(invoke, identity) for identity in identities),
+        identities,
+        benchmark=benchmark,
+        cache_namespace=timing_namespace,
+    )
 
-    for kind in ("a09", "original") if enabled else ("original",):
-        if kind == "original" and a09_clearly_ahead():
-            continue
+    def strategy(measure):
+        def score(kind, warp):
+            identity = (kind, warp)
 
-        if kind == "original" and not features[kind]["uncertain"]:
-            tested_original = [
-                identity
-                for identity, value in measured.items()
-                if identity[0] == "original" and not isinf(value)
+            if identity not in measured:
+                index = identities.index(identity)
+                measured[identity] = measure(index)
+
+                if isinf(measured[identity]):
+                    search["failures"][f"{kind}/{warp}"] = (
+                        timer.failure(index, args)
+                        or "benchmark returned an infinite timing"
+                    )
+            return measured[identity]
+
+        features = _model_features(
+            base_probe, probe, args, output_index, hardware, dots
+        )
+        ranked = {
+            kind: _rank_warps(features[kind], kind, legal_warps, hardware)
+            for kind in ("original", "a09")
+        }
+        initial = [("original", base_warps)]
+
+        if enabled:
+            best_a09 = ranked["a09"][0]
+            initial.append(("a09", best_a09))
+            neighbor = _adjacent_ranked(best_a09, ranked["a09"], legal_warps)
+
+            if neighbor is not None:
+                initial.append(("a09", neighbor))
+
+        search["initial"] = [list(identity) for identity in initial]
+
+        for kind, warp in initial:
+            score(kind, warp)
+
+        def a09_clearly_ahead():
+            if not enabled or any(path["uncertain"] for path in features.values()):
+                return False
+
+            a09_times = [
+                value
+                for (kind, _), value in measured.items()
+                if kind == "a09" and not isinf(value)
+            ]
+            original_times = [
+                value
+                for (kind, _), value in measured.items()
+                if kind == "original" and not isinf(value)
             ]
 
-            if len(tested_original) >= 2:
-                best_original = min(tested_original, key=measured.__getitem__)
+            return (
+                len(a09_times) >= 2
+                and bool(original_times)
+                and min(a09_times) * 1.10 < min(original_times)
+            )
+
+        if enabled and not a09_clearly_ahead():
+            baseline_index = legal_warps.index(base_warps)
+            first_window = legal_warps[max(0, baseline_index - 1) : baseline_index + 2]
+            recommended = min(first_window, key=ranked["original"].index)
+
+            if recommended != base_warps:
+                search["expanded"].append(["original", recommended])
+                score("original", recommended)
+
+        def weighted(identity):
+            return measured[identity] * (1 + min_gain if identity[0] == "a09" else 1)
+
+        for kind in ("a09", "original") if enabled else ("original",):
+            if kind == "original" and a09_clearly_ahead():
+                continue
+
+            if kind == "original" and not features[kind]["uncertain"]:
+                tested_original = [
+                    identity
+                    for identity, value in measured.items()
+                    if identity[0] == "original" and not isinf(value)
+                ]
+
+                if len(tested_original) >= 2:
+                    best_original = min(tested_original, key=measured.__getitem__)
+
+                    if (
+                        best_original[1] != base_warps
+                        and measured[best_original] * 1.03
+                        >= measured[("original", base_warps)]
+                    ):
+                        continue
+
+            while True:
+                challenger = _next_expansion(
+                    kind,
+                    measured,
+                    ranked[kind],
+                    legal_warps,
+                    uncertain=features[kind]["uncertain"],
+                )
+
+                if challenger is None:
+                    break
+
+                best_kind = min(
+                    (
+                        identity
+                        for identity in measured
+                        if identity[0] == kind and not isinf(measured[identity])
+                    ),
+                    key=weighted,
+                )
+                identity = (kind, challenger)
+                search["expanded"].append(list(identity))
+                score(*identity)
 
                 if (
-                    best_original[1] != base_warps
-                    and measured[best_original] * 1.03
-                    >= measured[("original", base_warps)]
+                    not features[kind]["uncertain"]
+                    and not isinf(measured[identity])
+                    and weighted(identity) >= weighted(best_kind) * 0.97
                 ):
-                    continue
+                    break
 
-        while True:
-            challenger = _next_expansion(
-                kind,
-                measured,
-                ranked[kind],
-                legal_warps,
-                uncertain=features[kind]["uncertain"],
+        valid = [identity for identity, value in measured.items() if not isinf(value)]
+
+        if not valid:
+            raise RuntimeError("No valid singleton-dot candidate was found.")
+
+        chosen_id = min(valid, key=weighted)
+        baseline_id = ("original", base_warps)
+
+        if chosen_id != baseline_id:
+            baseline_handle = candidates_by_id[baseline_id]["handle"]
+            chosen_handle = candidate_for(*chosen_id)["handle"]
+            trial_args = _scratch_output(args, output_index, torch)
+            before = cuda_graph_benchmark(
+                baseline_handle, trial_args, {}, graphs=graphs
             )
+            trial = cuda_graph_benchmark(chosen_handle, trial_args, {}, graphs=graphs)
+            after = cuda_graph_benchmark(baseline_handle, trial_args, {}, graphs=graphs)
+            baseline_time = (before + after) / 2
+            search["guard"] = {
+                "original": baseline_time,
+                "chosen": trial,
+                "drift": abs(after / before - 1),
+            }
 
-            if challenger is None:
-                break
-
-            best_kind = min(
-                (
-                    identity
-                    for identity in measured
-                    if identity[0] == kind and not isinf(measured[identity])
-                ),
-                key=weighted,
-            )
-            identity = (kind, challenger)
-            search["expanded"].append(list(identity))
-            score(*identity)
+            required_gain = min_gain if chosen_id[0] == "a09" else 0.0
 
             if (
-                not features[kind]["uncertain"]
-                and not isinf(measured[identity])
-                and weighted(identity) >= weighted(best_kind) * 0.97
+                search["guard"]["drift"] > 0.03
+                or trial * (1 + required_gain) >= baseline_time
             ):
-                break
+                chosen_id = baseline_id
 
+        search["features"] = features
+        search["model_order"] = ranked
+
+        return chosen_id
+
+    chosen_id = timer.search(strategy, args)
     valid = [identity for identity, value in measured.items() if not isinf(value)]
-
-    if not valid:
-        raise RuntimeError("No valid singleton-dot candidate was found.")
-
-    chosen_id = min(valid, key=weighted)
     baseline_id = ("original", base_warps)
-
-    if chosen_id != baseline_id:
-        baseline_handle = candidates_by_id[baseline_id]["handle"]
-        chosen_handle = candidates_by_id[chosen_id]["handle"]
-        trial_args = _scratch_output(args, output_index, torch)
-        before = _graph_time(baseline_handle, trial_args, torch, graphs=graphs)
-        trial = _graph_time(chosen_handle, trial_args, torch, graphs=graphs)
-        after = _graph_time(baseline_handle, trial_args, torch, graphs=graphs)
-        baseline_time = (before + after) / 2
-        search["guard"] = {
-            "original": baseline_time,
-            "chosen": trial,
-            "drift": abs(after / before - 1),
-        }
-
-        required_gain = min_gain if chosen_id[0] == "a09" else 0.0
-
-        if (
-            search["guard"]["drift"] > 0.03
-            or trial * (1 + required_gain) >= baseline_time
-        ):
-            chosen_id = baseline_id
-
-    chosen = candidates_by_id[chosen_id]
+    chosen = candidate_for(*chosen_id)
     search["scores"] = {
         f"{kind}/{warp}": value
         for (kind, warp), value in measured.items()
         if not isinf(value)
     }
-    search["features"] = features
-    search["model_order"] = ranked
     write_manifest(
         cache_path,
         {
@@ -571,34 +614,22 @@ def _autotune_singleton_dot_impl(base_request, a09_request, args, *, min_gain):
                 "warps": chosen["warps"],
                 "key": chosen["key"],
             },
+            "baseline": chosen_id == baseline_id,
+            "output_index": output_index,
             "search": search,
         },
     )
 
-    if quick_key is not None:
-        write_manifest(
-            quick_path,
-            {
-                "schema": 1,
-                "selected": {
-                    "kind": chosen["kind"],
-                    "warps": chosen["warps"],
-                    "key": chosen["key"],
-                },
-                "baseline": chosen_id == baseline_id,
-                "output_index": output_index,
-                "search": search,
-            },
-        )
-
     result = result_for(
         chosen,
-        tuple(candidates_by_id[identity] for identity in valid),
+        tuple(candidate_for(*identity) for identity in valid),
         output_index,
         cache_hit=False,
         search=search,
     )
-    result(*args)
+
+    if run_final:
+        result(*args)
 
     return result
 
@@ -632,25 +663,43 @@ def _with_pipeline(request, *, enable):
     return replace(request, pipeline=replace(spec, passes=tuple(passes)))
 
 
-def _legal_warps(hardware):
-    limit = (
-        min(hardware["max_threads_per_block"], hardware["max_threads_per_sm"])
-        // hardware["warp_size"]
-    )
+def _legal_warps(hardware, *, requested=None):
+    """Bound new search candidates; reject requests only against known limits."""
+    width = hardware["warp_size"]
+    limits = [
+        hardware.get(name) for name in ("max_threads_per_block", "max_threads_per_sm")
+    ]
+    known = [limit // width for limit in limits if limit is not None]
+    hard_limit = min(known) if known else None
+
+    if requested is not None and (
+        isinstance(requested, bool)
+        or not isinstance(requested, int)
+        or requested < 1
+        or requested & (requested - 1)
+        or (hard_limit is not None and requested > hard_limit)
+    ):
+        raise ValueError("The original request must have one legal warp count.")
+
+    limit = min(known + [4]) if any(value is None for value in limits) else hard_limit
 
     if limit < 1:
         raise ValueError("The device cannot run a one-warp block.")
 
-    return tuple(
-        1 << index for index in range(limit.bit_length()) if 1 << index <= limit
-    )
+    warps = {1 << index for index in range(limit.bit_length())}
+
+    if requested is not None:
+        warps.add(requested)
+    return tuple(sorted(warps))
 
 
 def _check_output(args, output_index):
     output = args[output_index]
 
+    output_storage = output.untyped_storage().data_ptr()
+
     if any(
-        tensor.untyped_storage().data_ptr() == output.untyped_storage().data_ptr()
+        tensor.untyped_storage().data_ptr() == output_storage
         for index, tensor in enumerate(args)
         if index != output_index
     ):
@@ -667,198 +716,23 @@ def _quick_selection_key(
     base_request, a09_request, signature, hardware, min_gain, digest
 ):
     """Index a winner only when both requests have inspectable source."""
-    unsupported = object()
+    from ninetoothed.compiler.cache import request_cache_key
 
-    def value_identity(value, seen=frozenset()):
-        if value is None or isinstance(value, (bool, int, float, str)):
-            return value
-
-        if isinstance(value, (tuple, list)):
-            items = tuple(value_identity(item, seen=seen) for item in value)
-
-            return unsupported if unsupported in items else items
-
-        if isinstance(value, dict) and all(isinstance(key, str) for key in value):
-            items = tuple(
-                (key, value_identity(item, seen=seen))
-                for key, item in sorted(value.items())
-            )
-
-            return (
-                unsupported if any(item is unsupported for _, item in items) else items
-            )
-
-        if isfunction(value):
-            identity = source_identity(value, seen)
-
-            return identity if identity is not None else unsupported
-
-        if isinstance(value, ModuleType) and value.__name__ == "ninetoothed.language":
-            return ("symbolic-language", value.__name__)
-
-        return unsupported
-
-    def source_identity(callable_value, seen=frozenset()):
-        arguments = None
-
-        if isinstance(callable_value, partial):
-            arguments = value_identity((callable_value.args, callable_value.keywords))
-
-            if arguments is unsupported:
-                return None
-
-            callable_value = callable_value.func
-
-        if (
-            not isfunction(callable_value)
-            or callable_value.__closure__
-            or callable_value in seen
-        ):
-            return None
-
-        seen = seen | {callable_value}
-        dependencies = getclosurevars(callable_value)
-
-        global_loads = {
-            instruction.argval
-            for instruction in get_instructions(callable_value)
-            if instruction.opname in {"LOAD_GLOBAL", "LOAD_NAME"}
-        }
-
-        if dependencies.nonlocals or dependencies.unbound & global_loads:
-            return None
-
-        defaults = value_identity(
-            (callable_value.__defaults__, callable_value.__kwdefaults__), seen=seen
-        )
-
-        if defaults is unsupported:
-            return None
-
-        globals_identity = []
-
-        for name, value in sorted(dependencies.globals.items()):
-            identity = value_identity(value, seen=seen)
-
-            if identity is unsupported:
-                return None
-
-            globals_identity.append((name, identity))
-
-        filename = getsourcefile(callable_value)
-
-        if filename is None:
-            return None
-
-        path = Path(filename)
-
-        try:
-            content = sha256(path.read_bytes()).hexdigest()
-        except OSError:
-            return None
-
-        return (
-            callable_value.__module__,
-            callable_value.__qualname__,
-            content,
-            defaults,
-            tuple(globals_identity),
-            arguments,
-        )
-
-    def request_identity(request):
-        arrangement = source_identity(request.arrangement)
-        application = source_identity(request.application)
-
-        if arrangement is None or application is None:
-            return None
-
-        tensors = []
-
-        for tensor in request.tensors:
-            if tensor.source is not tensor or tensor._history:
-                return None
-
-            if tensor.other is not None and not isinstance(
-                tensor.other, (bool, int, float, str)
-            ):
-                return None
-
-            tensors.append(
-                (
-                    tensor.name,
-                    tuple(map(str, tensor.shape)),
-                    str(tensor.dtype),
-                    tensor.other,
-                    tensor.constexpr,
-                    tensor.value,
-                    str(tensor.jagged_dim),
-                )
-            )
-
-        options = {
-            field.name: getattr(request, field.name)
-            for field in fields(request)
-            if field.name not in {"arrangement", "application", "tensors"}
-        }
-
-        return (arrangement, application, tensors, options)
-
-    original = request_identity(base_request)
-    optimized = request_identity(a09_request)
+    original, optimized = map(request_cache_key, (base_request, a09_request))
 
     if original is None or optimized is None:
         return None
 
-    package = Path(__file__).resolve().parents[1]
-
-    try:
-        sources = sha256()
-
-        for path in sorted(package.rglob("*.py")):
-            sources.update(path.relative_to(package).as_posix().encode())
-            sources.update(path.read_bytes())
-    except OSError:
-        return None
-
     return digest(
         {
-            "policy": "singleton-dot-quick-v2",
+            "policy": "singleton-dot-quick-v3",
             "original": original,
             "a09": optimized,
-            "compiler_sources": sources.hexdigest(),
             "signature": signature,
             "hardware": hardware,
             "min_gain": min_gain,
         }
     )
-
-
-def _singleton_dots(program):
-    values = {value.name: value for value in program.inputs}
-    values.update(
-        (value.name, value)
-        for block in program.blocks
-        for op in block.operations
-        for value in op.results
-    )
-    dots = []
-
-    for block in program.blocks:
-        for op in block.operations:
-            if op.opcode not in {"linalg.dot", "linalg.matmul"}:
-                continue
-
-            try:
-                m, k = (int(str(axis)) for axis in values[op.operands[0]].type.shape)
-                _, n = (int(str(axis)) for axis in values[op.operands[1]].type.shape)
-            except (KeyError, TypeError, ValueError):
-                continue
-
-            if m == 1 or n == 1:
-                dots.append((m, k, n))
-
-    return tuple(dots)
 
 
 def _program_count(compilation, args):
@@ -1142,50 +1016,6 @@ def _tolerance(dtype, torch):
         return {"rtol": 0.04, "atol": 0.02}
 
     return {"rtol": 2e-5, "atol": 5e-4}
-
-
-def _graph_time(function, args, torch, *, min_total_ms=20, graphs=None):
-    cached = graphs.get(function) if graphs is not None else None
-
-    if cached is None:
-        for _ in range(4):
-            function(*args)
-
-        torch.cuda.synchronize()
-        graph = torch.cuda.CUDAGraph()
-
-        with torch.cuda.graph(graph):
-            for _ in range(128):
-                function(*args)
-
-        if graphs is not None:
-            # Keep captured buffers alive for this tuning call's final remeasurement.
-            graphs[function] = (graph, args)
-    else:
-        graph, _ = cached
-
-    for _ in range(4):
-        graph.replay()
-
-    torch.cuda.synchronize()
-    samples = []
-    total_ms = 0.0
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-
-    while total_ms < min_total_ms or len(samples) < 12:
-        start.record()
-
-        for _ in range(8):
-            graph.replay()
-
-        end.record()
-        end.synchronize()
-        elapsed_ms = start.elapsed_time(end)
-        total_ms += elapsed_ms
-        samples.append(elapsed_ms / 1024)
-
-    return median(samples)
 
 
 __all__ = ["TunedSingletonDot", "autotune_singleton_dot"]

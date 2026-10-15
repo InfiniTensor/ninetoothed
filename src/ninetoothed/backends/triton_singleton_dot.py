@@ -10,7 +10,7 @@ Floating-point association differs from tensor-core dot accumulation.
 from dataclasses import replace
 
 from ninetoothed.backends.core import Target
-from ninetoothed.backends.triton_reductions import TritonBlockReductions
+from ninetoothed.backends.triton_reductions import analyze_block_reductions
 from ninetoothed.compiler.passes import LANGUAGE_SPECIFIC, Pass
 from ninetoothed.dtype import normalize_dtype
 from ninetoothed.ir import ssa
@@ -31,8 +31,19 @@ class TritonSingletonDot(Pass):
 
         block = program.blocks[0]
 
+        def finish(candidate, analysis):
+            schedule = dict(program.metadata.get("schedule", {}))
+            schedule["singleton_dot"] = analysis
+
+            if analysis["enabled"]:
+                schedule["block_reductions"] = analysis
+
+            return replace(
+                candidate, metadata=dict(program.metadata) | {"schedule": schedule}
+            )
+
         if any(op.regions for op in block.operations):
-            return program
+            return finish(program, {"enabled": False, "reason": "unsupported region"})
 
         values = {value.name: value for value in program.inputs}
         values.update((v.name, v) for op in block.operations for v in op.results)
@@ -62,7 +73,7 @@ class TritonSingletonDot(Pass):
             return value
 
         for op in block.operations:
-            if not _supported_dot(op, values):
+            if singleton_dot_shape(op, values) is None:
                 operations.append(op)
                 continue
 
@@ -94,26 +105,27 @@ class TritonSingletonDot(Pass):
             changed = True
 
         if not changed:
-            return program
+            return finish(
+                program, {"enabled": False, "reason": "no supported singleton dot"}
+            )
 
         candidate = replace(
             program, blocks=(replace(block, operations=tuple(operations)),)
         )
-        scheduled = TritonBlockReductions().run(candidate, context)
+        analysis = analyze_block_reductions(candidate, context)
 
-        if not scheduled.metadata["schedule"]["block_reductions"]["enabled"]:
-            return program
-        return scheduled
+        return finish(candidate if analysis["enabled"] else program, analysis)
 
 
-def _supported_dot(op, values):
+def singleton_dot_shape(op, values):
+    """Match the shared supported domain and return the static (M, K, N)."""
     if (
         op.opcode not in {"linalg.dot", "linalg.matmul"}
         or len(op.operands) != 2
         or len(op.results) != 1
         or op.attrs
     ):
-        return False
+        return None
 
     lhs, rhs = (values[name].type for name in op.operands)
     result = op.results[0].type
@@ -121,20 +133,23 @@ def _supported_dot(op, values):
     if any(
         type_.kind != "tensor" or len(type_.shape) != 2 for type_ in (lhs, rhs, result)
     ):
-        return False
+        return None
 
     if any(
         normalize_dtype(type_.dtype) not in {"float16", "bfloat16", "float32"}
         for type_ in (lhs, rhs)
     ):
-        return False
+        return None
 
     m, k = lhs.shape
     rk, n = rhs.shape
 
-    return (
-        normalize_dtype(result.dtype) == "float32"
-        and k == rk
-        and result.shape == (m, n)
-        and (str(m) == "1" or str(n) == "1")
-    )
+    if normalize_dtype(result.dtype) != "float32" or k != rk or result.shape != (m, n):
+        return None
+
+    try:
+        shape = tuple(int(str(axis)) for axis in (m, k, n))
+    except (TypeError, ValueError):
+        return None
+
+    return shape if min(shape) > 0 and (shape[0] == 1 or shape[2] == 1) else None

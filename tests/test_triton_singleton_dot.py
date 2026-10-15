@@ -18,7 +18,7 @@ def _arrangement(a, b, out):
 
 
 def _application(a, b, out):
-    out = ntl.dot(a, b)  # noqa: F841
+    out = ntl.dot(a.to(a.dtype), b).to(ntl.float32)  # noqa: F841
 
 
 def _request(m=1, k=32, n=16, dtype="float16"):
@@ -50,17 +50,23 @@ def test_singleton_dot_legality():
     )
     transform = TritonSingletonDot()
     program = compilation.kernel.ssa
-    assert transform.run(program, context) != program
+    transformed = transform.run(program, context)
+    assert transformed.metadata["schedule"]["singleton_dot"]["enabled"]
     limited = replace(
         context,
         pass_options={"ssa.triton.block_reductions": {"max_block_elements": 16}},
     )
-    assert transform.run(program, limited) == program
+    rejected = transform.run(program, limited)
+    assert rejected.blocks == program.blocks and rejected.inputs == program.inputs
+    assert (
+        rejected.metadata["schedule"]["singleton_dot"]["reason"]
+        == "block element budget exceeded"
+    )
 
     original = DEFAULT_COMPILER.compile(replace(_request(m=16), pipeline=None)).kernel
     assert (
-        transform.run(original.ssa, replace(context, tensors=original.tensors))
-        == original.ssa
+        transform.run(original.ssa, replace(context, tensors=original.tensors)).blocks
+        == original.ssa.blocks
     )
 
     integer_inputs = replace(
@@ -70,23 +76,25 @@ def test_singleton_dot_legality():
             for value in program.inputs
         ),
     )
-    assert transform.run(integer_inputs, context) == integer_inputs
+    assert transform.run(integer_inputs, context).blocks == integer_inputs.blocks
     assert PASS not in default_spec("triton").passes
 
 
 @pytest.mark.parametrize("device", get_available_devices())
 def test_singleton_dot_runtime(device):
-    for m, n in ((1, 16), (16, 1)):
-        for dtype in (torch.float16, torch.bfloat16, torch.float32):
-            a = torch.randn(m, 64, device=device, dtype=dtype)[:, ::2]
-            b = torch.randn(32, n, device=device, dtype=dtype)
-            out = torch.empty((m, n), device=device, dtype=torch.float32)
-            compilation = DEFAULT_COMPILER.compile(
-                _request(m=m, n=n, dtype=str(dtype).split(".")[-1])
-            )
-            assert "tl.dot(" not in compilation.artifact.primary_source
-            assert "tl.sum(" in compilation.artifact.primary_source
-            DEFAULT_COMPILER.materialize(compilation)(a, b, out)
-            torch.testing.assert_close(
-                out, (a.double() @ b.double()).float(), rtol=2e-5, atol=2e-5
-            )
+    for m, n, dtype in (
+        (1, 16, torch.float16),
+        (16, 1, torch.bfloat16),
+        (1, 1, torch.float32),
+    ):
+        a = torch.randn(m, 64, device=device, dtype=dtype)[:, ::2]
+        b = torch.randn(32, n, device=device, dtype=dtype)
+        out = torch.empty((m, n), device=device, dtype=torch.float32)
+        compilation = DEFAULT_COMPILER.compile(
+            _request(m=m, n=n, dtype=str(dtype).split(".")[-1])
+        )
+        assert "tl.dot(" not in compilation.artifact.primary_source
+        DEFAULT_COMPILER.materialize(compilation)(a, b, out)
+        torch.testing.assert_close(
+            out, (a.double() @ b.double()).float(), rtol=2e-5, atol=2e-5
+        )

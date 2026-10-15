@@ -1,6 +1,7 @@
 import math
 import threading
 import time
+from statistics import median
 
 from ninetoothed.compiler.cache import (
     CACHE_DIR,
@@ -75,6 +76,37 @@ class AutoTuner:
                 return result
 
         return best_func(*args, **kwargs)
+
+    def search(self, strategy, args, kwargs=None):
+        """Run a search policy with lazy, cached measurement by candidate index.
+
+        The policy returns its choice without a separate winner invocation.
+        Candidates may compile lazily inside the injected benchmark.
+        """
+        kwargs = {} if kwargs is None else kwargs
+
+        if self._validator is not None:
+            self._validator(args, kwargs)
+        return strategy(lambda index: self.measure(index, args, kwargs))
+
+    def measure(self, index, args, kwargs=None):
+        """Measure one candidate through the benchmark without selecting a winner."""
+        with self._lock:
+            return self._get_timing(
+                self._funcs[index], args, {} if kwargs is None else kwargs
+            )
+
+    def failure(self, index, args, kwargs=None):
+        """Return the recorded candidate failure, if any."""
+        manifest = read_manifest(self._get_func_cache_path(self._funcs[index])) or {}
+        key = self.argument_key(args, {} if kwargs is None else kwargs)
+
+        return manifest.get("failures", {}).get(key)
+
+    @staticmethod
+    def argument_key(args, kwargs=None):
+        """Return the shared shape/stride/dtype/device signature."""
+        return AutoTuner._make_arg_key(args, {} if kwargs is None else kwargs)
 
     def _get_timings(self, args, kwargs):
         arg_key = type(self)._make_arg_key(args, kwargs)
@@ -331,3 +363,54 @@ def _candidate_id(key):
     if isinstance(key, (str, int, float, bool, type(None))):
         return str(key)
     return repr(key)
+
+
+def cuda_graph_benchmark(function, args, kwargs, *, min_total_ms=20, graphs=None):
+    """Measure the GPU work of complete CUDA calls in ms.
+
+    ``graphs`` belongs to one search with unchanged inputs. Captured output
+    buffers are retained and reused; Python dispatch is excluded from timing.
+    """
+    import torch
+
+    cached = graphs.get(function) if graphs is not None else None
+
+    if cached is None:
+        for _ in range(4):
+            function(*args, **kwargs)
+
+        torch.cuda.synchronize()
+        graph = torch.cuda.CUDAGraph()
+
+        with torch.cuda.graph(graph):
+            for _ in range(128):
+                function(*args, **kwargs)
+
+        if graphs is not None:
+            # Keep captured buffers alive for this tuning call's final remeasurement.
+            graphs[function] = (graph, args, kwargs)
+    else:
+        graph = cached[0]
+
+    for _ in range(4):
+        graph.replay()
+
+    torch.cuda.synchronize()
+    samples = []
+    total_ms = 0.0
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+
+    while total_ms < min_total_ms or len(samples) < 12:
+        start.record()
+
+        for _ in range(8):
+            graph.replay()
+
+        end.record()
+        end.synchronize()
+        elapsed_ms = start.elapsed_time(end)
+        total_ms += elapsed_ms
+        samples.append(elapsed_ms / 1024)
+
+    return median(samples)
