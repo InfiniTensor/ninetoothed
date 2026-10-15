@@ -1239,7 +1239,8 @@ def promoted_dtype_application(x, y):
         )
         artifact = emit_kernel(kernel, "triton")
         source = artifact.primary_source
-        assert "tl.float32" in source
+        assert "_nt_cast_like(" in source
+        assert " + 0.5" in source
         assert "y.dtype.element_ty" not in source
 
     def test_constructor_propagates_dtype_ref_into_nested_region(self):
