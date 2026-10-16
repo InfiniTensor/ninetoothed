@@ -67,6 +67,43 @@ tensors = (Tensor(2), Tensor(2), Tensor(2))
 kernel = ninetoothed.make(arrangement, application, tensors)
 ```
 
+## Interpreting Kernels on the CPU
+
+`ninetoothed.interpret` runs the same SSA program a backend would receive on the
+CPU with NumPy, one program instance at a time. It needs no GPU, accepts NumPy
+arrays or PyTorch CPU tensors, and can trace every executed operation, which
+makes it useful for debugging an arrangement or an application on a machine
+without a CUDA device.
+
+```python
+kernel = ninetoothed.interpret(arrangement, application, tensors, trace=True)
+
+kernel(input, output)
+
+print(kernel.last_trace.format())
+```
+
+An interactive session stops on a breakpoint instead, which makes the value a
+name holds at one operation observable:
+
+```python
+from ninetoothed.interpreter import Breakpoint
+
+session = kernel.debug(
+    input, output, breakpoints=(Breakpoint(opcodes=("mem.",)),)
+)
+
+while (stop := session.resume()) is not None:
+    print(stop.format())
+```
+
+When a differential comparison fails, `ninetoothed.interpreter.export_reproduction`
+writes the SSA, the inputs, the metadata, and a script that re-runs the case.
+
+See the [interpreter documentation](https://ninetoothed.org/python_api/interpreter.html)
+for the supported operations, the execution model, the debugging session, the
+reproduction export, and the known limitations.
+
 ## Useful Links
 
 - [NineToothed Documentation](https://ninetoothed.org/)
