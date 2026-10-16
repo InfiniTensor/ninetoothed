@@ -1,5 +1,5 @@
 import ninetoothed.language as ntl
-from ninetoothed.frontend.python import from_application
+from ninetoothed.frontend.python import from_application, from_source
 from ninetoothed.ir import TensorSpec
 
 
@@ -37,6 +37,11 @@ def _attention_tensors():
         TensorSpec(ndim=0, dtype="bool", constexpr=True, name="is_causal"),
         TensorSpec(ndim=4, shape=("B", "H", "M", "D"), dtype="float16", name="o"),
     )
+
+
+def documented_double(x, out):
+    """Double every element, and keep this sentence out of the IR."""
+    out = x * 2.0  # noqa: F841
 
 
 def _opcodes(operations):
@@ -101,3 +106,23 @@ class TestApplicationSSALowering:
 
         for operation in reductions:
             assert "ntl" not in operation.operands
+
+    def test_a_docstring_is_skipped_instead_of_becoming_a_constant(self):
+        program = from_application(documented_double)
+        assert program is not None
+        opcodes = tuple(_opcodes(program.blocks[0].operations))
+        assert opcodes == ("arith.constant", "arith.mul", "mem.store")
+
+        for operation in _operations(program.blocks[0].operations):
+            assert not isinstance(operation.attrs.get("value"), str)
+
+    def test_a_bare_literal_statement_is_a_no_op(self):
+        program = from_source(
+            "def application(x, out):\n"
+            "    'a stray string'\n"
+            "    17\n"
+            "    out = x + 1.0\n"
+        )
+        assert program is not None
+        opcodes = tuple(_opcodes(program.blocks[0].operations))
+        assert opcodes == ("arith.constant", "arith.add", "mem.store")
