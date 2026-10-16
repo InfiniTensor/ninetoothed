@@ -1081,7 +1081,7 @@ def test_triton_zero_size_does_not_disturb_nonempty_prepared_call():
     assert tuner.calls == 1
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 def test_triton_tuple_configurations_are_benchmarked_and_cached(device, monkeypatch):
     benchmarked = []
 
@@ -1118,7 +1118,7 @@ def test_triton_tuple_configurations_are_benchmarked_and_cached(device, monkeypa
     assert len(benchmarked) == 2
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 def test_triton_prepared_cache_releases_gpu_tensor_storage(device):
     handle = ninetoothed.make(
         _arrangement,

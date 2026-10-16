@@ -3,7 +3,7 @@ import pytest
 from tests.utils import get_available_devices
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 def test_ipynb(device):
     if device != "cuda":
         pytest.skip("this test only supports CUDA")

@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 import platform
+import sys
+import sysconfig
 import tempfile
 from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
@@ -32,6 +34,30 @@ def stable_digest(value: Any) -> str:
     ).encode("utf-8")
 
     return hashlib.sha256(payload).hexdigest()
+
+
+def triton_cache_directory(root: Path) -> Path:
+    """Isolate native launchers compiled against different runtime environments."""
+    identity = {
+        "schema": 1,
+        "versions": _compiler_versions(),
+        "executable": sys.executable,
+        "prefix": sys.prefix,
+        "extension_suffix": sysconfig.get_config_var("EXT_SUFFIX"),
+        "machine": platform.machine(),
+    }
+    try:
+        import torch
+    except ModuleNotFoundError:
+        pass
+    else:
+        identity["torch"] = {
+            "path": torch.__file__,
+            "version": torch.__version__,
+            "git_version": torch.version.git_version,
+            "cxx11_abi": torch._C._GLIBCXX_USE_CXX11_ABI,
+        }
+    return root / stable_digest(identity)
 
 
 def compilation_cache_key(compilation) -> str:
@@ -186,7 +212,14 @@ def _unlock_file(file) -> None:
 def _compiler_versions() -> Mapping[str, str]:
     result = {"python": platform.python_version()}
 
-    for package in ("ninetoothed", "triton", "tilelang"):
+    for package in (
+        "ninetoothed",
+        "triton",
+        "triton-ascend",
+        "tilelang",
+        "torch",
+        "torch-npu",
+    ):
         try:
             result[package] = version(package)
         except PackageNotFoundError:
@@ -297,6 +330,7 @@ __all__ = [
     "compilation_toolchain_identity",
     "read_manifest",
     "stable_digest",
+    "triton_cache_directory",
     "write_manifest",
     "write_source",
 ]
