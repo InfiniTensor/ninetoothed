@@ -30,6 +30,9 @@ def _exp2_application(x, out):
 def test_exponential_promotes_low_precision_without_narrowing_float64(
     device, dtype, application, reference
 ):
+    if device == "npu" and dtype == torch.float64:
+        pytest.skip("Ascend Triton does not support float64 tensors")
+
     kernel = make(
         _arrangement,
         application,

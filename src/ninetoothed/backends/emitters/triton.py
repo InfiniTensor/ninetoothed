@@ -733,10 +733,11 @@ _EXP_INPUT = """
 @triton.jit
 def _nt_exp_input(value):
     tensor_value = _nt_cast_like(value, value)
-    if tensor_value.dtype == tl.float16 or tensor_value.dtype == tl.bfloat16:
-        return tensor_value.to(tl.float32)
-    else:
-        return tensor_value
+    if tensor_value.dtype == tl.float16:
+        tensor_value = tensor_value.to(tl.float32)
+    if tensor_value.dtype == tl.bfloat16:
+        tensor_value = tensor_value.to(tl.float32)
+    return tensor_value
 """
 
 

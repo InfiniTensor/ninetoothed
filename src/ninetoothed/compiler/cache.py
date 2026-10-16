@@ -46,10 +46,12 @@ def triton_cache_directory(root: Path) -> Path:
         "extension_suffix": sysconfig.get_config_var("EXT_SUFFIX"),
         "machine": platform.machine(),
     }
+
     try:
         import torch
     except ModuleNotFoundError:
         pass
+
     else:
         identity["torch"] = {
             "path": torch.__file__,

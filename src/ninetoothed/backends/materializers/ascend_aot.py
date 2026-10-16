@@ -46,6 +46,14 @@ def _launch_source(source, entrypoint, block):
     return ast.unparse(ast.fix_missing_locations(function)) + "\n"
 
 
+def _compile_signature(compilation, triton_compile_signature):
+    entries = triton_compile_signature(compilation).split(",")
+
+    # Ascend does not support float64 tensors, but the shared Triton AOT
+    # signature promotes every floating-point scalar to float64.
+    return ",".join("fp32" if entry == "fp64" else entry for entry in entries)
+
+
 def build(compilation, *, output_dir):
     if any(spec.dtype is None for spec in compilation.kernel.tensors):
         raise ValueError("Ascend AOT requires explicit tensor dtypes at build time.")
@@ -63,7 +71,9 @@ def build(compilation, *, output_dir):
     from ninetoothed.backends.materializers.triton import (
         _compile_block,
         _compile_schedule,
-        _compile_signature,
+    )
+    from ninetoothed.backends.materializers.triton import (
+        _compile_signature as _triton_compile_signature,
     )
     from ninetoothed.compiler.runtime import Handle, import_python_module
 
@@ -75,7 +85,7 @@ def build(compilation, *, output_dir):
     source_path.write_text(artifact.primary_source, encoding="utf-8")
     module = import_python_module(source_path)
     kernel = getattr(module, f"{artifact.kernel_name}_kernel")
-    entries = _compile_signature(compilation).split(",")
+    entries = _compile_signature(compilation, _triton_compile_signature).split(",")
 
     if len(entries) != len(kernel.arg_names):
         raise ValueError("Ascend AOT kernel signature does not match the launch ABI.")
