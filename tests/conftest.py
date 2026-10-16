@@ -2,7 +2,14 @@ import hashlib
 import random
 
 import pytest
-import torch
+
+try:
+    import torch
+except ModuleNotFoundError as exc:
+    if exc.name != "torch":
+        raise
+
+    torch = None
 
 
 def pytest_collectstart(collector):
@@ -22,7 +29,9 @@ def set_seed_per_test(request):
 
 def _set_random_seed(seed):
     random.seed(seed)
-    torch.manual_seed(seed)
+
+    if torch is not None:
+        torch.manual_seed(seed)
 
 
 def _test_case_path_from_request(request):

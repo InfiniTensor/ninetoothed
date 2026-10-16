@@ -427,6 +427,9 @@ def _index_compare(node: ast.Compare) -> IndexExpr:
 
 
 def _index_call(node: ast.Call) -> IndexExpr:
+    if node.keywords:
+        raise ValueError("Index expression calls do not support keyword arguments.")
+
     return IndexExpr(
         op="call",
         value=ast.unparse(node.func),
