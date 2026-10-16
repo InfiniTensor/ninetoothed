@@ -347,6 +347,18 @@ class PlatformRegistry:
                 f"{available}."
             ) from exc
 
+    def get_by_device_types(self, device_types) -> PlatformProfile | None:
+        """Return the first profile whose device types cover the request."""
+        requested = {str(device_type).lower() for device_type in device_types}
+
+        for profile in self._profiles.values():
+            if requested <= {
+                str(device_type).lower() for device_type in profile.device_types
+            }:
+                return profile
+
+        return None
+
     def profiles(self) -> tuple[PlatformProfile, ...]:
         return tuple(self._profiles.values())
 
@@ -764,6 +776,46 @@ def runtime_device_types(value: Any) -> tuple[str, ...]:
     backend = getattr(getattr(artifact, "backend", None), "value", None)
 
     return target_device_types(value) if backend == Target.TRITON.value else ("cuda",)
+
+
+def _argument_device_types(args, kwargs) -> frozenset[str]:
+    """Collect torch-like device types from launch arguments."""
+    device_types = set()
+
+    for value in (*args, *kwargs.values()):
+        device = getattr(value, "device", None)
+
+        if device is None:
+            continue
+
+        device_type = getattr(device, "type", str(device).split(":")[0])
+        device_types.add(str(device_type).lower())
+
+    return frozenset(device_types)
+
+
+def resolve_launch_device_types(device_types, args, kwargs) -> tuple[str, ...]:
+    """Re-resolve device types by launch arguments under legacy defaults.
+
+    Target resolution is configuration-driven and consults no runtime input,
+    so a launch on a device the resolved platform does not list (for example
+    MLU tensors under the generic CUDA default) is rejected even though a
+    matching profile exists in the registry. Fall back to the first profile
+    covering the argument device types; launches already covered by the
+    resolved profile are returned unchanged.
+    """
+    base = tuple(str(device_type).lower() for device_type in device_types)
+    missing = _argument_device_types(args, kwargs) - set(base)
+
+    if not missing:
+        return base
+
+    profile = default_platform_registry().get_by_device_types(missing)
+
+    if profile is None:
+        return base
+
+    return profile.device_types
 
 
 def validate_artifact_materialization(value: Any, *, mode: str) -> None:
