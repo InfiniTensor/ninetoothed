@@ -6,13 +6,32 @@ import pytest
 
 from ninetoothed.ascendifier import Ascendifier
 from ninetoothed.backends import Target, default_registry, emit
-from ninetoothed.ir import ir_to_dict
+from ninetoothed.backends.materializers.ascend_aot import _compile_signature
+from ninetoothed.frontend.python import from_source
+from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict
 from ninetoothed.targets import (
     resolve_target_context,
     runtime_device_types,
     validate_artifact_materialization,
 )
 from tests.test_backend_registry import _add_kernel
+
+
+def _exp_kernel():
+    source = "\ndef exp_input(x, out):\n    out = ntl.exp(x)\n"
+    tensors = (
+        TensorSpec(ndim=1, shape=("n",), dtype="float32", name="x"),
+        TensorSpec(ndim=1, shape=("n",), dtype="float32", name="out"),
+    )
+
+    return Kernel(
+        kernel_name="exp_input",
+        source=source,
+        source_language="ninetoothed-python",
+        entrypoint="exp_input",
+        tensors=tensors,
+        ssa=from_source(source, tensors),
+    )
 
 
 @pytest.mark.parametrize("platform", ("ascend-910b3", "ascend-910b4"))
@@ -39,6 +58,31 @@ def test_ascend_emits_python_with_platform_and_manifest(platform):
     validate_artifact_materialization(artifact, mode="jit")
     assert runtime_device_types(artifact) == ("npu",)
     validate_artifact_materialization(artifact, mode="aot")
+
+
+def test_ascend_exponential_helper_avoids_boolean_dtype_operations():
+    context = resolve_target_context("ascend", platform="ascend-910b4")
+    artifact = emit(_exp_kernel(), "ascend", target_context=context)
+    tree = ast.parse(artifact.primary_source)
+    helper = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_nt_exp_input"
+    )
+
+    assert (
+        len(tuple(node for node in ast.walk(helper) if isinstance(node, ast.Return)))
+        == 1
+    )
+    assert not tuple(node for node in ast.walk(helper) if isinstance(node, ast.BoolOp))
+    assert "_nt_exp_input(" in artifact.primary_source
+
+
+def test_ascend_aot_lowers_float_scalar_signatures():
+    def triton_signature(_compilation):
+        return "*fp64,fp64,i64"
+
+    assert _compile_signature(None, triton_signature) == "*fp64,fp32,i64"
 
 
 @pytest.mark.parametrize("namespace", ("tl", "triton.language"))

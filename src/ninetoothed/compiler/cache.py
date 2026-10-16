@@ -51,6 +51,7 @@ def triton_cache_directory(root: Path) -> Path:
         import torch
     except ModuleNotFoundError:
         pass
+
     else:
         identity["torch"] = {
             "path": torch.__file__,
