@@ -22,14 +22,12 @@ def specialize_tensor_specs(
     )
 
 
-def specialize_program(program: ssa.Program, values: Mapping[str, Any]) -> ssa.Program:
+def specialize_program(program, values):
     return replace(
         program,
-        inputs=tuple(_specialize_ssa_value(value, values) for value in program.inputs),
-        outputs=tuple(
-            _specialize_ssa_value(value, values) for value in program.outputs
-        ),
-        blocks=tuple(_specialize_block(block, values) for block in program.blocks),
+        inputs=tuple(_specialize_ssa_value(v, values) for v in program.inputs),
+        outputs=tuple(_specialize_ssa_value(v, values) for v in program.outputs),
+        blocks=tuple(_specialize_block(b, values) for b in program.blocks),
         metadata=_specialize_value(program.metadata, values),
     )
 
@@ -69,10 +67,23 @@ def specialize_schedule_tiles(kernel: Kernel) -> Kernel:
     if not values:
         return kernel
 
+    from ninetoothed.compiler.passes import Context, refresh_program_facts
+
+    tensors = specialize_tensor_specs(kernel.tensors, values)
+    program = specialize_program(kernel.ssa, values)
+    context = Context(
+        backend=kernel.compiler_options["target"]["backend"],
+        target=kernel.ssa.facts.get("target"),
+        compiler_options=kernel.compiler_options,
+        kernel_metadata=kernel.metadata,
+        tensors=tensors,
+    )
+    program = refresh_program_facts(program, context)
+
     return replace(
         kernel,
-        tensors=specialize_tensor_specs(kernel.tensors, values),
-        ssa=specialize_program(kernel.ssa, values),
+        tensors=tensors,
+        ssa=program,
         metadata=dict(kernel.metadata)
         | {"meta_defaults": scheduled_meta_defaults(defaults, schedule)},
     )
@@ -102,7 +113,6 @@ def _specialize_operation(
 ) -> ssa.Operation:
     return replace(
         operation,
-        operands=tuple(_specialize_value(item, values) for item in operation.operands),
         results=tuple(
             _specialize_ssa_value(value, values) for value in operation.results
         ),

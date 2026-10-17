@@ -16,6 +16,23 @@ from ninetoothed.frontend.python import from_source
 from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict
 from ninetoothed.targets import PlatformProfile, TargetContext
 
+EMISSION_TEST_BACKENDS = ("triton", "cuda", "tilelang")
+
+
+def _generic_target_context(backend):
+    """Build a generic-platform context so emission snapshots stay hermetic.
+
+    Without this, a pinned ``NINETOOTHED_PLATFORM`` in the environment would
+    change platform constraints (grid limits, config caps) and break
+    assertions that describe the generic lowering.
+    """
+    from ninetoothed.targets import default_platform_registry
+
+    return TargetContext(
+        backend=normalize_target(backend),
+        platform=default_platform_registry().get("generic"),
+    )
+
 
 def _source_only_kernel():
     return Kernel(
@@ -185,14 +202,10 @@ class TestRegistry:
 
     def test_default_registry_reports_three_backends(self):
         names = {capability.name for capability in backend_capabilities()}
-        assert names == {
-            Target.TRITON,
-            Target.TILELANG,
-            Target.CUDA,
-        }
+        assert names == {Target.TRITON, Target.TILELANG, Target.CUDA}
 
     def test_backends_reject_source_only_kernel_without_ssa(self):
-        for backend in ("triton", "cuda", "tilelang"):
+        for backend in EMISSION_TEST_BACKENDS:
             with pytest.raises(ValueError, match="requires ssa.Program"):
                 emit(_source_only_kernel(), backend)
 
@@ -203,8 +216,11 @@ class TestRegistry:
             "tilelang": ("python/tilelang", "out_buf[index] = v0"),
         }
 
-        for backend, (language, fragment) in expected.items():
-            artifact = emit(_add_kernel(), backend)
+        for backend in EMISSION_TEST_BACKENDS:
+            language, fragment = expected[backend]
+            artifact = emit(
+                _add_kernel(), backend, target_context=_generic_target_context(backend)
+            )
             assert artifact.language == language
             assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["target"]["platform"] == "generic"
@@ -237,9 +253,13 @@ class TestRegistry:
             "tilelang": "for v10_i in T.serial(k)",
         }
 
-        for backend, fragment in expected_fragments.items():
-            artifact = emit(_matmul_kernel(), backend)
-            assert fragment in artifact.primary_source
+        for backend in EMISSION_TEST_BACKENDS:
+            artifact = emit(
+                _matmul_kernel(),
+                backend,
+                target_context=_generic_target_context(backend),
+            )
+            assert expected_fragments[backend] in artifact.primary_source
             assert "linalg.matmul" not in artifact.primary_source
 
     def test_cuda_exposes_only_materialized_wmma_schedule(self):
@@ -279,14 +299,20 @@ class TestRegistry:
                 metadata={"cuda": {"arch": "native", "wmma": False}},
             ),
         )
-        artifact = emit(
-            _matmul_kernel("float16"),
-            "cuda",
-            target_context=target,
-        )
-
+        artifact = emit(_matmul_kernel("float16"), "cuda", target_context=target)
         assert "wmma::" not in artifact.primary_source
         assert not artifact.metadata["ssa_metadata"]["schedule_candidates"]
+        compound = _kernel_from_source(
+            "def compound(a, b, out):\n    out = (a @ b) @ b\n",
+            name="compound",
+            tensors=tuple(
+                (
+                    TensorSpec(ndim=2, shape=("k", "k"), dtype="float16", name=name)
+                    for name in ("a", "b", "out")
+                )
+            ),
+        )
+        assert "wmma::mma_sync(" not in emit(compound, "cuda").primary_source
 
     def test_optimization_metadata_contains_only_materialized_choices(self):
         forbidden_fields = {

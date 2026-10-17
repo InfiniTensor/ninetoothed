@@ -20,7 +20,6 @@ from ninetoothed.frontend.errors import LoweringError
 from ninetoothed.frontend.types import (
     _binary_type,
     _bool_type,
-    _broadcast_type,
     _cast_type,
     _load_type,
     _math_result_type,
@@ -28,6 +27,7 @@ from ninetoothed.frontend.types import (
     _next_dtype_shape,
     _offset_type,
     _reduce_type,
+    _select_type,
     _shape_dim_from_type,
     _subscript_type,
     _transpose_type,
@@ -546,7 +546,10 @@ class _ApplicationSSABuilder:
                     ssa.Operation(
                         opcode="mem.store",
                         operands=(value.name, output.name),
-                        attrs={"target": target.id},
+                        attrs={
+                            "target": target.id,
+                            "target_shape": tuple(output.type.shape),
+                        },
                     )
                 )
             else:
@@ -1051,7 +1054,7 @@ class _ApplicationSSABuilder:
             operations,
             "select.where",
             operands=(condition.name, body.name, orelse.name),
-            result_type=body.type,
+            result_type=_select_type(condition.type, body.type, orelse.type),
         )
 
     def _lower_subscript_expr(self, node, operations, env) -> ssa.Value:
@@ -1172,6 +1175,9 @@ class _ApplicationSSABuilder:
 
         if literal == "inf":
             return self._constant(operations, float("inf"))
+
+        if literal == "nan":
+            return self._constant(operations, float("nan"))
         return None
 
     def _lower_tensor_method_call(self, node, operations, env):
@@ -1589,7 +1595,7 @@ class _ApplicationSSABuilder:
                 operations,
                 "select.where",
                 operands=tuple(value.name for value in operands),
-                result_type=_broadcast_type(operands[1].type, operands[2].type),
+                result_type=_select_type(*(value.type for value in operands)),
             )
 
         if name in {"maximum", "minimum"}:
@@ -1745,7 +1751,9 @@ class _ApplicationSSABuilder:
 
         attr_value: Any = value
 
-        if isinstance(value, float) and not math.isfinite(value):
+        if isinstance(value, float) and math.isnan(value):
+            attr_value = "nan"
+        elif isinstance(value, float) and not math.isfinite(value):
             attr_value = "-inf" if value < 0 else "inf"
 
         result = self._emit(

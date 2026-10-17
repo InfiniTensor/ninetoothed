@@ -109,6 +109,9 @@ class TritonTarget(EmitterTarget):
         return f"tl.broadcast_to(tl.cast({value}, {dtype_expr}), {shape})"
 
     def literal(self, value: Any) -> str:
+        if value == "nan" or (isinstance(value, float) and math.isnan(value)):
+            return "float('nan')"
+
         if isinstance(value, float) and math.isinf(value):
             return "float('inf')" if value > 0 else "-float('inf')"
 
@@ -266,14 +269,14 @@ class TritonTarget(EmitterTarget):
             "max": "tl.maximum",
             "minimum": "tl.minimum",
             "min": "tl.minimum",
-            "pow": "tl.pow",
+            "pow": "libdevice.pow",
             "rand": "tl.rand",
             "rsqrt": "tl.rsqrt",
             "sin": "tl.sin",
             "sinh": "tl.sinh",
             "sqrt": "tl.sqrt",
             "tan": "tl.tan",
-            "tanh": "tl.tanh",
+            "tanh": "libdevice.tanh",
         }
 
         if name == "log1p":

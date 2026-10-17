@@ -75,11 +75,16 @@ class Program:
     blocks: tuple[Block, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
+    facts: Mapping[str, Any] = field(
+        default_factory=dict, compare=False, repr=False, metadata={"serialize": False}
+    )
+
     def __post_init__(self):
         object.__setattr__(self, "inputs", tuple(self.inputs))
         object.__setattr__(self, "outputs", tuple(self.outputs))
         object.__setattr__(self, "blocks", tuple(self.blocks))
         object.__setattr__(self, "metadata", freeze(self.metadata))
+        object.__setattr__(self, "facts", freeze(self.facts))
 
 
 def verify_program(program: Program) -> Program:

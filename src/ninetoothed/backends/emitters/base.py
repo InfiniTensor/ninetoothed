@@ -50,6 +50,9 @@ class EmitterTarget(ABC):
     native_block_matmul: bool = False
     max_vector_numel: int | None = None
 
+    def supports_native_block(self, kernel) -> bool:
+        return self.native_block_matmul
+
     def symbol(self, name: str) -> str:
         return f"v{name[1:]}" if name.startswith("%") else name
 
@@ -68,6 +71,17 @@ class EmitterTarget(ABC):
         raise NotImplementedError(
             f"Emitter {type(self).__name__} has no block value domain."
         )
+
+    def native_block_coords(self, axes: tuple[str, ...]) -> tuple[str, ...]:
+        raise NotImplementedError(
+            f"Emitter {type(self).__name__} has no native block coordinate domain."
+        )
+
+    def native_block_tile(self, kernel, axes: tuple[str, ...]) -> tuple[int, int]:
+        """Return the logical output extent owned by one collective block."""
+        del kernel, axes
+
+        return 16, 16
 
     def block_shape(self, axes: tuple[str, ...]) -> str:
         raise NotImplementedError(

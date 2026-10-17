@@ -106,7 +106,7 @@ def _rejection(program, context, schedule, *, max_block_elements, max_total_elem
 
     store = stores[0]
 
-    if set(store.attrs) - {"target"}:
+    if set(store.attrs) - {"target", "target_shape"}:
         return "requires a whole arranged output store"
 
     output = store.operands[1]
@@ -116,6 +116,15 @@ def _rejection(program, context, schedule, *, max_block_elements, max_total_elem
 
     values = {value.name: value for value in program.inputs}
     values.update((value.name, value) for op in operations for value in op.results)
+
+    if "target_shape" in store.attrs:
+        target_shape = store.attrs["target_shape"]
+
+        if not isinstance(target_shape, tuple) or _static_shape(target_shape) != (
+            _static_shape(values[output].type.shape)
+        ):
+            return "store domain must match the arranged output shape"
+
     total_elements = 0
 
     for value in values.values():

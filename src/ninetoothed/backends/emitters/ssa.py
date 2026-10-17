@@ -74,6 +74,7 @@ from ninetoothed.backends.emitters.expressions import (
 from ninetoothed.backends.emitters.expressions import (
     valid_symbol as _valid_symbol,
 )
+from ninetoothed.compiler.passes import Context, refresh_program_facts
 from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict, ssa
 
 _BINARY = {
@@ -115,36 +116,24 @@ def emit(kernel: Kernel, target: EmitterTarget) -> Artifact:
     if kernel.ssa is None:
         raise ValueError("Backend emission requires ssa.Program.")
 
+    context = Context(
+        backend=target.backend,
+        target=kernel.ssa.facts.get("target"),
+        compiler_options=kernel.compiler_options,
+        kernel_metadata=kernel.metadata,
+        tensors=kernel.tensors,
+    )
+    kernel = replace(kernel, ssa=refresh_program_facts(kernel.ssa, context))
     backend = target.backend
     block = kernel.ssa.blocks[0] if kernel.ssa.blocks else ssa.Block()
-    walked_ops = tuple(_walk_ops(block.operations))
-    operations = {result.name: op for op in walked_ops for result in op.results}
-    stores = tuple(
-        op for op in walked_ops if op.opcode == "mem.store" and len(op.operands) == 2
-    )
-    outputs = tuple(
-        dict.fromkeys(
-            (
-                *[store.operands[1] for store in stores],
-                *_atomic_output_tensors(walked_ops, operations),
-            )
-        )
-    ) or tuple(value.name for value in kernel.ssa.outputs)
-    public_variables = tuple(
-        tensor.name
-        for tensor in kernel.tensors
-        if tensor.name not in outputs and not tensor.constexpr
-    )
     auxiliary_bindings = _auxiliary_pointer_bindings(kernel.tensors)
-    variables = public_variables + tuple(
-        binding["name"] for binding in auxiliary_bindings
-    )
     shape_params = _shape_params(kernel.tensors, block.operations)
     source, render_context = _render_source(
         kernel,
         target,
         shape_params=shape_params,
     )
+    variables, outputs = render_context.variables, render_context.outputs
     metadata = {
         "backend": backend.value,
         "target": dict(kernel.metadata.get("target", {})),
@@ -348,8 +337,15 @@ def _render_source(
     )
     parameter_names = frozenset((*variables, *outputs, *shape_params))
 
-    if "index" in {*variables, *outputs, *shape_params}:
-        target = replace(target, index_name="__nt_index")
+    if "index" in parameter_names:
+        index_name = "__nt_index"
+        suffix = 0
+
+        while index_name in parameter_names:
+            suffix += 1
+            index_name = f"__nt_index_{suffix}"
+
+        target = replace(target, index_name=index_name)
 
     output = (
         outputs[0]
@@ -435,7 +431,7 @@ def _render_source(
         and not cooperative_reduction_program
     )
     native_block_program = bool(
-        target.native_block_matmul
+        target.supports_native_block(kernel)
         and split_outer_inner
         and len(value_axes) == 2
         and has_dot
@@ -470,8 +466,9 @@ def _render_source(
     elif native_block_program:
         axes = value_axes
         total = _target_index_expr(target, _product(value_axes))
-        tile_rows = f"(({value_axes[0]}) + 15) / 16"
-        tile_cols = f"(({value_axes[1]}) + 15) / 16"
+        tile_m, tile_n = target.native_block_tile(kernel, value_axes)
+        tile_rows = f"(({value_axes[0]}) + {tile_m - 1}) / {tile_m}"
+        tile_cols = f"(({value_axes[1]}) + {tile_n - 1}) / {tile_n}"
         grid_total = _target_index_expr(
             target, f"({_product(outer_axes)}) * ({tile_rows}) * ({tile_cols})"
         )
@@ -761,6 +758,17 @@ def _render_body(
     if block_program:
         coordinate_exprs = target.block_coords(axes)
         inner_index_expr = _linearized_index(coordinate_exprs, axes)
+    elif native_block_program:
+        # Inactive lanes still stage collective matrix operands. Decoding
+        # row*N+column would wrap column>=N into the next row on tail CTAs.
+        # Preserve the target's rectangular coordinates even outside bounds.
+        index_type = ssa.Type(kind="index", dtype="index")
+        native_coordinates = target.native_block_coords(axes)
+        coordinate_exprs = tuple(f"nt_i{dim}" for dim in range(len(axes)))
+        lines.extend(
+            target.local_decl(index_type, name, expression)
+            for name, expression in zip(coordinate_exprs, native_coordinates)
+        )
     elif enable_index_cse:
         index_type = ssa.Type(kind="index", dtype="index")
 
@@ -887,10 +895,15 @@ def _emit_cooperative_reduction_program(
                 "top-level effects are stores."
             )
 
-        value_axes = _value_axes(operation.operands[0], ctx)
+        value_axes = _store_value_axes(operation, ctx.value_types)
+
+        if value_axes is None:
+            value_axes = _value_axes(operation.operands[0], ctx)
 
         if value_axes == value_shape:
             _emit_cooperative_full_store(operation, value_shape, axis, ctx)
+        elif len(value_axes) == len(value_shape) and value_axes[axis] == "1":
+            _emit_cooperative_full_store(operation, value_axes, axis, ctx)
         elif value_axes == result_shape:
             _emit_cooperative_scalar_store(operation, result_shape, axis, ctx)
         else:
@@ -1187,6 +1200,7 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
             operand = _emit_element(
                 op.operands[0], _current_coords(operand_axes, ctx), ctx
             )
+
             result_type = ssa.Type(
                 kind="scalar",
                 dtype=op.results[0].type.dtype if op.results else "float32",
@@ -1567,6 +1581,11 @@ def _emit_dot_operand(
 
 
 def _dot_accumulator_dtype(op: ssa.Operation, ctx: _EmitContext) -> str:
+    result_dtype = _normalize_dtype(op.results[0].type.dtype)
+
+    if result_dtype == "float64":
+        return result_dtype
+
     operand_dtypes = {
         _normalize_dtype(type_.dtype)
         for operand in op.operands[:2]
@@ -1580,7 +1599,7 @@ def _dot_accumulator_dtype(op: ssa.Operation, ctx: _EmitContext) -> str:
         "bfloat16",
     }:
         return "float32"
-    return _normalize_dtype(op.results[0].type.dtype or "float32")
+    return result_dtype or "float32"
 
 
 def _cast_dot_operand(
@@ -1599,6 +1618,17 @@ def _cast_dot_operand(
 
 
 def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
+    if ctx.binding_coordinates and name in ctx.binding_coordinates:
+        required = ctx.binding_coordinates[name]
+
+        if tuple(item.strip("() ") for item in coords) != tuple(
+            item.strip("() ") for item in required
+        ):
+            raise ValueError(
+                f"Scalar loop carry {name} cannot be read at multiple coordinates: "
+                f"{required} and {coords}."
+            )
+
     if ctx.bindings and name in ctx.bindings:
         bound = ctx.bindings[name]
 
@@ -1622,6 +1652,8 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
             return name
 
         if ctx.tensor_infos[name].ndim == 0:
+            if ctx.tensor_infos[name].shape:
+                return _load_tensor_at(name, coords, ctx)
             return _tensor_value(name, ctx)
         return _load_tensor_at(name, coords, ctx)
 
@@ -1863,6 +1895,7 @@ def _reduction_input_mask(
 ) -> str | None:
     if name in ctx.tensor_infos:
         info = ctx.tensor_infos[name]
+
         level = _dtype_level(name, ctx) if level is None else level
         axes = _access_axes(info, ctx, level, fallback=_value_axes(name, ctx))
 
@@ -1978,7 +2011,6 @@ def _loop_bound_vector_element(
 def _render_scalar_expr(
     op: ssa.Operation, args: tuple[str, ...], ctx: _EmitContext
 ) -> str:
-    """Render pure operations once for both real values and type expressions."""
     opcode = op.opcode
     target = ctx.target
 
@@ -2166,7 +2198,7 @@ def _dtype_source(name: str, ctx: _EmitContext) -> _ValueType:
             sample=target.inline_constant(op.attrs["value"], declared),
         )
 
-    if opcode in {"linalg.dot", "linalg.matmul"} and not target.c_style_syntax:
+    if opcode in {"linalg.dot", "linalg.matmul"}:
         dtype = _dot_accumulator_dtype(op, ctx)
 
         return _ValueType(dtype=dtype, sample=target.dtype_sample(dtype))
@@ -2487,6 +2519,18 @@ def _load_tensor_at(
         ),
     )
     source_index = _materialize_index_expr(source_index, ctx)
+
+    if (
+        ctx.target.vector_value_semantics
+        and info is not None
+        and info.ndim > 0
+        and info.attrs is not None
+        and info.attrs.get("source_ndim") == 0
+        and _index_expr_is_vector(view_index, ctx)
+        and not _index_expr_is_vector(source_index, ctx)
+    ):
+        source_index = f"({source_index}) + 0 * ({view_index})"
+
     base_mask = _load_base_mask(source_index, ctx)
 
     if ctx.vector_program:
@@ -2521,7 +2565,12 @@ def _masked_load(
     ctx: _EmitContext,
 ) -> str:
     other = _load_other(info)
-    load = ctx.target.load(name, source_index, mask=mask, other=other)
+    scalar_view = info is not None and info.ndim == 0
+    load = (
+        name
+        if scalar_view
+        else ctx.target.load(name, source_index, mask=mask, other=other)
+    )
 
     if ctx.target.c_style_syntax and mask is not None:
         predicate = _materialize_bool_expr(mask, ctx) or mask
@@ -2538,6 +2587,9 @@ def _masked_load(
         if info is not None:
             other_value = ctx.target.cast(info.dtype, other_value)
         return ctx.target.where(predicate, load, other_value)
+
+    if scalar_view and mask is not None:
+        return ctx.target.where(mask, load, ctx.target.literal(other))
     return load
 
 
@@ -2683,19 +2735,18 @@ def _current_coords(axes: tuple[str, ...], ctx: _EmitContext) -> tuple[str, ...]
                     for axis, parallel_dim in zip(axes, parallel_dims)
                 )
         elif len(axes) < len(output_axes):
-            if _axes_compatible_prefix(axes, output_axes):
+            offset = len(output_axes) - len(axes)
+
+            if _axes_compatible_suffix(axes, output_axes):
+                coords = tuple(
+                    "0" if axis == "1" else output_coords[index + offset]
+                    for index, axis in enumerate(axes)
+                )
+            elif _axes_compatible_prefix(axes, output_axes):
                 coords = tuple(
                     "0" if axis == "1" else output_coords[index]
                     for index, axis in enumerate(axes)
                 )
-            else:
-                offset = len(output_axes) - len(axes)
-
-                if _axes_compatible_suffix(axes, output_axes):
-                    coords = tuple(
-                        "0" if axis == "1" else output_coords[index + offset]
-                        for index, axis in enumerate(axes)
-                    )
 
         if coords is not None:
             if (
@@ -2917,6 +2968,165 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
     return acc_expr
 
 
+def _scalar_loop_carry_coordinates(
+    op: ssa.Operation, ctx: _EmitContext
+) -> dict[str, tuple[str, ...]]:
+    """Prove the projection of lower-rank state held in native scalar slots.
+
+    A shape alone cannot distinguish row state from right-aligned column
+    state on square domains. Follow same-shape pointwise consumers until an
+    explicit singleton view, a broadcast or a store determines the axis.
+    No whole-vector read or multiple projection can use one scalar slot.
+    """
+    if not ctx.target.c_style_syntax or ctx.target.vector_value_semantics:
+        return {}
+
+    operations = tuple(
+        operation
+        for block in ctx.program.blocks
+        for operation in _walk_ops(block.operations)
+    )
+    result = {}
+    region_yield = op.regions[0].operations[-1]
+    math_names = {
+        "abs",
+        "ceil",
+        "cos",
+        "erf",
+        "exp",
+        "exp2",
+        "expm1",
+        "floor",
+        "log",
+        "log2",
+        "log1p",
+        "pow",
+        "reciprocal",
+        "round",
+        "rsqrt",
+        "sigmoid",
+        "sin",
+        "sqrt",
+        "tanh",
+        "trunc",
+    }
+
+    for value, attr in zip(op.results, op.attrs.get("iter_args", ())):
+        axes = tuple(map(str, value.type.shape))
+
+        if not axes or len(axes) >= len(ctx.output_axes):
+            continue
+
+        block_arg = str(attr["block_arg"])
+        members = {value.name, block_arg}
+
+        def pointwise(operation):
+            return not operation.regions and (
+                operation.opcode.startswith(("arith.", "cmp.", "math."))
+                or operation.opcode == "tensor.cast"
+                or operation.opcode == "select.where"
+                or operation.opcode.startswith("call.")
+                and operation.opcode[5:] in math_names
+            )
+
+        while True:
+            previous = len(members)
+
+            for operation in operations:
+                if (
+                    pointwise(operation)
+                    and len(operation.results) == 1
+                    and tuple(map(str, operation.results[0].type.shape)) == axes
+                    and any(operand in members for operand in operation.operands)
+                ):
+                    members.add(operation.results[0].name)
+
+            if len(members) == previous:
+                break
+
+        projections = set()
+
+        for operation in operations:
+            operands = tuple(
+                operand for operand in operation.operands if operand in members
+            )
+
+            if not operands or operation is op or operation is region_yield:
+                continue
+
+            if operation.opcode in {"shape.dim", "tensor.stride"}:
+                continue
+
+            if (
+                pointwise(operation)
+                and len(operation.results) == 1
+                and tuple(map(str, operation.results[0].type.shape)) == axes
+            ):
+                continue
+
+            if operation.opcode == "mem.store":
+                projections.add(_current_coords(axes, ctx))
+                continue
+
+            if len(operation.results) == 1:
+                consumer_axes = tuple(map(str, operation.results[0].type.shape))
+
+                if _axes_compatible_suffix(
+                    consumer_axes, tuple(map(str, ctx.output_axes))
+                ):
+                    coordinates = _current_coords(consumer_axes, ctx)
+
+                    if operation.opcode == "tensor.view":
+                        parts = tuple(
+                            part.strip()
+                            for part in str(operation.attrs.get("subscript", ""))
+                            .strip("()")
+                            .split(",")
+                        )
+
+                        if "None" in parts and all(
+                            part.strip() in {":", "None"} for part in parts
+                        ):
+                            projections.add(
+                                _view_base_coords(operation, coordinates, ctx)
+                            )
+                            continue
+                    elif pointwise(operation):
+                        projections.add(
+                            _broadcast_coords(coordinates, consumer_axes, axes)
+                        )
+                        continue
+
+            raise ValueError(
+                f"Scalar loop carry {value.name} has an unproven coordinate consumer "
+                f"{operation.opcode}."
+            )
+
+        if len(projections) > 1:
+            raise ValueError(
+                f"Scalar loop carry {value.name} requires multiple coordinate projections."
+            )
+
+        coordinates = next(iter(projections), _current_coords(axes, ctx))
+        result[value.name] = coordinates
+        result[block_arg] = coordinates
+
+    return result
+
+
+def _scalar_carry_context(ctx, type_, coordinates, suffix):
+    return ctx.child(
+        memo={
+            name: expression
+            for name, expression in ctx.memo.items()
+            if not _value_axes(name, ctx)
+        },
+        output_axes=tuple(map(str, type_.shape)),
+        coordinate_exprs=coordinates,
+        local_suffix=_nested_local_suffix(ctx, suffix),
+    )
+
+
 def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | None:
     if ctx.native_block_program:
         fused = ctx.target.emit_reduction_loop(local, op, ctx)
@@ -2928,13 +3138,25 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
     upper = _emit_loop_bound(op.operands[1], ctx)
     step = _emit_loop_bound(op.operands[2], ctx)
     iter_attrs = tuple(op.attrs.get("iter_args", ()))
+    carry_coordinates = _scalar_loop_carry_coordinates(op, ctx)
+    binding_coordinates = {**(ctx.binding_coordinates or {}), **carry_coordinates}
+    ctx.binding_coordinates = binding_coordinates
     result_names = tuple(result.name for result in op.results)
     loop_locals: dict[str, str] = {}
     result_locals: dict[str, str] = {}
 
     for result, attr, value in zip(result_names, iter_attrs, op.results):
         initial_name = str(attr["initial"])
-        init = _emit_value(initial_name, ctx)
+
+        if result in carry_coordinates:
+            coordinates = carry_coordinates[result]
+            init = _emit_element(
+                initial_name,
+                coordinates,
+                _scalar_carry_context(ctx, value.type, coordinates, result + "_init"),
+            )
+        else:
+            init = _emit_value(initial_name, ctx)
 
         if (
             ctx.target.vector_value_semantics
@@ -2994,6 +3216,7 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
         lines=body_lines,
         memo=dict(ctx.memo),
         bindings=loop_bindings,
+        binding_coordinates=binding_coordinates,
         vector_bindings=frozenset(vector_bindings),
         local_suffix=_nested_local_suffix(ctx, local),
     )
@@ -3012,9 +3235,17 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
 
     for result, yielded, value in zip(result_names, yields, op.results):
         next_local = _local_symbol(f"%next_{result[1:]}", body)
-        body_lines.append(
-            body.target.local_decl(value.type, next_local, _emit_value(yielded, body))
-        )
+
+        if result in carry_coordinates:
+            coordinates = carry_coordinates[result]
+            carry_body = _scalar_carry_context(
+                body, value.type, coordinates, result + "_yield"
+            )
+            next_value = _emit_element(yielded, coordinates, carry_body)
+        else:
+            next_value = _emit_value(yielded, body)
+
+        body_lines.append(body.target.local_decl(value.type, next_local, next_value))
         next_locals.append((result, next_local))
 
     for result, next_local in next_locals:
@@ -3318,6 +3549,9 @@ def _region_yield_element(
 
 def _tensor_value(name: str, ctx: _EmitContext) -> str:
     info = ctx.tensor_infos.get(name, _TensorInfo(name=name))
+
+    if info.attrs is not None and info.attrs.get("source_ndim") == 0 and info.shape:
+        return _load_tensor_at(name, _current_coords(_value_axes(name, ctx), ctx), ctx)
 
     if info.ndim == 0:
         if _is_bool_scalar_value(name, ctx) and ctx.target.tir_value_semantics:
@@ -4159,7 +4393,11 @@ def _tensor_info(tensor: TensorSpec) -> _TensorInfo:
     source_strides = tuple(str(dim) for dim in attrs.get("source_strides", ()))
 
     return _TensorInfo(
-        ndim=max(tensor.ndim, len(tensor.shape)),
+        ndim=(
+            0
+            if tensor.constexpr and attrs.get("source_ndim", tensor.ndim) == 0
+            else max(tensor.ndim, len(tensor.shape))
+        ),
         shape=tuple(str(dim) for dim in tensor.shape),
         dtype=_normalize_dtype(tensor.dtype or "float32"),
         name=tensor.name,
@@ -4240,9 +4478,17 @@ def _shape_params(
         for tensor in tensors
         if tensor.attrs.get("jagged_seq_len_param")
     }
+    referenced_values = {
+        operand for operation in _walk_ops(operations) for operand in operation.operands
+    }
 
     for tensor in tensors:
-        if tensor.constexpr and tensor.ndim == 0 and tensor.name not in params:
+        if (
+            tensor.constexpr
+            and tensor.attrs.get("source_ndim", tensor.ndim) == 0
+            and (tensor.ndim == 0 or tensor.name in referenced_values)
+            and tensor.name not in params
+        ):
             params.append(tensor.name)
 
         for attr_name in (
