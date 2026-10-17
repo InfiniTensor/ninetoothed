@@ -367,7 +367,7 @@ def _autotune_singleton_dot_impl(
     if cache_path is None:
         cache_identity = stable_digest(
             {
-                "policy": "singleton-dot-model-v16",
+                "policy": "singleton-dot-model-v17",
                 "original": compilation_cache_key(base_probe),
                 "a09": compilation_cache_key(probe),
                 "signature": signature,
@@ -547,13 +547,15 @@ def _autotune_singleton_dot_impl(
                         if identity[0] == kind and not isinf(measured[identity])
                     ),
                     key=weighted,
+                    default=None,
                 )
                 identity = (kind, challenger)
                 search["expanded"].append(list(identity))
                 score(*identity)
 
                 if (
-                    not features[kind]["uncertain"]
+                    best_kind is not None
+                    and not features[kind]["uncertain"]
                     and not isinf(measured[identity])
                     and weighted(identity) >= weighted(best_kind) * 0.97
                 ):
@@ -725,7 +727,7 @@ def _quick_selection_key(
 
     return digest(
         {
-            "policy": "singleton-dot-quick-v3",
+            "policy": "singleton-dot-quick-v4",
             "original": original,
             "a09": optimized,
             "signature": signature,
@@ -970,7 +972,7 @@ def _next_expansion(kind, measured, ranked, legal_warps, *, uncertain):
     ]
 
     if not same_kind:
-        return None
+        return next((warp for warp in ranked if (kind, warp) not in measured), None)
 
     best_kind = min(same_kind, key=measured.__getitem__)
     tested = {warp for current_kind, warp in measured if current_kind == kind}

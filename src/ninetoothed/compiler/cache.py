@@ -13,7 +13,7 @@ from hashlib import sha256
 from importlib.metadata import PackageNotFoundError, version
 from inspect import getclosurevars, getsourcefile, isfunction
 from pathlib import Path
-from types import ModuleType
+from types import CodeType, ModuleType
 from typing import Any, Iterator, Mapping
 
 from ninetoothed.backends.toolchain import cuda_compiler_identity
@@ -68,7 +68,8 @@ def request_cache_key(request):
     """Fingerprint inspectable requests before compiling; return None if uncertain.
 
     The key includes source dependencies, request options and compiler/toolchain
-    versions. Unsupported closures or tensor histories use the compiled cache.
+    versions. Nested code, unsupported closures or tensor histories use the
+    compiled cache.
     """
     unsupported = object()
 
@@ -116,6 +117,10 @@ def request_cache_key(request):
             not isfunction(callable_value)
             or callable_value.__closure__
             or callable_value in seen
+            or any(
+                isinstance(value, CodeType)
+                for value in callable_value.__code__.co_consts
+            )
         ):
             return None
 
