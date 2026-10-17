@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from ninetoothed.backends.core import Artifact, BuiltArtifact, Target
 from ninetoothed.backends.materializers.cuda import _cuda_wrapper
@@ -11,6 +12,7 @@ from ninetoothed.compiler.cache import (
     write_source,
 )
 from ninetoothed.compiler.runtime import (
+    _flatten_ffi_tensor_args,
     _public_values,
     _runtime_wrapper,
     load_built_artifact,
@@ -318,3 +320,23 @@ def test_concurrent_source_writes_are_atomic(tmp_path, monkeypatch):
 
     assert len(set(paths)) == 1
     assert paths[0].read_text(encoding="utf-8") == source
+
+
+def test_ffi_tensor_views_preserve_storage_span():
+    storage = torch.arange(24).reshape(4, 6)
+    binding = SimpleNamespace(kind="tensor")
+    cases = (
+        (storage[1:3, 1:5:2], 9),
+        (storage[:0], 0),
+        (storage[:, :1].expand(-1, 3), 19),
+    )
+
+    for view, span in cases:
+        (flattened,), keepalive = _flatten_ffi_tensor_args((binding,), (view,))
+        assert flattened.shape == (span,)
+        assert flattened.storage_offset() == view.storage_offset()
+        assert (
+            flattened.untyped_storage().data_ptr()
+            == storage.untyped_storage().data_ptr()
+        )
+        assert keepalive[0] is flattened

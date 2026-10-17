@@ -1172,7 +1172,7 @@ def canonical_math_application(x, y, out):
         assert "tl.dtype" not in triton_source
         assert "tl.broadcast_to(tl.cast(" in triton_source
         assert "auto vacc_" in artifacts["cuda"].primary_source
-        assert "T.alloc_var(_nt_dtype(" in artifacts["tilelang"].primary_source
+        assert "T.alloc_local((1,), _nt_dtype(" in artifacts["tilelang"].primary_source
 
     def test_constructor_canonicalizes_aliased_and_chained_tensor_dtype(self):
         kernel = _ssa_kernel(

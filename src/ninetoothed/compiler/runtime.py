@@ -1381,10 +1381,18 @@ def _flatten_ffi_tensor_args(bindings, values):
             "jagged_values",
             "jagged_offsets",
         } and hasattr(value, "as_strided"):
-            storage_numel = value.untyped_storage().nbytes() // value.element_size()
             storage_offset = value.storage_offset()
+            span = (
+                1
+                + sum(
+                    (size - 1) * stride
+                    for size, stride in zip(value.shape, value.stride())
+                )
+                if value.numel()
+                else 0
+            )
             value = value.as_strided(
-                (storage_numel - storage_offset,),
+                (span,),
                 (1,),
                 storage_offset=storage_offset,
             )

@@ -1,7 +1,7 @@
 """TileLang syntax hooks for the common SSA emitter."""
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from ninetoothed.backends.core import Target
@@ -69,6 +69,8 @@ class TileLangTarget(EmitterTarget):
     buffer_suffix: str = "_buf"
     entrypoint_prefix: str = "build_"
     tir_value_semantics: bool = True
+    scalar_global_access: bool = False
+    _accessed_buffers: set[str] | None = field(default=None, compare=False, repr=False)
 
     def uses_mutable_scalar_slots(self) -> bool:
         return True
@@ -80,7 +82,15 @@ class TileLangTarget(EmitterTarget):
             else self.value_dtype(init)
         )
 
-        return [f"{name} = T.alloc_var({dtype}, {init})"]
+        return [f"{name} = T.alloc_local((1,), {dtype})", f"{name}[0] = {init}"]
+
+    def mutable_scalar_read(self, name: str) -> str:
+        return f"{name}[0]"
+
+    def assign_scalar(self, name: str, value: str, *, mutable: bool) -> str:
+        destination = self.mutable_scalar_read(name) if mutable else name
+
+        return f"{destination} = {value}"
 
     def literal(self, value: Any) -> str:
         if isinstance(value, float) and math.isinf(value):
@@ -96,10 +106,31 @@ class TileLangTarget(EmitterTarget):
     def load(self, tensor, index, *, mask=None, other=0.0):
         del mask, other
 
-        return f"{self.tensor_ref(tensor)}[{index}]"
+        if self._accessed_buffers is not None:
+            self._accessed_buffers.add(self.tensor_ref(tensor))
+
+        reference = f"{self.tensor_ref(tensor)}[{index}]"
+
+        if self.scalar_global_access:
+            return (
+                f'T.call_extern(_nt_dtype({reference}), "_nt_load", '
+                f'{self.tensor_ref(tensor)}.access_ptr("r", offset={index}, extent=1))'
+            )
+
+        return reference
 
     def store(self, tensor, index, value, *, mask=None):
-        assignment = f"{self.tensor_ref(tensor)}[{index}] = {value}"
+        if self._accessed_buffers is not None:
+            self._accessed_buffers.add(self.tensor_ref(tensor))
+
+        reference = f"{self.tensor_ref(tensor)}[{index}]"
+        assignment = (
+            f'T.evaluate(T.call_extern("int32", "_nt_store", '
+            f'{self.tensor_ref(tensor)}.access_ptr("w", offset={index}, extent=1), '
+            f"{self.cast_like(value, reference)}))"
+            if self.scalar_global_access
+            else f"{reference} = {value}"
+        )
 
         return assignment if mask is None else f"if {mask}:\n    {assignment}"
 
@@ -247,7 +278,7 @@ def _render_tilelang_cooperative_dot_module(
         for name in buffer_names
     }
     buffers = "\n".join(
-        f"        {name}_buf = T.match_buffer({name}, ({buffer_extents[name]},), {_tile_dtype(tensors[name].dtype)})"
+        f"        {name}_buf = T.match_buffer({name}, ({buffer_extents[name]},), {_tile_dtype(tensors[name].dtype)}, align=1)"
         for name in buffer_names
     )
 
@@ -256,11 +287,12 @@ def _render_tilelang_cooperative_dot_module(
         *,
         coordinates: tuple[str, ...],
         bindings: Mapping[str, str] | None = None,
+        access_target: _Target | None = None,
     ) -> _EmitContext:
         inner_index = _linearized_index(coordinates, result_axes)
 
         return _EmitContext(
-            target=target,
+            target=target if access_target is None else access_target,
             kernel=kernel,
             program=kernel.ssa,  # type: ignore[arg-type]
             operations=operations,
@@ -294,33 +326,42 @@ def _render_tilelang_cooperative_dot_module(
 
     induction = str(loop.attrs.get("induction", "%iv"))
     loop_bindings = {induction: "ko"}
-    lhs_lines: list[str] = []
-    lhs_ctx = context(
-        lhs_lines,
-        coordinates=("mi", "ki"),
-        bindings=loop_bindings,
-    )
-    lhs_value = _emit_element(lhs, ("mi", "ki"), lhs_ctx)
-    lhs_lines.append(f"a_shared[mi, ki] = {lhs_value}")
-    rhs_lines: list[str] = []
-    rhs_ctx = context(
-        rhs_lines,
-        coordinates=("ki", "ni"),
-        bindings=loop_bindings,
-    )
-    rhs_value = _emit_element(rhs, ("ki", "ni"), rhs_ctx)
-    rhs_lines.append(f"b_shared[ki, ni] = {rhs_value}")
+    transfer_buffers = (set(), set(), set())
 
-    output_lines: list[str] = []
-    output_ctx = context(
-        output_lines,
-        coordinates=("mi", "ni"),
-        bindings={loop.results[0].name: "c_local[mi, ni]"},
-    )
-    _emit_operation(plan.store, output_ctx)
+    def transfer_sources(scalar_access: bool):
+        access_target = replace(target, scalar_global_access=scalar_access)
+        lhs_lines: list[str] = []
+        lhs_ctx = context(
+            lhs_lines,
+            coordinates=("mi", "ki"),
+            bindings=loop_bindings,
+            access_target=replace(access_target, _accessed_buffers=transfer_buffers[0]),
+        )
+        lhs_value = _emit_element(lhs, ("mi", "ki"), lhs_ctx)
+        lhs_lines.append(f"a_shared[mi, ki] = {lhs_value}")
+        rhs_lines: list[str] = []
+        rhs_ctx = context(
+            rhs_lines,
+            coordinates=("ki", "ni"),
+            bindings=loop_bindings,
+            access_target=replace(access_target, _accessed_buffers=transfer_buffers[1]),
+        )
+        rhs_value = _emit_element(rhs, ("ki", "ni"), rhs_ctx)
+        rhs_lines.append(f"b_shared[ki, ni] = {rhs_value}")
 
-    if not output_lines:
-        return None
+        output_lines: list[str] = []
+        output_ctx = context(
+            output_lines,
+            coordinates=("mi", "ni"),
+            bindings={loop.results[0].name: "c_local[mi, ni]"},
+            access_target=replace(access_target, _accessed_buffers=transfer_buffers[2]),
+        )
+        _emit_operation(plan.store, output_ctx)
+
+        return lhs_lines, rhs_lines, output_lines, output_ctx
+
+    lhs_lines, rhs_lines, output_lines, output_ctx = transfer_sources(False)
+    scalar_lhs, scalar_rhs, scalar_output, _ = transfer_sources(True)
 
     lhs_storage_dtype = _resolved_dot_operand_dtype(lhs, output_ctx)
     rhs_storage_dtype = _resolved_dot_operand_dtype(rhs, output_ctx)
@@ -346,9 +387,74 @@ def _render_tilelang_cooperative_dot_module(
         if bound_lines
         else ""
     )
-    lhs_source = _indent_block("\n".join(lhs_lines), "                    ")
-    rhs_source = _indent_block("\n".join(rhs_lines), "                    ")
-    output_source = _indent_block("\n".join(output_lines), "                ")
+
+    alignment_checks: list[str] = []
+
+    def parallel_source(lines, loop_header, indent):
+        return _indent_block(
+            f"{loop_header}:\n" + _indent_block("\n".join(lines), "    "), indent
+        )
+
+    def transfer_source(native, scalar, loop_header, indent, accessed_buffers):
+        # Only the buffers accessed by this transfer select its scalar fallback.
+        alignment = " & ".join(
+            f'T.call_extern("bool", "_nt_aligned", {name}.data)'
+            for name in sorted(accessed_buffers)
+        )
+
+        if not alignment:
+            return parallel_source(native, loop_header, indent)
+
+        alignment_name = f"nt_aligned_{len(alignment_checks)}"
+        alignment_checks.append(f"{alignment_name} = {alignment}")
+        branches = "\n".join(
+            f"{branch}:\n    {loop_header}:\n"
+            + _indent_block("\n".join(lines), "        ")
+            for branch, lines in ((f"if {alignment_name}", native), ("else", scalar))
+        )
+
+        return _indent_block(branches, indent)
+
+    lhs_loop = f"for mi, ki in T.Parallel({bm}, {bk})"
+    rhs_loop = f"for ki, ni in T.Parallel({bk}, {bn})"
+    lhs_source = transfer_source(
+        lhs_lines,
+        scalar_lhs,
+        lhs_loop,
+        "                ",
+        transfer_buffers[0],
+    )
+    rhs_source = transfer_source(
+        rhs_lines,
+        scalar_rhs,
+        rhs_loop,
+        "                ",
+        transfer_buffers[1],
+    )
+    load_source = f"{lhs_source}\n{rhs_source}"
+
+    if len(alignment_checks) == 2:
+        # Keep aligned copies together for TileLang's pipeline optimization.
+        native_loads = "\n".join(
+            (
+                parallel_source(lhs_lines, lhs_loop, "                    "),
+                parallel_source(rhs_lines, rhs_loop, "                    "),
+            )
+        )
+        load_source = (
+            "                if nt_aligned_0 & nt_aligned_1:\n"
+            f"{native_loads}\n                else:\n"
+            + _indent_block(load_source, "    ")
+        )
+
+    output_source = transfer_source(
+        output_lines,
+        scalar_output,
+        f"for mi, ni in T.Parallel({bm}, {bn})",
+        "            ",
+        transfer_buffers[2],
+    )
+    alignment_source = _indent_block("\n".join(alignment_checks), "            ")
 
     return f'''"""TileLang lowering generated by NineToothed from ssa.Program.
 
@@ -370,6 +476,19 @@ except ImportError:
 
 {_TYPE_IDENTITY}
 
+_NT_SCALAR_ACCESS = """
+__device__ __forceinline__ bool _nt_aligned(const void* pointer) {{
+    return (reinterpret_cast<unsigned long long>(pointer) & 63) == 0;
+}}
+template <typename V>
+__device__ __forceinline__ V _nt_load(const V* pointer) {{ return *pointer; }}
+template <typename V, typename W>
+__device__ __forceinline__ int _nt_store(V* pointer, W value) {{
+    *pointer = value;
+    return 0;
+}}
+"""
+
 def build_{kernel.kernel_name}():
     if tilelang is None:
         raise ImportError("TileLang is required to build this backend artifact.")
@@ -378,17 +497,15 @@ def build_{kernel.kernel_name}():
     def {kernel.kernel_name}({handle_args}):
 {buffers}
         with T.Kernel({grid_total}, threads={threads}) as outer_index:{bound_source}
+            T.import_source(_NT_SCALAR_ACCESS)
+{alignment_source}
             a_shared = T.alloc_shared(({bm}, {bk}), {lhs_dtype})
             b_shared = T.alloc_shared(({bk}, {bn}), {rhs_dtype})
             c_local = T.alloc_fragment(({bm}, {bn}), {accumulator_dtype})
             T.clear(c_local)
             for ko in T.Pipelined({upper}, num_stages={num_stages}):
-                for mi, ki in T.Parallel({bm}, {bk}):
-{lhs_source}
-                for ki, ni in T.Parallel({bk}, {bn}):
-{rhs_source}
+{load_source}
                 T.gemm(a_shared, b_shared, c_local)
-            for mi, ni in T.Parallel({bm}, {bn}):
 {output_source}
 
     return {kernel.kernel_name}
@@ -427,7 +544,7 @@ def _render_tilelang_module(
         for name in buffer_names
     }
     buffers = "\n".join(
-        f"        {name}_buf = T.match_buffer({name}, ({buffer_extents[name]},), {_tile_dtype(tensors[name].dtype)})"
+        f"        {name}_buf = T.match_buffer({name}, ({buffer_extents[name]},), {_tile_dtype(tensors[name].dtype)}, align=1)"
         for name in buffer_names
     )
 
