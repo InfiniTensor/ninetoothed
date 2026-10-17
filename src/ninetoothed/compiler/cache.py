@@ -6,8 +6,14 @@ import os
 import platform
 import tempfile
 from contextlib import contextmanager
+from dataclasses import fields
+from dis import get_instructions
+from functools import partial
+from hashlib import sha256
 from importlib.metadata import PackageNotFoundError, version
+from inspect import getclosurevars, getsourcefile, isfunction
 from pathlib import Path
+from types import CodeType, ModuleType
 from typing import Any, Iterator, Mapping
 
 from ninetoothed.backends.toolchain import cuda_compiler_identity
@@ -53,6 +59,179 @@ def compilation_cache_key(compilation) -> str:
             "pass_options": request.pass_options,
             "architecture": _architecture(compilation),
             "toolchain": compilation_toolchain_identity(compilation),
+            "versions": _compiler_versions(),
+        }
+    )
+
+
+def request_cache_key(request):
+    """Fingerprint inspectable requests before compiling; return None if uncertain.
+
+    The key includes source dependencies, request options and compiler/toolchain
+    versions. Nested code, unsupported closures or tensor histories use the
+    compiled cache.
+    """
+    unsupported = object()
+
+    def value_identity(value, seen=frozenset()):
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+
+        if isinstance(value, (tuple, list)):
+            items = tuple(value_identity(item, seen=seen) for item in value)
+
+            return unsupported if unsupported in items else items
+
+        if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+            items = tuple(
+                (key, value_identity(item, seen=seen))
+                for key, item in sorted(value.items())
+            )
+
+            return (
+                unsupported if any(item is unsupported for _, item in items) else items
+            )
+
+        if isfunction(value):
+            identity = source_identity(value, seen)
+
+            return identity if identity is not None else unsupported
+
+        if isinstance(value, ModuleType) and value.__name__ == "ninetoothed.language":
+            return ("symbolic-language", value.__name__)
+
+        return unsupported
+
+    def source_identity(callable_value, seen=frozenset()):
+        arguments = None
+
+        if isinstance(callable_value, partial):
+            arguments = value_identity((callable_value.args, callable_value.keywords))
+
+            if arguments is unsupported:
+                return None
+
+            callable_value = callable_value.func
+
+        if (
+            not isfunction(callable_value)
+            or callable_value.__closure__
+            or callable_value in seen
+            or any(
+                isinstance(value, CodeType)
+                for value in callable_value.__code__.co_consts
+            )
+        ):
+            return None
+
+        seen = seen | {callable_value}
+        dependencies = getclosurevars(callable_value)
+
+        global_loads = {
+            instruction.argval
+            for instruction in get_instructions(callable_value)
+            if instruction.opname in {"LOAD_GLOBAL", "LOAD_NAME"}
+        }
+
+        if dependencies.nonlocals or dependencies.unbound & global_loads:
+            return None
+
+        defaults = value_identity(
+            (callable_value.__defaults__, callable_value.__kwdefaults__), seen=seen
+        )
+
+        if defaults is unsupported:
+            return None
+
+        globals_identity = []
+
+        for name, value in sorted(dependencies.globals.items()):
+            identity = value_identity(value, seen=seen)
+
+            if identity is unsupported:
+                return None
+
+            globals_identity.append((name, identity))
+
+        filename = getsourcefile(callable_value)
+
+        if filename is None:
+            return None
+
+        path = Path(filename)
+
+        try:
+            content = sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return None
+
+        return (
+            callable_value.__module__,
+            callable_value.__qualname__,
+            content,
+            defaults,
+            tuple(globals_identity),
+            arguments,
+        )
+
+    def identify(request):
+        arrangement = source_identity(request.arrangement)
+        application = source_identity(request.application)
+
+        if arrangement is None or application is None:
+            return None
+
+        tensors = []
+
+        for tensor in request.tensors:
+            if tensor.source is not tensor or tensor._history:
+                return None
+
+            if tensor.other is not None and not isinstance(
+                tensor.other, (bool, int, float, str)
+            ):
+                return None
+
+            tensors.append(
+                (
+                    tensor.name,
+                    tuple(map(str, tensor.shape)),
+                    str(tensor.dtype),
+                    tensor.other,
+                    tensor.constexpr,
+                    tensor.value,
+                    str(tensor.jagged_dim),
+                )
+            )
+
+        options = {
+            field.name: getattr(request, field.name)
+            for field in fields(request)
+            if field.name not in {"arrangement", "application", "tensors"}
+        }
+
+        return (arrangement, application, tensors, options)
+
+    result = identify(request)
+
+    if result is None:
+        return None
+
+    package = Path(__file__).resolve().parents[1]
+
+    try:
+        sources = sha256()
+
+        for path in sorted(package.rglob("*.py")):
+            sources.update(path.relative_to(package).as_posix().encode())
+            sources.update(path.read_bytes())
+    except OSError:
+        return None
+
+    return stable_digest(
+        {
+            "request": result,
+            "compiler_sources": sources.hexdigest(),
             "versions": _compiler_versions(),
         }
     )
@@ -296,6 +475,7 @@ __all__ = [
     "compilation_cache_key",
     "compilation_toolchain_identity",
     "read_manifest",
+    "request_cache_key",
     "stable_digest",
     "write_manifest",
     "write_source",

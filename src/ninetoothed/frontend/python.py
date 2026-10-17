@@ -1703,7 +1703,7 @@ class _ApplicationSSABuilder:
             "shape.dim",
             operands=(tensor.name,),
             attrs={"dim": _literal_value(node.slice), "source": source},
-            result_type=ssa.Type(kind="index"),
+            result_type=ssa.Type(kind="index", dtype="index"),
         )
 
     def _lower_subscript_values(

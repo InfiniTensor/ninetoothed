@@ -25,6 +25,8 @@ from ninetoothed.dtype import normalize_dtype
 _OPERATIONS = frozenset(
     {
         "arith.constant",
+        "dtype.constant",
+        "dtype.of",
         "arith.add",
         "arith.sub",
         "arith.mul",
@@ -39,6 +41,8 @@ _OPERATIONS = frozenset(
         "math.sqrt",
         "math.rsqrt",
         "tensor.view",
+        "linalg.transpose",
+        "shape.dim",
         "tensor.cast",
         "reduce.sum",
         "reduce.max",
@@ -58,29 +62,36 @@ class TritonBlockReductions(Pass):
     default_enabled = False
 
     def run(self, program, context):
-        options = dict(context.pass_options.get(self.name, {}))
-        unknown = options.keys() - {"max_block_elements", "max_total_elements"}
-
-        if unknown:
-            raise ValueError(f"Unknown block reduction options: {sorted(unknown)}.")
-
-        limits = {"max_block_elements": 4096, "max_total_elements": 32768} | options
-
-        for name, value in limits.items():
-            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-                raise ValueError(f"Block reduction option `{name}` must be positive.")
-
         schedule = dict(program.metadata.get("schedule", {}))
-        reason = _rejection(program, context, schedule, **limits)
-        schedule["block_reductions"] = {
-            "enabled": reason is None,
-            "reason": reason or "bounded straight-line reduction graph",
-            **limits,
-        }
+        schedule["block_reductions"] = analyze_block_reductions(program, context)
 
         return replace(
             program, metadata=dict(program.metadata) | {"schedule": schedule}
         )
+
+
+def analyze_block_reductions(program, context):
+    """Return shared legality/resource diagnostics without changing the program."""
+    options = dict(context.pass_options.get(TritonBlockReductions.name, {}))
+    unknown = options.keys() - {"max_block_elements", "max_total_elements"}
+
+    if unknown:
+        raise ValueError(f"Unknown block reduction options: {sorted(unknown)}.")
+
+    limits = {"max_block_elements": 4096, "max_total_elements": 32768} | options
+
+    for name, value in limits.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"Block reduction option `{name}` must be positive.")
+
+    schedule = program.metadata.get("schedule", {})
+    reason = _rejection(program, context, schedule, **limits)
+
+    return {
+        "enabled": reason is None,
+        "reason": reason or "bounded straight-line reduction graph",
+        **limits,
+    }
 
 
 def _rejection(program, context, schedule, *, max_block_elements, max_total_elements):

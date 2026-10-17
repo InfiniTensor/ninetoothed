@@ -36,6 +36,14 @@ def test_auto_tuner(args, kwargs, _):
 
     auto_tuner(*args, **kwargs)
     assert benchmark_calls == [_foo, _bar]
+    chosen_index = auto_tuner.search(
+        lambda measure: min(range(2), key=measure), args, kwargs
+    )
+    assert auto_tuner.measure(chosen_index, args, kwargs) == min(
+        _foo_delay(*args, **kwargs), _bar_delay(*args, **kwargs)
+    )
+    assert auto_tuner.failure(chosen_index, args, kwargs) is None
+    assert benchmark_calls == [_foo, _bar]
 
     cache_hit_benchmarks = []
     cached_tuner = AutoTuner(
@@ -85,6 +93,8 @@ def test_auto_tuner_reports_every_failed_candidate(_):
 
     with pytest.raises(RuntimeError, match="first.*_foo failed.*second.*_bar failed"):
         tuner(1)
+
+    assert "_foo failed" in tuner.failure(0, (1,))
 
     def fail_after_benchmark(*_args, **_kwargs):
         raise RuntimeError("Winner invocation failed.")
