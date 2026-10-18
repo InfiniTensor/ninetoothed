@@ -76,6 +76,13 @@ class CudaOptimizeSchedule(OptimizeSchedule):
     name = "ssa.cuda.optimize_schedule"
     supported_backends = (Target.CUDA,)
 
+    def lower_row_group(self, program, schedule, context):
+        from ninetoothed.backends.emitters.cuda import TARGET
+
+        if not TARGET.supports_cooperative_reduction(schedule):
+            return {"enabled": False, "reason": "requires cooperative row reduction"}
+        return {"mapping": "cooperative-loop"}
+
     def schedule_candidates(
         self,
         analysis: Mapping[str, Any],

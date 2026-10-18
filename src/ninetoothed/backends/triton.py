@@ -47,6 +47,13 @@ class TritonOptimizeSchedule(OptimizeSchedule):
     name = "ssa.triton.optimize_schedule"
     supported_backends = (Target.TRITON,)
 
+    def lower_row_group(self, program, schedule, context):
+        from ninetoothed.backends.triton_reductions import analyze_block_reductions
+
+        return analyze_block_reductions(program, context, allow_row_vector=True) | {
+            "mapping": "block-vector"
+        }
+
     def schedule_candidates(
         self,
         analysis: Mapping[str, Any],

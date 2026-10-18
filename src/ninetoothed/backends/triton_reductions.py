@@ -71,8 +71,8 @@ class TritonBlockReductions(Pass):
         )
 
 
-def analyze_block_reductions(program, context):
-    """Return shared legality/resource diagnostics without changing the program."""
+def analyze_block_reductions(program, context, *, allow_row_vector=False):
+    """Check block legality, preserving row-vector schedules unless opted out."""
     options = dict(context.pass_options.get(TritonBlockReductions.name, {}))
     unknown = options.keys() - {"max_block_elements", "max_total_elements"}
 
@@ -86,7 +86,9 @@ def analyze_block_reductions(program, context):
             raise ValueError(f"Block reduction option `{name}` must be positive.")
 
     schedule = program.metadata.get("schedule", {})
-    reason = _rejection(program, context, schedule, **limits)
+    reason = _rejection(
+        program, context, schedule, allow_row_vector=allow_row_vector, **limits
+    )
 
     return {
         "enabled": reason is None,
@@ -95,11 +97,22 @@ def analyze_block_reductions(program, context):
     }
 
 
-def _rejection(program, context, schedule, *, max_block_elements, max_total_elements):
+def _rejection(
+    program,
+    context,
+    schedule,
+    *,
+    allow_row_vector,
+    max_block_elements,
+    max_total_elements,
+):
     if context.resolved_target.backend != Target.TRITON:
         return "requires the Triton backend"
 
-    if schedule.get("reduction", {}).get("mode") == "row-vector":
+    if (
+        schedule.get("reduction", {}).get("mode") == "row-vector"
+        and not allow_row_vector
+    ):
         return "preserve the existing row-vector schedule"
 
     operations = program.blocks[0].operations
