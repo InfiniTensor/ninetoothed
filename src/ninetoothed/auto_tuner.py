@@ -75,6 +75,11 @@ class AutoTuner:
 
         return best_func(*args, **kwargs)
 
+    @staticmethod
+    def argument_key(args, kwargs=None):
+        """Return the shared shape/stride/dtype/device signature."""
+        return AutoTuner._make_arg_key(args, {} if kwargs is None else kwargs)
+
     def _get_timings(self, args, kwargs):
         arg_key = type(self)._make_arg_key(args, kwargs)
 

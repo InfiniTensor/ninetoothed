@@ -1406,7 +1406,12 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
         return _emit_linalg_dot(op, ctx)
 
     if opcode == "linalg.transpose":
-        return _emit_value(op.operands[0], ctx)
+        value = _emit_value(op.operands[0], ctx)
+
+        if ctx.block_program and len(_value_axes(op.operands[0], ctx)) == 2:
+            # The target's default transpose primitive exchanges two matrix axes.
+            return target.call("transpose", (value,))
+        return value
 
     raise ValueError(f"Unsupported SSA opcode `{opcode}` for unified backend emitter.")
 

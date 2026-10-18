@@ -140,7 +140,9 @@ class TestPipeline:
             expected = {f"ssa.{backend.value}.optimize_schedule"}
 
             if backend == Target.TRITON:
-                expected.add("ssa.triton.block_reductions")
+                expected.update(
+                    {"ssa.triton.block_reductions", "ssa.triton.singleton_dot"}
+                )
 
             assert backend_passes == expected
             assert (
@@ -152,6 +154,7 @@ class TestPipeline:
         } == {
             "ssa.triton.optimize_schedule",
             "ssa.triton.block_reductions",
+            "ssa.triton.singleton_dot",
             "ssa.cuda.optimize_schedule",
             "ssa.tilelang.optimize_schedule",
         }

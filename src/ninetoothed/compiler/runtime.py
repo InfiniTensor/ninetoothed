@@ -790,6 +790,7 @@ class _PreparedRuntimeLaunch:
     binding_plan: _RuntimeBindingPlan | None
     owner_refs: tuple[weakref.ReferenceType, ...] | None
     empty: bool
+    invoker: Callable[[Any, tuple, dict], Any]
     invocation_plan: Callable[[tuple, tuple, dict], Any] | None = None
     cache_token: object | None = None
 
@@ -950,7 +951,7 @@ def _verified_runtime_launch(launch):
                 call_key=call_key,
             )
         ):
-            return launch._ninetoothed_invoke_prepared(
+            return active_snapshot.invoker(
                 active_snapshot,
                 args,
                 kwargs,
@@ -967,7 +968,7 @@ def _verified_runtime_launch(launch):
             prepared_calls[identity] = cached
             activate(identity, cached)
 
-            return launch._ninetoothed_invoke_prepared(cached, args, kwargs)
+            return cached.invoker(cached, args, kwargs)
 
         prepared = launch._ninetoothed_prepare(args, kwargs)
         cached_prepared = remember(
@@ -977,13 +978,49 @@ def _verified_runtime_launch(launch):
             prepared,
         )
 
-        return launch._ninetoothed_invoke_prepared(
+        return prepared.invoker(
             cached_prepared or prepared,
             args,
             kwargs,
         )
 
+    verified._ninetoothed_prepare = launch._ninetoothed_prepare
+    verified._ninetoothed_invoke_prepared = launch._ninetoothed_invoke_prepared
+
     return verified
+
+
+def dispatch_handles(resolve):
+    """Select a Handle when its call contract changes, sharing runtime guards.
+
+    ``resolve(args, kwargs)`` returns a Handle without invoking it. Tensor
+    shape, stride, dtype, device, pointer and storage offset remain checked
+    on every call by the same bounded, weak-reference cache as ordinary Handles.
+    """
+
+    def prepare(args, kwargs):
+        handle = resolve(args, kwargs)
+        launch = handle._launch
+
+        if not hasattr(launch, "_ninetoothed_prepare"):
+            launch = _runtime_wrapper(
+                handle,
+                handle._compilation.launch_abi,
+                low_level=False,
+                specs=handle._compilation.kernel.tensors,
+                device_types=runtime_device_types(handle._compilation),
+            )
+
+        return launch._ninetoothed_prepare(args, kwargs)
+
+    return _verified_runtime_launch(
+        SimpleNamespace(
+            _ninetoothed_prepare=prepare,
+            _ninetoothed_invoke_prepared=lambda prepared, args, kwargs: (
+                prepared.invoker(prepared, args, kwargs)
+            ),
+        )
+    )
 
 
 def _runtime_wrapper(
@@ -1020,6 +1057,7 @@ def _runtime_wrapper(
                 binding_plan=None,
                 owner_refs=_runtime_owner_refs(args, kwargs),
                 empty=True,
+                invoker=invoke,
             )
 
         values, _keepalive = _bound_values(abi, bound_public, scalar_mode="value")
@@ -1067,6 +1105,7 @@ def _runtime_wrapper(
             owner_refs=owner_refs,
             empty=False,
             invocation_plan=invocation_plan,
+            invoker=invoke,
         )
 
     def invoke(prepared, args, kwargs):
@@ -1515,6 +1554,7 @@ __all__ = [
     "Handle",
     "KernelLaunchError",
     "import_python_module",
+    "dispatch_handles",
     "load_built_artifact",
     "materialize",
     "overflow_terms",
