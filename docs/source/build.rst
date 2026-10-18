@@ -296,3 +296,23 @@ must be executable as the reference.
         original_request, reduction_request, (lhs, rhs, output)
     )
     tuned(lhs, rhs, output)
+
+Row reduction grouping
+----------------------
+
+``autotune_row_reductions(request, (input, output))`` returns a callable tuner
+shared by Triton, CUDA and TileLang. It compares the original with a small
+shortlist of physical row counts that divide the existing logical row tile.
+Logical shapes and arrangement stay fixed. Device capacity and reduction width
+rank the intermediate partitions; valid candidates are checked against the
+original and measured with the shared timer. The default is at most four
+candidates, including the original; results use the existing tuning cache.
+
+This opt-in path supports independent row reductions with elementwise consumers
+and one fully written, write-only, non-aliased floating-point output. It requires
+single-level, regular tiling and broadcasting; padding, complex views, control
+flow and pointer operations retain their original execution path. Inputs inside
+each reduction must have matching valid domains without implicit broadcasting.
+Only the designated output may be written during tuning. Pass tensors
+positionally on one accelerator. Logical tiles and thread counts are not tuned,
+and default compilation is unchanged.

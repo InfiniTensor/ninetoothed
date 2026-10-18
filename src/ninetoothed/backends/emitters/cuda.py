@@ -28,6 +28,7 @@ _materialize_index_expr = common.materialize_index_expr
 _nested_local_suffix = common.nested_local_suffix
 _normalize_dtype = common.normalize_dtype
 _reduction_identity = common.reduction_identity
+_reduction_input_mask = common.reduction_input_mask
 _source_index_for_value = common.source_index_for_value
 _target_index_expr = common.target_index_expr
 _value_axes = common.value_axes
@@ -340,6 +341,16 @@ class CudaTarget(EmitterTarget):
 {common.indent_block(body, "    ")}"""
             blocks_expr = grid_total
         elif context.cooperative_reduction_program:
+            group = kernel.ssa.metadata.get("schedule", {}).get("row_group", {})
+
+            if group.get("enabled") and group.get("mapping") == "cooperative-loop":
+                body = (
+                    f"for (int64_t nt_group_row = 0; nt_group_row < {group['rows']}; "
+                    f"++nt_group_row) {{\n"
+                    + common.indent_block(body, "    ")
+                    + "\n    __syncthreads();\n}"
+                )
+
             kernel_prelude = body
             blocks_expr = grid_total
         else:
@@ -437,6 +448,13 @@ def _emit_cuda_cooperative_reduction(
     )
     term = _emit_element(operand, coordinates, body)
     term = ctx.target.cast(accumulator_dtype, term)
+
+    if ctx.program.metadata.get("schedule", {}).get("row_group", {}).get("enabled"):
+        mask = _reduction_input_mask(operand, coordinates, body)
+
+        if mask is not None:
+            term = ctx.target.where(mask, term, identity)
+
     body_lines.append(
         f"{accumulator} = "
         f"{_cuda_reduction_update(operator, accumulator, term, accumulator_dtype)};"

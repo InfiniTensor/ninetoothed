@@ -33,12 +33,23 @@ def tensor_spec(name: str, tensor) -> TensorSpec:
     shape = getattr(tensor, "shape", getattr(source, "shape", ()))
     application_shape = _application_shape(tensor)
 
+    history = tuple(
+        entry
+        for level in getattr(tensor, "_levels", ())
+        for value in level
+        for entry in value._history
+    )
     attrs = _source_attrs(tensor) | {
         "application_shape": application_shape,
         "application_ndim": len(application_shape),
         "dtype_shapes": _dtype_shapes(tensor),
         "dtype_target_dims": _dtype_target_dims(tensor),
         "access_templates": _access_templates(tensor),
+        "layout_operations": tuple(sorted({op.__name__ for op, _, _ in history})),
+        "custom_tiling": any(
+            op.__name__ == "tile" and (len(args) > 1 or kwargs.keys() - {"tile_shape"})
+            for op, args, kwargs in history
+        ),
     }
 
     return TensorSpec(

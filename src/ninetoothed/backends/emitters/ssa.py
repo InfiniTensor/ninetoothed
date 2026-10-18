@@ -240,17 +240,27 @@ def _static_integer(value) -> int | None:
         return None
 
 
-def _reduction_program_domain(schedule, target, reduction_coordinate):
+def _reduction_program_domain(schedule, target, reduction_coordinate, *, group=None):
     axes = tuple(str(axis) for axis in schedule.get("value_shape", ()))
     reduction_axis = int(schedule["axis"])
     parallel_shape = tuple(str(axis) for axis in schedule.get("parallel_shape", ()))
     parallel_total = _product(parallel_shape)
     program_index = target.program_id(0)
+    grouped = bool(group)
+    groups = group.get("groups_per_tile", 1) if grouped else 1
     parallel_index = (
-        "0"
+        "nt_group_row"
+        if grouped
+        else "0"
         if _is_one_expr(parallel_total)
         else _target_index_expr(target, f"({program_index}) % ({parallel_total})")
     )
+
+    if groups > 1:
+        parallel_index = (
+            f"(({program_index}) % {groups}) * {group['rows']} + nt_group_row"
+        )
+
     coordinates = []
     parallel_dim = 0
 
@@ -267,17 +277,27 @@ def _reduction_program_domain(schedule, target, reduction_coordinate):
     coordinates = tuple(coordinates)
     outer_shape = tuple(str(axis) for axis in schedule.get("program_shape", ()))
     outer_index = (
-        "0"
+        program_index
+        if grouped
+        else "0"
         if not outer_shape
         else program_index
         if _is_one_expr(parallel_total)
         else _target_index_expr(target, f"floor(({program_index})/({parallel_total}))")
     )
 
+    if groups > 1:
+        outer_index = _target_index_expr(target, f"floor(({program_index}) / {groups})")
+
     return (
         axes,
         _target_index_expr(target, str(schedule["extent"])),
-        _target_index_expr(target, _product((*outer_shape, *parallel_shape))),
+        _target_index_expr(
+            target,
+            f"({_product(outer_shape)}) * {groups}"
+            if groups > 1
+            else _product(outer_shape if grouped else (*outer_shape, *parallel_shape)),
+        ),
         outer_index,
         _linearized_index(coordinates, axes),
         coordinates,
@@ -314,6 +334,8 @@ def _render_source(
     program = kernel.ssa
     assert program is not None
     reduction_schedule = _row_reduction_schedule(program, target)
+    row_group = program.metadata.get("schedule", {}).get("row_group", {})
+    group_mapping = row_group.get("mapping") if row_group.get("enabled") else None
     block = program.blocks[0] if program.blocks else ssa.Block()
     tensor_infos = {tensor.name: _tensor_info(tensor) for tensor in kernel.tensors}
     auxiliary_bindings = _auxiliary_pointer_bindings(kernel.tensors)
@@ -397,6 +419,7 @@ def _render_source(
         )
 
     output_attrs = output_info.attrs or {} if output_info is not None else {}
+
     split_outer_inner = bool(
         value_axes
         and output_info is not None
@@ -416,6 +439,7 @@ def _render_source(
                 .get("enabled", False)
                 and 1 <= len(value_axes) <= 2
             )
+            or group_mapping == "block-vector"
         )
     )
     vector_scalar_program = bool(
@@ -454,6 +478,15 @@ def _render_source(
         grid_total = _target_index_expr(target, _product(outer_axes))
         outer_index_expr = target.program_id(0)
         inner_index_expr = "0"
+
+        if group_mapping == "block-vector" and row_group.get("groups_per_tile", 1) > 1:
+            groups = row_group["groups_per_tile"]
+            grid_total = _target_index_expr(
+                target, f"({_product(outer_axes)}) * {groups}"
+            )
+            outer_index_expr = _target_index_expr(
+                target, f"floor(({target.program_id(0)}) / {groups})"
+            )
     elif vector_reduction_program or cooperative_reduction_program:
         (
             axes,
@@ -466,7 +499,26 @@ def _render_source(
             reduction_schedule,
             target,
             "offsets" if vector_reduction_program else "0",
+            group=row_group if group_mapping == "cooperative-loop" else None,
         )
+    elif group_mapping == "scalar-tile":
+        axes = value_axes
+        groups = row_group.get("groups_per_tile", 1)
+        physical_axes = list(axes)
+        parallel_axis = int(reduction_schedule["parallel_axes"][0])
+        physical_axes[parallel_axis] = str(row_group["rows"])
+        total = _target_index_expr(target, _product(physical_axes))
+        grid_total = _target_index_expr(target, f"({_product(outer_axes)}) * {groups}")
+        outer_index_expr = _target_index_expr(
+            target, f"floor(({target.program_id(0)}) / {groups})"
+        )
+        coords = list(
+            _coords_from_linear(target.index_name, tuple(physical_axes), target)
+        )
+        coords[parallel_axis] = (
+            f"({coords[parallel_axis]}) + (({target.program_id(0)}) % {groups}) * {row_group['rows']}"
+        )
+        inner_index_expr = _linearized_index(tuple(coords), axes)
     elif native_block_program:
         axes = value_axes
         total = _target_index_expr(target, _product(value_axes))
@@ -760,6 +812,20 @@ def _render_body(
 
     if block_program:
         coordinate_exprs = target.block_coords(axes)
+        group = kernel.ssa.metadata.get("schedule", {}).get("row_group", {})
+
+        if group.get("enabled") and group.get("groups_per_tile", 1) > 1:
+            parallel_axis = int(
+                kernel.ssa.metadata["schedule"]["reduction"]["parallel_axes"][0]
+            )
+            physical_axes = list(axes)
+            physical_axes[parallel_axis] = str(group["rows"])
+            coords = list(target.block_coords(tuple(physical_axes)))
+            coords[parallel_axis] = (
+                f"({coords[parallel_axis]}) + (({target.program_id(0)}) % {group['groups_per_tile']}) * {group['rows']}"
+            )
+            coordinate_exprs = tuple(coords)
+
         inner_index_expr = _linearized_index(coordinate_exprs, axes)
     elif enable_index_cse:
         index_type = ssa.Type(kind="index", dtype="index")
@@ -1215,6 +1281,23 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
         if ctx.block_program:
             operator = op.opcode[len("reduce.") :]
             operand = _emit_value(op.operands[0], ctx)
+
+            if (
+                ctx.kernel.ssa.metadata.get("schedule", {})
+                .get("row_group", {})
+                .get("enabled", False)
+            ):
+                operand_axes = _value_axes(op.operands[0], ctx)
+                mask = _reduction_input_mask(
+                    op.operands[0], _current_coords(operand_axes, ctx), ctx
+                )
+
+                if mask is not None:
+                    identity = _reduction_identity(
+                        operator, op.results[0].type, ctx.target
+                    )
+                    operand = ctx.target.where(mask, operand, identity)
+
             axis = int(op.attrs.get("axis", 0) or 0)
             expr = ctx.target.vector_reduce(operator, operand, axis)
             ctx.lines.append(ctx.target.local_decl(op.results[0].type, local, expr))
@@ -1246,12 +1329,21 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
 
         expr = _scf_if_expr(op, ctx)
     elif (
-        not ctx.target.vector_value_semantics
-        and op.results
-        and op.results[0].type.kind == "tensor"
-        and op.opcode.startswith("arith.")
-        and ctx.reduce_axis is not None
-    ) or _should_emit_tensor_value_as_element(op):
+        (
+            ctx.program.metadata.get("schedule", {})
+            .get("row_group", {})
+            .get("enabled", False)
+            and op.opcode.startswith(("arith.", "cmp.", "math.", "select."))
+        )
+        or (
+            not ctx.target.vector_value_semantics
+            and op.results
+            and op.results[0].type.kind == "tensor"
+            and op.opcode.startswith("arith.")
+            and ctx.reduce_axis is not None
+        )
+        or _should_emit_tensor_value_as_element(op)
+    ):
         expr = _emit_element(name, _reduction_value_coords(name, ctx), ctx)
     else:
         expr = _operation_expr(op, ctx)
@@ -1679,7 +1771,7 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
 
     if op.opcode == "tensor.view":
         if ctx.block_program:
-            return ctx.target.render_view(op, ctx)
+            return ctx.target.render_view(op, ctx, coords=coords)
         return _emit_element(op.operands[0], _view_base_coords(op, coords, ctx), ctx)
 
     if op.opcode == "linalg.transpose":
@@ -1758,10 +1850,16 @@ def _emit_element_arg(
         else ctx.output_axes
     )
     operand_axes = _value_axes(operand, ctx)
+    operand_coords = _broadcast_coords(coords, result_axes, operand_axes)
 
-    return _emit_element(
-        operand, _broadcast_coords(coords, result_axes, operand_axes), ctx
-    )
+    if (
+        ctx.program.metadata.get("schedule", {}).get("row_group", {}).get("enabled")
+        and ctx.reduce_index is None
+        and operand_coords == _current_coords(operand_axes, ctx)
+    ):
+        return _emit_value(operand, ctx)
+
+    return _emit_element(operand, operand_coords, ctx)
 
 
 def _element_binary(
@@ -2652,7 +2750,21 @@ def _current_coords(axes: tuple[str, ...], ctx: _EmitContext) -> tuple[str, ...]
         return ()
 
     if ctx.block_program:
-        return ctx.target.block_coords(axes)
+        coords = list(ctx.target.block_coords(axes))
+        group = ctx.program.metadata.get("schedule", {}).get("row_group", {})
+
+        if group.get("enabled") and group.get("groups_per_tile", 1) > 1:
+            parallel_axis = int(
+                ctx.program.metadata["schedule"]["reduction"]["parallel_axes"][0]
+            )
+
+            if (
+                len(axes) == len(ctx.output_axes)
+                and axes[parallel_axis] == ctx.output_axes[parallel_axis]
+            ):
+                coords[parallel_axis] = ctx.coordinate_exprs[parallel_axis]
+
+        return tuple(coords)
 
     output_axes = tuple(str(axis) for axis in ctx.output_axes)
 
@@ -4509,6 +4621,7 @@ nested_local_suffix = _nested_local_suffix
 normalize_dtype = _normalize_dtype
 product = _product
 reduction_identity = _reduction_identity
+reduction_input_mask = _reduction_input_mask
 resolved_dot_operand_dtype = _resolved_dot_operand_dtype
 rewrite_index_math = _rewrite_index_math
 schedule_int = _schedule_int
@@ -4545,6 +4658,7 @@ __all__ = [
     "normalize_dtype",
     "product",
     "reduction_identity",
+    "reduction_input_mask",
     "resolved_dot_operand_dtype",
     "rewrite_index_math",
     "schedule_int",

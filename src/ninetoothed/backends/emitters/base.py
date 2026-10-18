@@ -74,7 +74,7 @@ class EmitterTarget(ABC):
             f"Emitter {type(self).__name__} has no block value domain."
         )
 
-    def render_view(self, operation, context) -> str:
+    def render_view(self, operation, context, *, coords=None) -> str:
         raise NotImplementedError(
             f"Emitter {type(self).__name__} has no block view syntax."
         )

@@ -13,6 +13,7 @@ from ninetoothed.compiler.driver import (
     resolve_target,
 )
 from ninetoothed.compiler.jit import jit
+from ninetoothed.compiler.row_reduction_autotune import autotune_row_reductions
 from ninetoothed.compiler.runtime import load_built_artifact
 from ninetoothed.compiler.singleton_dot_autotune import autotune_singleton_dot
 from ninetoothed.targets import PlatformProfile, PlatformRegistry, TargetContext
@@ -24,6 +25,7 @@ __all__ = [
     "DEFAULT_COMPILER",
     "aot",
     "autotune_singleton_dot",
+    "autotune_row_reductions",
     "compile_kernel",
     "jit",
     "lower",
