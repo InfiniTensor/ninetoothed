@@ -273,3 +273,26 @@ without it, asynchronous devices are timed by host submission only. Custom
 
 After upgrades or changes to timing or tuning code, clear ``~/.ninetoothed``
 (or ``NINETOOTHED_CACHE_DIR`` when set) before reusing tuning results.
+
+Singleton dot optimization
+--------------------------
+
+``autotune_singleton_dot`` compares original and reduction kernels for static 2D
+Triton dots with ``M == 1`` or ``N == 1``, FP16/BF16/FP32 inputs and FP32 outputs.
+It shortlists configurations using hardware and workload estimates, checks their
+results, then measures and selects the fastest valid candidate. Default
+compilation is unchanged.
+
+Both requests must match in application, tensor shapes/dtypes, target and calling
+convention; tiles may differ. Pass all tensors positionally on one accelerator,
+with one output that does not alias any input. The original default configuration
+must be executable as the reference.
+
+.. code-block:: python
+
+    from ninetoothed.compiler import autotune_singleton_dot
+
+    tuned = autotune_singleton_dot(
+        original_request, reduction_request, (lhs, rhs, output)
+    )
+    tuned(lhs, rhs, output)

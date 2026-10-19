@@ -646,6 +646,26 @@ without it, asynchronous devices are timed by host submission only. Custom
 <p>After upgrades or changes to timing or tuning code, clear <code class="docutils literal notranslate"><span class="pre">~/.ninetoothed</span></code>
 (or <code class="docutils literal notranslate"><span class="pre">NINETOOTHED_CACHE_DIR</span></code> when set) before reusing tuning results.</p>
 </section>
+<section id="singleton-dot-optimization">
+<h2>Singleton dot optimization<a class="headerlink" href="#singleton-dot-optimization" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">autotune_singleton_dot</span></code> compares original and reduction kernels for static 2D
+Triton dots with <code class="docutils literal notranslate"><span class="pre">M</span> <span class="pre">==</span> <span class="pre">1</span></code> or <code class="docutils literal notranslate"><span class="pre">N</span> <span class="pre">==</span> <span class="pre">1</span></code>, FP16/BF16/FP32 inputs and FP32 outputs.
+It shortlists configurations using hardware and workload estimates, checks their
+results, then measures and selects the fastest valid candidate. Default
+compilation is unchanged.</p>
+<p>Both requests must match in application, tensor shapes/dtypes, target and calling
+convention; tiles may differ. Pass all tensors positionally on one accelerator,
+with one output that does not alias any input. The original default configuration
+must be executable as the reference.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ninetoothed.compiler</span><span class="w"> </span><span class="kn">import</span> <span class="n">autotune_singleton_dot</span>
+
+<span class="n">tuned</span> <span class="o">=</span> <span class="n">autotune_singleton_dot</span><span class="p">(</span>
+    <span class="n">original_request</span><span class="p">,</span> <span class="n">reduction_request</span><span class="p">,</span> <span class="p">(</span><span class="n">lhs</span><span class="p">,</span> <span class="n">rhs</span><span class="p">,</span> <span class="n">output</span><span class="p">)</span>
+<span class="p">)</span>
+<span class="n">tuned</span><span class="p">(</span><span class="n">lhs</span><span class="p">,</span> <span class="n">rhs</span><span class="p">,</span> <span class="n">output</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
 </section>
 
 
@@ -703,6 +723,7 @@ without it, asynchronous devices are timed by host submission only. Custom
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#caching">Caching</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#calling-from-c">Calling from C++</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shared-runtime-timing">Shared runtime timing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#singleton-dot-optimization">Singleton dot optimization</a></li>
 </ul>
   </nav></div>
 
