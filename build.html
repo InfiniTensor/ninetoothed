@@ -637,6 +637,15 @@ success without launching, and unsupported configuration keys return an error.</
 and configuration types. Python-only configurations, such as jagged tensors or
 arbitrary string keys, remain available through the returned callable.</p>
 </section>
+<section id="shared-runtime-timing">
+<h2>Shared runtime timing<a class="headerlink" href="#shared-runtime-timing" title="Link to this heading">#</a></h2>
+<p>Python auto-tuning shares an internal timer, preferring device graphs and events
+and falling back to Python timing. Available device synchronization is used;
+without it, asynchronous devices are timed by host submission only. Custom
+<code class="docutils literal notranslate"><span class="pre">benchmark</span></code> callbacks still return milliseconds.</p>
+<p>After upgrades or changes to timing or tuning code, clear <code class="docutils literal notranslate"><span class="pre">~/.ninetoothed</span></code>
+(or <code class="docutils literal notranslate"><span class="pre">NINETOOTHED_CACHE_DIR</span></code> when set) before reusing tuning results.</p>
+</section>
 </section>
 
 
@@ -693,6 +702,7 @@ arbitrary string keys, remain available through the returned callable.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#combining-configuration-axes">Combining Configuration Axes</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#caching">Caching</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#calling-from-c">Calling from C++</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shared-runtime-timing">Shared runtime timing</a></li>
 </ul>
   </nav></div>
 
