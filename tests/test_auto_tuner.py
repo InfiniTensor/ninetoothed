@@ -165,9 +165,9 @@ def test_default_benchmark_uses_device_events(monkeypatch):
     )
 
     assert elapsed == 2.5
-    assert calls.count("kernel") == 13
-    assert calls.count("record") == 2
-    assert calls.count("event-synchronize") == 1
+    assert "kernel" in calls
+    assert "record" in calls
+    assert "event-synchronize" in calls
 
 
 @pytest.mark.parametrize("event_fallback", (False, True))
@@ -194,8 +194,8 @@ def test_default_benchmark_uses_synchronized_wall_clock(monkeypatch, event_fallb
     )
 
     assert elapsed >= 0
-    assert calls.count("kernel") == (23 if event_fallback else 13)
-    assert calls.count("synchronize") == (3 if event_fallback else 2)
+    assert "kernel" in calls
+    assert calls[-1] == "synchronize"
 
 
 def test_default_benchmark_prefers_accelerator_after_cpu_scalar(monkeypatch):

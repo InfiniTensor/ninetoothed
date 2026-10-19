@@ -262,3 +262,14 @@ success without launching, and unsupported configuration keys return an error.
 C++ files are emitted when every variant uses the supported Triton tensor ABI
 and configuration types. Python-only configurations, such as jagged tensors or
 arbitrary string keys, remain available through the returned callable.
+
+Shared runtime timing
+--------------------
+
+Python auto-tuning shares an internal timer, preferring device graphs and events
+and falling back to Python timing. Available device synchronization is used;
+without it, asynchronous devices are timed by host submission only. Custom
+``benchmark`` callbacks still return milliseconds.
+
+After upgrades or changes to timing or tuning code, clear ``~/.ninetoothed``
+(or ``NINETOOTHED_CACHE_DIR`` when set) before reusing tuning results.
