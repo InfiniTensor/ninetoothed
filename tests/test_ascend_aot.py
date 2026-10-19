@@ -37,6 +37,12 @@ def test_aot_build_reload_without_compiler(application, dtype, tmp_path):
     handle = DEFAULT_COMPILER.materialize(compilation, output_dir=tmp_path, mode="aot")
     built = handle._built_artifact
     assert Path(built.binary_path).stat().st_size > 0
+    cpp_sources = tuple(tmp_path.rglob("*.ascend.launch.cpp"))
+    assert cpp_sources
+    cpp_source = cpp_sources[0].read_text(encoding="utf-8")
+    assert "rtDevBinaryRegister" in cpp_source
+    assert "rtKernelLaunch" in cpp_source
+    assert "ffts_addr" in cpp_source
     relocated = tmp_path / "relocated"
     shutil.copytree(Path(built.binary_path).parent, relocated)
     built = replace(built, binary_path=str(relocated / "kernel.bin"))

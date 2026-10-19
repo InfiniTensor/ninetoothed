@@ -115,6 +115,21 @@ def build(compilation, *, output_dir):
     binary.write_bytes(compiled.kernel)
     shutil.copy2(compiled.run.launch.__self__.__file__, output / "launcher.so")
     shutil.copy2(driver.active.utils.npu_utils_mod.__file__, output / "npu_utils.so")
+    cpp_source = None
+
+    try:
+        from ninetoothed.backends.materializers.ascend_cpp import write_launcher
+
+        cpp_source = write_launcher(
+            compilation,
+            compiled,
+            signature,
+            binary,
+            output_dir,
+        )
+    except ValueError:
+        pass
+
     (output / "launch.py").write_text(
         _launch_source(
             artifact.primary_source, artifact.entrypoint, _compile_block(compilation)
@@ -144,7 +159,10 @@ def build(compilation, *, output_dir):
     )
     launch = load(built)
 
-    return Handle(compilation, compiled, launch, source_path, binary)
+    handle = Handle(compilation, compiled, launch, source_path, binary)
+    handle._cpp_source = None if cpp_source is None else str(cpp_source)
+
+    return handle
 
 
 def load(built):

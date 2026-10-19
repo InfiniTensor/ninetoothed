@@ -205,6 +205,10 @@ def build(
             cpp_variants.append(
                 (key, handle._compilation, f"launch_{variant_name}_variant")
             )
+        elif handle._backend == "ascend" and getattr(handle, "_cpp_source", None):
+            cpp_variants.append(
+                (key, handle._compilation, f"launch_{variant_name}_variant")
+            )
 
         group = grouped.setdefault(key, {"handles": [], "keys": []})
         group["handles"].append(handle)
@@ -246,6 +250,22 @@ def build(
             supports_cpp_export,
             write_dispatcher,
         )
+
+        if backend == "ascend":
+            from ninetoothed.backends.materializers.ascend_cpp import (
+                supports_cpp_export as supports_ascend_cpp_export,
+            )
+            from ninetoothed.backends.materializers.ascend_cpp import (
+                write_dispatcher as write_ascend_dispatcher,
+            )
+
+            if supports_ascend_cpp_export(cpp_variants):
+                write_ascend_dispatcher(
+                    base_name, runtime_names, cpp_variants, output_dir
+                )
+
+            return _BuildHandle(variants, len(runtime_names))
+
         from ninetoothed.backends.materializers.triton import publish_cpp_sources
 
         if supports_cpp_export(cpp_variants):
