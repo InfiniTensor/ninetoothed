@@ -998,7 +998,9 @@ def _emit_cooperative_full_store(
         )
     )
     ctx.lines.extend(_indent_lines(body_lines, ctx.target))
-    ctx.lines.append("}")
+
+    if ctx.target.c_style_syntax:
+        ctx.lines.append("}")
 
 
 def _emit_cooperative_scalar_store(
@@ -1010,8 +1012,12 @@ def _emit_cooperative_scalar_store(
     coordinates = tuple(
         coordinate for dim, coordinate in enumerate(ctx.coordinate_exprs) if dim != axis
     )
-    linear = _target_index_expr(
-        ctx.target, _linearized_index(coordinates, result_shape)
+    linear = (
+        "0"
+        if not coordinates
+        else _target_index_expr(
+            ctx.target, _linearized_index(coordinates, result_shape)
+        )
     )
     body_lines: list[str] = []
     body = ctx.child(
@@ -1022,9 +1028,11 @@ def _emit_cooperative_scalar_store(
         local_suffix=_nested_local_suffix(ctx, "reduced_store"),
     )
     _emit_operation(operation, body)
-    ctx.lines.append(f"if ({ctx.target.thread_id()} == 0) {{")
+    ctx.lines.append(_if_header(f"{ctx.target.thread_id()} == 0", ctx.target))
     ctx.lines.extend(_indent_lines(body_lines, ctx.target))
-    ctx.lines.append("}")
+
+    if ctx.target.c_style_syntax:
+        ctx.lines.append("}")
 
 
 def _is_top_level_effect(op: ssa.Operation) -> bool:
@@ -2574,6 +2582,19 @@ def _load_tensor_at(
         if producer.opcode in {"tensor.view", "mem.data_ptr"} and producer.operands:
             name = producer.operands[0]
 
+    # A reduction may have staged this source row into shared memory so that
+    # both the reduction operand and a downstream broadcast consumer read it
+    # from shared (one global read) instead of re-reading global memory.
+    if (
+        ctx.shared_stash
+        and coords
+        and name in ctx.shared_stash
+        and len(coords) > ctx.shared_stash[name][1]
+    ):
+        stash_name, stash_axis = ctx.shared_stash[name]
+
+        return f"{stash_name}[{coords[stash_axis]}]"
+
     info = ctx.tensor_infos.get(name)
     dtype_level = _dtype_level(name, ctx) if level is None else level
     axes = _access_axes(info, ctx, dtype_level, fallback=_value_axes(name, ctx))
@@ -3473,6 +3494,23 @@ def _load_tensor(name: str, view_index: str, ctx: _EmitContext) -> str:
         view_index,
         ctx=ctx,
     )
+
+    # Read the staged shared copy of a reduction's source row (indexed by the
+    # reduction-axis position, which is ``view_index`` for a block-per-row
+    # consumer) instead of re-reading global memory.
+    if ctx.shared_stash and name in ctx.shared_stash:
+        stash_name, _ = ctx.shared_stash[name]
+        other = _load_other(info)
+        load = f"{stash_name}[{view_index}]"
+
+        if ctx.target.tir_value_semantics and mask is not None:
+            predicate = _materialize_bool_expr(mask, ctx) or mask
+            other_value = ctx.target.literal(other)
+
+            if info is not None:
+                other_value = ctx.target.cast(info.dtype, other_value)
+            return ctx.target.where(predicate, load, other_value)
+        return load
 
     return _masked_load(name, source_index, mask, info, ctx)
 
@@ -4626,6 +4664,8 @@ resolved_dot_operand_dtype = _resolved_dot_operand_dtype
 rewrite_index_math = _rewrite_index_math
 schedule_int = _schedule_int
 source_index_for_value = _source_index_for_value
+source_strides = _source_strides
+replace_symbols = _replace_symbols
 target_index_expr = _target_index_expr
 value_axes = _value_axes
 value_axes_from_types = _value_axes_from_types
@@ -4663,6 +4703,8 @@ __all__ = [
     "rewrite_index_math",
     "schedule_int",
     "source_index_for_value",
+    "source_strides",
+    "replace_symbols",
     "target_index_expr",
     "value_axes",
     "value_axes_from_types",

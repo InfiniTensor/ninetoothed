@@ -81,6 +81,7 @@ class EmitContext:
     cooperative_reduction_program: bool = False
     scheduled_reductions: frozenset[str] = frozenset()
     reduction_schedule: Mapping[str, Any] | None = None
+    shared_stash: dict[str, tuple[str, int]] | None = None
 
     def child(
         self,
@@ -128,6 +129,7 @@ class EmitContext:
             "cooperative_reduction_program": self.cooperative_reduction_program,
             "scheduled_reductions": self.scheduled_reductions,
             "reduction_schedule": self.reduction_schedule,
+            "shared_stash": self.shared_stash,
         }
         data.update(kwargs)
 
