@@ -1,0 +1,35 @@
+{
+  "paths": {
+    "ninetoothed": "../..",
+    "ntops": "/path/to/ntops.lab",
+    "baseline": "/path/to/triton-ascend-ops",
+    "model": "/path/to/DeepSeek-R1-Distill-Llama-8B"
+  },
+  "case_csv": "/path/to/triton-ascend_results_2.0.csv",
+  "output_dir": "/path/to/results/ascend-report",
+  "cache_dir": "/path/to/data-volume/compiler-cache",
+  "tmp_dir": "/path/to/data-volume/compiler-tmp",
+  "devices": [0, 1, 2, 3],
+  "cpu_affinity": "auto",
+  "scheduling": {"TRITON_ALL_BLOCKS_PARALLEL": "0"},
+  "operators": {
+    "warmup": 50,
+    "device_samples": 15,
+    "api_samples": 60,
+    "window_ms": 10,
+    "timeout_seconds": 600
+  },
+  "e2e": {
+    "model_id": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+    "model_revision": "6a6f4aa4197940add57724a7707d069478df56b1",
+    "prompt": "Explain why the sky appears blue during the day and why sunsets often look red.",
+    "input_tokens": 19,
+    "output_tokens": 128,
+    "dtype": "bfloat16",
+    "batch": 1,
+    "seed": 20261020,
+    "warmup": 2,
+    "samples": 10,
+    "logits_diagnostics": false
+  }
+}
