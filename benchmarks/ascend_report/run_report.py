@@ -7,6 +7,7 @@ import json
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 if __package__:
@@ -161,6 +162,37 @@ def main(argv=None):
                 return failure
 
         if args.phase in ("all", "e2e"):
+            if any(stage >= 5 for stage in config["e2e"]["stages"]):
+                devices = config["e2e"]["devices"]
+                manifest["phases"]["core_validation"] = {"started": now()}
+                write_json(manifest_path, manifest)
+                # Validation has no timing comparisons. Each worker owns one card.
+                with ThreadPoolExecutor(max_workers=min(2, len(devices))) as pool:
+                    jobs = [
+                        pool.submit(
+                            run_child,
+                            [
+                                sys.executable,
+                                str(Path(__file__).with_name("validate_core.py")),
+                                "--config",
+                                str(args.config),
+                                "--backend",
+                                backend,
+                                "--device",
+                                str(devices[index % len(devices)]),
+                            ],
+                            output / f"core-validation-{backend}.log",
+                        )
+                        for index, backend in enumerate(("triton", "ntops"))
+                    ]
+                    codes = [job.result() for job in jobs]
+                failure = next((code for code in codes if code), 0)
+                manifest["phases"]["core_validation"].update(
+                    finished=now(), returncodes=codes
+                )
+                write_json(manifest_path, manifest)
+                if failure:
+                    return failure
             command = [
                 sys.executable,
                 str(Path(__file__).with_name("e2e.py")),

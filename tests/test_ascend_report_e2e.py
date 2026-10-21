@@ -25,7 +25,11 @@ def configuration(tmp_path):
         "cache_dir": "cache",
         "tmp_dir": "temporary",
         "device": 0,
-        "e2e": {"prompt": "Synthetic test prompt.", "model_revision": "a" * 40},
+        "e2e": {
+            "prompt": "Synthetic test prompt.",
+            "model_revision": "a" * 40,
+            "stages": [1, 2, 3, 4],
+        },
     }
     path = tmp_path / "config.json"
     runner.write_json(path, raw)
@@ -167,6 +171,9 @@ def test_config_resolves_paths_and_preserves_protocol(configuration):
         state.config["e2e"][name]
         for name in ("input_tokens", "output_tokens", "warmup", "samples")
     ] == [19, 128, 2, 10]
+    del state.raw["e2e"]["stages"]
+    runner.write_json(state.path, state.raw)
+    assert runner.read_config(state.path)["e2e"]["stages"] == [1, 2, 3, 4, 5, 6]
     state.raw["devices"] = [0, 1, 2, 3]
     state.raw["e2e"]["devices"] = [2, 3]
     runner.write_json(state.path, state.raw)
@@ -188,6 +195,46 @@ def test_text_sanity_accepts_unicode_without_judging_semantics():
     assert not runner.text_sanity([1] * 128, "bad\ufffd", 128)["passed"]
     assert not runner.text_sanity([1] * 128, "bad\x00", 128)["passed"]
     assert not runner.text_sanity([1], "Synthetic text.", 128)["passed"]
+
+
+@pytest.mark.parametrize("stages", [[], [0], [7], [1, 1], [True], "5,6"])
+def test_rejects_invalid_stage_selection(configuration, stages):
+    configuration.raw["e2e"]["stages"] = stages
+    runner.write_json(configuration.path, configuration.raw)
+    with pytest.raises(ValueError, match="stages"):
+        runner.read_config(configuration.path)
+
+
+def test_core_coverage_requires_real_pinned_kernel_launches():
+    calls = {"sdpa": 32, "linear:q_proj": 32, "linear:lm_head": 1}
+    launches = {
+        "sdpa:generated:ntops_lab_flash_attention_ascend_npu": 32,
+        "linear_mm:generated:ntops_lab_mm_npu": 33,
+    }
+    coverage = runner.validate_core_launches("ntops", 6, calls, launches)
+    assert (
+        coverage["sdpa"]["verified"] and coverage["linear_mm"]["kernel_launches"] == 33
+    )
+    with pytest.raises(RuntimeError, match="real JIT launches"):
+        runner.validate_core_launches("ntops", 6, calls, {})
+    with pytest.raises(RuntimeError, match="unexpected kernel"):
+        runner.validate_core_launches(
+            "ntops", 5, calls, {"sdpa:native:torch_fallback": 32}
+        )
+
+
+def test_core_operator_stages_use_selected_devices_and_both_orders(harness):
+    harness.raw["devices"] = [0, 1, 2, 3]
+    harness.raw["e2e"]["stages"] = [4, 5, 6]
+    runner.write_json(harness.path, harness.raw)
+    assert harness.invoke() == 0
+    assert len(harness.invocations) == 3 + 3 * 4
+    assert [stage["stage"] for stage in harness.report()["stages"]] == [4, 5, 6]
+    for stage, device in zip([4, 5, 6], [0, 1, 2]):
+        selected = [item for item in harness.device_invocations if item[1] == stage]
+        assert len(selected) == 4
+        assert {item[3] for item in selected} == {device}
+        assert [item[2] for item in selected] == ["triton", "ntops", "ntops", "triton"]
 
 
 def test_two_orders_use_seventeen_workers_and_resume_reuses_results(harness):

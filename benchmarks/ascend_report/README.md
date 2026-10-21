@@ -1,6 +1,6 @@
 # Ascend report measurements
 
-This suite measures the CSV-aligned operator cases and four stages of DeepSeek generation, then writes the data needed for the Word report. It uses the configured source checkouts and records their actual file hashes. Operator and model phases run sequentially to avoid competing with synchronized generation timing.
+This suite measures the CSV-aligned operator cases and configured stages of DeepSeek generation, then writes the data needed for the Word report. It uses the configured source checkouts and records their actual file hashes. Operator and model phases run sequentially to avoid competing with synchronized generation timing.
 
 Use an Ascend Linux environment with CANN, PyTorch, torch_npu, Triton-Ascend, NumPy, SymPy and Transformers already installed. Load the CANN environment and activate that Python environment before running. The baseline checkout must contain `benchmarks/cases.py` and `benchmarks/run.py`; the validated baseline is `zebra-uestc/triton-ascend-ops` at `c35f31b027489517e9c745b2338e01832f718489`, with `ssen0829/ntops.lab` at `56f2df800e859f378b6d2f8f2bd57cc4660fb77e`.
 
@@ -14,7 +14,20 @@ python benchmarks/ascend_report/run_report.py --config /path/to/config.json
 
 The operator phase measures both implementations on the same physical card for each case, with 50 warmups, 15 device samples and 60 public-API samples by default. Generated-kernel graph replay and public calls retain the original case reference checks and tolerances. Existing host layout/parameter adapters, the masked-load `Tensor.to` compatibility shim and explicit NPU launcher-name shim are recorded in every result. Unsupported source contracts stay `UNSUPPORTED`; no numerical fallback is substituted.
 
-Operator groups are distributed across the configured cards. The model phase assigns stages to cards and runs one lane per card: a reference process and that card's stages, with both backends and both execution orders kept on the same physical card. Four cards run four stages concurrently, using four reference processes and16 timed processes. A single card uses one reference plus16 timed processes. CPU affinity is split into nonoverlapping groups by default and recorded; `cpu_affinity` can provide explicit per-card CPU lists. `operators.devices` or `e2e.devices` can override the global card list.
+Operator groups are distributed across the configured cards. The model phase assigns stages to cards and runs one lane per card: a reference process and that card's stages, with both backends and both execution orders kept on the same physical card. CPU affinity is split into nonoverlapping groups by default and recorded; `cpu_affinity` can provide explicit per-card CPU lists. `operators.devices` or `e2e.devices` can override the global card list.
+
+`e2e.stages` selects stages by number. The default and example run all six stages on four cards (four reference processes plus24 timed processes). Set `[1, 2, 3, 4]` explicitly to measure the earlier limited scope. Every selected stage runs both backend orders. The stages add replacements cumulatively:
+
+1. SiLU and RMSNorm.
+2. MLP gating Mul.
+3. Floating TensorAdd, including RoPE and residual paths.
+4. Neg, Sin and Cos.
+5. SDPA for causal prefill and cached decode, preserving scale and grouped query attention.
+6. All model `nn.Linear` projections and the language model head.
+
+Stages5–6 call the pinned numeric kernels directly. Both backends preserve operand strides and avoid per-token full-weight copies; unsupported masks or biases raise instead of silently using native kernels. The NineToothed matrix path bypasses the repository's handwritten NPU fallback and retains its original FP32-to-FP16 intermediate rounding before BF16 storage. The framework still provides embedding, cache management, generation control and unpatched primitives, including RoPE frequency construction. These stages do not claim that every model operation has been replaced. Recorded counters distinguish native matrix operations from verified custom-kernel launches and verify that every patched Linear module executed.
+
+Before timing stages5–6, the entry point validates representative model attention/Linear shapes against native NPU operations with the existing BF16 operator tolerances. This includes transposed prefill layouts, grouped KV heads, cached decode and the vocabulary projection. The validation processes finish before model timing begins. Raw validation outcomes are written beside the measurement results.
 
 The model protocol defaults to BF16, batch1, 19 input tokens, 128 fixed greedy output tokens, two warmups and ten synchronized `generate()` samples. Loading, tokenization, text decoding, result checking and launch counting remain outside timing. Each sample's output text and token IDs are saved. Logits are optional diagnostics and never determine acceptance. Multi-card wall-clock results are labeled as concurrent measurements: compiler, CPU and memory resources are shared, so total runtime is not guaranteed to scale linearly with the card count.
 

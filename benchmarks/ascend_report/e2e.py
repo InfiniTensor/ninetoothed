@@ -62,8 +62,8 @@ def source_identity(config):
         for path in sorted(root.rglob("*.py")):
             files[name + "/" + path.relative_to(root).as_posix()] = sha256_file(path)
 
-    for name in ("e2e.py", "e2e_runner.py", "affinity.py"):
-        files["runner/" + name] = sha256_file(Path(__file__).with_name(name))
+    for path in sorted(Path(__file__).parent.glob("*.py")):
+        files["runner/" + path.name] = sha256_file(path)
 
     return {
         "sha256": files,
@@ -312,11 +312,13 @@ def build_report(config, environment):
     review = semantic_review(root)
     stages = []
 
-    for stage in range(1, 5):
+    for stage in config["e2e"]["stages"]:
         device = execution["stage_devices"][str(stage)]
         stage_reference = references.get(str(device))
         timings = {}
         counts = {}
+        native_matrix_counts = {}
+        core_coverage = []
         diagnostics = {}
         output_texts = {}
         token_matches = []
@@ -386,6 +388,9 @@ def build_report(config, environment):
                     )
 
             left, right = records["triton"], records["ntops"]
+            core_coverage.extend(
+                record.get("core_kernel_coverage", {}) for record in (left, right)
+            )
             eligible = acceptance_state(
                 root, [(paths[key], records[key]) for key in paths], review
             )
@@ -432,6 +437,10 @@ def build_report(config, environment):
                 "triton": left["operator_calls"],
                 "ninetoothed": right["operator_calls"],
             }
+            native_matrix_counts[label] = {
+                "triton": left.get("native_matrix_calls", {}),
+                "ninetoothed": right.get("native_matrix_calls", {}),
+            }
             output_texts[label] = {
                 "triton": left["output_text"],
                 "ninetoothed": right["output_text"],
@@ -466,6 +475,24 @@ def build_report(config, environment):
                 },
                 "operator_counts": counts.get("forward", counts.get("reverse", {})),
                 "operator_counts_by_order": counts,
+                "native_matrix_counts_by_order": native_matrix_counts,
+                "replacement_coverage": {
+                    "sdpa_requested": stage >= 5,
+                    "sdpa_verified": stage >= 5
+                    and len(core_coverage) == 4
+                    and all(
+                        item.get("sdpa", {}).get("verified") is True
+                        for item in core_coverage
+                    ),
+                    "model_linear_projections_and_lm_head_requested": stage >= 6,
+                    "model_linear_projections_and_lm_head_verified": stage >= 6
+                    and len(core_coverage) == 4
+                    and all(
+                        item.get("linear_mm", {}).get("verified") is True
+                        for item in core_coverage
+                    ),
+                    "all_model_operators_replaced": False,
+                },
                 "output_texts": output_texts,
                 "logits_diagnostics": diagnostics,
                 "timings": timings,
@@ -517,11 +544,10 @@ def build_report(config, environment):
             "ratio_percent_formula": "100 * triton_median_s / ninetoothed_median_s; higher is better",
             "semantic_acceptance": "Human review of normal coherent output; logits and exact token equality are diagnostic only.",
             "preserved": [
-                "HF LlamaAttention",
-                "Linear",
+                "HF Llama model orchestration",
                 "HF causal mask",
                 "HF KV cache",
-                "native HF SDPA",
+                "Embedding, generation control and unpatched primitive operations",
             ],
             "ntops_compatibility": [
                 "launcher alias",
@@ -537,9 +563,10 @@ def build_report(config, environment):
 
 
 def execution_plan(config):
-    devices = config["e2e"]["devices"][:4]
+    stages = config["e2e"]["stages"]
+    devices = config["e2e"]["devices"][: len(stages)]
     assignments = {
-        str(stage): devices[(stage - 1) % len(devices)] for stage in range(1, 5)
+        str(stage): devices[index % len(devices)] for index, stage in enumerate(stages)
     }
     affinity = plan_cpu_affinity(
         devices, config["e2e"]["cpu_affinity"], minimum=config["e2e"]["cpu_threads"]
@@ -552,7 +579,7 @@ def execution_plan(config):
         "stage_devices": assignments,
         "max_concurrent_workers": len(devices),
         "workers_per_device": 1,
-        "expected_workers": len(devices) + 16,
+        "expected_workers": len(devices) + len(stages) * 4,
         "cpu_affinity": {str(device): affinity[device] for device in devices},
         "reference_by_device": {
             str(device): reference_path(config, device)
@@ -583,7 +610,7 @@ def run_lanes(config, environment):
         nonlocal active
         stages = [
             stage
-            for stage in range(1, 5)
+            for stage in config["e2e"]["stages"]
             if execution["stage_devices"][str(stage)] == device
         ]
         affinity = execution["cpu_affinity"][str(device)]

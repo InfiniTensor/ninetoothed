@@ -33,6 +33,8 @@ SCOPES = {
     2: "SiLU + RMSNorm + MLP gating Mul",
     3: "SiLU + RMSNorm + MLP gating Mul + TensorAdd (RoPE and residual paths)",
     4: "SiLU + RMSNorm + MLP gating Mul + TensorAdd + Neg + Sin + Cos",
+    5: "Stage 4 + scaled dot product attention (prefill and cached decode)",
+    6: "Stage 5 + all model Linear projections and language model head",
 }
 
 
@@ -107,8 +109,20 @@ def read_config(path):
         "model_id": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
         "model_revision": None,
         "cpu_threads": 1,
+        "stages": list(SCOPES),
     }
     settings.update(values)
+
+    if (
+        not isinstance(settings["stages"], list)
+        or not settings["stages"]
+        or any(
+            type(stage) is not int or stage not in SCOPES
+            for stage in settings["stages"]
+        )
+        or len(set(settings["stages"])) != len(settings["stages"])
+    ):
+        raise ValueError("e2e.stages must contain distinct supported stage numbers.")
 
     for name, minimum in (
         ("input_tokens", 1),
@@ -190,6 +204,53 @@ def text_sanity(output_ids, text, expected_tokens):
     }
 
     return {"passed": all(checks.values()), **checks}
+
+
+def validate_core_launches(backend, stage, calls, launches):
+    """Match logical core calls to actual launches of the pinned numeric kernels."""
+    result = {}
+    expected = []
+    if stage >= 5:
+        expected.append(
+            (
+                "sdpa",
+                calls.get("sdpa", 0),
+                "ntops_lab_flash_attention_ascend_npu"
+                if backend == "ntops"
+                else "_attn_fwd",
+            )
+        )
+    if stage >= 6:
+        expected.append(
+            (
+                "linear_mm",
+                sum(
+                    count for name, count in calls.items() if name.startswith("linear:")
+                ),
+                "ntops_lab_mm_npu" if backend == "ntops" else "mm_kernel",
+            )
+        )
+    for operation, logical_count, kernel_name in expected:
+        selected = {
+            name: count
+            for name, count in launches.items()
+            if name.split(":", 1)[0] == operation
+        }
+        if logical_count <= 0 or sum(selected.values()) != logical_count:
+            raise RuntimeError(
+                f"Core operator {operation} calls do not match its real JIT launches."
+            )
+        if any(name.rsplit(":", 1)[-1] != kernel_name for name in selected):
+            raise RuntimeError(
+                f"Core operator {operation} executed an unexpected kernel."
+            )
+        result[operation] = {
+            "verified": True,
+            "logical_calls": logical_count,
+            "kernel_launches": sum(selected.values()),
+            "kernel_name": kernel_name,
+        }
+    return result
 
 
 def configure_runtime(config):
@@ -294,9 +355,11 @@ class Adapters:
         self.active_operation = "unclassified"
         self.calls = collections.Counter()
         self.shapes = collections.Counter()
+        self.native_matrix_calls = collections.Counter()
         self.aliases = []
         self.parameter_to_hits = 0
         self.source_imports = {}
+        self.core_operator_adapters = {}
         operators = ("silu", "mul", "add", "neg", "sin", "cos")
 
         if backend == "ntops":
@@ -479,13 +542,26 @@ def stage_dispatch(adapter, stage):
                 if stage >= 4 and func in unary:
                     return adapter.call(unary[func], args[0])
 
+            if adapter.collect and func in (
+                torch.ops.aten.mm.default,
+                torch.ops.aten.bmm.default,
+                torch.ops.aten.matmul.default,
+                torch.ops.aten.addmm.default,
+            ):
+                signature = [
+                    (tuple(value.shape), str(value.dtype))
+                    for value in args
+                    if isinstance(value, torch.Tensor)
+                ]
+                adapter.native_matrix_calls[f"{func}:{signature}"] += 1
+
             return func(*args, **kwargs)
 
     return StageDispatch()
 
 
 @contextlib.contextmanager
-def patched(adapter, stage):
+def patched(adapter, stage, model=None):
     from transformers.activations import SiLUActivation
     from transformers.models.llama.modeling_llama import LlamaMLP, LlamaRMSNorm
 
@@ -521,7 +597,28 @@ def patched(adapter, stage):
         LlamaMLP.forward = mlp
 
     try:
-        with stage_dispatch(adapter, stage):
+        with contextlib.ExitStack() as patches:
+            patches.enter_context(stage_dispatch(adapter, stage))
+            if stage >= 5:
+                if __package__:
+                    from .e2e_attention import Adapter as AttentionAdapter
+                else:
+                    from e2e_attention import Adapter as AttentionAdapter
+
+                attention = AttentionAdapter(adapter.backend, torch, recorder=adapter)
+                adapter.core_operator_adapters["sdpa"] = attention
+                patches.enter_context(attention.patched())
+            if stage >= 6:
+                if model is None:
+                    raise ValueError("Linear replacement requires the loaded model.")
+                if __package__:
+                    from .e2e_linear import Adapter as LinearAdapter
+                else:
+                    from e2e_linear import Adapter as LinearAdapter
+
+                linear = LinearAdapter(adapter.backend, torch, recorder=adapter)
+                adapter.core_operator_adapters["linear"] = linear
+                patches.enter_context(linear.patched(model))
             yield
     finally:
         (
@@ -707,7 +804,7 @@ def measure_worker(config, backend, stage, order, identity):
         adapter = Adapters(backend, torch, device_cache)
         reference = json.loads(reference_path(config).read_text(encoding="utf-8"))
 
-        with patched(adapter, stage):
+        with patched(adapter, stage, model):
             if settings["logits_diagnostics"]:
                 result["logits_diagnostic"] = save_logits(
                     model,
@@ -765,6 +862,23 @@ def measure_worker(config, backend, stage, order, identity):
             if stage >= 4:
                 required += ["neg", "sin", "cos"]
 
+            if stage >= 5:
+                required.append("sdpa")
+            if stage >= 6:
+                required.extend(
+                    "linear:" + name
+                    for name in (
+                        "q_proj",
+                        "k_proj",
+                        "v_proj",
+                        "o_proj",
+                        "gate_proj",
+                        "up_proj",
+                        "down_proj",
+                        "lm_head",
+                    )
+                )
+
             if not all(adapter.calls[name] > 0 for name in required):
                 raise RuntimeError(
                     f"Requested patches did not execute: {adapter.calls}"
@@ -774,6 +888,34 @@ def measure_worker(config, backend, stage, order, identity):
                 key.startswith("tensor_add") for key in adapter.calls
             ):
                 raise RuntimeError("Requested TensorAdd patches did not execute.")
+
+            if backend == "ntops" and any(
+                name.rsplit(":", 1)[-1] == "_matmul_kernel" for name in launches
+            ):
+                raise RuntimeError(
+                    "A handwritten matmul fallback executed in the NineToothed path."
+                )
+
+            core_coverage = validate_core_launches(
+                backend, stage, adapter.calls, launches
+            )
+            if stage >= 6:
+                linear_provenance = adapter.core_operator_adapters[
+                    "linear"
+                ].provenance()
+                missing = [
+                    item["name"]
+                    for item in linear_provenance["patched_modules"]
+                    if linear_provenance["module_calls"].get(item["name"], 0) <= 0
+                ]
+                if missing:
+                    raise RuntimeError(
+                        f"Requested Linear modules did not execute: {missing}"
+                    )
+                core_coverage["linear_mm"]["all_patched_modules_executed"] = True
+                core_coverage["linear_mm"]["module_count"] = len(
+                    linear_provenance["patched_modules"]
+                )
 
         if not all(math.isfinite(sample) and sample > 0 for sample in samples):
             raise RuntimeError("Generation timing produced an invalid sample.")
@@ -805,6 +947,8 @@ def measure_worker(config, backend, stage, order, identity):
             counted_tokens_match_samples=counted_output["output_ids"]
             == outputs[0]["output_ids"],
             operator_calls=dict(adapter.calls),
+            native_matrix_calls=dict(adapter.native_matrix_calls),
+            core_kernel_coverage=core_coverage,
             shape_calls=dict(adapter.shapes),
             jit_launches=dict(launches),
             generated_sources={
@@ -813,6 +957,10 @@ def measure_worker(config, backend, stage, order, identity):
                 if Path(key.rsplit(":", 2)[1]).is_file()
             },
             compatibility_shim=adapter.provenance(),
+            core_operator_adapters={
+                name: implementation.provenance()
+                for name, implementation in adapter.core_operator_adapters.items()
+            },
             measurement_role="text_output_review_pending",
             acceptance_eligible=None,
         )
@@ -830,7 +978,7 @@ def main():
     parser.add_argument(
         "--backend", choices=("reference", "triton", "ntops"), required=True
     )
-    parser.add_argument("--stage", type=int, choices=range(5), default=0)
+    parser.add_argument("--stage", type=int, choices=[0, *SCOPES], default=0)
     parser.add_argument("--order", default="reference")
     parser.add_argument("--identity", required=True)
     parser.add_argument("--device", type=int)
