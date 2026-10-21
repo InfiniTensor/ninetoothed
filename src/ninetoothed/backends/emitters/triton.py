@@ -52,6 +52,31 @@ def _target_metadata(kernel: Kernel) -> dict[str, Any]:
     return dict(profile.get("metadata", {}))
 
 
+def _vendor_probe_limit(kernel: Kernel) -> int | None:
+    """Return the vendor grid bound under the unconfigured generic default.
+
+    Unlike a profile-declared limit this never changes kernel lowering: the
+    launch guard raises instead, and the JIT handle rebuilds with the limit
+    set so only oversized launches pay for grid-stride lowering.
+    """
+    target_options = dict(kernel.compiler_options.get("target", {}))
+
+    if target_options.get("platform") not in (None, "generic"):
+        return None
+
+    try:
+        import triton
+
+        target = triton.runtime.driver.active.get_current_target()
+
+        if str(getattr(target, "backend", "")) == "mlu":
+            return 65535
+    except Exception:
+        pass
+
+    return None
+
+
 def _platform_grid_limit(kernel: Kernel) -> int | None:
     """Resolve the vendor grid limit for the kernel's Triton target.
 
@@ -530,6 +555,12 @@ class TritonTarget(EmitterTarget):
         body = common.rewrite_index_math(context.body, c_style=False)
         target_metadata = _target_metadata(kernel)
         grid_limit = _platform_grid_limit(kernel)
+        probe_limit = _vendor_probe_limit(kernel)
+        _grid_probe_import = (
+            "from ninetoothed.compiler.runtime import LaunchGridExceeded\n"
+            if probe_limit is not None and grid_limit is None
+            else ""
+        )
         block_size = int(target_metadata.get("triton_block_size", 256))
 
         if block_size < 1 or block_size & (block_size - 1):
@@ -665,6 +696,15 @@ class TritonTarget(EmitterTarget):
             program_count = f"triton.cdiv({context.grid_total}, block)"
             launch_grid = f"({program_count},)"
 
+            if probe_limit is not None:
+                launch_guard = (
+                    f"    print('DBG-LAUNCH grid-expr:', {program_count})\n"
+                    f"    if {program_count} > {probe_limit}:\n"
+                    "        raise LaunchGridExceeded(\n"
+                    f'            f"out of resource: grid size, Required: {{{program_count}}}, Hardware limit: {probe_limit}"\n'
+                    "        )\n"
+                )
+
         if not uses_grid_stride_loop:
             kernel_body = (
                 f"offsets = {offsets}\n"
@@ -685,6 +725,7 @@ import triton
 import triton.language as tl
 from math import floor
 from triton.language.extra import libdevice
+{_grid_probe_import}
 {_RUNTIME_REDUCTION_IDENTITY if "_nt_reduction_identity(" in body else ""}
 {_CAST_LIKE if "_nt_cast_like(" in body else ""}
 {_VECTOR_ELEMENT if "_nt_vector_element(" in body else ""}

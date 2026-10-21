@@ -53,6 +53,15 @@ def overflow_terms(argument_names, tensor_ndims):
     )
 
 
+class LaunchGridExceeded(Exception):
+    """Raised by generated launchers when the grid exceeds the vendor bound.
+
+    Derives from Exception directly: the tuning and prepared-launch chains
+    swallow RuntimeError subclasses while benchmarking candidates, and this
+    condition must propagate to the Handle retry.
+    """
+
+
 class Handle:
     def __init__(self, compilation, kernel, launch, source, library=None):
         self._compilation = compilation
@@ -92,7 +101,58 @@ class Handle:
         )
 
     def __call__(self, *args, **kwargs):
-        return self._launch(*args, **kwargs)
+        try:
+            return self._launch(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - re-raised unless matching
+            retryable = isinstance(exc, LaunchGridExceeded) or (
+                type(exc).__name__ == "OutOfResources"
+                and "grid size" in str(exc)
+            )
+
+            if (
+                not retryable
+                or getattr(self, "_grid_limit_retried", False)
+                or self._compilation.artifact.backend != Target.TRITON
+            ):
+                raise
+
+            self._grid_limit_retried = True
+
+            return self._recompile_with_grid_limit(*args, **kwargs)
+
+    def _recompile_with_grid_limit(self, *args, **kwargs):
+        from dataclasses import replace as dataclass_replace
+
+        from ninetoothed.compiler import compile_kernel
+
+        limited = compile_kernel(
+            dataclass_replace(self._compilation.request, triton_grid_limit=65535)
+        )
+        specialized = materialize(
+            limited,
+            output_dir=getattr(self, "_output_dir", None),
+            mode=getattr(self, "_mode", "jit"),
+        )
+
+
+
+        for attribute in (
+            "_artifact",
+            "_kernel",
+            "_source",
+            "_library",
+            "_ssa",
+            "_pass_trace",
+            "_launch_plan",
+            "_built_artifact",
+        ):
+            setattr(self, attribute, getattr(specialized, attribute, None))
+        self._launch = specialized._launch
+
+        return specialized(
+            *args,
+            **_filter_runtime_kwargs(specialized._compilation.launch_abi, kwargs),
+        )
 
 
 def materialize(
@@ -114,7 +174,13 @@ def materialize(
     materializer = materializer_for(target)
 
     if mode == "jit":
-        return materializer.jit_materialize(compilation, output_dir=output_dir)
+        handle = materializer.jit_materialize(compilation, output_dir=output_dir)
+
+        if isinstance(handle, Handle):
+            handle._output_dir = output_dir
+            handle._mode = mode
+
+        return handle
 
     if mode == "aot":
         if output_dir is None:
