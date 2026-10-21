@@ -179,7 +179,68 @@ def _materialize(compilation):
             validate_bindings,
         )
 
+    handle._launch = _grid_limit_retry_launch(handle, compilation)
+
     return handle
+
+
+def _grid_limit_retry_launch(handle, compilation, output_dir=None):
+    """Rebuild with the vendor grid limit when a launch exceeds it.
+
+    Kernels launch in their normal (flat) form; when the hardware rejects
+    the grid (MLU: 65535 programs per dim), the compilation is rebuilt once
+    with ``triton_grid_limit`` set so the kernel lowers to grid-stride form
+    and the launch is retried.
+    """
+    original = handle._launch
+
+    def launch(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - re-raised unless matching
+            if (
+                type(exc).__name__ != "OutOfResources"
+                or "grid size" not in str(exc)
+                or getattr(handle, "_grid_limit_retried", False)
+            ):
+                raise
+
+            handle._grid_limit_retried = True
+
+            from dataclasses import replace as dataclass_replace
+
+            from ninetoothed.compiler import compile_kernel
+            from ninetoothed.compiler.runtime import (
+                _filter_runtime_kwargs,
+                materialize as materialize_runtime,
+            )
+
+            limited = compile_kernel(
+                dataclass_replace(compilation.request, triton_grid_limit=65535)
+            )
+            specialized = materialize_runtime(
+                limited, output_dir=output_dir, mode="jit"
+            )
+
+            for attribute in (
+                "_artifact",
+                "_kernel",
+                "_source",
+                "_library",
+                "_ssa",
+                "_pass_trace",
+                "_launch_plan",
+                "_built_artifact",
+            ):
+                setattr(handle, attribute, getattr(specialized, attribute, None))
+            handle._launch = specialized._launch
+
+            return specialized(
+                *args,
+                **_filter_runtime_kwargs(specialized._compilation.launch_abi, kwargs),
+            )
+
+    return launch
 
 
 def _candidate_launch(compilation, launch, kernel, candidate, validate_bindings):

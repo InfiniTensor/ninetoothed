@@ -55,33 +55,18 @@ def _target_metadata(kernel: Kernel) -> dict[str, Any]:
 def _platform_grid_limit(kernel: Kernel) -> int | None:
     """Resolve the vendor grid limit for the kernel's Triton target.
 
-    Platform profiles are the authoritative source.  Only when no platform
-    was configured at all (the legacy generic default) does the active
-    Triton driver's vendor backend contribute its hardware grid bound
-    (MLU: 65535 programs per dim); explicitly configured platforms decide
-    for themselves.
+    Platform profiles are the authoritative source; launch-time recovery
+    may also set the request-level ``triton_grid_limit`` override when the
+    hardware rejects the launch grid.
     """
     limit = _target_metadata(kernel).get("triton_grid_limit")
 
     if limit is not None:
         return int(limit)
 
-    target_options = dict(kernel.compiler_options.get("target", {}))
+    override = kernel.compiler_options.get("triton_grid_limit")
 
-    if target_options.get("platform") not in (None, "generic"):
-        return None
-
-    try:
-        import triton
-
-        target = triton.runtime.driver.active.get_current_target()
-
-        if str(getattr(target, "backend", "")) == "mlu":
-            return 65535
-    except Exception:
-        pass
-
-    return None
+    return None if override is None else int(override)
 
 
 @dataclass(frozen=True, kw_only=True)

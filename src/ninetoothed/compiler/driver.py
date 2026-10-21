@@ -52,6 +52,7 @@ class CompileRequest:
     backend_options: Mapping[str, Any] | None = None
     tensor_dtypes: Mapping[str, str] | None = None
     specialization_values: Mapping[str, Any] | None = None
+    triton_grid_limit: int | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -361,6 +362,7 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
             "ssa_pass_options": dict(request.pass_options or {}),
             "backend_options": backend_options,
             "target": target_context.as_metadata(),
+            "triton_grid_limit": request.triton_grid_limit,
         },
         metadata={
             "caller": request.caller,
