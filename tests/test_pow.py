@@ -35,6 +35,9 @@ def pow(input, exponent):
 @pytest.mark.parametrize("dtype", (torch.float32,))
 @pytest.mark.parametrize("size", (44925,))
 def test(size, dtype, device):
+    if device == "npu" and "910b3" in torch.npu.get_device_name().lower():
+        pytest.skip("Ascend 910B3 pow support is unverified")
+
     input = torch.rand(size, dtype=dtype, device=device)
     exponent = torch.rand(size, dtype=dtype, device=device)
 

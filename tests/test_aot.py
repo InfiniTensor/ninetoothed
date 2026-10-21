@@ -16,7 +16,7 @@ from ninetoothed.compiler.runtime import overflow_terms
 from tests.utils import get_available_devices
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 @pytest.mark.parametrize(
     "dtype, ninetoothed_dtype", ((torch.bfloat16, ninetoothed.bfloat16),)
 )
@@ -72,7 +72,7 @@ def test_add(test_multi_device, size, dtype, device, ninetoothed_dtype):
             assert torch.allclose(output, expected)
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 @pytest.mark.parametrize(
     "dtype, ninetoothed_dtype, atol", ((torch.float16, ninetoothed.float16, 0.075),)
 )
@@ -116,7 +116,7 @@ def test_addmm(m, n, k, dtype, device, ninetoothed_dtype, atol):
     assert torch.allclose(output, expected, atol=atol)
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 @pytest.mark.parametrize(
     "dtype, ninetoothed_dtype, rtol, atol",
     ((torch.float16, ninetoothed.float16, 0.01, 0.01),),
@@ -179,7 +179,7 @@ def test_attention(
     assert torch.allclose(output, expected, rtol=rtol, atol=atol)
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 @pytest.mark.parametrize(
     "dtype, ninetoothed_dtype", ((torch.float16, ninetoothed.float16),)
 )
@@ -217,7 +217,7 @@ def test_matmul(m, n, k, dtype, device, ninetoothed_dtype):
 
 
 @pytest.mark.parametrize("constexpr_shapes", (False, True))
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 @pytest.mark.parametrize(
     "dtype, ninetoothed_dtype, rtol, atol",
     ((torch.float16, ninetoothed.float16, 0.001, 0.001),),
@@ -309,7 +309,7 @@ def test_conv2d(
     assert torch.allclose(output, expected, rtol=rtol, atol=atol)
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 def test_fp32_scalar(device):
     def _arrangement(input, scale, output):
         return input.tile((256,)), scale, output.tile((256,))
@@ -349,7 +349,7 @@ def test_fp32_scalar(device):
     assert torch.allclose(output, expected)
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 def test_aot_with_static_non_power_of_two_innermost_sizes(device):
     def _arrangement(input, output):
         return input.tile((3,)), output.tile((3,))

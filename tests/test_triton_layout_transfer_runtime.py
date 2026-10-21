@@ -146,7 +146,7 @@ def test_layout_transfer_runtime_contract_and_aot_wiring():
     assert not function.called
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("device", get_available_devices(backend="triton"))
 def test_layout_transfer_jit_aot_reload_with_dynamic_strides(device, tmp_path):
     rows, columns = 127, 79
     input = torch.empty_strided(

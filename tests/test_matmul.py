@@ -1,3 +1,5 @@
+import functools
+
 import pytest
 import torch
 
@@ -52,8 +54,13 @@ def matmul(lhs, rhs):
         (lhs.shape[0], rhs.shape[1]), device=lhs.device, dtype=torch.float16
     )
 
+    is_npu = lhs.device.type == "npu"
+    tile = (
+        {"BLOCK_SIZE_M": 32, "BLOCK_SIZE_N": 32, "BLOCK_SIZE_K": 512} if is_npu else {}
+    )
+    tensors = tuple(Tensor(2, shape_options={"constexpr": is_npu}) for _ in range(3))
     matmul_kernel = ninetoothed.make(
-        arrangement, application, (Tensor(2), Tensor(2), Tensor(2))
+        functools.partial(arrangement, **tile), application, tensors
     )
 
     matmul_kernel(lhs, rhs, output)
@@ -72,6 +79,9 @@ _FLOAT8_E5M2_CONFIG = (
 @pytest.mark.parametrize("n", (512,))
 @pytest.mark.parametrize("m", (512,))
 def test(m, n, k, dtype, device, atol):
+    if device == "npu" and dtype == torch.float8_e5m2:
+        pytest.skip("Ascend 910B does not support float8_e5m2 tensors")
+
     randn_dtype = dtype if dtype != torch.float8_e5m2 else torch.float16
 
     input = torch.randn((m, k), dtype=randn_dtype, device=device)
