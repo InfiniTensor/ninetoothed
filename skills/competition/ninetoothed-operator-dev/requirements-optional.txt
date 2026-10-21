@@ -1,0 +1,8 @@
+# Optional — visualization (human-review artifacts, save_path= mode only)
+# Install with: bash setup.sh --with-viz
+# OR: pip install -r requirements-optional.txt
+#
+# Note: visualization.visualize_arrangement() additionally requires a display
+# (tkinter GUI) and is for local development only — do NOT call it in a
+# headless agent evaluation context.
+matplotlib>=3.7.0
