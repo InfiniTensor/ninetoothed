@@ -29,6 +29,7 @@ def configuration(tmp_path):
             "prompt": "Synthetic test prompt.",
             "model_revision": "a" * 40,
             "stages": [1, 2, 3, 4],
+            "orders": ["forward", "reverse"],
         },
     }
     path = tmp_path / "config.json"
@@ -55,6 +56,7 @@ def harness(configuration, monkeypatch):
     state.maximum_concurrency = 0
     state.reference_barrier = None
     state.corrupt_uuid = False
+    state.core_kernels_verified = False
     state.worker_lock = threading.Lock()
 
     def worker_record(backend, stage, order, identity, device=0, cpus=None):
@@ -90,6 +92,12 @@ def harness(configuration, monkeypatch):
                 operator_calls={"rms_norm": 1, "silu": 1},
                 semantic_review={"status": "pending"},
             )
+
+            if state.core_kernels_verified:
+                record["core_kernel_coverage"] = {
+                    "sdpa": {"verified": stage >= 5},
+                    "linear_mm": {"verified": stage >= 6},
+                }
 
         return record
 
@@ -174,9 +182,13 @@ def test_config_resolves_paths_and_preserves_protocol(configuration):
     assert state.config["e2e"]["linear_tuning"] == "fixed"
     assert state.config["e2e"]["linear_block_sizes"] == [32, 32, 32]
     assert state.config["e2e"]["linear_weight_layout"] == "packed"
+    assert state.config["e2e"]["orders"] == ["forward", "reverse"]
     del state.raw["e2e"]["stages"]
+    del state.raw["e2e"]["orders"]
     runner.write_json(state.path, state.raw)
-    assert runner.read_config(state.path)["e2e"]["stages"] == [1, 2, 3, 4, 5, 6]
+    defaults = runner.read_config(state.path)["e2e"]
+    assert defaults["stages"] == [1, 2, 3, 4, 5, 6]
+    assert defaults["orders"] == ["forward"]
     state.raw["devices"] = [0, 1, 2, 3]
     state.raw["e2e"]["devices"] = [2, 3]
     runner.write_json(state.path, state.raw)
@@ -205,6 +217,25 @@ def test_rejects_invalid_stage_selection(configuration, stages):
     configuration.raw["e2e"]["stages"] = stages
     runner.write_json(configuration.path, configuration.raw)
     with pytest.raises(ValueError, match="stages"):
+        runner.read_config(configuration.path)
+
+
+@pytest.mark.parametrize(
+    "orders",
+    [
+        [],
+        ["sideways"],
+        ["forward", "forward"],
+        ["triton_then_ntops"],
+        [True],
+        "forward",
+    ],
+)
+def test_rejects_invalid_order_selection(configuration, orders):
+    configuration.raw["e2e"]["orders"] = orders
+    runner.write_json(configuration.path, configuration.raw)
+
+    with pytest.raises(ValueError, match="orders"):
         runner.read_config(configuration.path)
 
 
@@ -238,6 +269,84 @@ def test_core_operator_stages_use_selected_devices_and_both_orders(harness):
         assert len(selected) == 4
         assert {item[3] for item in selected} == {device}
         assert [item[2] for item in selected] == ["triton", "ntops", "ntops", "triton"]
+
+    for stage in harness.report()["stages"]:
+        coverage = stage["replacement_coverage"]
+        assert coverage["sdpa_requested"] == (stage["stage"] >= 5)
+        assert not coverage["sdpa_verified"]
+        assert not coverage["model_linear_projections_and_lm_head_verified"]
+
+
+@pytest.mark.parametrize(
+    ("order", "raw_order", "backends"),
+    [
+        ("forward", "triton_then_ntops", ["triton", "ntops"]),
+        ("reverse", "ntops_then_triton", ["ntops", "triton"]),
+    ],
+)
+def test_one_order_runs_six_stages_in_sixteen_paired_workers(
+    harness, monkeypatch, order, raw_order, backends
+):
+    harness.raw["devices"] = [0, 1, 2, 3]
+    harness.raw["e2e"].update(stages=[1, 2, 3, 4, 5, 6], orders=[order])
+    harness.core_kernels_verified = True
+    runner.write_json(harness.path, harness.raw)
+    monkeypatch.setattr(
+        affinity.os, "sched_getaffinity", lambda _: set(range(8)), raising=False
+    )
+    monkeypatch.setattr(
+        affinity.os, "sched_setaffinity", lambda *_: None, raising=False
+    )
+
+    assert harness.invoke() == 0
+    assert len(harness.invocations) == 16
+    assert sum(item[2] == "reference" for item in harness.invocations) == 4
+    assert {item[0] for item in harness.invocations} == {"reference", raw_order}
+    report = harness.report()
+    assert report["selected_orders"] == [order]
+    assert report["provenance"]["execution"]["expected_workers"] == 16
+    assert report["provenance"]["sampling"]["orders"] == [order]
+    assert [stage["stage"] for stage in report["stages"]] == [1, 2, 3, 4, 5, 6]
+
+    for stage in report["stages"]:
+        number = stage["stage"]
+        device = (number - 1) % 4
+        selected = [item for item in harness.device_invocations if item[1] == number]
+        assert selected == [
+            (raw_order, number, backend, device) for backend in backends
+        ]
+        assert stage["selected_orders"] == [order]
+        assert set(stage["timings"]) == {order}
+        assert set(stage["operator_counts_by_order"]) == {order}
+        assert set(stage["core_operator_adapters"]) == {order}
+        assert stage["timings"][order]["device_uuid"] == f"synthetic-device-{device}"
+        assert stage["timings"][order]["cpu_affinity"] == [2 * device, 2 * device + 1]
+        assert stage["accuracy"]["passed"] is None
+        coverage = stage["replacement_coverage"]
+        assert coverage["sdpa_verified"] == (number >= 5)
+        assert coverage["model_linear_projections_and_lm_head_verified"] == (
+            number >= 6
+        )
+
+    paths = sorted((harness.output / "results").glob("*.json"))
+    assert len(paths) == 12
+    assert all(path.name.startswith(raw_order) for path in paths)
+    reviews = {
+        path.relative_to(harness.output).as_posix(): {
+            "raw_sha256": runner.sha256_file(path),
+            "passed": True,
+        }
+        for path in paths
+    }
+    runner.write_json(harness.output / "semantic-review.json", {"records": reviews})
+    assert harness.invoke("--summarize-only") == 0
+    reviewed = harness.report()
+    assert all(stage["accuracy"]["passed"] for stage in reviewed["stages"])
+    assert all(
+        stage["timings"][order]["acceptance_eligible"] for stage in reviewed["stages"]
+    )
+    assert harness.invoke("--resume") == 0
+    assert len(harness.invocations) == 16
 
 
 def test_two_orders_use_seventeen_workers_and_resume_reuses_results(harness):

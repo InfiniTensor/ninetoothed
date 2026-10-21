@@ -36,6 +36,10 @@ SCOPES = {
     5: "Stage 4 + scaled dot product attention (prefill and cached decode)",
     6: "Stage 5 + all model Linear projections and language model head",
 }
+ORDERS = {
+    "forward": ("triton_then_ntops", ("triton", "ntops")),
+    "reverse": ("ntops_then_triton", ("ntops", "triton")),
+}
 
 
 def write_json(path, value):
@@ -110,11 +114,21 @@ def read_config(path):
         "model_revision": None,
         "cpu_threads": 1,
         "stages": list(SCOPES),
+        "orders": ["forward"],
         "linear_tuning": "fixed",
         "linear_block_sizes": [32, 32, 32],
         "linear_weight_layout": "packed",
     }
     settings.update(values)
+    orders = settings["orders"]
+    if (
+        not isinstance(orders, list)
+        or not orders
+        or any(not isinstance(order, str) or order not in ORDERS for order in orders)
+        or len(set(orders)) != len(orders)
+    ):
+        raise ValueError("e2e.orders must contain distinct forward or reverse names.")
+
     if settings["linear_tuning"] not in ("auto", "fixed"):
         raise ValueError("linear_tuning must be auto or fixed.")
     if settings["linear_weight_layout"] not in ("view", "packed"):

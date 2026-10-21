@@ -19,15 +19,24 @@ from pathlib import Path
 
 if __package__:
     from .affinity import plan_cpu_affinity
-    from .e2e_runner import SCOPES, read_config, reference_path, sha256_file, write_json
+    from .e2e_runner import (
+        ORDERS,
+        SCOPES,
+        read_config,
+        reference_path,
+        sha256_file,
+        write_json,
+    )
 else:
     from affinity import plan_cpu_affinity
-    from e2e_runner import SCOPES, read_config, reference_path, sha256_file, write_json
-
-ORDERS = {
-    "triton_then_ntops": ("triton", "ntops"),
-    "ntops_then_triton": ("ntops", "triton"),
-}
+    from e2e_runner import (
+        ORDERS,
+        SCOPES,
+        read_config,
+        reference_path,
+        sha256_file,
+        write_json,
+    )
 
 
 def now():
@@ -278,6 +287,7 @@ def acceptance_state(root, records, review):
 def build_report(config, environment):
     root = Path(config["e2e_output_dir"])
     execution = environment["execution"]
+    selected_orders = config["e2e"]["orders"]
     references = {}
 
     for device in execution["devices"]:
@@ -327,10 +337,8 @@ def build_report(config, environment):
         acceptance = []
         sanity = []
 
-        for order, label in (
-            ("triton_then_ntops", "forward"),
-            ("ntops_then_triton", "reverse"),
-        ):
+        for label in selected_orders:
+            order, _ = ORDERS[label]
             paths = {
                 backend: record_path(root, order, stage, backend)
                 for backend in ("triton", "ntops")
@@ -458,6 +466,7 @@ def build_report(config, environment):
             {
                 "stage": stage,
                 "scope": SCOPES[stage],
+                "selected_orders": selected_orders,
                 "physical_device": device,
                 "device_uuid": stage_reference["environment"]["device_uuid"]
                 if stage_reference
@@ -470,7 +479,7 @@ def build_report(config, environment):
                     "passed": False
                     if False in acceptance
                     else True
-                    if len(acceptance) == 2
+                    if len(acceptance) == len(selected_orders)
                     and all(value is True for value in acceptance)
                     else None,
                     "token_and_text_equality_are_acceptance_gates": False,
@@ -485,14 +494,14 @@ def build_report(config, environment):
                 "replacement_coverage": {
                     "sdpa_requested": stage >= 5,
                     "sdpa_verified": stage >= 5
-                    and len(core_coverage) == 4
+                    and len(core_coverage) == 2 * len(selected_orders)
                     and all(
                         item.get("sdpa", {}).get("verified") is True
                         for item in core_coverage
                     ),
                     "model_linear_projections_and_lm_head_requested": stage >= 6,
                     "model_linear_projections_and_lm_head_verified": stage >= 6
-                    and len(core_coverage) == 4
+                    and len(core_coverage) == 2 * len(selected_orders)
                     and all(
                         item.get("linear_mm", {}).get("verified") is True
                         for item in core_coverage
@@ -506,6 +515,7 @@ def build_report(config, environment):
         )
 
     report = {
+        "selected_orders": selected_orders,
         "model": reference["model"],
         "reference_by_device": {
             device: {
@@ -533,6 +543,7 @@ def build_report(config, environment):
                 "observed_max_concurrent_workers", 0
             ),
             "sampling": {
+                "orders": selected_orders,
                 "warmup_per_process": config["e2e"]["warmup"],
                 "samples_per_process": config["e2e"]["samples"],
                 "statistic": "median",
@@ -574,6 +585,7 @@ def build_report(config, environment):
 
 def execution_plan(config):
     stages = config["e2e"]["stages"]
+    orders = config["e2e"]["orders"]
     devices = config["e2e"]["devices"][: len(stages)]
     assignments = {
         str(stage): devices[index % len(devices)] for index, stage in enumerate(stages)
@@ -583,13 +595,14 @@ def execution_plan(config):
     )
 
     return {
-        "protocol": "Stages run on parallel device lanes; both backends and orders of a stage stay on one physical device.",
+        "protocol": "Stages run on parallel device lanes; both backends and selected orders of a stage stay on one physical device.",
+        "orders": orders,
         "requested_devices": config["e2e"]["devices"],
         "devices": devices,
         "stage_devices": assignments,
         "max_concurrent_workers": len(devices),
         "workers_per_device": 1,
-        "expected_workers": len(devices) + len(stages) * 4,
+        "expected_workers": len(devices) + len(stages) * 2 * len(orders),
         "cpu_affinity": {str(device): affinity[device] for device in devices},
         "reference_by_device": {
             str(device): reference_path(config, device)
@@ -626,7 +639,8 @@ def run_lanes(config, environment):
         affinity = execution["cpu_affinity"][str(device)]
         sequence = [("reference", 0, "reference")]
 
-        for order, backends in ORDERS.items():
+        for selected in config["e2e"]["orders"]:
+            order, backends = ORDERS[selected]
             for stage in stages:
                 sequence.extend((order, stage, backend) for backend in backends)
 

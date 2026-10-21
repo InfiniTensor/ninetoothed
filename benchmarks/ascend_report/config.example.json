@@ -21,6 +21,7 @@
   },
   "e2e": {
     "stages": [1, 2, 3, 4, 5, 6],
+    "orders": ["forward"],
     "linear_tuning": "fixed",
     "linear_block_sizes": [32, 32, 32],
     "linear_weight_layout": "packed",
