@@ -51,6 +51,9 @@ class TileLangOptimizeSchedule(OptimizeSchedule):
     name = "ssa.tilelang.optimize_schedule"
     supported_backends = (Target.TILELANG,)
 
+    def lower_row_group(self, program, schedule, context):
+        return {"mapping": "scalar-tile"}
+
     def schedule_candidates(
         self,
         analysis: Mapping[str, Any],

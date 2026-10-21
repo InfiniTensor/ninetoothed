@@ -131,6 +131,7 @@ class TestPipeline:
         assert "ssa.decompose_linalg" in independent
         assert "ssa.analyze_effects" in independent
         assert "ssa.select_schedule" in independent
+        assert "ssa.group_reduction_rows" in independent
 
         for backend in Target:
             backend_passes = {
@@ -141,7 +142,10 @@ class TestPipeline:
 
             if backend == Target.TRITON:
                 expected.update(
-                    {"ssa.triton.block_reductions", "ssa.triton.singleton_dot"}
+                    {
+                        "ssa.triton.block_reductions",
+                        "ssa.triton.singleton_dot",
+                    }
                 )
 
             assert backend_passes == expected
