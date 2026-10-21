@@ -19,7 +19,14 @@ def validate(config, backend):
     torch, cache = runner.configure_runtime(config)
     recorder = runner.Adapters(backend, torch, cache)
     attention = AttentionAdapter(backend, torch, recorder=recorder)
-    linear = LinearAdapter(backend, torch, recorder=recorder)
+    linear = LinearAdapter(
+        backend,
+        torch,
+        recorder=recorder,
+        tuning=config["e2e"]["linear_tuning"],
+        block_sizes=config["e2e"]["linear_block_sizes"],
+        weight_layout=config["e2e"]["linear_weight_layout"],
+    )
     model = json.loads((Path(config["paths"]["model"]) / "config.json").read_text())
     hidden = model["hidden_size"]
     heads = model["num_attention_heads"]
@@ -103,6 +110,8 @@ def validate(config, backend):
             weight = torch.randn(
                 (columns, reduction), device="npu", dtype=torch.bfloat16
             ) / math.sqrt(reduction)
+            if config["e2e"]["linear_weight_layout"] == "packed":
+                weight = weight.transpose(0, 1).contiguous().transpose(0, 1)
             for rows in (1, input_tokens):
                 x = torch.randn(
                     (1, rows, reduction), device="npu", dtype=torch.bfloat16

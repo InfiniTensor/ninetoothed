@@ -110,8 +110,26 @@ def read_config(path):
         "model_revision": None,
         "cpu_threads": 1,
         "stages": list(SCOPES),
+        "linear_tuning": "fixed",
+        "linear_block_sizes": [32, 32, 32],
+        "linear_weight_layout": "packed",
     }
     settings.update(values)
+    if settings["linear_tuning"] not in ("auto", "fixed"):
+        raise ValueError("linear_tuning must be auto or fixed.")
+    if settings["linear_weight_layout"] not in ("view", "packed"):
+        raise ValueError("linear_weight_layout must be view or packed.")
+    blocks = settings["linear_block_sizes"]
+    if (
+        not isinstance(blocks, (list, tuple))
+        or len(blocks) != 3
+        or any(
+            type(size) is not int or size < 16 or size & (size - 1) for size in blocks
+        )
+    ):
+        raise ValueError(
+            "linear_block_sizes must be three powers of two of at least16."
+        )
 
     if (
         not isinstance(settings["stages"], list)
@@ -206,7 +224,7 @@ def text_sanity(output_ids, text, expected_tokens):
     return {"passed": all(checks.values()), **checks}
 
 
-def validate_core_launches(backend, stage, calls, launches):
+def validate_core_launches(backend, stage, calls, launches, linear_kernel_name=None):
     """Match logical core calls to actual launches of the pinned numeric kernels."""
     result = {}
     expected = []
@@ -227,7 +245,8 @@ def validate_core_launches(backend, stage, calls, launches):
                 sum(
                     count for name, count in calls.items() if name.startswith("linear:")
                 ),
-                "ntops_lab_mm_npu" if backend == "ntops" else "mm_kernel",
+                linear_kernel_name
+                or ("ntops_lab_mm_npu" if backend == "ntops" else "mm_kernel"),
             )
         )
     for operation, logical_count, kernel_name in expected:
@@ -561,7 +580,15 @@ def stage_dispatch(adapter, stage):
 
 
 @contextlib.contextmanager
-def patched(adapter, stage, model=None):
+def patched(
+    adapter,
+    stage,
+    model=None,
+    *,
+    linear_tuning="auto",
+    linear_block_sizes=(32, 32, 32),
+    linear_weight_layout="view",
+):
     from transformers.activations import SiLUActivation
     from transformers.models.llama.modeling_llama import LlamaMLP, LlamaRMSNorm
 
@@ -616,7 +643,14 @@ def patched(adapter, stage, model=None):
                 else:
                     from e2e_linear import Adapter as LinearAdapter
 
-                linear = LinearAdapter(adapter.backend, torch, recorder=adapter)
+                linear = LinearAdapter(
+                    adapter.backend,
+                    torch,
+                    recorder=adapter,
+                    tuning=linear_tuning,
+                    block_sizes=linear_block_sizes,
+                    weight_layout=linear_weight_layout,
+                )
                 adapter.core_operator_adapters["linear"] = linear
                 patches.enter_context(linear.patched(model))
             yield
@@ -804,7 +838,14 @@ def measure_worker(config, backend, stage, order, identity):
         adapter = Adapters(backend, torch, device_cache)
         reference = json.loads(reference_path(config).read_text(encoding="utf-8"))
 
-        with patched(adapter, stage, model):
+        with patched(
+            adapter,
+            stage,
+            model,
+            linear_tuning=settings["linear_tuning"],
+            linear_block_sizes=settings["linear_block_sizes"],
+            linear_weight_layout=settings["linear_weight_layout"],
+        ):
             if settings["logits_diagnostics"]:
                 result["logits_diagnostic"] = save_logits(
                     model,
@@ -897,7 +938,15 @@ def measure_worker(config, backend, stage, order, identity):
                 )
 
             core_coverage = validate_core_launches(
-                backend, stage, adapter.calls, launches
+                backend,
+                stage,
+                adapter.calls,
+                launches,
+                adapter.core_operator_adapters["linear"].provenance()["tuning"][
+                    "kernel_name"
+                ]
+                if stage >= 6
+                else None,
             )
             if stage >= 6:
                 linear_provenance = adapter.core_operator_adapters[

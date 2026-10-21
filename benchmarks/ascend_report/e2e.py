@@ -318,6 +318,7 @@ def build_report(config, environment):
         timings = {}
         counts = {}
         native_matrix_counts = {}
+        core_adapters = {}
         core_coverage = []
         diagnostics = {}
         output_texts = {}
@@ -441,6 +442,10 @@ def build_report(config, environment):
                 "triton": left.get("native_matrix_calls", {}),
                 "ninetoothed": right.get("native_matrix_calls", {}),
             }
+            core_adapters[label] = {
+                "triton": left.get("core_operator_adapters", {}),
+                "ninetoothed": right.get("core_operator_adapters", {}),
+            }
             output_texts[label] = {
                 "triton": left["output_text"],
                 "ninetoothed": right["output_text"],
@@ -476,6 +481,7 @@ def build_report(config, environment):
                 "operator_counts": counts.get("forward", counts.get("reverse", {})),
                 "operator_counts_by_order": counts,
                 "native_matrix_counts_by_order": native_matrix_counts,
+                "core_operator_adapters": core_adapters,
                 "replacement_coverage": {
                     "sdpa_requested": stage >= 5,
                     "sdpa_verified": stage >= 5
@@ -534,12 +540,16 @@ def build_report(config, environment):
                 "excluded": [
                     "model load",
                     "tokenization",
+                    "one-time weight preparation and restoration",
                     "output copy/check/text decoding",
                     "launch counting",
                 ],
                 "independent_process_per": "order/stage/backend",
                 "TRITON_ALL_BLOCKS_PARALLEL": "0",
                 "cpu_threads": config["e2e"]["cpu_threads"],
+                "linear_tuning": config["e2e"]["linear_tuning"],
+                "linear_block_sizes": config["e2e"]["linear_block_sizes"],
+                "linear_weight_layout": config["e2e"]["linear_weight_layout"],
             },
             "ratio_percent_formula": "100 * triton_median_s / ninetoothed_median_s; higher is better",
             "semantic_acceptance": "Human review of normal coherent output; logits and exact token equality are diagnostic only.",

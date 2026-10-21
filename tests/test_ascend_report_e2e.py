@@ -171,6 +171,9 @@ def test_config_resolves_paths_and_preserves_protocol(configuration):
         state.config["e2e"][name]
         for name in ("input_tokens", "output_tokens", "warmup", "samples")
     ] == [19, 128, 2, 10]
+    assert state.config["e2e"]["linear_tuning"] == "fixed"
+    assert state.config["e2e"]["linear_block_sizes"] == [32, 32, 32]
+    assert state.config["e2e"]["linear_weight_layout"] == "packed"
     del state.raw["e2e"]["stages"]
     runner.write_json(state.path, state.raw)
     assert runner.read_config(state.path)["e2e"]["stages"] == [1, 2, 3, 4, 5, 6]

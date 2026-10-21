@@ -21,6 +21,9 @@
   },
   "e2e": {
     "stages": [1, 2, 3, 4, 5, 6],
+    "linear_tuning": "fixed",
+    "linear_block_sizes": [32, 32, 32],
+    "linear_weight_layout": "packed",
     "model_id": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
     "model_revision": "6a6f4aa4197940add57724a7707d069478df56b1",
     "prompt": "Explain why the sky appears blue during the day and why sunsets often look red.",

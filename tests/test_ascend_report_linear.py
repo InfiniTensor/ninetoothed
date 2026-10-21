@@ -1,11 +1,30 @@
 import collections
 import contextlib
+import weakref
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from benchmarks.ascend_report import e2e_linear
+
+BM, BN, BK = "dynamic_m", "dynamic_n", "dynamic_k"
+
+
+def _arrangement(left, right, output):
+    return left.tile((BM, BK)), right.tile((BK, BN)), output.tile((BM, BN))
+
+
+def _application(left, right, output):
+    output = left + right  # noqa: F841
+
+
+class _SymbolicTensor:
+    def __init__(self, rank):
+        self.rank = rank
+
+    def tile(self, shape):
+        return self.rank, shape
 
 
 class _Tensor:
@@ -55,7 +74,7 @@ class _Linear:
 
 @pytest.fixture
 def harness(monkeypatch):
-    state = SimpleNamespace(calls=[], disabled=0, device_contexts=0)
+    state = SimpleNamespace(calls=[], disabled=0, device_contexts=0, fixed_builds=[])
 
     @contextlib.contextmanager
     def disable_dispatch():
@@ -90,11 +109,24 @@ def harness(monkeypatch):
     def fail_public_run(*args):
         raise AssertionError("The public NPU wrapper uses a forbidden fallback.")
 
+    def make(arrangement, application, tensors, **configuration):
+        state.fixed_builds.append(
+            {
+                "arrangement": arrangement,
+                "application": application,
+                "tiles": arrangement(*tensors),
+                "configuration": configuration,
+            }
+        )
+        return generated
+
     module = SimpleNamespace(
         __name__="ntops_lab.kernels.linear.mm",
         __file__="synthetic/ntops/mm.py",
         kernel=generated,
         run=fail_public_run,
+        arrangement=_arrangement,
+        application=_application,
     )
     baseline_module = SimpleNamespace(
         __name__="triton_ascend_ops.kernels.mm",
@@ -107,6 +139,7 @@ def harness(monkeypatch):
             load_operator=lambda name: baseline_module
         ),
         "triton.language": SimpleNamespace(float32="tl.float32"),
+        "ninetoothed": SimpleNamespace(Tensor=_SymbolicTensor, make=make),
     }
     monkeypatch.setattr(
         e2e_linear, "importlib", SimpleNamespace(import_module=imports.__getitem__)
@@ -303,3 +336,274 @@ def test_custom_instance_forward_is_not_silently_replaced(harness):
 
     assert module.forward is override
     assert not harness.calls
+
+
+def test_fixed_tuning_binds_only_arrangement_meta_parameters(harness):
+    adapter = e2e_linear.Adapter("ntops", harness.torch, tuning="fixed")
+    assert len(harness.fixed_builds) == 1
+    built = harness.fixed_builds[0]
+    assert built["arrangement"].__code__ is _arrangement.__code__
+    assert built["arrangement"].__globals__ is not _arrangement.__globals__
+    assert built["application"] is _application
+    assert built["tiles"] == ((2, (32, 32)), (2, (32, 32)), (2, (32, 32)))
+    assert (BM, BN, BK) == ("dynamic_m", "dynamic_n", "dynamic_k")
+    assert built["configuration"] == {
+        "kernel_name": "ntops_lab_mm_fixed_32_32_32",
+        "num_warps": 8,
+        "num_stages": 1,
+    }
+    metadata = adapter.provenance()["tuning"]
+    assert metadata["autotune_enabled"] is False
+    assert metadata["kernel_name"] == "ntops_lab_mm_fixed_32_32_32_npu"
+
+
+def test_fixed_tuning_retains_baseline_kernel_and_tiles(harness):
+    adapter = e2e_linear.Adapter("triton", harness.torch, tuning="fixed")
+    metadata = adapter.provenance()["tuning"]
+    assert not harness.fixed_builds
+    assert metadata["block_sizes"] == [32, 32, 32]
+    assert metadata["kernel_name"] == "mm_kernel"
+    assert metadata["autotune_enabled"] is False
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    ({"tuning": "unknown"}, {"block_sizes": (32, 32)}, {"block_sizes": (32, 24, 32)}),
+)
+def test_invalid_tuning_is_rejected_before_kernel_import(harness, arguments):
+    with pytest.raises(ValueError):
+        e2e_linear.Adapter("ntops", harness.torch, **arguments)
+    assert not harness.fixed_builds
+
+
+@pytest.fixture
+def packing_harness(harness, monkeypatch):
+    state = harness
+    state.parameter_roots = []
+    state.copy_calls = 0
+    state.fail_copy_at = None
+    state.max_allocated = 0
+
+    def root_array(values):
+        while isinstance(values.base, np.ndarray):
+            values = values.base
+        return values
+
+    class Parameter(_Tensor):
+        def __init__(self, values, device=None):
+            super().__init__(values, device)
+            self.grad = None
+            self.requires_grad = True
+            state.parameter_roots.append(weakref.ref(root_array(self.values)))
+
+        @property
+        def data(self):
+            return _Tensor(self.values, self.device)
+
+        @data.setter
+        def data(self, tensor):
+            self.values = tensor.values
+
+    def storage(tensor):
+        root = root_array(tensor.values)
+        pointer, size = root.__array_interface__["data"][0], root.nbytes
+        return SimpleNamespace(data_ptr=lambda: pointer, nbytes=lambda: size)
+
+    def contiguous(tensor):
+        if tensor.values.flags.c_contiguous:
+            return tensor
+        state.copy_calls += 1
+        if state.copy_calls == state.fail_copy_at:
+            raise RuntimeError("synthetic packing allocation failure")
+        array = np.ascontiguousarray(tensor.values)
+        state.parameter_roots.append(weakref.ref(array))
+        return _Tensor(array, tensor.device)
+
+    def allocated(device):
+        roots = {id(ref()): ref() for ref in state.parameter_roots if ref() is not None}
+        current = sum(array.nbytes for array in roots.values())
+        state.max_allocated = max(state.max_allocated, current)
+        return current
+
+    class Event:
+        def __init__(self, **kwargs):
+            pass
+
+        def record(self):
+            pass
+
+        def synchronize(self):
+            pass
+
+        def elapsed_time(self, other):
+            return 0.25
+
+    monkeypatch.setattr(_Tensor, "untyped_storage", storage, raising=False)
+    monkeypatch.setattr(
+        _Tensor,
+        "storage_offset",
+        lambda tensor: (
+            (
+                tensor.values.__array_interface__["data"][0]
+                - root_array(tensor.values).__array_interface__["data"][0]
+            )
+            // tensor.values.itemsize
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        _Tensor, "numel", lambda tensor: tensor.values.size, raising=False
+    )
+    monkeypatch.setattr(
+        _Tensor, "element_size", lambda tensor: tensor.values.itemsize, raising=False
+    )
+    monkeypatch.setattr(
+        _Tensor,
+        "is_contiguous",
+        lambda tensor: tensor.values.flags.c_contiguous,
+        raising=False,
+    )
+    monkeypatch.setattr(_Tensor, "contiguous", contiguous)
+    state.torch.nn.Parameter = Parameter
+    state.torch.no_grad = contextlib.nullcontext
+    state.torch.inference_mode = lambda enabled=True: contextlib.nullcontext()
+    state.torch.npu.Event = Event
+    state.torch.npu.synchronize = lambda device=None: None
+    state.torch.npu.memory_allocated = allocated
+    state.torch.npu.max_memory_allocated = lambda device: state.max_allocated
+    state.torch.npu.memory_reserved = allocated
+    state.Parameter = Parameter
+    state.root_array = root_array
+
+    def model(modules, extra_parameters=(), buffers=()):
+        return SimpleNamespace(
+            named_modules=lambda: iter(modules),
+            named_parameters=lambda remove_duplicate=False: iter(
+                [(name + ".weight", module.weight) for name, module in modules]
+                + list(extra_parameters)
+            ),
+            named_buffers=lambda remove_duplicate=False: iter(buffers),
+        )
+
+    state.model = model
+    return state
+
+
+@pytest.mark.parametrize("backend", ("ntops", "triton"))
+def test_packing_preserves_parameter_identity_values_and_restores_layout(
+    packing_harness, backend
+):
+    state = packing_harness
+    weight = state.Parameter(np.arange(15, dtype=np.float32).reshape(3, 5))
+    expected = weight.values.copy()
+    original_storage = weakref.ref(state.root_array(weight.values))
+    module = _Linear(weight)
+    adapter = e2e_linear.Adapter(backend, state.torch, weight_layout="packed")
+    with adapter.patched(state.model([("q_proj", module)])):
+        assert module.weight is weight
+        assert weight.stride() == (1, 3)
+        assert weight.transpose(0, 1).is_contiguous()
+        np.testing.assert_array_equal(weight.values, expected)
+        assert original_storage() is None
+    assert module.weight is weight
+    assert weight.stride() == (5, 1)
+    np.testing.assert_array_equal(weight.values, expected)
+    statistics_ = adapter.provenance()["weight_preparation"]
+    assert statistics_["old_tensor_or_storage_snapshots_retained"] is False
+    assert (
+        statistics_["packing"]["completed"] and statistics_["restoration"]["completed"]
+    )
+    assert statistics_["packing"]["copied_bytes"] == expected.nbytes
+    assert (
+        statistics_["packing"]["maximum_single_matrix_temporary_bytes"]
+        == expected.nbytes
+    )
+    assert (
+        statistics_["packing"]["memory_before"]["memory_allocated"]
+        == statistics_["packing"]["memory_after"]["memory_allocated"]
+    )
+
+
+def test_shared_parameter_is_packed_once_and_both_modules_stay_consistent(
+    packing_harness,
+):
+    state = packing_harness
+    weight = state.Parameter(np.arange(15, dtype=np.float32).reshape(3, 5))
+    modules = [("q_proj", _Linear(weight)), ("k_proj", _Linear(weight))]
+    adapter = e2e_linear.Adapter("ntops", state.torch, weight_layout="packed")
+    with adapter.patched(state.model(modules)):
+        assert modules[0][1].weight is modules[1][1].weight is weight
+        assert state.copy_calls == 1
+        assert weight.stride() == (1, 3)
+    assert state.copy_calls == 2
+    stats = adapter.provenance()["weight_preparation"]
+    assert stats["unique_parameter_count"] == 1
+    assert stats["selected_module_count"] == 2
+    assert stats["shared_parameter_module_count"] == 1
+    assert weight.stride() == (5, 1)
+
+
+@pytest.mark.parametrize(
+    "alias_kind",
+    ("different_parameter", "nonlinear_parameter", "buffer", "noncontiguous"),
+)
+def test_unsafe_weight_aliases_or_layouts_are_rejected_before_copy(
+    packing_harness, alias_kind
+):
+    state = packing_harness
+    weight = state.Parameter(np.arange(15, dtype=np.float32).reshape(3, 5))
+    modules = [("q_proj", _Linear(weight))]
+    extra, buffers = [], []
+    if alias_kind == "different_parameter":
+        modules.append(("k_proj", _Linear(state.Parameter(weight.values))))
+    elif alias_kind == "nonlinear_parameter":
+        extra.append(("embed_tokens.weight", weight))
+    elif alias_kind == "buffer":
+        buffers.append(("weight_cache", _Tensor(weight.values, weight.device)))
+    else:
+        weight.values = weight.values.T
+    adapter = e2e_linear.Adapter("ntops", state.torch, weight_layout="packed")
+    with pytest.raises(ValueError):
+        with adapter.patched(state.model(modules, extra, buffers)):
+            raise AssertionError("Unsafe weight layout must not be entered.")
+    assert state.copy_calls == 0
+    assert not adapter._patched
+    assert "forward" not in modules[0][1].__dict__
+
+
+def test_partial_packing_failure_restores_already_packed_parameters(packing_harness):
+    state = packing_harness
+    weights = [
+        state.Parameter(np.arange(15, dtype=np.float32).reshape(3, 5)) for _ in range(2)
+    ]
+    modules = [("q_proj", _Linear(weights[0])), ("k_proj", _Linear(weights[1]))]
+    state.fail_copy_at = 2
+    adapter = e2e_linear.Adapter("ntops", state.torch, weight_layout="packed")
+    with pytest.raises(RuntimeError, match="synthetic packing allocation"):
+        with adapter.patched(state.model(modules)):
+            raise AssertionError("The second packing operation must fail.")
+    assert all(weight.stride() == (5, 1) for weight in weights)
+    assert all("forward" not in module.__dict__ for _, module in modules)
+    assert not adapter._patched
+    stats = adapter.provenance()["weight_preparation"]
+    assert stats["packing"]["completed"] is False
+    assert stats["restoration"]["completed"] is True
+    assert stats["restoration"]["parameters_processed"] == 1
+
+
+def test_exception_inside_model_context_restores_all_packed_weights(packing_harness):
+    state = packing_harness
+    weights = [
+        state.Parameter(np.full((3, 5), number, dtype=np.float32)) for number in (1, 2)
+    ]
+    modules = [("q_proj", _Linear(weights[0])), ("k_proj", _Linear(weights[1]))]
+    adapter = e2e_linear.Adapter("ntops", state.torch, weight_layout="packed")
+    with pytest.raises(RuntimeError, match="synthetic inference failure"):
+        with adapter.patched(state.model(modules)):
+            raise RuntimeError("synthetic inference failure")
+    for number, weight in enumerate(weights, 1):
+        assert weight.stride() == (5, 1)
+        assert np.all(weight.values == number)
+    assert (
+        adapter.provenance()["weight_preparation"]["restoration"]["completed"] is True
+    )
