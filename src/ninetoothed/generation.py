@@ -135,6 +135,7 @@ class CodeGenerator(ast.NodeTransformer):
 
         npu_tree = copy.deepcopy(tree)
         Ascendifier().visit(npu_tree)
+        self._add_npu_grid_pruning(npu_tree)
         ast.fix_missing_locations(npu_tree)
 
         if prettify:
@@ -446,16 +447,21 @@ class CodeGenerator(ast.NodeTransformer):
 
             symbol = self._symbols[symbol_str]
 
-            max_values_of_non_meta_params[symbol_str] = symbol.upper_bound
+            if (upper_bound := getattr(symbol, "upper_bound", None)) is not None:
+                max_values_of_non_meta_params[symbol_str] = upper_bound
 
         block_size_configs = []
 
         for values in itertools.product(*values_of_meta_params):
             config = {param: value for param, value in zip(meta, values)}
 
-            if sympy.logic.simplify_logic(
+            valid = sympy.logic.simplify_logic(
                 inequalities.subs(config | max_values_of_non_meta_params)
-            ):
+            )
+
+            # Dynamic dimensions without an explicit bound are checked when
+            # Triton specializes the kernel for the actual runtime shape.
+            if valid is not sympy.false:
                 block_size_configs.append(config)
 
         if not block_size_configs:
@@ -676,6 +682,52 @@ class CodeGenerator(ast.NodeTransformer):
 
         return grid
 
+    def _add_npu_grid_pruning(self, tree):
+        if self._autotune is None:
+            return
+
+        symbols = self._symbols
+
+        class ParameterLookup(ast.NodeTransformer):
+            def visit_Name(self, node):
+                if node.id in symbols:
+                    return ast.Subscript(
+                        value=ast.Name(id="meta", ctx=ast.Load()),
+                        slice=ast.Constant(value=node.id),
+                        ctx=ast.Load(),
+                    )
+
+                return node
+
+        grid = ParameterLookup().visit(copy.deepcopy(self.raw_grid))
+        alias = "ninetoothed_make_grid_pruner"
+        tree.body.insert(
+            0,
+            ast.ImportFrom(
+                module="ninetoothed.ascend_autotune",
+                names=[ast.alias(name="make_grid_pruner", asname=alias)],
+                level=0,
+            ),
+        )
+
+        for node in ast.walk(tree):
+            if Ascendifier._is_triton_autotune_call(node):
+                node.keywords.append(
+                    ast.keyword(
+                        arg="prune_configs_by",
+                        value=ast.Dict(
+                            keys=[ast.Constant(value="early_config_prune")],
+                            values=[
+                                ast.Call(
+                                    func=ast.Name(id=alias, ctx=ast.Load()),
+                                    args=[copy.deepcopy(grid)],
+                                    keywords=[],
+                                )
+                            ],
+                        ),
+                    )
+                )
+
     def _generate_load(self, tensor, indices=()):
         if tensor.ndim == 0:
             return Symbol(tensor.source.name).node
@@ -705,7 +757,23 @@ class CodeGenerator(ast.NodeTransformer):
 
         pointers = name_for_pointers + overall_offsets
 
+        if type(self)._index_arrays(mask) - type(self)._index_arrays(pointers):
+            # Expanded dimensions can remain in the mask after their source
+            # coordinates disappear from the pointer expression.
+            pointers = call("broadcast", pointers, mask)[0]
+
         return pointers, mask
+
+    @staticmethod
+    def _index_arrays(expression):
+        return {
+            ast.dump(node, include_attributes=False)
+            for node in ast.walk(expression.node)
+            if isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and node.value.func.attr == "arange"
+        }
 
     def _complete_indices(self, tensor, indices):
         return (
@@ -837,7 +905,7 @@ class CodeGenerator(ast.NodeTransformer):
                 if not naming.is_meta(name):
                     next_power_of_2_name = naming.make_next_power_of_2(name)
 
-                    return Symbol(next_power_of_2_name).node
+                    return Symbol(next_power_of_2_name, constexpr=True).node
 
                 return self.generic_visit(node)
 
@@ -958,6 +1026,32 @@ class _Inliner(ast.NodeTransformer):
             node = alias_restorer.visit(node)
 
         return node
+
+    def visit_Attribute(self, node):
+        attributes = []
+        root = node
+
+        while isinstance(root, ast.Attribute):
+            attributes.append(root.attr)
+            root = root.value
+
+        if isinstance(root, ast.Name):
+            value = self._globals.get(root.id)
+
+            for attribute in reversed(attributes):
+                if not inspect.ismodule(value):
+                    break
+
+                value = getattr(value, attribute, None)
+
+            if value is libdevice:
+                self.libdevice_used = True
+
+                return ast.copy_location(
+                    ast.Name(id=self.LIBDEVICE_ALIAS, ctx=node.ctx), node
+                )
+
+        return self.generic_visit(node)
 
     def visit_Expr(self, node):
         value, stmts = self._inline_expr(node.value)

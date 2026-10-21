@@ -1,5 +1,7 @@
 import ast
 
+from ninetoothed.ascend_reductions import split_large_load_reductions
+
 
 class Ascendifier(ast.NodeTransformer):
     def __init__(self):
@@ -518,5 +520,7 @@ class Ascendifier(ast.NodeTransformer):
         self.generic_visit(node)
 
         node = type(self)._rewrite_tail_key_boundary_masks(node)
+
+        node = split_large_load_reductions(node)
 
         return node
