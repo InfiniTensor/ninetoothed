@@ -52,6 +52,38 @@ def _target_metadata(kernel: Kernel) -> dict[str, Any]:
     return dict(profile.get("metadata", {}))
 
 
+def _platform_grid_limit(kernel: Kernel) -> int | None:
+    """Resolve the vendor grid limit for the kernel's Triton target.
+
+    Platform profiles are the authoritative source.  Only when no platform
+    was configured at all (the legacy generic default) does the active
+    Triton driver's vendor backend contribute its hardware grid bound
+    (MLU: 65535 programs per dim); explicitly configured platforms decide
+    for themselves.
+    """
+    limit = _target_metadata(kernel).get("triton_grid_limit")
+
+    if limit is not None:
+        return int(limit)
+
+    target_options = dict(kernel.compiler_options.get("target", {}))
+
+    if target_options.get("platform") not in (None, "generic"):
+        return None
+
+    try:
+        import triton
+
+        target = triton.runtime.driver.active.get_current_target()
+
+        if str(getattr(target, "backend", "")) == "mlu":
+            return 65535
+    except Exception:
+        pass
+
+    return None
+
+
 @dataclass(frozen=True, kw_only=True)
 class TritonTarget(EmitterTarget):
     backend: Target = Target.TRITON
@@ -370,9 +402,7 @@ class TritonTarget(EmitterTarget):
         ):
             return context
 
-        uses_grid_stride_layout = (
-            _target_metadata(context.kernel).get("triton_grid_limit") is not None
-        )
+        uses_grid_stride_layout = _platform_grid_limit(context.kernel) is not None
         source_row_axis = "[:, None]" if uses_grid_stride_layout else "[None, :]"
         source_column_axis = "[None, :]" if uses_grid_stride_layout else "[:, None]"
         value_shape = (
@@ -514,7 +544,7 @@ class TritonTarget(EmitterTarget):
         kernel = context.kernel
         body = common.rewrite_index_math(context.body, c_style=False)
         target_metadata = _target_metadata(kernel)
-        grid_limit = target_metadata.get("triton_grid_limit")
+        grid_limit = _platform_grid_limit(kernel)
         block_size = int(target_metadata.get("triton_block_size", 256))
 
         if block_size < 1 or block_size & (block_size - 1):
