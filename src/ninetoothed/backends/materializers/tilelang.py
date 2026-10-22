@@ -126,6 +126,7 @@ def _host_wrapper(function, abi, *, specs=()):
     def launch(*args, **kwargs):
         import torch
         import tvm
+        import tvm_ffi
 
         public = _public_values(abi, args, kwargs, specs=specs)
 
@@ -135,8 +136,9 @@ def _host_wrapper(function, abi, *, specs=()):
         values, keepalive = _bound_values(abi, public, scalar_mode="value")
         values, flattened = _flatten_ffi_tensor_args(abi.kernel_args, values)
         keepalive.extend(flattened)
+        # Tensor views need not start at a 64-byte storage boundary.
         converted = [
-            tvm.runtime.from_dlpack(value)
+            tvm_ffi.from_dlpack(value, require_contiguous=True)
             if isinstance(value, torch.Tensor) and value.ndim > 0
             else value.item()
             if hasattr(value, "item")

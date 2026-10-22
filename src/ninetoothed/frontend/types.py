@@ -2,6 +2,7 @@
 
 import ast
 import re
+from dataclasses import replace
 from typing import Any
 
 from ninetoothed.dtype import normalize_dtype
@@ -111,7 +112,21 @@ def _next_dtype_shape(type_: ssa.Type) -> tuple[str, ...] | None:
     return shapes[level + 1]
 
 
-def _reduce_type(type_: ssa.Type, axis: Any, *, strict: bool) -> ssa.Type:
+def _reduce_type(
+    type_: ssa.Type, axis: Any, *, operator: str, strict: bool
+) -> ssa.Type:
+    if operator == "sum":
+        promoted_dtype = {
+            "bool": "uint32",
+            "int8": "int32",
+            "int16": "int32",
+            "uint8": "uint32",
+            "uint16": "uint32",
+        }.get(normalize_dtype(type_.dtype))
+
+        if promoted_dtype is not None:
+            type_ = replace(type_, dtype=promoted_dtype)
+
     if type_.kind != "tensor":
         return type_
 
@@ -299,7 +314,16 @@ def _binary_type(operator: ast.operator, lhs: ssa.Type, rhs: ssa.Type) -> ssa.Ty
             return ssa.Type(kind=kind, shape=shape, dtype="index")
         return _offset_pointer_type(lhs, rhs)
 
-    return _broadcast_type(lhs, rhs)
+    result = _broadcast_type(lhs, rhs)
+
+    if (
+        isinstance(operator, ast.Div)
+        and result.dtype is not None
+        and normalize_dtype(result.dtype) not in {"float32", "float64"}
+    ):
+        return replace(result, dtype="float32")
+
+    return result
 
 
 def _offset_pointer_type(pointer: ssa.Type, offset: ssa.Type) -> ssa.Type:
@@ -409,10 +433,10 @@ def _promote_dtype(lhs: str | None, rhs: str | None) -> str | None:
     lhs = normalize_dtype(lhs)
     rhs = normalize_dtype(rhs)
 
-    if lhs is None:
-        return rhs
+    if lhs is None or rhs is None:
+        return None
 
-    if rhs is None or lhs == rhs:
+    if lhs == rhs:
         return lhs
 
     if {lhs, rhs} == {"float16", "bfloat16"}:
@@ -442,7 +466,7 @@ def _promote_dtype(lhs: str | None, rhs: str | None) -> str | None:
     return lhs if ranks[lhs] >= ranks[rhs] else rhs
 
 
-def _cast_type(type_: ssa.Type, dtype: str) -> ssa.Type:
+def _cast_type(type_: ssa.Type, dtype: str | None) -> ssa.Type:
     normalized = normalize_dtype(dtype)
 
     if normalized == "dtype":

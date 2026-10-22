@@ -213,6 +213,38 @@ class EmitterTarget(ABC):
     @abstractmethod
     def cast(self, dtype: str, value: str) -> str: ...
 
+    def inline_constant(self, value: Any, type_: ssa.Type) -> str:
+        del type_
+
+        return self.literal(value)
+
+    def dtype_sample(self, dtype: str) -> str:
+        return self.cast("int64" if dtype == "index" else dtype, "1")
+
+    def parameter_sample(self, name: str, info) -> str:
+        return name if info.ndim == 0 else self.dtype_sample(info.dtype)
+
+    def true_divide(self, lhs: str, rhs: str) -> str:
+        return f"({lhs} / {rhs})"
+
+    def value_dtype(self, value: str) -> str:
+        raise NotImplementedError("Runtime value dtype is not supported.")
+
+    def dtype_equal(self, lhs: str, rhs: str) -> str:
+        return f"({self.value_dtype(lhs)} == {self.value_dtype(rhs)})"
+
+    def select_dtype_sample(self, condition: str, yes: str, no: str) -> str:
+        return f"({yes} if {condition} else {no})"
+
+    def vector_element(self, value: str, index: str) -> str:
+        raise NotImplementedError("Vector element extraction is not supported.")
+
+    def reduction_identity(self, dtype: str, operator: str, shape: str) -> str:
+        raise NotImplementedError("Runtime reduction dtype is not supported.")
+
+    def cast_like(self, value: str, reference: str) -> str:
+        raise NotImplementedError("Casting to a computed dtype is not supported.")
+
     @abstractmethod
     def where(self, cond: str, yes: str, no: str) -> str: ...
 
@@ -227,6 +259,11 @@ class EmitterTarget(ABC):
 
     @abstractmethod
     def reduce_update(self, operator: str, acc: str, term: str) -> str: ...
+
+    def reduce_update_typed(
+        self, operator: str, acc: str, term: str, dtype: str | None
+    ) -> str:
+        return self.reduce_update(operator, acc, term)
 
     @abstractmethod
     def render_module(self, context: ModuleRenderContext) -> str: ...
