@@ -36,7 +36,7 @@ def test_default_profiles_expose_normalized_independent_contracts():
         assert registry.get(profile.name) is profile
         assert not profile.aliases
 
-        if profile.name != "generic":
+        if profile.name not in {"generic", "rvne"}:
             assert profile.name == (
                 f"{profile.accelerator_vendor}-{profile.accelerator_name}"
             )
@@ -51,6 +51,37 @@ def test_default_profiles_expose_normalized_independent_contracts():
 
             for mode in modes:
                 target.validate_materialization(mode)
+
+
+def test_rvne_defaults_to_aot_profile_with_host_buffers(monkeypatch):
+    monkeypatch.delenv("NINETOOTHED_PLATFORM", raising=False)
+    monkeypatch.delenv("NINETOOTHED_COMPUTE_ARCH", raising=False)
+    target = resolve_target_context("rvne")
+
+    assert target.backend == Target.RVNE
+    assert target.platform.name == "rvne"
+    assert target.compute_arch == "rv64imafcvzne"
+    assert target.device_types == ("cpu",)
+    assert runtime_device_types(type("Compilation", (), {"target": target})()) == (
+        "cpu",
+    )
+    target.validate_materialization("aot")
+
+    with pytest.raises(ValueError, match="does not support `jit` materialization"):
+        target.validate_materialization("jit")
+
+
+@pytest.mark.parametrize("platform", ("generic", "nvidia-a100", "nvidia-h100"))
+def test_gpu_profiles_do_not_claim_rvne_support(platform):
+    with pytest.raises(ValueError, match="Backend `rvne` is not supported"):
+        resolve_target_context("rvne", platform=platform)
+
+
+def test_rvne_respects_explicit_platform_environment(monkeypatch):
+    monkeypatch.setenv("NINETOOTHED_PLATFORM", "nvidia-a100")
+
+    with pytest.raises(ValueError, match="Backend `rvne` is not supported"):
+        resolve_target_context("rvne")
 
 
 def test_target_context_normalizes_aliases_and_optional_compute_architecture():

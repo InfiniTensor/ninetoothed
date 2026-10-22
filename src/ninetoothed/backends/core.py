@@ -12,6 +12,7 @@ class Target(str, Enum):
     TRITON = "triton"
     TILELANG = "tilelang"
     CUDA = "cuda"
+    RVNE = "rvne"
 
 
 _CANONICAL_BACKEND_NAMES = {
@@ -19,6 +20,7 @@ _CANONICAL_BACKEND_NAMES = {
     "triton": Target.TRITON,
     "tilelang": Target.TILELANG,
     "cuda": Target.CUDA,
+    "rvne": Target.RVNE,
 }
 
 

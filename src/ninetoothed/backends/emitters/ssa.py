@@ -1764,6 +1764,9 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
                 op.results[0].type.attrs.get("dtype_level", _dtype_level(base, ctx))
             )
 
+            if level == _dtype_level(base, ctx):
+                coords = (*extract_indices, *coords)
+
             return _load_tensor_at(
                 base, coords, ctx, level=level, extract_indices=extract_indices
             )
@@ -2087,6 +2090,11 @@ def _render_scalar_expr(
 
     if opcode == "select.where":
         return target.where(*args)
+
+    specialized = target.arithmetic_expr(op, args, ctx)
+
+    if specialized is not None:
+        return specialized
 
     name = opcode.split(".", 1)[1]
 
@@ -3945,6 +3953,11 @@ def _coords_from_linear(
 
 
 def _target_index_expr(target: _Target, expr: str) -> str:
+    specialized = target.render_index_expr(expr)
+
+    if specialized is not None:
+        return specialized
+
     rewritten = _rewrite_index_math(expr, c_style=target.c_style_syntax)
 
     return rewritten

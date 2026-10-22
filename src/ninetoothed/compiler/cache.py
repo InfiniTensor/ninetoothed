@@ -240,6 +240,13 @@ def compilation_toolchain_identity(compilation) -> Mapping[str, Any]:
 
     if backend == "cuda":
         return {"cuda": cuda_compiler_identity()}
+
+    if backend == "rvne":
+        from ninetoothed.backends.rvne_toolchain import rvne_compiler_identity
+
+        root = dict(compilation.request.backend_options or {}).get("toolchain_root")
+
+        return {"rvne": rvne_compiler_identity(root)}
     return {}
 
 

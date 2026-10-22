@@ -89,6 +89,11 @@ class EmitterTarget(ABC):
 
         return operation.results[0].type
 
+    def arithmetic_expr(self, operation, args, context) -> str | None:
+        del operation, args, context
+
+        return None
+
     def coerce_binary_args(self, operation, args, context):
         del operation, context
 
@@ -159,6 +164,11 @@ class EmitterTarget(ABC):
 
     def index_cast(self, value: str) -> str:
         return value
+
+    def render_index_expr(self, expression: str) -> str | None:
+        del expression
+
+        return None
 
     def uses_mutable_scalar_slots(self) -> bool:
         return False
