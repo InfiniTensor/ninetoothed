@@ -11,6 +11,7 @@ from ninetoothed import Tensor
 from ninetoothed.compiler import DEFAULT_COMPILER, Compiler, CompileRequest
 from ninetoothed.compiler import driver as compiler_driver
 from ninetoothed.targets import resolve_target_context
+from tests.utils import backend_platform_available, requires_backend
 
 
 def _arrangement(input, other, output):
@@ -41,6 +42,7 @@ def test_jit_implementation_class_is_not_public():
     assert "JIT" not in compiler.__all__
 
 
+@requires_backend("cuda")
 def test_jit_function_and_decorator_use_the_default_compiler(monkeypatch):
     requests = []
 
@@ -72,6 +74,7 @@ def test_jit_function_and_decorator_use_the_default_compiler(monkeypatch):
     assert requests[2][0].compute_arch == "sm_90"
 
 
+@requires_backend("cuda")
 def test_pure_lowering_does_not_query_runtime_cuda_architecture(monkeypatch):
     import ninetoothed.compiler.cache as cache
 
@@ -128,6 +131,7 @@ def test_make_preserves_legacy_caller_materialization_mode(tmp_path, monkeypatch
     assert calls[2][0].platform == "generic"
 
 
+@requires_backend("cuda")
 def test_compilation_rejects_target_and_artifact_backend_mismatch():
     compilation = DEFAULT_COMPILER.compile(
         CompileRequest(
@@ -135,6 +139,7 @@ def test_compilation_rejects_target_and_artifact_backend_mismatch():
             application=_application,
             tensors=(Tensor(1), Tensor(1), Tensor(1)),
             backend="triton",
+            platform="generic",
         )
     )
 
@@ -142,6 +147,7 @@ def test_compilation_rejects_target_and_artifact_backend_mismatch():
         replace(compilation, target=resolve_target_context("cuda"))
 
 
+@requires_backend("cuda")
 def test_explicit_cuda_arch_binds_and_validates_backend_architecture():
     compilation = DEFAULT_COMPILER.compile(
         CompileRequest(
@@ -207,6 +213,7 @@ def test_triton_launch_plan_enumerates_symbolic_meta_parameters():
             application=_application,
             tensors=(Tensor(1), Tensor(1), Tensor(1)),
             backend="triton",
+            platform="generic",
         )
     )
     candidates = compilation.launch_plan.tuning_candidates
@@ -235,6 +242,7 @@ def test_triton_launch_plan_contains_limited_runtime_variants():
             application=_application,
             tensors=(Tensor(1), Tensor(1), Tensor(1)),
             backend="triton",
+            platform="generic",
             num_warps=(4, 8),
             num_stages=(2, 3),
             max_num_configs=3,
@@ -258,6 +266,9 @@ def test_triton_launch_plan_contains_limited_runtime_variants():
     ),
 )
 def test_non_triton_backends_reject_unsupported_auto_tuning(backend, options):
+    if not backend_platform_available(backend):
+        pytest.skip(f"`{backend}` is not available on this platform.")
+
     with pytest.raises(NotImplementedError, match="auto-tuning is not supported"):
         DEFAULT_COMPILER.compile(
             CompileRequest(
