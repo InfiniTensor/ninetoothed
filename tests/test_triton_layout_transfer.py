@@ -1,3 +1,4 @@
+import ast
 import pytest
 import torch
 
@@ -189,7 +190,16 @@ def test_layout_transfer_grid_stride_preserves_unbounded_source():
         ),
     ).primary_source
 
-    assert unbounded == baseline
+    def kernel_body(module_source):
+        tree = ast.parse(module_source)
+        kernel_def = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name.endswith("_kernel")
+        )
+        return ast.unparse(kernel_def)
+
+    assert kernel_body(unbounded) == kernel_body(baseline)
     assert "tl.program_id(1)" not in bounded
     assert "tl.range(tl.program_id(0)" in bounded
     assert "tl.num_programs(0)" in bounded

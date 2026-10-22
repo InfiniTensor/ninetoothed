@@ -1596,8 +1596,14 @@ def application(x, out):
         )
         source = emit_kernel(kernel, "triton").primary_source
         assert source.count("tl.store(") == 2
+        tree = ast.parse(source)
+        kernel_def = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name.endswith("_kernel")
+        )
         conditional = next(
-            node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.If)
+            node for node in ast.walk(kernel_def) if isinstance(node, ast.If)
         )
 
         for branch in (conditional.body, conditional.orelse):

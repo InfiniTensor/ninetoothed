@@ -698,7 +698,6 @@ class TritonTarget(EmitterTarget):
 
             if probe_limit is not None:
                 launch_guard = (
-                    f"    print('DBG-LAUNCH grid-expr:', {program_count})\n"
                     f"    if {program_count} > {probe_limit}:\n"
                     "        raise LaunchGridExceeded(\n"
                     f'            f"out of resource: grid size, Required: {{{program_count}}}, Hardware limit: {probe_limit}"\n'
