@@ -15,6 +15,9 @@ _SUPPORTED_DTYPES = frozenset({"bool", "int32", "uint32", "int64", "uint64", "fl
 _SUPPORTED_OPCODES = frozenset(
     {
         "arith.constant",
+        "dtype.constant",
+        "dtype.of",
+        "dtype.select",
         "arith.add",
         "arith.sub",
         "arith.subtract",
