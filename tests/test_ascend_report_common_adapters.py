@@ -1,9 +1,12 @@
+import inspect
 import sys
+import types
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from benchmarks.ascend_report import fixed_pool
 from benchmarks.ascend_report import operator_adapters as adapters
 
 
@@ -217,17 +220,17 @@ def test_common_dropout_rejects_ranks_without_a_source_contract(runtime, shape):
 
 
 @pytest.mark.parametrize("paired", (False, True))
-def test_common_max_pool_dispatches_values_only_existing_helper(runtime, paired):
+def test_common_max_pool_uses_fixed_kernel_and_allocates_each_call(
+    runtime, paired, monkeypatch
+):
     x = Tensor(np.zeros((1, 2, 7, 5), dtype=np.float32), runtime.events)
-    expected = Tensor(np.ones((1, 2, 4, 3), dtype=np.float32), runtime.events)
     calls = []
 
-    def pool(input_, kind, **kwargs):
-        calls.append((input_, kind, kwargs))
+    def kernel(input_, output):
+        calls.append((input_, output))
 
-        return expected
-
-    runtime.modules["layout.avg_pool2d"] = SimpleNamespace(_pool2d=pool)
+    runtime.modules["layout.avg_pool2d"] = SimpleNamespace()
+    monkeypatch.setattr(fixed_pool, "build_kernel", lambda: kernel)
     parameters = {
         "kernel_size": [3, 3] if paired else 3,
         "stride": (2, 2) if paired else 2,
@@ -238,13 +241,78 @@ def test_common_max_pool_dispatches_values_only_existing_helper(runtime, paired)
         common_case("max_pool2d"), {"args": (x,), "parameters": parameters}
     )
     assert not calls
-    assert call() is expected
-    assert calls == [
-        (x, "max", {"kernel_size": (3, 3), "stride": (2, 2), "padding": (1, 1)})
-    ]
+    assert runtime.events == [("import", "layout.avg_pool2d")]
+    first, second = call(), call()
+    assert first is not second
+    assert first.shape == second.shape == (1, 2, 4, 3)
+    assert calls == [(x, first), (x, second)]
+    assert sum(event[0] == "allocate" for event in runtime.events) == 2
     assert metadata["output_contract"] == "tensor"
     assert metadata["numeric_scope"] == "max_pool2d_values_only"
     assert metadata["source_modules"] == ["ntops_lab.kernels.layout.avg_pool2d"]
+    assert metadata["tuning"]["autotune_enabled"] is False
+    assert metadata["tuning"]["kernel_name"] == "ntops_lab_max_pool2d_fixed128_npu"
+
+
+def test_fixed_pool_factory_isolates_arrangement_globals_and_reuses_application(
+    monkeypatch,
+):
+    def arrangement(x, out, **window):
+        return globals()["block_size"](), x, out, window
+
+    def application(x, out):
+        return x, out
+
+    original_block = object()
+    original_globals = dict(arrangement.__globals__)
+    original_globals["block_size"] = lambda: original_block
+    original = types.FunctionType(arrangement.__code__, original_globals)
+    source = SimpleNamespace(
+        _pool2d_arrangement=original, _max_pool_application=application
+    )
+    monkeypatch.setitem(sys.modules, "ntops_lab.kernels.layout.avg_pool2d", source)
+    builds = []
+    handle = object()
+
+    def make(arranged, app, tensors, **options):
+        builds.append((arranged, app, tensors, options))
+
+        return handle
+
+    monkeypatch.setitem(
+        sys.modules,
+        "ninetoothed",
+        SimpleNamespace(make=make, Tensor=lambda rank, **options: (rank, options)),
+    )
+    fixed_pool.build_kernel.cache_clear()
+
+    try:
+        assert fixed_pool.build_kernel() is fixed_pool.build_kernel() is handle
+        assert len(builds) == 1
+        arranged, app, tensors, options = builds[0]
+        assert arranged.func.__code__ is original.__code__
+        assert inspect.getsource(arranged.func) == inspect.getsource(original)
+        assert arranged.func.__globals__ is not original.__globals__
+        assert original(None, None)[0] is original_block
+        assert arranged(None, None)[0] == 128
+        assert arranged.keywords == {
+            "kernel_h": 3,
+            "kernel_w": 3,
+            "stride_h": 2,
+            "stride_w": 2,
+            "pad_h": 1,
+            "pad_w": 1,
+        }
+        assert app is source._max_pool_application
+        assert tensors == ((4, {"other": float("-inf")}), (4, {}))
+        assert options == {
+            "kernel_name": "ntops_lab_max_pool2d_fixed128",
+            "num_warps": 8,
+            "num_stages": 1,
+            "max_num_configs": 1,
+        }
+    finally:
+        fixed_pool.build_kernel.cache_clear()
 
 
 @pytest.mark.parametrize(

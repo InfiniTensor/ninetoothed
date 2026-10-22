@@ -19,6 +19,11 @@ import importlib
 import math
 from typing import Any, Callable
 
+if __package__:
+    from . import fixed_pool
+else:
+    import fixed_pool
+
 
 class UnsupportedCase(RuntimeError):
     """The requested contract cannot be supplied by an existing source kernel."""
@@ -272,23 +277,27 @@ def build_call(
             "MaxPool2d requires one rank-four NCHW tensor.",
         )
         x = args[0]
-        mod = _source(meta, "layout.avg_pool2d")
+        _source(meta, "layout.avg_pool2d")
         meta["numeric_scope"] = "max_pool2d_values_only"
+        meta["tuning"] = {
+            "mode": "fixed",
+            "block_size": fixed_pool.BLOCK_SIZE,
+            "num_warps": fixed_pool.NUM_WARPS,
+            "num_stages": fixed_pool.NUM_STAGES,
+            "max_num_configs": fixed_pool.MAX_NUM_CONFIGS,
+            "autotune_enabled": False,
+            "kernel_name": fixed_pool.KERNEL_NAME + "_npu",
+        }
         meta["numeric_notes"].append(
             "Retain the existing max-reduction application and negative-infinity padding; indices are neither produced nor fabricated."
         )
         _adapt(
             meta,
             "dispatch",
-            "Call the existing pooling helper with kind='max', kernel_size=(3,3), stride=(2,2), and padding=(1,1).",
+            "Reuse the existing pooling arrangement and max application with kernel_size=(3,3), stride=(2,2), and padding=(1,1); fix block128, eight warps and one stage without autotuning.",
         )
 
-        return (
-            lambda: mod._pool2d(
-                x, "max", kernel_size=(3, 3), stride=(2, 2), padding=(1, 1)
-            ),
-            meta,
-        )
+        return lambda: fixed_pool.run(x), meta
 
     if op in _POINTWISE:
         _check_keywords(meta, params, ())

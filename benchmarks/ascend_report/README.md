@@ -20,7 +20,7 @@ and use a new output directory. This profile has 453 cases:
 | Operator | Adjusted contract |
 |---|---|
 | clamp | Bounds are `[-1, 1]`; original shapes and dtypes are retained. |
-| max_pool2d | Values only, `kernel_size=3`, `stride=2`, `padding=1`. |
+| max_pool2d | Values only, `kernel_size=3`, `stride=2`, `padding=1`; fixed block128, 8warps, 1stage, no autotuning. |
 | dropout | Inference or `p=0`, values only; excludes the `p=1` case. No random training performance is claimed. |
 | reduction | sum, mean, min and max; excludes all 11 product reductions. |
 | addmm | `alpha=beta=1`, including the model prefill shape. |
@@ -35,6 +35,11 @@ dropout masks even when they are not returned. These costs remain in its timing.
 The adjusted profile has a separate `adjusted_full_matrix` metric and never
 establishes the original 465-case result. A six-operator subset can be measured
 with `--phase operators --ops clamp max_pool2d dropout reduction addmm conv2d`.
+
+The fixed pooling schedule binds `block_size()` to128 in a copy of the existing
+arrangement function's globals and reuses its original maximum application.
+It avoids recompiling the full autotuning grid for every pooling shape; it does
+not mutate the source module or introduce another numerical implementation.
 
 The operator phase measures both implementations on the same physical card for each case, with 50 warmups, 15 device samples and 60 public-API samples by default. Generated-kernel graph replay and public calls retain the original case reference checks and tolerances. Existing host layout/parameter adapters, the masked-load `Tensor.to` compatibility shim and explicit NPU launcher-name shim are recorded in every result. Unsupported source contracts stay `UNSUPPORTED`; no numerical fallback is substituted.
 

@@ -675,6 +675,7 @@ def main():
             "operators.py",
             "operator_adapters.py",
             "case_profiles.py",
+            "fixed_pool.py",
             "affinity.py",
             "summarize.py",
         ]
