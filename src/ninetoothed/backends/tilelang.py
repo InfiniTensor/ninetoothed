@@ -4,6 +4,7 @@ TileLang lowering is driven by the same SSA operation stream as Triton and
 CUDA.  This file intentionally contains no kernel-specialized emitters.
 """
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Mapping
 
 from ninetoothed.backends.core import (
@@ -12,6 +13,7 @@ from ninetoothed.backends.core import (
     Capability,
     Target,
 )
+from ninetoothed.backends.emitters.analysis import dot_accumulation_plan
 from ninetoothed.backends.emitters.tilelang import emit
 from ninetoothed.compiler.passes import (
     Context,
@@ -26,7 +28,7 @@ if TYPE_CHECKING:
 
 class TileLangBackend(Backend):
     name = Target.TILELANG
-    supported_options = frozenset({"max_threads_per_block"})
+    supported_options = frozenset({"max_threads_per_block", "max_shared_memory_bytes"})
     capability = Capability(
         name=name,
         emits_source=True,
@@ -51,6 +53,18 @@ class TileLangOptimizeSchedule(OptimizeSchedule):
     name = "ssa.tilelang.optimize_schedule"
     supported_backends = (Target.TILELANG,)
 
+    def run(self, program, context):
+        # Classify dataflow before tile specialization; symbolic sizes are valid.
+        analysis = dict(program.metadata.get("analysis", {}))
+        analysis["tilelang_dot_accumulation"] = (
+            dot_accumulation_plan(program) is not None
+        )
+        program = replace(
+            program, metadata=dict(program.metadata) | {"analysis": analysis}
+        )
+
+        return super().run(program, context)
+
     def lower_row_group(self, program, schedule, context):
         return {"mapping": "scalar-tile"}
 
@@ -60,28 +74,18 @@ class TileLangOptimizeSchedule(OptimizeSchedule):
         schedule: Mapping[str, Any],
         context: Context,
     ) -> tuple[ScheduleCandidate, ...]:
-        del context
-
-        if schedule.get("granularity") == "exp-reduction-dot-region":
-            return (
+        if (
+            analysis.get("has_dot")
+            and not analysis.get("tilelang_dot_accumulation")
+            and set(analysis.get("dot_input_dtypes", ())) <= {"float16", "bfloat16"}
+        ):
+            return tuple(
                 ScheduleCandidate(
-                    name="flash-128x128",
-                    schedule={
-                        "tile": {"block_m": 128, "block_n": 128},
-                        "threads": 256,
-                        "num_stages": 2,
-                    },
-                    tags=("default", "flash"),
-                ),
-                ScheduleCandidate(
-                    name="flash-128x64",
-                    schedule={
-                        "tile": {"block_m": 128, "block_n": 64},
-                        "threads": 256,
-                        "num_stages": 2,
-                    },
-                    tags=("flash",),
-                ),
+                    name=f"materialized-tiles-{threads}",
+                    schedule={"tilelang_materialize_tiles": True, "threads": threads},
+                    tags=("materialized-tiles",),
+                )
+                for threads in (128, 256)
             )
 
         if schedule.get("granularity") == "elementwise-grid":
@@ -112,14 +116,23 @@ class TileLangOptimizeSchedule(OptimizeSchedule):
                 # per-element lowering than a block-cooperative tree reduction.
                 return ()
 
-            if extent is not None and extent <= 32:
-                thread_counts = (32, 64, 128)
-            elif extent is not None and extent <= 128:
-                thread_counts = (128, 64, 256)
-            elif extent is not None and extent <= 512:
-                thread_counts = (128, 256, 512)
-            else:
-                thread_counts = (128, 256, 512)
+            # Without a concrete device limit, stay within CUDA's conservative
+            # shared-memory budget. Include every reduction buffer and scratch.
+            options = context.compiler_options.get("backend_options", {})
+            shared_limit = int(options.get("max_shared_memory_bytes", 48 * 1024))
+            scheduled = set(reduction.get("reductions", ()))
+            domains = tuple(
+                domain
+                for domain in analysis.get("reduction_domains", ())
+                if domain["result"] in scheduled
+            )
+
+            def shared_bytes(threads):
+                return sum(
+                    (int(domain["extent"]) + threads)
+                    * max(4, _dtype_nbytes(domain.get("result_dtype")))
+                    for domain in domains
+                )
 
             return tuple(
                 ScheduleCandidate(
@@ -128,12 +141,14 @@ class TileLangOptimizeSchedule(OptimizeSchedule):
                         "tilelang_cooperative_reduction": True,
                         "threads": threads,
                     },
+                    constraints={"shared_memory_bytes": shared_bytes(threads)},
                     tags=("cooperative-reduction",),
                 )
-                for threads in thread_counts
+                for threads in (128, 256, 512)
+                if domains and shared_bytes(threads) <= shared_limit
             )
 
-        if schedule.get("granularity") != "blocked-linalg" or not _dot_gemm_supported(
+        if not analysis.get("tilelang_dot_accumulation") or not _dot_gemm_supported(
             analysis
         ):
             return ()
@@ -189,6 +204,10 @@ class TileLangOptimizeSchedule(OptimizeSchedule):
         schedule: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         del backend
+
+        if schedule.get("tilelang_materialize_tiles"):
+            # Unknown runtime dtypes are checked by the post-specialization plan.
+            return {"preserve_linalg": True}
 
         if schedule.get("granularity") == "blocked-linalg":
             return {"preserve_linalg": _dot_gemm_supported(analysis)}

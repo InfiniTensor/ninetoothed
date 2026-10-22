@@ -188,7 +188,6 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
         cache_key=cache_key,
     )
     specializations: dict[tuple[tuple[str, str], ...], Handle] = {}
-    identity_cache: dict[tuple, Handle] = {}
     handle = None
 
     def update_handle(source_handle) -> None:
@@ -204,19 +203,6 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
 
     def launch(*args, **kwargs):
         nonlocal handle
-
-        identity = _lazy_specialization_identity(args, kwargs)
-
-        if identity is not None:
-            cached = identity_cache.get(identity)
-
-            if cached is not None:
-                update_handle(cached)
-
-                return cached(
-                    *args,
-                    **_filter_runtime_kwargs(cached._compilation.launch_abi, kwargs),
-                )
 
         public = _public_values(
             compilation.launch_abi,
@@ -250,9 +236,6 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
 
         specialized = specializations[key]
 
-        if identity is not None:
-            identity_cache[identity] = specialized
-
         update_handle(specialized)
 
         return specialized(
@@ -263,41 +246,6 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
     handle = Handle(compilation, None, launch, source)
 
     return handle
-
-
-def _lazy_specialization_identity(args, kwargs):
-    """Return a cheap semantic identity for lazy specialization caching.
-
-    The identity captures every argument property that influences runtime
-    specialization (tensor shape/strides/dtype/device and scalar values) so
-    that repeated launches with matching arguments can skip re-validating and
-    re-deriving the specialization.  Returns ``None`` when an argument cannot
-    be summarized, in which case the caller falls back to the full path.
-    """
-    parts = [len(args)]
-
-    for value in (*args, *kwargs.values()):
-        shape = getattr(value, "shape", None)
-
-        if shape is not None and hasattr(value, "dtype"):
-            try:
-                strides = tuple(value.stride())
-            except (TypeError, RuntimeError):
-                return None
-
-            parts.append(
-                (
-                    tuple(shape),
-                    getattr(value, "dtype", None),
-                    getattr(value, "device", None),
-                    strides,
-                )
-            )
-        elif _is_cacheable_runtime_literal(value):
-            parts.append(value)
-        else:
-            return None
-    return tuple(parts)
 
 
 def _runtime_specialization_values(compilation, public) -> dict[str, Any]:
@@ -663,7 +611,6 @@ class _PreparedBoundValue:
     tensor: weakref.ReferenceType | None = None
     owner: weakref.ReferenceType | None = None
     binding: LaunchBinding | None = None
-    access: str | None = None
     flatten_tensor: bool = False
 
     @classmethod
@@ -694,7 +641,7 @@ class _PreparedBoundValue:
         except TypeError:
             return None
 
-        return cls(tensor=tensor, access=binding.access, flatten_tensor=flatten_tensors)
+        return cls(tensor=tensor, flatten_tensor=flatten_tensors)
 
     def resolve(self, *, flatten_tensor=False):
         if self.binding is not None:
@@ -721,21 +668,6 @@ class _PreparedBoundValue:
 
         is_contiguous = value.is_contiguous()
 
-        # Rebase a byte-misaligned *contiguous* view to an aligned offset-zero
-        # clone so vectorized copies stay within alignment (strided views are
-        # read element-wise, which only needs dtype alignment, and must keep
-        # their storage span). A writable view's clone is copied back after the
-        # kernel so the result reaches the view.
-        copy_back = None
-
-        if is_contiguous and (value.storage_offset() * value.element_size()) % 16 != 0:
-            clone = value.clone()
-
-            if self.access in {"write", "read_write"}:
-                copy_back = (value, clone)
-
-            value = clone
-
         # A contiguous buffer's extent is just its element count; a strided
         # view's extent is its elements' storage span, matching the access
         # template's strided indexing.
@@ -753,9 +685,6 @@ class _PreparedBoundValue:
             (1,),
             storage_offset=value.storage_offset(),
         )
-
-        if copy_back is not None:
-            flattened._nt_copy_back = copy_back
 
         return flattened, flattened
 
@@ -1226,13 +1155,6 @@ def _runtime_wrapper(
         else:
             result = function(*values) if low_level else function(*args, **kwargs)
 
-        if low_level:
-            for value in values:
-                copy_back = getattr(value, "_nt_copy_back", None)
-
-                if copy_back is not None:
-                    copy_back[0].copy_(copy_back[1])
-
         del keepalive
 
         if result is not None and not abi.outputs:
@@ -1266,13 +1188,6 @@ def _runtime_wrapper(
             keepalive.extend(flattened)
 
         result = function(*values) if low_level else function(*args, **kwargs)
-
-        if low_level:
-            for value in values:
-                copy_back = getattr(value, "_nt_copy_back", None)
-
-                if copy_back is not None:
-                    copy_back[0].copy_(copy_back[1])
 
         del keepalive
 
@@ -1486,24 +1401,6 @@ def _flatten_ffi_tensor_args(bindings, values):
         } and hasattr(value, "as_strided"):
             is_contiguous = value.is_contiguous()
 
-            # Rebase a byte-misaligned *contiguous* view to an aligned
-            # offset-zero clone so vectorized copies stay within alignment
-            # (strided views are read element-wise, which only needs dtype
-            # alignment, and must keep their storage span). A writable view's
-            # clone is copied back after the kernel so the result reaches it.
-            copy_back = None
-
-            if (
-                is_contiguous
-                and (value.storage_offset() * value.element_size()) % 16 != 0
-            ):
-                clone = value.clone()
-
-                if binding.access in {"write", "read_write"}:
-                    copy_back = (value, clone)
-
-                value = clone
-
             # A contiguous buffer's extent is just its element count; a strided
             # view's extent is its elements' storage span, matching the access
             # template's strided indexing.
@@ -1522,9 +1419,6 @@ def _flatten_ffi_tensor_args(bindings, values):
                 (1,),
                 storage_offset=value.storage_offset(),
             )
-
-            if copy_back is not None:
-                value._nt_copy_back = copy_back
 
             flattened.append(value)
 

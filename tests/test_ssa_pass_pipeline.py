@@ -270,7 +270,7 @@ class TestPipeline:
         expected_counts = {
             Target.TRITON: 3,
             Target.CUDA: 1,
-            Target.TILELANG: 3,
+            Target.TILELANG: 2,
         }
 
         for backend, expected_count in expected_counts.items():
@@ -280,10 +280,9 @@ class TestPipeline:
             assert (
                 lowered.metadata["selected_schedule_candidate"] == candidates[0]["name"]
             )
-            assert (
-                lowered.metadata["schedule"]["tile"]
-                == candidates[0]["schedule"]["tile"]
-            )
+            assert lowered.metadata["schedule"].get("tile", {}) == candidates[0][
+                "schedule"
+            ].get("tile", {})
 
     def test_schedule_candidate_can_be_selected_by_pass_option(self):
         program = _program(

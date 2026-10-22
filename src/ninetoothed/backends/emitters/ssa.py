@@ -20,15 +20,9 @@ from ninetoothed.backends.emitters.analysis import (
 )
 from ninetoothed.backends.emitters.analysis import schedule_int as _schedule_int
 from ninetoothed.backends.emitters.analysis import (
-    value_depends_on as _value_depends_on,
-)
-from ninetoothed.backends.emitters.analysis import (
     walk_ops as _walk_ops,
 )
 from ninetoothed.backends.emitters.base import EmitterTarget, ModuleRenderContext
-from ninetoothed.backends.emitters.context import (
-    CooperativeDotPlan as _CooperativeDotPlan,
-)
 from ninetoothed.backends.emitters.context import EmitContext as _EmitContext
 from ninetoothed.backends.emitters.context import TensorInfo as _TensorInfo
 from ninetoothed.backends.emitters.context import ValueType as _ValueType
@@ -1704,6 +1698,11 @@ def _cast_dot_operand(
 
 
 def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
+    materialized = ctx.target.materialized_element(name, coords)
+
+    if materialized is not None:
+        return materialized
+
     if ctx.bindings and name in ctx.bindings:
         bound = ctx.bindings[name]
 
@@ -2581,19 +2580,6 @@ def _load_tensor_at(
 
         if producer.opcode in {"tensor.view", "mem.data_ptr"} and producer.operands:
             name = producer.operands[0]
-
-    # A reduction may have staged this source row into shared memory so that
-    # both the reduction operand and a downstream broadcast consumer read it
-    # from shared (one global read) instead of re-reading global memory.
-    if (
-        ctx.shared_stash
-        and coords
-        and name in ctx.shared_stash
-        and len(coords) > ctx.shared_stash[name][1]
-    ):
-        stash_name, stash_axis = ctx.shared_stash[name]
-
-        return f"{stash_name}[{coords[stash_axis]}]"
 
     info = ctx.tensor_infos.get(name)
     dtype_level = _dtype_level(name, ctx) if level is None else level
@@ -3495,23 +3481,6 @@ def _load_tensor(name: str, view_index: str, ctx: _EmitContext) -> str:
         ctx=ctx,
     )
 
-    # Read the staged shared copy of a reduction's source row (indexed by the
-    # reduction-axis position, which is ``view_index`` for a block-per-row
-    # consumer) instead of re-reading global memory.
-    if ctx.shared_stash and name in ctx.shared_stash:
-        stash_name, _ = ctx.shared_stash[name]
-        other = _load_other(info)
-        load = f"{stash_name}[{view_index}]"
-
-        if ctx.target.tir_value_semantics and mask is not None:
-            predicate = _materialize_bool_expr(mask, ctx) or mask
-            other_value = ctx.target.literal(other)
-
-            if info is not None:
-                other_value = ctx.target.cast(info.dtype, other_value)
-            return ctx.target.where(predicate, load, other_value)
-        return load
-
     return _masked_load(name, source_index, mask, info, ctx)
 
 
@@ -4167,75 +4136,6 @@ def _logical_ssa_audit(kernel: Kernel, target: _Target) -> str:
     return "\n".join(lines)
 
 
-def _cooperative_dot_plan(
-    operations: Mapping[str, ssa.Operation],
-    stores: tuple[ssa.Operation, ...],
-    value_types: Mapping[str, ssa.Type],
-) -> _CooperativeDotPlan | None:
-    unique_operations = {id(op): op for op in operations.values()}.values()
-
-    for loop in unique_operations:
-        if loop.opcode != "scf.for" or len(loop.results) != 1 or len(loop.regions) != 1:
-            continue
-
-        iter_args = tuple(loop.attrs.get("iter_args", ()))
-
-        if len(iter_args) != 1 or len(loop.operands) < 4:
-            continue
-
-        initial = operations.get(str(iter_args[0].get("initial", "")))
-
-        if initial is None or not _is_zero_initializer(initial):
-            continue
-
-        region = loop.regions[0]
-        dots = tuple(
-            op
-            for op in region.operations
-            if op.opcode in {"linalg.dot", "linalg.matmul"}
-            and len(op.operands) >= 2
-            and len(op.results) == 1
-        )
-
-        if len(dots) != 1:
-            continue
-
-        dot = dots[0]
-        block_arg = str(iter_args[0].get("block_arg", ""))
-        add = next(
-            (
-                op
-                for op in region.operations
-                if op.opcode == "arith.add"
-                and len(op.results) == 1
-                and set(op.operands) == {block_arg, dot.results[0].name}
-            ),
-            None,
-        )
-        yield_op = next(
-            (op for op in region.operations if op.opcode == "scf.yield"), None
-        )
-
-        if (
-            add is None
-            or yield_op is None
-            or yield_op.operands != (add.results[0].name,)
-        ):
-            continue
-
-        lhs_axes = _value_axes_from_types(dot.operands[0], value_types)
-        rhs_axes = _value_axes_from_types(dot.operands[1], value_types)
-        result_axes = tuple(str(dim) for dim in dot.results[0].type.shape)
-
-        if not _static_cooperative_dot_shape(lhs_axes, rhs_axes, result_axes):
-            continue
-
-        for store in stores:
-            if _value_depends_on(store.operands[0], loop.results[0].name, operations):
-                return _CooperativeDotPlan(loop=loop, dot=dot, store=store)
-    return None
-
-
 def _resolved_dot_operand_dtype(name: str, ctx: _EmitContext) -> str:
     producer = ctx.operations.get(name)
 
@@ -4280,32 +4180,6 @@ def _value_axes_from_types(
     type_ = value_types.get(name)
 
     return () if type_ is None else tuple(str(dim) for dim in type_.shape)
-
-
-def _static_cooperative_dot_shape(
-    lhs_axes: tuple[str, ...],
-    rhs_axes: tuple[str, ...],
-    result_axes: tuple[str, ...],
-) -> bool:
-    if len(lhs_axes) != 2 or len(rhs_axes) != 2 or len(result_axes) != 2:
-        return False
-
-    if lhs_axes[-1] != rhs_axes[0]:
-        return False
-
-    try:
-        dimensions = tuple(int(axis) for axis in (*lhs_axes, *rhs_axes, *result_axes))
-    except ValueError:
-        return False
-    return all(dimension > 0 and dimension % 16 == 0 for dimension in dimensions)
-
-
-def _is_zero_initializer(op: ssa.Operation) -> bool:
-    if op.opcode in {"tensor.zeros", "tensor.empty"}:
-        return op.opcode == "tensor.zeros"
-    return (
-        op.opcode in {"arith.constant", "tensor.full"} and op.attrs.get("value", 0) == 0
-    )
 
 
 def _tensor_info(tensor: TensorSpec) -> _TensorInfo:
@@ -4637,7 +4511,6 @@ def _cast_value(op: ssa.Operation, value: str, ctx: _EmitContext) -> str:
 access_axes = _access_axes
 buffer_storage_extent = _buffer_storage_extent
 combined_mask = _combined_mask
-cooperative_dot_plan = _cooperative_dot_plan
 current_coords = _current_coords
 default_strides = _default_strides
 dot_accumulator_dtype = _dot_accumulator_dtype
@@ -4675,7 +4548,6 @@ __all__ = [
     "access_axes",
     "buffer_storage_extent",
     "combined_mask",
-    "cooperative_dot_plan",
     "current_coords",
     "default_strides",
     "dot_accumulator_dtype",

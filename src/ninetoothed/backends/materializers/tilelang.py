@@ -132,19 +132,13 @@ def _tilelang_streamed_call(function):
     import torch
     import tvm
 
-    # Use ``torch._C._cuda_getCurrentRawStream`` to avoid building a ``Stream``
-    # object per call, and refresh the tvm binding only when the (device,
-    # stream) actually changes (the common case is a repeated launch).
     get_raw_stream = torch._C._cuda_getCurrentRawStream
-    state = {}
 
     def call(*values):
         device = torch.cuda.current_device()
-        stream = get_raw_stream(device)
-
-        if state.get("key") != (device, stream):
-            tvm.cuda(device).set_raw_stream(stream)
-            state["key"] = (device, stream)
+        # TVM's binding is shared by kernels on this thread and device.
+        # Another handle can change it between two calls to this handle.
+        tvm.cuda(device).set_raw_stream(get_raw_stream(device))
 
         function(*values)
 

@@ -425,6 +425,7 @@ def random_application(seed, out):
                 ),
                 backend="tilelang",
                 kernel_name=f"tilelang_schedule_{candidate}",
+                max_shared_memory_bytes=160 * 1024,
                 pass_options={
                     "ssa.tilelang.optimize_schedule": {"candidate": candidate}
                 },
