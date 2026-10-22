@@ -11,6 +11,7 @@ from ninetoothed.compiler.passes import (
     Pass,
     Pipeline,
     PipelineSpec,
+    build,
     create_default_registry,
     default_spec,
     lower_for_target,
@@ -84,6 +85,17 @@ class TestPipeline:
             backend=Target.CUDA,
             compiler_options={"num_warps": 4, "num_stages": 3},
         )
+        assert tuple(lowered.metadata["pass_trace"]) == (
+            "ssa.canonicalize",
+            "ssa.unroll_static_elementwise",
+            "ssa.cse",
+            "ssa.plan_materialization",
+            "ssa.analyze_effects",
+            "ssa.select_schedule",
+            "ssa.cuda.optimize_schedule",
+            "ssa.decompose_linalg",
+            "ssa.validate_target_capabilities",
+        )
         assert lowered.metadata["target_backend"] == "cuda"
         assert lowered.metadata["target_platform"] == "generic"
         assert lowered.metadata["schedule"]["granularity"] == "elementwise-grid"
@@ -128,6 +140,9 @@ class TestPipeline:
             descriptor.name for descriptor in registered(category=HARDWARE_INDEPENDENT)
         }
         assert "ssa.canonicalize" in independent
+        assert "ssa.unroll_static_elementwise" in independent
+        assert "ssa.cse" in independent
+        assert "ssa.plan_materialization" in independent
         assert "ssa.decompose_linalg" in independent
         assert "ssa.analyze_effects" in independent
         assert "ssa.select_schedule" in independent
@@ -138,13 +153,9 @@ class TestPipeline:
                 descriptor.name
                 for descriptor in registered(category=BACKEND_SPECIFIC, backend=backend)
             }
-            expected = (
-                {f"ssa.{backend.value}.optimize_schedule"}
-                if backend.value in ["cuda", "triton", "tilelang"]
-                else set()
-            )
+            expected = {f"ssa.{backend.value}.optimize_schedule"}
 
-            if backend in {*()}:
+            if backend in {Target.BANGC, Target.ASCENDC}:
                 expected.add(f"ssa.{backend.value}.lower_schedule")
 
             if backend == Target.TRITON:
@@ -168,6 +179,10 @@ class TestPipeline:
             "ssa.triton.singleton_dot",
             "ssa.cuda.optimize_schedule",
             "ssa.tilelang.optimize_schedule",
+            "ssa.bangc.lower_schedule",
+            "ssa.bangc.optimize_schedule",
+            "ssa.ascendc.lower_schedule",
+            "ssa.ascendc.optimize_schedule",
         }
 
         platform_passes = {
@@ -272,6 +287,56 @@ class TestPipeline:
                 program_facts(current, "analysis")["reduction_schedule"]["mode"]
                 == "row-vector"
             )
+
+        duplicate = _program(
+            "def duplicate(x, out):\n    first = x + x\n    second = x + x\n    out = first + second\n",
+            tuple(
+                TensorSpec(name=name, ndim=1, shape=("n",), dtype="float32")
+                for name in ("x", "out")
+            ),
+            "duplicate",
+        )
+        spec = PipelineSpec(
+            passes=("ssa.cse",), pass_options={"ssa.cse": {"enabled": False}}
+        )
+
+        for pipeline in (spec, build(spec, backend=Target.TRITON)):
+            for options, count in (({}, 4), ({"ssa.cse": {"enabled": True}}, 3)):
+                current = lower_for_target(
+                    duplicate,
+                    backend=Target.TRITON,
+                    pass_pipeline=pipeline,
+                    pass_options=options,
+                )
+                assert len(current.blocks[0].operations) == count
+
+        # Row addressing must remain legal when every optional performance pass is omitted.
+        tensors = (
+            TensorSpec(name="x", ndim=2, shape=(1, 8), dtype="float32"),
+            TensorSpec(name="out", ndim=2, shape=(1, 1), dtype="float32"),
+        )
+        row = _program(
+            "def row(x, out):\n    out = ntl.sum(x, axis=1)\n", tensors, "row"
+        )
+
+        for backend in (Target.CUDA, Target.BANGC, Target.ASCENDC):
+            names = ("ssa.canonicalize", "ssa.analyze_effects", "ssa.select_schedule")
+
+            if backend != Target.CUDA:
+                names += (f"ssa.{backend.value}.lower_schedule",)
+
+            current = lower_for_target(
+                row,
+                backend=backend,
+                tensors=tensors,
+                pass_pipeline=(*names, "ssa.decompose_linalg"),
+            )
+            assert (
+                program_facts(current, "analysis")["reduction_schedule"]["mode"]
+                == "row-vector"
+            )
+            assert not program_facts(current, "reduction_reuse")["enabled"]
+            assert not current.metadata["native_execution"]
 
     def test_default_pipeline_records_selected_passes(self):
         program = _copy_program()

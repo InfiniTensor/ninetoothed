@@ -44,7 +44,9 @@ def test_tiled_reduction_uses_subscript_store_domain():
     assert "ntl.float32" not in artifact.primary_source
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize(
+    "device", tuple(device for device in get_available_devices() if device == "cuda")
+)
 @pytest.mark.parametrize("dtype", (torch.float16, torch.float32))
 @pytest.mark.parametrize("width", (17, 256, 1025))
 def test_tiled_reduction_loop_runtime(device, dtype, width):

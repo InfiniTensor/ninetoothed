@@ -96,6 +96,21 @@ def rewrite_index_math(expr: str, *, c_style: bool) -> str:
     return current
 
 
+def c_integer_expr(expr: str) -> str:
+    """Normalize integer index expressions for the native C++ backends."""
+    current = rewrite_index_math(expr, c_style=True).replace("//", "/")
+    current = re.sub(r"\bTrue\b", "true", current)
+    current = re.sub(r"\bFalse\b", "false", current)
+    pattern = re.compile(r"floor\(\(([^()]+)\)/([A-Za-z_][A-Za-z0-9_]*)\)")
+    previous = None
+
+    while current != previous:
+        previous = current
+        current = pattern.sub(r"((\1)/(\2))", current)
+
+    return current
+
+
 def _rewrite_floor_arg(arg: str, *, c_style: bool) -> str:
     split = split_top_level_binary(arg, "/")
 

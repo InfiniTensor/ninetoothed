@@ -22,9 +22,14 @@ from typing import Any, Mapping
 
 from ninetoothed.backends.core import Target, normalize_target
 from ninetoothed.compiler.canonicalize import canonicalize_dtype_expressions
+from ninetoothed.compiler.cse import (
+    eliminate_common_subexpressions,
+)
 from ninetoothed.compiler.layout import LayoutTransfer, analyze_layout_transfer
+from ninetoothed.compiler.numeric_bounds import analyze_numeric_bounds
 from ninetoothed.compiler.reduction_geometry import prove_unit_parallel_reductions
 from ninetoothed.compiler.reductions import analyze_reductions
+from ninetoothed.compiler.uniform import uniform_store
 from ninetoothed.dtype import normalize_dtype
 from ninetoothed.ir import ssa
 from ninetoothed.targets import TargetContext, resolve_target_context
@@ -93,9 +98,11 @@ class Pass:
     category = HARDWARE_INDEPENDENT
     phase = "generic"
     supported_backends: tuple[Target, ...] = ()
+    option_validator: Callable[..., None] | None = None
     reads: tuple[str, ...] = ()
     provides: tuple[str, ...] = ()
     changes_ssa: bool = False
+    preserves_stage_plan: bool = False
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         raise NotImplementedError
@@ -113,6 +120,7 @@ class Descriptor:
     default_enabled: bool = True
     description: str = ""
     tags: tuple[str, ...] = ()
+    option_validator: Callable[..., None] | None = None
     reads: tuple[str, ...] = ()
     provides: tuple[str, ...] = ()
     changes_ssa: bool = False
@@ -181,10 +189,36 @@ class Registry:
             else bool(True if default_enabled is None else default_enabled),
             description=doc,
             tags=tuple(tags),
+            option_validator=probe.option_validator,
             reads=probe.reads,
             provides=probe.provides,
             changes_ssa=probe.changes_ssa,
         )
+
+    def validate_options(self, pass_names, options) -> None:
+        fallback = None
+
+        for name, settings in options.items():
+            if name in {
+                "ssa.plan_reduction_reuse",
+                "ssa.prove_numeric_bounds",
+                "ssa.vector_resource_policy",
+                "ssa.ascendc.plan_serial_queue_storage",
+            }:
+                raise ValueError(
+                    f"SSA pass `{name}` was replaced by shared analysis or target planning."
+                )
+
+            descriptor = self._descriptors.get(name)
+
+            if descriptor is None:
+                if fallback is None:
+                    fallback = _default_registry()
+
+                descriptor = fallback._descriptors.get(name)
+
+            if descriptor is not None and descriptor.option_validator is not None:
+                descriptor.option_validator(settings, present=name in pass_names)
 
     def get(self, name: str) -> Descriptor:
         try:
@@ -252,11 +286,51 @@ class Pipeline:
         *,
         registry: Registry | None = None,
     ) -> ssa.Program:
-        current = ssa.verify_program(program)
+        _default_registry(registry or self.registry).validate_options(
+            {pass_.name for pass_ in self.passes}, context.pass_options
+        )
+        from ninetoothed.compiler.materialization import retain_bound_plan
+
+        current = ssa.verify_program(retain_bound_plan(program))
+        current = _with_metadata(current, native_execution=False)
         current = _with_metadata(current, pipeline_selection=self._pipeline_metadata())
 
         for pass_ in self.passes:
+            previous = current
             current = pass_.run(current, context)
+
+            if (
+                current.plans
+                and not pass_.preserves_stage_plan
+                and (previous.inputs, previous.outputs, previous.blocks)
+                != (current.inputs, current.outputs, current.blocks)
+            ):
+                if previous.metadata.get("materialization", {}).get(
+                    "explicitly_enabled"
+                ):
+                    raise ValueError(
+                        f"Pass `{pass_.name}` changed SSA after explicitly requested stage planning. "
+                        "Place materialization planning after this transform."
+                    )
+
+                current = replace(current, plans={})
+                current = _with_metadata(
+                    current,
+                    materialization={
+                        "enabled": False,
+                        "selected": False,
+                        "reason": "SSA changed after stage planning",
+                    },
+                )
+
+            if pass_.preserves_stage_plan:
+                current = replace(
+                    current,
+                    plans={
+                        name: plan.bind(current) if plan else None
+                        for name, plan in current.plans.items()
+                    },
+                )
 
             current = refresh_program_facts(current, context)
             ssa.verify_program(current)
@@ -319,7 +393,105 @@ class Canonicalize(Pass):
         )
 
 
-FACT_NAMES = ("analysis",)
+class UnrollStaticElementwiseLoops(Pass):
+    """Expand small typed pure loops in their original arithmetic order."""
+
+    name = "ssa.unroll_static_elementwise"
+    category = HARDWARE_INDEPENDENT
+    phase = "canonicalization"
+
+    changes_ssa = True
+
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
+        enabled = _reuse_pass_enabled(context, self.name)
+        expanded = ()
+
+        if enabled:
+            from ninetoothed.compiler.unroll import unroll_static_elementwise_loops
+
+            program, expanded = unroll_static_elementwise_loops(program)
+        return _with_metadata(
+            program, static_unroll={"enabled": enabled, "expanded": expanded}
+        )
+
+
+class CommonSubexpressionElimination(Pass):
+    """Reuse identical expressions within one effect-free block segment."""
+
+    name = "ssa.cse"
+    category = HARDWARE_INDEPENDENT
+    phase = "canonicalization"
+
+    changes_ssa = True
+
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
+        enabled = _reuse_pass_enabled(context, self.name)
+        eliminated = ()
+
+        if enabled:
+            program, eliminated = eliminate_common_subexpressions(program)
+
+        return _with_metadata(
+            program,
+            cse={"enabled": enabled, "eliminated": eliminated},
+        )
+
+
+class PlanMaterialization(Pass):
+    """Plan storage boundaries for reused expensive tensor producer graphs."""
+
+    name = "ssa.plan_materialization"
+    category = HARDWARE_INDEPENDENT
+    phase = "canonicalization"
+    default_enabled = True
+
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
+        options = _pass_options(context, self.name)
+        default = context.backend in {Target.CUDA, Target.BANGC, Target.ASCENDC}
+
+        if set(options) - {"enabled"} or not isinstance(
+            options.get("enabled", default), bool
+        ):
+            raise ValueError(
+                f"SSA pass `{self.name}` only accepts a boolean `enabled` option."
+            )
+
+        enabled = options.get("enabled", default)
+
+        if enabled and context.backend not in {
+            Target.CUDA,
+            Target.BANGC,
+            Target.ASCENDC,
+        }:
+            raise ValueError(
+                "SSA materialization currently requires a native C-style stage consumer."
+            )
+
+        from ninetoothed.compiler.materialization import plan_materialization
+
+        plan = plan_materialization(program) if enabled else None
+        program = replace(program, plans={**program.plans, "materialization": plan})
+
+        return _with_metadata(
+            program,
+            materialization={
+                "enabled": enabled,
+                "explicitly_enabled": enabled and options.get("enabled") is True,
+                "selected": plan is not None,
+                **(plan.metadata() if plan else {}),
+            },
+        )
+
+
+def _reuse_pass_enabled(context, name):
+    options = _pass_options(context, name)
+
+    if set(options) - {"enabled"} or not isinstance(options.get("enabled", True), bool):
+        raise ValueError(f"SSA pass `{name}` only accepts a boolean `enabled` option.")
+    return options.get("enabled", True)
+
+
+FACT_NAMES = ("analysis", "numeric_bounds", "reduction_reuse")
 
 
 def program_facts(program, name):
@@ -371,6 +543,12 @@ class AnalyzeEffects(Pass):
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         unit_parallel = prove_unit_parallel_reductions(program)
+        reuse_enabled = bool(program.metadata.get("cse", {}).get("enabled", False))
+        reuse = {
+            "enabled": reuse_enabled,
+            "results": unit_parallel if reuse_enabled else (),
+        }
+        program = _with_metadata(program, reduction_reuse=reuse)
         opcodes = tuple(_iter_opcodes(program))
         stores = sum(1 for opcode in opcodes if opcode == "mem.store")
         reductions = sum(1 for opcode in opcodes if opcode.startswith("reduce."))
@@ -383,6 +561,7 @@ class AnalyzeEffects(Pass):
 
         program = _with_metadata(
             program,
+            numeric_bounds=analyze_numeric_bounds(program),
             analysis={
                 "operation_count": len(opcodes),
                 "store_count": stores,
@@ -396,6 +575,7 @@ class AnalyzeEffects(Pass):
                     opcodes
                 ),
                 "layout_transfer": layout_transfer,
+                "uniform_store": uniform_store(program),
                 **reduction_analysis,
             },
         )
@@ -419,6 +599,7 @@ class DecomposeLinalg(Pass):
     phase = "canonicalization"
 
     changes_ssa = True
+    preserves_stage_plan = True
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         optimization = dict(program.metadata.get("optimization", {}))
@@ -495,10 +676,35 @@ class SelectSchedule(Pass):
         return _with_metadata(program, schedule=schedule, schedule_analysis=analysis)
 
 
+class LowerNativeSchedule(Pass):
+    """Map a proved reduction domain onto serial native task ownership."""
+
+    category = LANGUAGE_SPECIFIC
+    phase = "schedule_lowering"
+    reads = ("schedule",)
+    provides = ("native_task_domain",)
+    reduction_flag: str
+
+    def run(self, program, context):
+        del context
+        schedule = dict(program.metadata.get("schedule", {}))
+        reduction = schedule.get("reduction", {})
+
+        if (
+            schedule.get("granularity") == "parallel-reduction"
+            and isinstance(reduction, Mapping)
+            and reduction.get("mode") == "row-vector"
+        ):
+            schedule[self.reduction_flag] = True
+
+        return _with_metadata(program, schedule=schedule)
+
+
 class OptimizeSchedule(Pass):
     """Contract for language-specific schedule optimization passes."""
 
     name = "ssa.optimize_schedule"
+    native_execution = False
     category = LANGUAGE_SPECIFIC
     phase = "optimization"
     reads = ("analysis", "schedule")
@@ -586,6 +792,7 @@ class OptimizeSchedule(Pass):
             | {
                 "schedule": optimized_schedule,
                 "optimization": optimization,
+                **({"native_execution": True} if self.native_execution else {}),
                 "schedule_candidates": candidate_metadata,
                 "rejected_schedule_candidates": rejected,
                 "selected_schedule_candidate": (
@@ -689,6 +896,11 @@ def create_default_registry() -> Registry:
 
     registry = Registry()
     registry.register(Canonicalize, tags=("generic", "required"))
+    registry.register(UnrollStaticElementwiseLoops, tags=("generic", "unroll"))
+    registry.register(CommonSubexpressionElimination, tags=("generic", "reuse"))
+    registry.register(
+        PlanMaterialization, tags=("generic", "materialization", "guarded")
+    )
     registry.register(AnalyzeEffects, tags=("generic", "analysis", "required"))
     registry.register(SelectSchedule, tags=("schedule",))
     registry.register(GroupReductionRows, tags=("schedule", "reduction"))

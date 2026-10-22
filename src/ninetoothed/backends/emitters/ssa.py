@@ -26,6 +26,7 @@ from ninetoothed.backends.emitters.base import EmitterTarget, ModuleRenderContex
 from ninetoothed.backends.emitters.context import EmitContext as _EmitContext
 from ninetoothed.backends.emitters.context import TensorInfo as _TensorInfo
 from ninetoothed.backends.emitters.context import ValueType as _ValueType
+from ninetoothed.backends.emitters.expressions import c_integer_expr
 from ninetoothed.backends.emitters.expressions import (
     default_strides as _default_strides,
 )
@@ -68,7 +69,7 @@ from ninetoothed.backends.emitters.expressions import (
 from ninetoothed.backends.emitters.expressions import (
     valid_symbol as _valid_symbol,
 )
-from ninetoothed.compiler.passes import Context, refresh_program_facts
+from ninetoothed.compiler.passes import Context, program_facts, refresh_program_facts
 from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict, ssa
 
 _BINARY = {
@@ -110,6 +111,8 @@ def emit(kernel: Kernel, target: EmitterTarget) -> Artifact:
     if kernel.ssa is None:
         raise ValueError("Backend emission requires ssa.Program.")
 
+    from ninetoothed.compiler.materialization import retain_bound_plan
+
     context = Context(
         backend=target.backend,
         target=kernel.ssa.facts.get("target"),
@@ -117,7 +120,9 @@ def emit(kernel: Kernel, target: EmitterTarget) -> Artifact:
         kernel_metadata=kernel.metadata,
         tensors=kernel.tensors,
     )
-    kernel = replace(kernel, ssa=refresh_program_facts(kernel.ssa, context))
+    kernel = replace(
+        kernel, ssa=refresh_program_facts(retain_bound_plan(kernel.ssa), context)
+    )
     backend = target.backend
     block = kernel.ssa.blocks[0] if kernel.ssa.blocks else ssa.Block()
     auxiliary_bindings = _auxiliary_pointer_bindings(kernel.tensors)
@@ -176,6 +181,7 @@ def emit(kernel: Kernel, target: EmitterTarget) -> Artifact:
         },
         entrypoint=target.entrypoint(kernel.kernel_name),
         metadata=metadata,
+        execution_plans={**kernel.ssa.plans, **render_context.execution_plans},
     )
 
 
@@ -353,6 +359,9 @@ def _render_source(
     )
     parameter_names = frozenset((*variables, *outputs, *shape_params))
 
+    if target.c_style_syntax:
+        target = replace(target, shadowed_global_names=parameter_names)
+
     if "index" in parameter_names:
         index_name = "__nt_index"
         suffix = 0
@@ -450,6 +459,7 @@ def _render_source(
     )
     native_block_program = bool(
         target.supports_native_block(kernel)
+        and target.optimizes_native_execution(kernel)
         and split_outer_inner
         and len(value_axes) == 2
         and has_dot
@@ -540,6 +550,7 @@ def _render_source(
         outer_index_expr = target.index_name
         inner_index_expr = target.index_name
 
+    collective_lines: list[str] = []
     body = _render_body(
         kernel,
         target,
@@ -567,6 +578,7 @@ def _render_source(
             else None
         ),
         cooperative_reduction_program=cooperative_reduction_program,
+        collective_lines=collective_lines,
     )
     body = _with_contiguous_1d_fast_path(
         kernel,
@@ -609,8 +621,13 @@ def _render_source(
         ),
         scalar_program=vector_scalar_program,
         cooperative_reduction_program=cooperative_reduction_program,
+        collective_body="\n".join(collective_lines),
     )
     context = target.schedule_context(context)
+
+    from ninetoothed.ir.frozen import freeze
+
+    context = replace(context, lowering_plans=freeze(context.lowering_plans))
 
     return target.render_module(context), context
 
@@ -792,11 +809,13 @@ def _render_body(
     coordinate_exprs: tuple[str, ...] = (),
     reduction_schedule: Mapping[str, Any] | None = None,
     cooperative_reduction_program: bool = False,
+    collective_lines: list[str] | None = None,
 ) -> str:
     output = outputs[0] if outputs else "out"
     lines: list[str] = []
     enable_index_cse = (
-        not target.vector_value_semantics
+        bool(kernel.ssa.metadata.get("cse", {}).get("enabled", False))
+        and not target.vector_value_semantics
         and not cooperative_reduction_program
         and outer_index_expr != inner_index_expr
     )
@@ -913,6 +932,7 @@ def _render_body(
             str(result) for result in (reduction_schedule or {}).get("reductions", ())
         ),
         reduction_schedule=reduction_schedule,
+        collective_lines=[] if collective_lines is None else collective_lines,
     )
 
     if cooperative_reduction_program:
@@ -922,6 +942,9 @@ def _render_body(
             ctx.lines.append("/* no-op */")
         return "\n".join(ctx.lines)
 
+    for result in _planned_reduction_values(ctx):
+        _emit_value(result, ctx)
+
     for op in operations:
         if _is_top_level_effect(op):
             _emit_operation(op, ctx)
@@ -929,6 +952,18 @@ def _render_body(
     if not ctx.lines:
         ctx.lines.append("pass" if not target.c_style_syntax else "/* no-op */")
     return "\n".join(ctx.lines)
+
+
+def _planned_reduction_values(ctx: _EmitContext) -> tuple[str, ...]:
+    plan = program_facts(ctx.program, "reduction_reuse")
+
+    if (
+        not plan.get("enabled")
+        or (ctx.reduction_schedule or {}).get("mode") != "row-vector"
+    ):
+        return ()
+
+    return tuple(plan.get("results", ()))
 
 
 def _emit_cooperative_reduction_program(
@@ -1268,6 +1303,23 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
             operand = _emit_element(
                 op.operands[0], _current_coords(operand_axes, ctx), ctx
             )
+
+            if (
+                name in _planned_reduction_values(ctx)
+                and op.operands[0] in ctx.operations
+                and op.operands[0] not in ctx.memo
+            ):
+                producer = ctx.operations[op.operands[0]]
+                operand_local = _local_symbol(op.operands[0], ctx)
+                ctx.lines.append(
+                    ctx.target.local_decl(
+                        ctx.target.arithmetic_result_type(producer, ctx),
+                        operand_local,
+                        operand,
+                    )
+                )
+                ctx.memo[op.operands[0]] = operand_local
+                operand = operand_local
 
             result_type = ssa.Type(
                 kind="scalar",
@@ -1669,6 +1721,48 @@ def _emit_linalg_dot(
     return acc_expr
 
 
+def emit_direct_dot_operand(
+    name: str, coords: tuple[str, ...], ctx: _EmitContext
+) -> tuple[str, str | None]:
+    """Load a native dot operand using the shared access and mask rules."""
+    original_name, original_coords = name, coords
+    producer = ctx.operations.get(name)
+
+    while (
+        producer is not None and producer.opcode == "tensor.view" and producer.operands
+    ):
+        coords = _view_base_coords(producer, coords, ctx)
+        name = producer.operands[0]
+        producer = ctx.operations.get(name)
+
+    info = ctx.tensor_infos.get(name)
+
+    if info is not None and info.ndim == 0:
+        return _emit_value(name, ctx), None
+
+    if info is None or _load_other(info) != 0.0:
+        return _emit_element(original_name, original_coords, ctx), None
+
+    level = _dtype_level(name, ctx)
+    axes = _access_axes(info, ctx, level, fallback=_value_axes(name, ctx))
+    view_index = _linearized_index(coords, axes) if coords else "0"
+    source_index = _target_index_expr(
+        ctx.target,
+        _source_index_for_value(
+            info, view_index, ctx, level=level, value_coords=coords
+        ),
+    )
+    source_index = _materialize_index_expr(source_index, ctx)
+    mask = _combined_mask(
+        ctx.target, None, info, view_index, ctx=ctx, level=level, value_coords=coords
+    )
+
+    if mask is not None:
+        mask = _materialize_bool_expr(mask, ctx) or mask
+
+    return ctx.target.load(name, source_index), mask
+
+
 def _emit_dot_operand(
     name: str, coords: tuple[str, ...], ctx: _EmitContext
 ) -> tuple[str, str | None]:
@@ -1843,7 +1937,9 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
 
         args[0] = _materialize_bool_expr(args[0], ctx) or args[0]
 
-        return ctx.target.where(args[0], args[1], args[2])
+        return ctx.target.check_numeric_result(
+            op, ctx.target.where(args[0], args[1], args[2]), ctx
+        )
 
     if op.opcode.startswith(("arith.", "cmp.", "math.", "call.")):
         name = op.opcode.split(".", 1)[1]
@@ -2119,6 +2215,15 @@ def _loop_bound_vector_element(
 
 
 def _render_scalar_expr(
+    op: ssa.Operation, args: tuple[str, ...], ctx: _EmitContext
+) -> str:
+    """Render pure operations once for both real values and type expressions."""
+    value = _render_unchecked_scalar_expr(op, args, ctx)
+
+    return ctx.target.check_numeric_result(op, value, ctx)
+
+
+def _render_unchecked_scalar_expr(
     op: ssa.Operation, args: tuple[str, ...], ctx: _EmitContext
 ) -> str:
     opcode = op.opcode
@@ -3063,7 +3168,11 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
     inner_lines: list[str] = []
     inner = ctx.child(
         lines=inner_lines,
-        memo={},
+        memo={
+            name: value
+            for name, value in ctx.memo.items()
+            if name in _planned_reduction_values(ctx)
+        },
         reduce_axis=0 if normalized_axis is None else normalized_axis,
         reduce_index=loop_var,
         reduce_flattened=axis is None,
@@ -4751,6 +4860,17 @@ def _cast_value(op: ssa.Operation, value: str, ctx: _EmitContext) -> str:
     return ctx.target.cast(_resolved_cast_dtype(op, ctx), value)
 
 
+def guarded_body(predicate: str, native: str, fallback: str) -> str:
+    """Wrap a native C++ path with its unchanged indexed fallback."""
+    return (
+        f"    if ({predicate}) {{\n"
+        + _indent_block(native, "    ")
+        + "\n    } else {\n"
+        + _indent_block(fallback, "    ")
+        + "\n    }"
+    )
+
+
 # Public analysis and traversal hooks used by backend strategies.  Keeping this
 # boundary explicit lets the shared walker move between modules without making
 # backend implementations depend on private implementation names.
@@ -4793,17 +4913,20 @@ view_base_coords = _view_base_coords
 __all__ = [
     "access_axes",
     "buffer_storage_extent",
+    "c_integer_expr",
     "combined_mask",
     "current_coords",
     "default_strides",
     "dot_accumulator_dtype",
     "dtype_level",
     "emit",
+    "emit_direct_dot_operand",
     "emit_element",
     "emit_loop_bound",
     "emit_operation",
     "emit_value",
     "fresh_temp",
+    "guarded_body",
     "indent_block",
     "indent_lines",
     "linearized_index",

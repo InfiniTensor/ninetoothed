@@ -5,12 +5,17 @@ import json
 import os
 import platform
 import tempfile
+import time
 from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
-from ninetoothed.backends.toolchain import cuda_compiler_identity
+from ninetoothed.backends.toolchain import (
+    ascendc_compiler_identity,
+    bangc_compiler_identity,
+    cuda_compiler_identity,
+)
 from ninetoothed.ir import ir_to_dict
 
 _CACHE_ROOT = Path(
@@ -34,7 +39,7 @@ def stable_digest(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def compilation_cache_key(compilation) -> str:
+def compilation_cache_key(compilation, *, toolchain=None) -> str:
     """Return a key covering source, IR, ABI, target, options, and toolchain."""
     request = compilation.request
     artifact = compilation.artifact
@@ -52,7 +57,9 @@ def compilation_cache_key(compilation) -> str:
             "pipeline": request.pipeline,
             "pass_options": request.pass_options,
             "architecture": _architecture(compilation),
-            "toolchain": compilation_toolchain_identity(compilation),
+            "toolchain": compilation_toolchain_identity(compilation)
+            if toolchain is None
+            else toolchain,
             "versions": _compiler_versions(),
         }
     )
@@ -118,8 +125,6 @@ def atomic_write_bytes(path: str | Path, content: bytes) -> None:
 
 
 def _atomic_write(path: Path, content: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
     with cache_lock(path):
         if path.is_file() and path.read_bytes() == content:
             return
@@ -148,11 +153,28 @@ def _atomic_write(path: Path, content: bytes) -> None:
 def cache_lock(path: str | Path) -> Iterator[None]:
     """Hold a process lock associated with one cache artifact path."""
     lock_path = Path(f"{Path(path)}.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with lock_path.open("a+b") as lock:
-        _lock_file(lock)
+    # Network filesystems (NFS/AFS) can surface transient errors from
+    # concurrent mkdir/open even with exist_ok; retry briefly.
+    for attempt in range(8):
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock = lock_path.open("a+b")
 
+            try:
+                _lock_file(lock)
+            except BaseException:
+                lock.close()
+                raise
+        except OSError:
+            if attempt == 7:
+                raise
+
+            time.sleep(0.01)
+        else:
+            break
+
+    with lock:
         try:
             yield
         finally:
@@ -240,6 +262,36 @@ def compilation_toolchain_identity(compilation) -> Mapping[str, Any]:
 
     if backend == "cuda":
         return {"cuda": cuda_compiler_identity()}
+
+    if backend == "bangc":
+        identity = dict(bangc_compiler_identity())
+        options = dict(compilation.request.backend_options or {})
+
+        # The resolved architecture selects different cncc code paths, so
+        # binaries must not be shared across targets with different archs.
+        try:
+            from ninetoothed.backends.toolchain import resolve_bangc_arch
+
+            identity["arch"] = resolve_bangc_arch(options.get("arch", "native"))
+
+        except Exception:
+            identity["arch"] = str(options.get("arch", "native"))
+        return {"bangc": identity}
+
+    if backend == "ascendc":
+        identity = dict(ascendc_compiler_identity())
+        options = dict(compilation.request.backend_options or {})
+
+        # Native architecture resolution depends on CANN configuration rather
+        # than the explicit backend option alone.
+        try:
+            from ninetoothed.backends.toolchain import resolve_ascendc_arch
+
+            identity["arch"] = resolve_ascendc_arch(options.get("arch", "native"))
+
+        except Exception:
+            identity["arch"] = str(options.get("arch", "native"))
+        return {"ascendc": identity}
     return {}
 
 

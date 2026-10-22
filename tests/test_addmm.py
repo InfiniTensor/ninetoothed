@@ -1,3 +1,4 @@
+import os
 import random
 
 import pytest
@@ -62,6 +63,26 @@ def addmm(input, mat1, mat2, beta=1, alpha=1):
 @pytest.mark.parametrize("n", (512,))
 @pytest.mark.parametrize("m", (512,))
 def test(m, n, k, dtype, device, atol):
+    if (
+        os.environ.get("NINETOOTHED_BACKEND") == "ascendc"
+        and dtype == torch.float8_e5m2
+    ):
+        with pytest.raises(ValueError, match="float8_e5m2"):
+            ninetoothed.make(
+                arrangement,
+                application,
+                (
+                    Tensor(shape=(m, n), dtype="float8_e5m2"),
+                    Tensor(shape=(m, k), dtype="float8_e5m2"),
+                    Tensor(shape=(k, n), dtype="float8_e5m2"),
+                    Tensor(0, dtype=ninetoothed.float32),
+                    Tensor(0, dtype=ninetoothed.float32),
+                    Tensor(shape=(m, n), dtype=ninetoothed.float16),
+                ),
+            )
+
+        return
+
     randn_dtype = dtype if dtype != torch.float8_e5m2 else torch.float16
 
     input = torch.randn((m, n), dtype=randn_dtype, device=device)

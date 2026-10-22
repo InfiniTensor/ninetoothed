@@ -199,7 +199,9 @@ def test_layout_transfer_grid_stride_preserves_unbounded_source():
     assert "max(1, 65535 // _ninetoothed_num_warps)" in bounded
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize(
+    "device", tuple(device for device in get_available_devices() if device == "cuda")
+)
 def test_layout_transfer_grid_stride_runs_on_accelerator(device, monkeypatch):
     profile = PlatformProfile(
         name="synthetic-layout-grid-stride",

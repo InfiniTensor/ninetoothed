@@ -6,8 +6,8 @@ import torch
 
 import ninetoothed
 from ninetoothed.backends import emit as emit_kernel
-from ninetoothed.backends.materializers import cuda as cuda_materializer
 from ninetoothed.backends.materializers import triton as triton_materializer
+from ninetoothed.backends.materializers.native import native_scalar
 from ninetoothed.compiler.runtime import _validate_dtype_contract
 from ninetoothed.frontend.python import from_source
 from ninetoothed.ir import Kernel, TensorSpec
@@ -130,7 +130,7 @@ def test_triton_aot_integer_arguments_preserve_width_and_signedness(
     )
     assert type(packed) is argument_type is ctype
     assert packed.value == value
-    cuda_packed = cuda_materializer._cuda_scalar(value, alias)
+    cuda_packed = native_scalar(value, alias)
     assert type(cuda_packed) is ctype
     assert cuda_packed.value == value
 

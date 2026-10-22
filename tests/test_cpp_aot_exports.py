@@ -57,6 +57,7 @@ def test_cpp_build_runs_without_python_after_relocation(
         meta_parameters=("block_size",),
         kernel_name="cpp_add",
         output_dir=tmp_path / "initial",
+        backend="triton",
     )
 
     from ninetoothed.backends.materializers import triton as materializer
@@ -73,6 +74,7 @@ def test_cpp_build_runs_without_python_after_relocation(
         meta_parameters=("block_size",),
         kernel_name="cpp_add",
         output_dir=output_dir,
+        backend="triton",
     )
     relocated = tmp_path / "relocated"
     relocated.mkdir()

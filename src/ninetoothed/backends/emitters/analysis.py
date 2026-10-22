@@ -228,12 +228,53 @@ def collect_value_types(
             collect_value_types(region, value_types)
 
 
+def source_shape(info) -> tuple[str, ...]:
+    return tuple(
+        map(
+            str,
+            (info.attrs or {}).get("source_shape") or info.source_shape or info.shape,
+        )
+    )
+
+
+def shape_dimension_expression(
+    context, operation: ssa.Operation, *, default_dim=None, require_source_info=False
+) -> str | None:
+    """Resolve a uniform dimension without guessing tensor or scalar dtypes."""
+    if operation.opcode != "shape.dim" or len(operation.operands) != 1:
+        return None
+
+    operand = operation.operands[0]
+    info = context.tensors.get(operand)
+    type_ = context.value_types.get(operand)
+    physical = operation.attrs.get("source")
+
+    if physical and info is None and require_source_info:
+        return None
+
+    shape = (
+        source_shape(info)
+        if physical and info is not None
+        else tuple(map(str, type_.shape))
+        if type_ is not None
+        else ()
+    )
+    dimension = operation.attrs.get("dim", default_dim)
+
+    if not isinstance(dimension, int) or not -len(shape) <= dimension < len(shape):
+        return None
+
+    return shape[dimension]
+
+
 __all__ = [
     "atomic_output_tensors",
     "collect_value_types",
     "dot_accumulation_plan",
     "program_value_types",
     "schedule_int",
+    "shape_dimension_expression",
+    "source_shape",
     "value_depends_on",
     "walk_ops",
 ]

@@ -31,6 +31,27 @@ class ModuleRenderContext:
     cooperative_reduction_program: bool = False
     private_meta_parameters: tuple[tuple[str, int], ...] = ()
     scheduled_metadata: Mapping[str, Any] = field(default_factory=dict)
+    collective_body: str = ""
+    lowering_plans: dict[str, Any] = field(
+        default_factory=dict, compare=False, repr=False
+    )
+    execution_plans: dict[str, Any] = field(
+        default_factory=dict, compare=False, repr=False
+    )
+
+
+def private_parameter_conflicts(context, prefixes, *, excluded_prefixes=()):
+    """Find emitted ABI names that could be shadowed by private locals."""
+    parameters = dict.fromkeys(
+        (*context.variables, *context.outputs, *getattr(context, "shape_params", ()))
+    )
+
+    return tuple(
+        name
+        for name in parameters
+        if any(name.startswith(prefix) for prefix in prefixes)
+        and not any(name.startswith(prefix) for prefix in excluded_prefixes)
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -49,9 +70,16 @@ class EmitterTarget(ABC):
     tir_value_semantics: bool = False
     native_block_matmul: bool = False
     max_vector_numel: int | None = None
+    shadowed_global_names: frozenset[str] = frozenset()
 
     def supports_native_block(self, kernel) -> bool:
         return self.native_block_matmul
+
+    def global_helper(self, name: str) -> str:
+        """Qualify a known global C++ helper without changing ABI names."""
+        if self.c_style_syntax and name in self.shadowed_global_names:
+            return f"::{name}"
+        return name
 
     def symbol(self, name: str) -> str:
         return f"v{name[1:]}" if name.startswith("%") else name
@@ -107,6 +135,11 @@ class EmitterTarget(ABC):
         del operation, context
 
         return args
+
+    def check_numeric_result(self, operation, value, context):
+        del operation, context
+
+        return value
 
     def coerce_dot_args(self, operation, args, context):
         del operation, context
@@ -193,6 +226,10 @@ class EmitterTarget(ABC):
         del mutable
 
         return f"{name} = {value}"
+
+    def optimizes_native_execution(self, kernel) -> bool:
+        """Read optimization intent; target planners still prove every route."""
+        return bool(kernel.ssa and kernel.ssa.metadata.get("native_execution", False))
 
     def schedule_context(self, context: ModuleRenderContext) -> ModuleRenderContext:
         return context

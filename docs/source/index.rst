@@ -14,3 +14,4 @@ NineToothed Documentation
    basics
    build
    python_api
+   native_backends

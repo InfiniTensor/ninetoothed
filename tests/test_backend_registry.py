@@ -16,7 +16,8 @@ from ninetoothed.frontend.python import from_source
 from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict
 from ninetoothed.targets import PlatformProfile, TargetContext
 
-EMISSION_TEST_BACKENDS = ("triton", "cuda", "tilelang")
+# Source emission is pure: every backend contract runs without its toolchain.
+EMISSION_TEST_BACKENDS = ("triton", "cuda", "tilelang", "bangc", "ascendc")
 
 
 def _generic_target_context(backend):
@@ -200,9 +201,15 @@ class TestRegistry:
         with pytest.raises(RuntimeError, match="Explicit CUDA compiler"):
             toolchain.find_nvcc()
 
-    def test_default_registry_reports_three_backends(self):
+    def test_default_registry_reports_builtin_backends(self):
         names = {capability.name for capability in backend_capabilities()}
-        assert names == {Target.TRITON, Target.TILELANG, Target.CUDA}
+        assert names == {
+            Target.TRITON,
+            Target.TILELANG,
+            Target.CUDA,
+            Target.BANGC,
+            Target.ASCENDC,
+        }
 
     def test_backends_reject_source_only_kernel_without_ssa(self):
         for backend in EMISSION_TEST_BACKENDS:
@@ -214,6 +221,14 @@ class TestRegistry:
             "triton": ("python/triton", "tl.store(out + index, v0, mask=mask)"),
             "cuda": ("cuda/c++", "out[index] = v0;"),
             "tilelang": ("python/tilelang", "out_buf[index] = v0"),
+            "bangc": (
+                "bangc/c++",
+                "__bang_add(nt_dag_buf_2, nt_dag_buf_0, nt_dag_buf_1, nt_aligned);",
+            ),
+            "ascendc": (
+                "ascendc/c++",
+                "Add(nt_lo, nt_a0, nt_a1, (int32_t)nt_aligned);",
+            ),
         }
 
         for backend in EMISSION_TEST_BACKENDS:
@@ -246,11 +261,22 @@ class TestRegistry:
         assert "const half* __restrict__ x" in artifact.primary_source
         assert "half* __restrict__ out" in artifact.primary_source
 
+    def test_bangc_backend_maps_half_dtypes_to_bang_types(self):
+        artifact = emit(_add_kernel("float16"), "bangc")
+        assert "#include <bang.h>" in artifact.primary_source
+        assert "const half* x" in artifact.primary_source
+        assert "half* out" in artifact.primary_source
+        assert "half* __restrict__" not in artifact.primary_source
+        assert "__mlu_entry__" in artifact.primary_source
+        assert "cnrtQueue_t queue" in artifact.primary_source
+
     def test_linalg_matmul_is_decomposed_before_backend_emission(self):
         expected_fragments = {
             "triton": "for v10_i in range(0, k, 1):",
             "cuda": "for (int64_t v10_i = 0; v10_i < k; v10_i += 1)",
             "tilelang": "T.serial(k)",
+            "bangc": "for (int64_t v10_i = 0; v10_i < k; v10_i += 1)",
+            "ascendc": "for (int64_t v10_i = 0; v10_i < k; v10_i += 1)",
         }
 
         for backend in EMISSION_TEST_BACKENDS:
@@ -310,6 +336,16 @@ class TestRegistry:
                     TensorSpec(ndim=2, shape=("k", "k"), dtype="float16", name=name)
                     for name in ("a", "b", "out")
                 )
+            ),
+        )
+        assert "wmma::mma_sync(" not in emit(compound, "cuda").primary_source
+
+        compound = _kernel_from_source(
+            "def compound(a, b, out):\n    out = (a @ b) @ b\n",
+            name="compound",
+            tensors=tuple(
+                TensorSpec(ndim=2, shape=("k", "k"), dtype="float16", name=name)
+                for name in ("a", "b", "out")
             ),
         )
         assert "wmma::mma_sync(" not in emit(compound, "cuda").primary_source

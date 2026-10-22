@@ -480,8 +480,8 @@ def _launch_abi(
 
         if binding is None and artifact.backend in {
             Target.CUDA,
-            getattr(Target, "BANGC", None),
-            getattr(Target, "ASCENDC", None),
+            Target.BANGC,
+            Target.ASCENDC,
         }:
             reduction = artifact.metadata.get("ssa_schedule", {}).get("reduction", {})
             domains = (

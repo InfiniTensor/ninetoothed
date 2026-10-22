@@ -1565,6 +1565,7 @@ def scalarized_index_application(x, indices, y):
                 (Tensor(1), Tensor(1)),
                 backend=backend,
                 kernel_name=f"ssa_control_flow_{backend}",
+                pass_options={"ssa.unroll_static_elementwise": {"enabled": False}},
             )
             _assert_ssa_artifact(artifact, route=route)
             rendered_ssa = str(artifact.metadata["ssa"])

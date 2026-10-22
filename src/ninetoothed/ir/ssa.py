@@ -78,6 +78,9 @@ class Program:
     facts: Mapping[str, Any] = field(
         default_factory=dict, compare=False, repr=False, metadata={"serialize": False}
     )
+    plans: Mapping[str, Any] = field(
+        default_factory=dict, compare=False, repr=False, metadata={"serialize": False}
+    )
 
     def __post_init__(self):
         object.__setattr__(self, "inputs", tuple(self.inputs))
@@ -85,6 +88,7 @@ class Program:
         object.__setattr__(self, "blocks", tuple(self.blocks))
         object.__setattr__(self, "metadata", freeze(self.metadata))
         object.__setattr__(self, "facts", freeze(self.facts))
+        object.__setattr__(self, "plans", freeze(self.plans))
 
 
 def verify_program(program: Program) -> Program:

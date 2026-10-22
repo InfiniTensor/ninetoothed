@@ -67,6 +67,12 @@ tensors = (Tensor(2), Tensor(2), Tensor(2))
 kernel = ninetoothed.make(arrangement, application, tensors)
 ```
 
+### CUDA Accumulation Policy
+
+For eligible FP16 dot/add loops with a zero-initialized FP32 accumulator, the CUDA backend defaults to `cuda_wmma_accumulation="fused"`. It keeps one FP32 WMMA accumulator across the source K groups, preserving the existing CUDA accumulation behavior. This mode does not promise a separate FP32 rounding boundary after every source dot/add group.
+
+Pass `cuda_wmma_accumulation="ordered"` to `ninetoothed.make(..., backend="cuda")` when those group boundaries matter. This mode resets each dot partial and adds it to the carry in source order with a round-to-nearest FP32 addition. Both modes keep FP32 accumulation; their results, including a final FP16 conversion, can differ numerically. The selected mode, accumulator dtype, and rounding policy are recorded in artifact metadata. The policy applies only to the validated pure dot/add loop; other types and regions retain ordinary lowering.
+
 ## Useful Links
 
 - [NineToothed Documentation](https://ninetoothed.org/)

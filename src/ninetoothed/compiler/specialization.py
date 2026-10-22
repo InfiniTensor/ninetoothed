@@ -22,13 +22,36 @@ def specialize_tensor_specs(
     )
 
 
-def specialize_program(program, values):
-    return replace(
+def specialize_program(program: ssa.Program, values: Mapping[str, Any]) -> ssa.Program:
+    from ninetoothed.compiler.materialization import retain_bound_plan
+
+    program = retain_bound_plan(program)
+    specialized = replace(
         program,
         inputs=tuple(_specialize_ssa_value(v, values) for v in program.inputs),
         outputs=tuple(_specialize_ssa_value(v, values) for v in program.outputs),
         blocks=tuple(_specialize_block(b, values) for b in program.blocks),
         metadata=_specialize_value(program.metadata, values),
+        plans={
+            name: replace(
+                plan,
+                stages=tuple(
+                    replace(stage, program=specialize_program(stage.program, values))
+                    for stage in plan.stages
+                ),
+            )
+            if plan is not None
+            else None
+            for name, plan in program.plans.items()
+        },
+    )
+
+    return replace(
+        specialized,
+        plans={
+            name: plan.bind(specialized) if plan else None
+            for name, plan in specialized.plans.items()
+        },
     )
 
 

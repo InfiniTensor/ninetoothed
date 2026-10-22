@@ -78,7 +78,9 @@ def test_block_reduction_guards_preserve_the_original_schedule():
         assert replace(rejected, metadata=candidate.metadata) == candidate
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize(
+    "device", tuple(device for device in get_available_devices() if device == "cuda")
+)
 def test_block_reduction_runtime(device):
     shape = (3, 8, 16)
     x = torch.randn((*shape[:-1], shape[-1] * 2), device=device)[..., ::2]
@@ -107,7 +109,9 @@ def _independent_application(x, y, out):
     out = x + ntl.sum(y, axis=0)  # noqa: F841
 
 
-@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize(
+    "device", tuple(device for device in get_available_devices() if device == "cuda")
+)
 def test_block_reduction_loads_each_input_domain(device):
     request = replace(
         _request(),

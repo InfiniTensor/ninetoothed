@@ -53,7 +53,17 @@ def overflow_terms(argument_names, tensor_ndims):
 
 
 class Handle:
-    def __init__(self, compilation, kernel, launch, source, library=None):
+    def __init__(
+        self,
+        compilation,
+        kernel,
+        launch,
+        source,
+        library=None,
+        *,
+        cache_key=None,
+        toolchain=None,
+    ):
         self._compilation = compilation
         self._artifact = compilation.artifact
         self._backend = compilation.artifact.backend.value
@@ -66,7 +76,7 @@ class Handle:
         self._ssa = compilation.kernel.ssa
         self._pass_trace = compilation.pass_trace
         self._launch_plan = compilation.launch_plan
-        cache_key = compilation_cache_key(compilation)
+        cache_key = cache_key or compilation_cache_key(compilation, toolchain=toolchain)
         manifest = (
             Path(self._library).with_suffix(".manifest.json")
             if self._library is not None
@@ -79,6 +89,7 @@ class Handle:
                 cache_key,
                 Path(self._source),
                 None if self._library is None else Path(self._library),
+                toolchain=toolchain,
             ),
         )
         self._built_artifact = BuiltArtifact(
@@ -179,6 +190,8 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
     suffix = {
         Target.CUDA: "cu",
         Target.TILELANG: "tilelang.py",
+        Target.BANGC: "mlu",
+        Target.ASCENDC: "ascendc",
     }[artifact.backend]
     cache_key = compilation_cache_key(compilation)
     source = write_source(
@@ -1574,7 +1587,7 @@ def _publish_library(cache_library: Path, output_dir, filename: str) -> Path:
     return destination
 
 
-def _built_manifest(compilation, cache_key, source, library):
+def _built_manifest(compilation, cache_key, source, library, *, toolchain=None):
     from ninetoothed.compiler.cache import compilation_toolchain_identity
 
     assert compilation.target is not None
@@ -1591,7 +1604,9 @@ def _built_manifest(compilation, cache_key, source, library):
         "launch_abi": compilation.artifact.metadata.get("launch_abi", {}),
         "launch_plan": ir_to_dict(compilation.launch_plan),
         "pass_trace": compilation.pass_trace,
-        "toolchain": compilation_toolchain_identity(compilation),
+        "toolchain": compilation_toolchain_identity(compilation)
+        if toolchain is None
+        else toolchain,
     }
 
 

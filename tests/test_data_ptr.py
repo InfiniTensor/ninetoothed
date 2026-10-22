@@ -1,3 +1,5 @@
+import os
+
 import pytest
 import torch
 
@@ -34,6 +36,12 @@ def sum(input):
 @pytest.mark.parametrize("size", (64180,))
 def test_data_ptr(size, device):
     input = torch.randn(size, device=device)
+
+    if os.environ.get("NINETOOTHED_BACKEND") == "ascendc":
+        with pytest.raises(ValueError, match="does not support atomic updates"):
+            sum(input)
+
+        return
 
     output = sum(input)
 

@@ -4,7 +4,7 @@ from tests.utils import get_available_devices
 
 
 @pytest.mark.parametrize("device", get_available_devices())
-def test_ipynb(device):
+def test_ipynb(device, tmp_path):
     if device != "cuda":
         pytest.skip("this test only supports CUDA")
 
@@ -44,7 +44,7 @@ def test_ipynb(device):
 
         assert torch.allclose(sin(input), torch.sin(input))
 
-    PARENT_DIR_PATH = os.path.dirname(__file__)
+    PARENT_DIR_PATH = str(tmp_path)
     PY_FILE_NAME = "test_sin.py"
     PY_FILE_PATH = os.path.join(PARENT_DIR_PATH, PY_FILE_NAME)
     IPYNB_FILE_NAME = os.path.splitext(PY_FILE_NAME)[0] + ".ipynb"

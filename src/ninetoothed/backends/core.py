@@ -6,12 +6,15 @@ from pathlib import Path
 from typing import Any, Mapping, MutableMapping
 
 from ninetoothed.ir import Kernel
+from ninetoothed.ir.frozen import freeze
 
 
 class Target(str, Enum):
     TRITON = "triton"
     TILELANG = "tilelang"
     CUDA = "cuda"
+    BANGC = "bangc"
+    ASCENDC = "ascendc"
 
 
 _CANONICAL_BACKEND_NAMES = {
@@ -19,6 +22,8 @@ _CANONICAL_BACKEND_NAMES = {
     "triton": Target.TRITON,
     "tilelang": Target.TILELANG,
     "cuda": Target.CUDA,
+    "bangc": Target.BANGC,
+    "ascendc": Target.ASCENDC,
 }
 
 
@@ -43,6 +48,12 @@ class Artifact:
     sources: Mapping[str, str]
     entrypoint: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    execution_plans: Mapping[str, Any] = field(
+        default_factory=dict, compare=False, repr=False, metadata={"serialize": False}
+    )
+
+    def __post_init__(self):
+        object.__setattr__(self, "execution_plans", freeze(self.execution_plans))
 
     @property
     def primary_source_name(self) -> str:

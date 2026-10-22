@@ -149,7 +149,7 @@ def test_type_only_branch_reassigns_unspecialized_dtype():
     assert "tl.float32" in source
     ast.parse(source)
 
-    for backend in ("cuda",):
+    for backend in ("cuda", "bangc", "ascendc"):
         source = emit_kernel(kernel, backend).primary_source
         assert "tl." not in source
 

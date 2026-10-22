@@ -1,4 +1,5 @@
 import functools
+import os
 import shutil
 
 import pytest
@@ -39,6 +40,16 @@ def premake(size=None, dtype=None, block_size=None):
     return arrangement_, application, tensors
 
 
+def premake_float32_alpha(size=None, dtype=None, block_size=None):
+    arrangement_, application_, tensors = premake(size, dtype, block_size)
+
+    return (
+        arrangement_,
+        application_,
+        (tensors[0], tensors[1], Tensor(0, dtype=ninetoothed.float32), tensors[3]),
+    )
+
+
 @pytest.mark.parametrize("device", get_available_devices())
 @pytest.mark.parametrize(
     "dtype, ninetoothed_dtype, rtol, atol",
@@ -49,6 +60,14 @@ def premake(size=None, dtype=None, block_size=None):
 )
 @pytest.mark.parametrize("size", (20260128, 1127))
 def test_auto_tuning(size, dtype, device, ninetoothed_dtype, rtol, atol):
+    ascendc = os.environ.get("NINETOOTHED_BACKEND") == "ascendc"
+
+    if ascendc:
+        arrangement_, application_, tensors = premake(size, ninetoothed_dtype, 256)
+
+        with pytest.raises(ValueError, match="float64.*dav-c220"):
+            ninetoothed.make(arrangement_, application_, tensors)
+
     caller = device
     kernel_name = "add"
     output_dir = CACHE_DIR / "test_auto_tuning"
@@ -85,7 +104,7 @@ def test_auto_tuning(size, dtype, device, ninetoothed_dtype, rtol, atol):
     )
 
     kernel = ninetoothed.build(
-        premake,
+        premake_float32_alpha if ascendc else premake,
         configs,
         meta_parameters=("block_size",),
         caller=caller,
@@ -95,7 +114,7 @@ def test_auto_tuning(size, dtype, device, ninetoothed_dtype, rtol, atol):
 
     input = torch.randn((size,), dtype=dtype, device=device)
     other = torch.randn((size,), dtype=dtype, device=device)
-    alpha = torch.randn((), dtype=torch.float64)
+    alpha = torch.randn((), dtype=torch.float32 if ascendc else torch.float64)
     output = torch.empty_like(input)
 
     kernel(input, other, alpha, output, size, ninetoothed_dtype)

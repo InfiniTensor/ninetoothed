@@ -127,6 +127,10 @@ def test_squeezing_the_innermost_level(num_rows, num_cols, num_indices, device):
     expected = output.clone()
     expected[indices] = input
 
+    if os.environ.get("NINETOOTHED_BACKEND") == "bangc":
+        # The verified BangC data contract excludes 64-bit integer buffers.
+        indices = indices.to(torch.int32)
+
     kernel(input, indices, output)
 
     assert output.shape == (num_rows, num_cols)

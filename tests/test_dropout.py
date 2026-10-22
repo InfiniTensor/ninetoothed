@@ -44,4 +44,10 @@ def test(size, dtype, device):
 
     assert abs(non_zero_ratio - (1 - p)) < 0.05
 
-    assert torch.allclose(output[output != 0], input[output != 0] / (1 - p))
+    # Some devices quantize the scalar divisor to Half before division.
+    # Compute the mathematical reference on the CPU using the same tolerance.
+    actual = output.cpu()
+    source = input.cpu()
+    retained = actual != 0
+
+    assert torch.allclose(actual[retained], source[retained] / (1 - p))
