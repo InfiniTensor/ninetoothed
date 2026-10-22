@@ -112,6 +112,11 @@ def mlu_requested(compilation) -> bool:
     if "mlu" in _compilation_device_types(compilation):
         return True
 
+    if not hasattr(compilation, "target") or not hasattr(compilation, "kernel"):
+        # Incomplete compilations (unit-test mocks) carry no device signal;
+        # leave them on the caller's default path instead of claiming them.
+        return False
+
     try:
         import torch
     except ImportError:
