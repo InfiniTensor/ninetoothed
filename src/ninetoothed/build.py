@@ -200,6 +200,11 @@ def build(
             output_dir=output_dir,
             mode="aot",
         )
+        print(
+            f"DBG-BUILD variant={variant_name} backend={handle._backend}"
+            f" handle_type={type(handle).__name__}",
+            flush=True,
+        )
 
         if handle._backend == "triton":
             cpp_variants.append(

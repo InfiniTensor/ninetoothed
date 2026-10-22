@@ -77,6 +77,7 @@ extern "C" int {entry_name}(CNqueue stream{param_decls}) {{
 
   // Cambricon's JIT launcher scales gridX by num_warps before launching.
   grid_x *= {num_warps};
+{grid_overflow_check}
 
   if (grid_x * grid_y * grid_z <= 0) {{
     return 0;
@@ -157,15 +158,24 @@ def compile_mlu_aot(compilation, source: Path, library: Path) -> None:
     grid_x, grid_y, grid_z = _compile_grid(compilation).split(",")
     num_warps, num_stages = _compile_schedule(compilation)
 
-    # The rendered grid is the uncapped logical program count; clamp it to
-    # the platform grid limit before the launcher's num_warps scaling, the
-    # same way the JIT emitter clamps its launch grid. The kernel body is a
-    # grid-stride loop, so the capped launch still covers every program.
+    # A grid-stride rebuild (triton_grid_limit set on the request) may
+    # clamp: its loop covers every logical program. A flat first build must
+    # keep its full grid -- the launcher refuses grids the hardware would
+    # silently clamp, and the Handle retry rebuilds with the limit set.
     platform_metadata = getattr(
         getattr(compilation.target, "platform", None), "metadata", {}
     )
-    grid_limit = int(platform_metadata.get("triton_grid_limit", 65535))
-    launch_cap = f"{grid_limit // num_warps}u"
+    request_limit = getattr(compilation.request, "triton_grid_limit", None)
+    profile_limit = int(platform_metadata.get("triton_grid_limit") or 0)
+
+    if request_limit is not None:
+        launch_cap = f"{int(request_limit) // num_warps}u"
+        capped = True
+    elif profile_limit:
+        launch_cap = f"{profile_limit // num_warps}u"
+        capped = True
+    else:
+        capped = False
 
     sys_path = list(sys.path)
     source_parent = str(Path(source).parent)
@@ -276,9 +286,30 @@ def compile_mlu_aot(compilation, source: Path, library: Path) -> None:
         entry_name=entry_name,
         param_decls=param_decls,
         params_list=params_list,
-        grid_x=f"((({grid_x}) < {launch_cap}) ? ({grid_x}) : {launch_cap})",
-        grid_y=f"((({grid_y}) < {launch_cap}) ? ({grid_y}) : {launch_cap})",
-        grid_z=f"((({grid_z}) < {launch_cap}) ? ({grid_z}) : {launch_cap})",
+        grid_x=(
+            f"((({grid_x}) < {launch_cap}) ? ({grid_x}) : {launch_cap})"
+            if capped
+            else f"({grid_x})"
+        ),
+        grid_y=(
+            f"((({grid_y}) < {launch_cap}) ? ({grid_y}) : {launch_cap})"
+            if capped
+            else f"({grid_y})"
+        ),
+        grid_z=(
+            f"((({grid_z}) < {launch_cap}) ? ({grid_z}) : {launch_cap})"
+            if capped
+            else f"({grid_z})"
+        ),
+        grid_overflow_check=(
+            ""
+            if capped
+            else (
+                "    if (grid_x > 65535u || grid_y > 65535u || grid_z > 65535u) {\n"
+                "    return -6553;\n"
+                "    }\n"
+            )
+        ),
         num_warps=num_warps,
         func_type=func_type,
     )

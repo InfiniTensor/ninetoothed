@@ -61,6 +61,16 @@ class LaunchGridExceeded(Exception):
     condition must propagate to the Handle retry.
     """
 
+    def __init__(self, message):
+        import os as _os
+
+        if _os.environ.get("NT_GRID_DEBUG"):
+            import traceback
+
+            traceback.print_stack()
+
+        super().__init__(message)
+
 
 class Handle:
     def __init__(self, compilation, kernel, launch, source, library=None):
@@ -105,6 +115,8 @@ class Handle:
             return self._launch(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001 - re-raised unless matching
             retryable = isinstance(exc, LaunchGridExceeded) or (
+                isinstance(exc, KernelLaunchError) and exc.args[:1] == (-6553,)
+            ) or (
                 type(exc).__name__ == "OutOfResources"
                 and "grid size" in str(exc)
             )
@@ -183,9 +195,21 @@ def materialize(
         return handle
 
     if mode == "aot":
+        import os as _os
+
+        if _os.environ.get("NT_GRID_DEBUG"):
+            print(f"DBG-MAT mode=aot backend={target}", flush=True)
+
         if output_dir is None:
             raise ValueError("AOT materialization requires an output directory.")
-        return materializer.aot_build(compilation, output_dir=output_dir)
+
+        handle = materializer.aot_build(compilation, output_dir=output_dir)
+
+        if isinstance(handle, Handle):
+            handle._output_dir = output_dir
+            handle._mode = mode
+
+        return handle
 
     raise ValueError(f"Unknown materialization mode `{mode}`.")
 

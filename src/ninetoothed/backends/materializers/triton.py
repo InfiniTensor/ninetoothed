@@ -819,7 +819,49 @@ def _runtime_vector_validator(compilation):
 
 
 def _aot_materialize(compilation, *, output_dir):
+    import os as _os
+
+    if _os.environ.get("NT_GRID_DEBUG"):
+        print(
+            "DBG-AOT-MAT entered;"
+            f" req-limit={getattr(compilation.request, 'triton_grid_limit', 'MISSING')}",
+            flush=True,
+        )
+
     from ninetoothed.compiler.runtime import Handle, _publish_library
+
+    import os as _dbg_os
+    import time as _dbg_time
+
+    _debug = bool(_dbg_os.environ.get("NT_GRID_DEBUG"))
+    limited = _apply_vendor_grid_limit(compilation)
+
+    if _debug and limited is not compilation:
+        print(
+            "DBG-COND"
+            f" kernel={compilation.artifact.kernel_name}"
+            f" grid={_compile_grid(limited).split(',')[0]}"
+            f" needs_limit={_aot_grid_needs_limit(limited)}",
+            flush=True,
+        )
+
+    if limited is not compilation and _aot_grid_needs_limit(limited):
+        # The kernel was emitted flat, so clamping the launcher grid alone
+        # would silently drop the tail. Recompile so the emitter wraps the
+        # kernel in a grid-stride loop matching the clamped launcher grid.
+        from ninetoothed.compiler import compile_kernel
+
+        _started = _dbg_time.monotonic()
+        compilation = compile_kernel(limited.request)
+
+        if _debug:
+            print(
+                f"DBG-COND recompiled in {_dbg_time.monotonic() - _started:.1f}s",
+                flush=True,
+            )
+    # Otherwise the grid provably fits under the vendor limit: keep the
+    # flat kernel -- Cambricon compiles loop-shaped kernels dramatically
+    # slower -- and the uncapped launcher keeps its -6553 runtime guard.
 
     compilation = _select_aot_candidate(compilation)
     artifact = compilation.artifact
@@ -868,6 +910,56 @@ def _aot_materialize(compilation, *, output_dir):
     )
 
     return handle
+
+
+def _apply_vendor_grid_limit(compilation):
+    """Adopt the vendor grid limit for AOT builds on unconfigured MLU hosts.
+
+    AOT launches run through the compiled launcher, where an oversized grid
+    would be silently clamped by the vendor runtime; compiling the kernel
+    grid-stride from the start keeps coverage correct. Explicit platforms
+    are left untouched.
+    """
+    request = getattr(compilation, "request", None)
+
+    if (
+        request is None
+        or request.triton_grid_limit is not None
+        or request.platform is not None
+    ):
+        return compilation
+
+    import os
+
+    if os.environ.get("NINETOOTHED_PLATFORM"):
+        return compilation
+
+    backend = None
+
+    try:
+        import triton
+
+        target = triton.runtime.driver.active.get_current_target()
+        backend = str(getattr(target, "backend", ""))
+    except Exception as exc:
+        backend = f"probe-failed: {exc!r}"
+
+    import os as _os
+
+    if _os.environ.get("NT_GRID_DEBUG"):
+        print(f"DBG-V9 probe backend={backend!r}", flush=True)
+
+    if backend != "mlu":
+        return compilation
+
+    from dataclasses import replace
+
+    replaced = replace(compilation, request=replace(request, triton_grid_limit=65535))
+
+    if _os.environ.get("NT_GRID_DEBUG"):
+        print("DBG-V9 adopted limit=65535", flush=True)
+
+    return replaced
 
 
 def _select_aot_candidate(compilation):
@@ -1382,6 +1474,60 @@ def _constant_grid_total(compilation) -> int:
         ) from exc
 
 
+def _static_grid_value(expression) -> int | None:
+    """Evaluate an emitted C grid literal; None when it is not constant."""
+    import ast
+
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError:
+        return None
+
+    def visit(node):
+        if isinstance(node, ast.BinOp):
+            left = visit(node.left)
+            right = visit(node.right)
+            if left is None or right is None or (
+                isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod)) and right == 0
+            ):
+                return None
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            # C integer division truncates; grid terms are non-negative,
+            # so floor division matches what the launcher computes.
+            return left // right
+        if isinstance(node, ast.Constant) and isinstance(node.value, int):
+            return node.value
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            value = visit(node.operand)
+            return None if value is None else -value
+        return None
+
+    return visit(tree.body if isinstance(tree, ast.Expression) else tree)
+
+
+def _aot_grid_needs_limit(compilation) -> bool:
+    """Whether the AOT launch grid can exceed the vendor grid limit.
+
+    Only a fully constant grid that fits within ``65535`` tasks can stay
+    flat; anything dynamic or oversized needs a grid-stride kernel so
+    coverage survives the clamped launcher grid.
+    """
+    grid_x = _compile_grid(compilation).split(",")[0]
+    value = _static_grid_value(grid_x)
+
+    if value is None:
+        return True
+
+    num_warps = _compile_schedule(compilation)[0]
+
+    return value * num_warps > 65535
+
+
 def _compile_grid(compilation) -> str:
     total = _specialized_grid_total(compilation).replace("//", "/")
     mode = dict(compilation.artifact.metadata.get("program_mode", {}))
@@ -1540,6 +1686,13 @@ def _aot_wrapper(
         del keepalive
 
         if result != 0:
+            if result == -6553:
+                from ninetoothed.compiler.runtime import LaunchGridExceeded
+
+                raise LaunchGridExceeded(
+                    "out of resource: grid size exceeds the vendor limit"
+                )
+
             raise KernelLaunchError(result)
         return _first_output(abi, public)
 
