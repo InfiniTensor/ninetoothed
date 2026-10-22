@@ -165,6 +165,7 @@ class TestPipeline:
         assert "ssa.decompose_linalg" in independent
         assert "ssa.analyze_effects" in independent
         assert "ssa.select_schedule" in independent
+        assert "ssa.group_reduction_rows" in independent
 
         for backend in Target:
             backend_passes = {
@@ -174,7 +175,12 @@ class TestPipeline:
             expected = {f"ssa.{backend.value}.optimize_schedule"}
 
             if backend == Target.TRITON:
-                expected.add("ssa.triton.block_reductions")
+                expected.update(
+                    {
+                        "ssa.triton.block_reductions",
+                        "ssa.triton.singleton_dot",
+                    }
+                )
 
             assert backend_passes == expected
             assert (
@@ -186,6 +192,7 @@ class TestPipeline:
         } == {
             "ssa.triton.optimize_schedule",
             "ssa.triton.block_reductions",
+            "ssa.triton.singleton_dot",
             "ssa.cuda.optimize_schedule",
             "ssa.tilelang.optimize_schedule",
             "ssa.rvne.optimize_schedule",

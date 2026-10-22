@@ -1,6 +1,5 @@
 import math
 import threading
-import time
 
 from ninetoothed.compiler.cache import (
     CACHE_DIR,
@@ -29,7 +28,7 @@ class AutoTuner:
         if not self._funcs or len(self._funcs) != len(self._keys):
             raise ValueError("AutoTuner requires one key for every candidate.")
 
-        self._benchmark = benchmark or _default_benchmark
+        self._benchmark = _default_benchmark if benchmark is None else benchmark
         self._validator = validator
         self._lock = threading.Lock()
         self._key_ids = tuple(_candidate_id(key) for key in self._keys)
@@ -75,6 +74,11 @@ class AutoTuner:
                 return result
 
         return best_func(*args, **kwargs)
+
+    @staticmethod
+    def argument_key(args, kwargs=None):
+        """Return the shared shape/stride/dtype/device signature."""
+        return AutoTuner._make_arg_key(args, {} if kwargs is None else kwargs)
 
     def _get_timings(self, args, kwargs):
         arg_key = type(self)._make_arg_key(args, kwargs)
@@ -206,125 +210,20 @@ _AUTO_TUNING_CACHE_DIR = CACHE_DIR / "auto_tuning"
 
 
 def _default_benchmark(function, args, kwargs):
-    import torch
+    from ninetoothed.compiler.benchmark import benchmark_kernel
 
-    for _ in range(3):
-        function(*args, **kwargs)
-
-    runtime = _device_runtime(torch, args, kwargs)
-    event_factory = getattr(runtime, "Event", None)
-
-    if callable(event_factory):
-        try:
-            start = event_factory(enable_timing=True)
-            end = event_factory(enable_timing=True)
-            start.record()
-        except (NotImplementedError, RuntimeError, TypeError):
-            return _wall_clock_benchmark(
-                function,
-                args,
-                kwargs,
-                runtime,
-                require_synchronization=True,
-            )
-        else:
-            for _ in range(10):
-                function(*args, **kwargs)
-
-            try:
-                end.record()
-            except (NotImplementedError, TypeError):
-                return _wall_clock_benchmark(
-                    function,
-                    args,
-                    kwargs,
-                    runtime,
-                    require_synchronization=True,
-                )
-
-            synchronize = getattr(runtime, "synchronize", None)
-
-            if callable(synchronize):
-                synchronize()
-            else:
-                try:
-                    end.synchronize()
-                except (NotImplementedError, TypeError):
-                    raise RuntimeError(
-                        "Event-only device runtime cannot synchronize a wall-clock "
-                        "fallback."
-                    )
-
-            try:
-                return start.elapsed_time(end) / 10
-            except (NotImplementedError, RuntimeError, TypeError):
-                return _wall_clock_benchmark(
-                    function,
-                    args,
-                    kwargs,
-                    runtime,
-                    require_synchronization=True,
-                )
-
-    return _wall_clock_benchmark(function, args, kwargs, runtime)
-
-
-def _wall_clock_benchmark(
-    function,
-    args,
-    kwargs,
-    runtime,
-    *,
-    require_synchronization=False,
-):
-    synchronize = getattr(runtime, "synchronize", None)
-
-    if require_synchronization and not callable(synchronize):
-        raise RuntimeError(
-            "Device runtime cannot safely synchronize a wall-clock benchmark."
-        )
-
-    if callable(synchronize):
-        synchronize()
-
-    started = time.perf_counter()
-
-    for _ in range(10):
-        function(*args, **kwargs)
-
-    if callable(synchronize):
-        synchronize()
-
-    return (time.perf_counter() - started) * 1000 / 10
-
-
-def _device_runtime(torch, args, kwargs):
-    cpu_runtime = None
-
-    for value in (*args, *kwargs.values()):
-        device = getattr(value, "device", None)
-
-        if device is None:
-            continue
-
-        device_type = getattr(device, "type", str(device).split(":", 1)[0])
-        runtime = getattr(torch, str(device_type).lower(), None)
-
-        if runtime is None:
-            continue
-
-        if str(device_type).lower() == "cpu":
-            cpu_runtime = runtime
-        else:
-            return runtime
-
-    return cpu_runtime
+    return benchmark_kernel(function, args, kwargs)
 
 
 def _default_cache_namespace():
-    import torch
+    try:
+        import torch
+    except ImportError:
+        framework = "python"
+    else:
+        framework = f"torch_{torch.__version__}"
 
-    return f"device_timer_v3_torch_{torch.__version__.replace('.', '_')}"
+    return framework
 
 
 def _candidate_id(key):

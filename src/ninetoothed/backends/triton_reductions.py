@@ -25,6 +25,9 @@ from ninetoothed.dtype import normalize_dtype
 _OPERATIONS = frozenset(
     {
         "arith.constant",
+        # Dtype descriptors are compile-time metadata used by tensor casts.
+        "dtype.constant",
+        "dtype.of",
         "arith.add",
         "arith.sub",
         "arith.mul",
@@ -39,6 +42,8 @@ _OPERATIONS = frozenset(
         "math.sqrt",
         "math.rsqrt",
         "tensor.view",
+        "linalg.transpose",
+        "shape.dim",
         "tensor.cast",
         "reduce.sum",
         "reduce.max",
@@ -58,36 +63,56 @@ class TritonBlockReductions(Pass):
     default_enabled = False
 
     def run(self, program, context):
-        options = dict(context.pass_options.get(self.name, {}))
-        unknown = options.keys() - {"max_block_elements", "max_total_elements"}
-
-        if unknown:
-            raise ValueError(f"Unknown block reduction options: {sorted(unknown)}.")
-
-        limits = {"max_block_elements": 4096, "max_total_elements": 32768} | options
-
-        for name, value in limits.items():
-            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-                raise ValueError(f"Block reduction option `{name}` must be positive.")
-
         schedule = dict(program.metadata.get("schedule", {}))
-        reason = _rejection(program, context, schedule, **limits)
-        schedule["block_reductions"] = {
-            "enabled": reason is None,
-            "reason": reason or "bounded straight-line reduction graph",
-            **limits,
-        }
+        schedule["block_reductions"] = analyze_block_reductions(program, context)
 
         return replace(
             program, metadata=dict(program.metadata) | {"schedule": schedule}
         )
 
 
-def _rejection(program, context, schedule, *, max_block_elements, max_total_elements):
+def analyze_block_reductions(program, context, *, allow_row_vector=False):
+    """Check block legality, preserving row-vector schedules unless opted out."""
+    options = dict(context.pass_options.get(TritonBlockReductions.name, {}))
+    unknown = options.keys() - {"max_block_elements", "max_total_elements"}
+
+    if unknown:
+        raise ValueError(f"Unknown block reduction options: {sorted(unknown)}.")
+
+    limits = {"max_block_elements": 4096, "max_total_elements": 32768} | options
+
+    for name, value in limits.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"Block reduction option `{name}` must be positive.")
+
+    schedule = program.metadata.get("schedule", {})
+    reason = _rejection(
+        program, context, schedule, allow_row_vector=allow_row_vector, **limits
+    )
+
+    return {
+        "enabled": reason is None,
+        "reason": reason or "bounded straight-line reduction graph",
+        **limits,
+    }
+
+
+def _rejection(
+    program,
+    context,
+    schedule,
+    *,
+    allow_row_vector,
+    max_block_elements,
+    max_total_elements,
+):
     if context.resolved_target.backend != Target.TRITON:
         return "requires the Triton backend"
 
-    if schedule.get("reduction", {}).get("mode") == "row-vector":
+    if (
+        schedule.get("reduction", {}).get("mode") == "row-vector"
+        and not allow_row_vector
+    ):
         return "preserve the existing row-vector schedule"
 
     operations = program.blocks[0].operations
@@ -117,6 +142,8 @@ def _rejection(program, context, schedule, *, max_block_elements, max_total_elem
     values = {value.name: value for value in program.inputs}
     values.update((value.name, value) for op in operations for value in op.results)
     total_elements = 0
+    group = schedule.get("row_group", {}) if allow_row_vector else {}
+    reduction = schedule.get("reduction", {})
 
     for value in values.values():
         shape = _static_shape(value.type.shape)
@@ -128,6 +155,14 @@ def _rejection(program, context, schedule, *, max_block_elements, max_total_elem
             return "requires power-of-two block dimensions"
 
         elements = prod(shape)
+
+        if group.get("enabled") and group.get("groups_per_tile", 1) > 1:
+            parallel_axis = reduction["parallel_axes"][0]
+
+            if len(shape) == len(reduction["value_shape"]) and shape[
+                parallel_axis
+            ] == int(reduction["parallel_shape"][0]):
+                elements = elements // group["groups_per_tile"]
 
         if elements > min(max_block_elements, 65536):
             return "block element budget exceeded"

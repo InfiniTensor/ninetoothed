@@ -245,6 +245,7 @@ class TritonTarget(EmitterTarget):
             return f"tl.{name}(_nt_exp_input({args[0]}))"
 
         functions = {
+            "transpose": "tl.trans",
             "abs": "tl.abs",
             "acos": "tl.acos",
             "asin": "tl.asin",
@@ -328,9 +329,51 @@ class TritonTarget(EmitterTarget):
             values += ","
         return f"({values})"
 
-    def render_view(self, operation, context) -> str:
-        value = common.emit_value(operation.operands[0], context)
+    def render_view(self, operation, context, *, coords=None) -> str:
         subscript = str(operation.attrs.get("subscript", "")).strip()
+        group = context.program.metadata.get("schedule", {}).get("row_group", {})
+
+        if group.get("enabled") and "None" not in subscript and coords is not None:
+            return common.emit_element(operation.operands[0], coords, context)
+
+        if (
+            group.get("enabled")
+            and group.get("groups_per_tile", 1) > 1
+            and "None" in subscript
+        ):
+            axes = common.value_axes(operation.results[0].name, context)
+            coords = common.view_base_coords(
+                operation,
+                common.current_coords(axes, context) if coords is None else coords,
+                context,
+            )
+            physical_axes = list(axes)
+            parallel_axis = context.program.metadata["schedule"]["reduction"][
+                "parallel_axes"
+            ][0]
+
+            if (
+                len(axes) == len(context.output_axes)
+                and axes[parallel_axis] == context.output_axes[parallel_axis]
+            ):
+                physical_axes[parallel_axis] = str(group["rows"])
+
+            shape = self.block_shape(
+                tuple(
+                    axis
+                    for axis, part in zip(
+                        physical_axes, subscript.strip("()").split(",")
+                    )
+                    if part.strip() != "None"
+                )
+            )
+            value = common.emit_element(
+                operation.operands[0],
+                tuple(f"({coord}).reshape({shape})" for coord in coords),
+                context,
+            )
+        else:
+            value = common.emit_value(operation.operands[0], context)
 
         if "None" not in subscript:
             return value

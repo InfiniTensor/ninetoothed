@@ -262,3 +262,57 @@ success without launching, and unsupported configuration keys return an error.
 C++ files are emitted when every variant uses the supported Triton tensor ABI
 and configuration types. Python-only configurations, such as jagged tensors or
 arbitrary string keys, remain available through the returned callable.
+
+Shared runtime timing
+--------------------
+
+Python auto-tuning shares an internal timer, preferring device graphs and events
+and falling back to Python timing. Available device synchronization is used;
+without it, asynchronous devices are timed by host submission only. Custom
+``benchmark`` callbacks still return milliseconds.
+
+After upgrades or changes to timing or tuning code, clear ``~/.ninetoothed``
+(or ``NINETOOTHED_CACHE_DIR`` when set) before reusing tuning results.
+
+Singleton dot optimization
+--------------------------
+
+``autotune_singleton_dot`` compares original and reduction kernels for static 2D
+Triton dots with ``M == 1`` or ``N == 1``, FP16/BF16/FP32 inputs and FP32 outputs.
+It shortlists configurations using hardware and workload estimates, checks their
+results, then measures and selects the fastest valid candidate. Default
+compilation is unchanged.
+
+Both requests must match in application, tensor shapes/dtypes, target and calling
+convention; tiles may differ. Pass all tensors positionally on one accelerator,
+with one output that does not alias any input. The original default configuration
+must be executable as the reference.
+
+.. code-block:: python
+
+    from ninetoothed.compiler import autotune_singleton_dot
+
+    tuned = autotune_singleton_dot(
+        original_request, reduction_request, (lhs, rhs, output)
+    )
+    tuned(lhs, rhs, output)
+
+Row reduction grouping
+----------------------
+
+``autotune_row_reductions(request, (input, output))`` returns a callable tuner
+shared by Triton, CUDA and TileLang. It compares the original with a small
+shortlist of physical row counts that divide the existing logical row tile.
+Logical shapes and arrangement stay fixed. Device capacity and reduction width
+rank the intermediate partitions; valid candidates are checked against the
+original and measured with the shared timer. The default is at most four
+candidates, including the original; results use the existing tuning cache.
+
+This opt-in path supports independent row reductions with elementwise consumers
+and one fully written, write-only, non-aliased floating-point output. It requires
+single-level, regular tiling and broadcasting; padding, complex views, control
+flow and pointer operations retain their original execution path. Inputs inside
+each reduction must have matching valid domains without implicit broadcasting.
+Only the designated output may be written during tuning. Pass tensors
+positionally on one accelerator. Logical tiles and thread counts are not tuned,
+and default compilation is unchanged.

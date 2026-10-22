@@ -47,6 +47,13 @@ class TritonOptimizeSchedule(OptimizeSchedule):
     name = "ssa.triton.optimize_schedule"
     supported_backends = (Target.TRITON,)
 
+    def lower_row_group(self, program, schedule, context):
+        from ninetoothed.backends.triton_reductions import analyze_block_reductions
+
+        return analyze_block_reductions(program, context, allow_row_vector=True) | {
+            "mapping": "block-vector"
+        }
+
     def schedule_candidates(
         self,
         analysis: Mapping[str, Any],
@@ -160,12 +167,14 @@ class TritonOptimizeSchedule(OptimizeSchedule):
 def register_ssa_passes(registry: "Registry") -> None:
     from ninetoothed.backends.registry import register_pass_bundle
     from ninetoothed.backends.triton_reductions import TritonBlockReductions
+    from ninetoothed.backends.triton_singleton_dot import TritonSingletonDot
 
     register_pass_bundle(
         registry,
         backend=Target.TRITON,
         optimize_schedule=TritonOptimizeSchedule,
     )
+    registry.register(TritonSingletonDot, tags=("optimization", "triton", "linalg"))
     registry.register(
         TritonBlockReductions, tags=("optimization", "triton", "reduction")
     )

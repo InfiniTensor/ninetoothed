@@ -479,6 +479,13 @@ class OptimizeSchedule(Pass):
         if isinstance(reduction, Mapping):
             optimized_schedule["reduction"] = dict(reduction)
 
+        group = optimized_schedule.get("row_group", {})
+
+        if group.get("enabled"):
+            optimized_schedule["row_group"] = dict(group) | dict(
+                self.lower_row_group(program, optimized_schedule, context)
+            )
+
         candidate_metadata = tuple(candidate.as_metadata() for candidate in candidates)
 
         return _replace_program(
@@ -505,6 +512,10 @@ class OptimizeSchedule(Pass):
         del analysis, schedule, context
 
         return ()
+
+    def lower_row_group(self, program, schedule, context):
+        """Select a real backend implementation of the common grouping intent."""
+        return {"enabled": False, "reason": "backend has no grouped-row lowering"}
 
     def select_candidate(
         self,
@@ -548,6 +559,11 @@ class ValidateTargetCapabilities(Pass):
     phase = "target_legality"
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
+        group = program.metadata.get("schedule", {}).get("row_group", {})
+
+        if group.get("enabled") and "mapping" not in group:
+            raise ValueError("Row grouping must precede backend schedule optimization.")
+
         required = _required_capabilities(program)
         report = context.resolved_target.validate_capabilities(required)
 
@@ -559,11 +575,14 @@ class ValidateTargetCapabilities(Pass):
 
 
 def create_default_registry() -> Registry:
+    from ninetoothed.compiler.row_reductions import GroupReductionRows
+
     registry = Registry()
     registry.register(Canonicalize, tags=("generic", "required"))
     registry.register(DecomposeLinalg, tags=("generic", "linalg", "decomposition"))
     registry.register(AnalyzeEffects, tags=("generic", "analysis", "required"))
     registry.register(SelectSchedule, tags=("schedule",))
+    registry.register(GroupReductionRows, tags=("schedule", "reduction"))
     _register_backend_passes(registry)
     registry.register(
         ValidateTargetCapabilities,
