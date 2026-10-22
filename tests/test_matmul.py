@@ -72,6 +72,18 @@ _FLOAT8_E5M2_CONFIG = (
 @pytest.mark.parametrize("n", (512,))
 @pytest.mark.parametrize("m", (512,))
 def test(m, n, k, dtype, device, atol):
+    if device == "mlu" and dtype == torch.float8_e5m2:
+        pytest.skip("float8 is not supported by the MLU Triton backend yet")
+
+    if device == "mlu":
+        # The MLU math library and the compiled kernel round the fp32
+        # accumulator independently, so results differ by up to one fp16
+        # ULP; atol=1e-8 demands bitwise agreement across implementations.
+        rtol = 1e-2
+        atol = max(atol, 1e-2)
+    else:
+        rtol = None
+
     randn_dtype = dtype if dtype != torch.float8_e5m2 else torch.float16
 
     input = torch.randn((m, k), dtype=randn_dtype, device=device)
@@ -87,4 +99,4 @@ def test(m, n, k, dtype, device, atol):
         output = matmul(input, other)
         expected = torch.matmul(input, other)
 
-    assert torch.allclose(output, expected, atol=atol)
+    assert torch.allclose(output, expected, rtol=rtol, atol=atol)
