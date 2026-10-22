@@ -34,7 +34,7 @@ from ninetoothed.compiler.layout_runtime import (
 from ninetoothed.dtype import normalize_dtype
 from ninetoothed.targets import runtime_device_types
 
-_TRITON_AOT_LAUNCHER_SCHEMA = 2
+_TRITON_AOT_LAUNCHER_SCHEMA = 10
 _TRITON_MODULE_PATTERN = re.compile(
     r"^CUmodule ([A-Za-z_][A-Za-z0-9_]*)_mod = NULL;$", re.MULTILINE
 )
@@ -66,7 +66,7 @@ class TritonMaterializer(Materializer):
             _runtime_specs,
         )
 
-        _, function, enter, leave = _load_aot_exports(
+        _, function, enter, leave, mlu = _load_aot_exports(
             built.binary_path,
             built.source.kernel_name,
         )
@@ -84,6 +84,7 @@ class TritonMaterializer(Materializer):
                 built.source.metadata,
                 abi,
             ),
+            mlu=mlu,
         )
 
 
@@ -844,7 +845,7 @@ def _aot_materialize(compilation, *, output_dir):
         output_dir,
         f"{artifact.kernel_name}.triton.so",
     )
-    _, function, enter, leave = _load_aot_exports(
+    _, function, enter, leave, mlu = _load_aot_exports(
         library_path,
         artifact.kernel_name,
     )
@@ -858,6 +859,7 @@ def _aot_materialize(compilation, *, output_dir):
             getattr(artifact, "metadata", {}),
             compilation.launch_abi,
         ),
+        mlu=mlu,
     )
     handle = Handle(compilation, function, wrapped, source, library_path)
     write_manifest(
@@ -929,16 +931,25 @@ def _load_aot_exports(library_path, kernel_name):
             "rebuild the artifact with the current NineToothed version."
         ) from exc
 
+    mlu = hasattr(library, "ninetoothed_triton_is_mlu")
+
     function.restype = ctypes.c_int
     enter.argtypes = []
     enter.restype = ctypes.c_int
     leave.argtypes = []
     leave.restype = None
 
-    return library, function, enter, leave
+    return library, function, enter, leave, mlu
 
 
 def _compile_aot_library(compilation, source: Path, library: Path) -> None:
+    from .mluaot import compile_mlu_aot, mlu_requested
+
+    if mlu_requested(compilation):
+        compile_mlu_aot(compilation, source, library)
+
+        return
+
     _ensure_c_compiler()
     artifact = compilation.artifact
     kernel_name = f"{artifact.kernel_name}_kernel"
@@ -1065,6 +1076,20 @@ def _cpp_source_bundle(library):
     ):
         return None
     return sources
+
+
+def has_standalone_cpp_sources(compilation) -> bool:
+    """Return whether the built artifact carries a standalone C++ bundle.
+
+    Artifacts built through vendor-specific paths (for example the Cambricon
+    MLU launcher) do not carry the NVIDIA-style C++ source bundle.
+    """
+    library = (
+        artifact_directory(compilation_cache_key(compilation))
+        / f"{compilation.artifact.kernel_name}.triton.so"
+    )
+
+    return _cpp_source_bundle(library) is not None
 
 
 def publish_cpp_sources(compilation, output_dir):
@@ -1423,6 +1448,27 @@ def _compile_schedule(compilation) -> tuple[int, int]:
     return int(warps), int(stages)
 
 
+def _aot_stream_handle(public) -> int:
+    """Return the current stream handle for the launch values' device."""
+    import torch
+
+    for value in public.values():
+        device = getattr(value, "device", None)
+
+        if device is None:
+            continue
+
+        if device.type == "mlu":
+            return torch.mlu.current_stream(device).mlu_stream
+
+        return torch.cuda.current_stream(device).cuda_stream
+
+    if hasattr(torch, "mlu") and torch.mlu.is_available():
+        return torch.mlu.current_stream().mlu_stream
+
+    return torch.cuda.current_stream().cuda_stream
+
+
 def _aot_wrapper(
     function,
     enter,
@@ -1431,6 +1477,7 @@ def _aot_wrapper(
     tensor_specs,
     *,
     validate_bindings=None,
+    mlu=False,
 ):
     from ninetoothed.compiler.runtime import (
         KernelLaunchError,
@@ -1448,7 +1495,10 @@ def _aot_wrapper(
     )
     function.argtypes = [
         ctypes.c_void_p,
-        *(_triton_aot_ctype(binding, specs) for binding in runtime_bindings),
+        *(
+            _triton_aot_ctype(binding, specs, mlu=mlu)
+            for binding in runtime_bindings
+        ),
     ]
 
     def launch(*args, **kwargs):
@@ -1472,9 +1522,11 @@ def _aot_wrapper(
             public,
             scalar_mode="cuda",
             specs=specs,
-            cuda_scalar=_triton_aot_scalar,
+            cuda_scalar=lambda value, dtype: _triton_aot_scalar(
+                value, dtype, mlu=mlu
+            ),
         )
-        stream = ctypes.c_void_p(torch.cuda.current_stream().cuda_stream)
+        stream = ctypes.c_void_p(_aot_stream_handle(public))
         enter_result = enter()
 
         if enter_result != 0:
@@ -1494,14 +1546,36 @@ def _aot_wrapper(
     return launch
 
 
-def _triton_aot_scalar(value, dtype):
+def _triton_aot_scalar(value, dtype, *, mlu=False):
     name = normalize_dtype(str(dtype))
 
     if hasattr(value, "item"):
         value = value.item()
 
     if name in {"float16", "bfloat16", "float32", "float64"}:
-        return ctypes.c_double(float(value))
+        if not mlu:
+            return ctypes.c_double(float(value))
+
+        # MLU libraries take float scalars as IEEE-754 bit patterns in
+        # unsigned device-ABI slots, and the MLU AOT signature narrows
+        # fp64 scalars to fp32, so pack to the narrowed width.
+        import struct
+
+        value = float(value)
+
+        if name == "float64":
+            name = "float32"
+
+        if name == "float16":
+            bits = struct.unpack("H", struct.pack("e", value))[0]
+            return ctypes.c_uint16(bits)
+
+        if name == "bfloat16":
+            bits = int.from_bytes(struct.pack("f", value)[2:4], "big")
+            return ctypes.c_uint16(bits)
+
+        bits = struct.unpack("I", struct.pack("f", value))[0]
+        return ctypes.c_uint32(bits)
 
     ctype = {
         "bool": ctypes.c_int8,
@@ -1520,7 +1594,7 @@ def _triton_aot_scalar(value, dtype):
     return ctype(value)
 
 
-def _triton_aot_ctype(binding, specs):
+def _triton_aot_ctype(binding, specs, mlu=False):
     if binding.kind in {"tensor", "jagged_values", "jagged_offsets"}:
         return ctypes.c_void_p
 
@@ -1528,7 +1602,18 @@ def _triton_aot_ctype(binding, specs):
         name = normalize_dtype(str(specs[binding.source].dtype))
 
         if name in {"float16", "bfloat16", "float32", "float64"}:
-            return ctypes.c_double
+            if not mlu:
+                return ctypes.c_double
+
+            if name == "float64":
+                # Match the fp32 narrowing applied by the MLU AOT signature.
+                name = "float32"
+
+            return {
+                "float16": ctypes.c_uint16,
+                "bfloat16": ctypes.c_uint16,
+                "float32": ctypes.c_uint32,
+            }[name]
 
         ctype = {
             "bool": ctypes.c_int8,

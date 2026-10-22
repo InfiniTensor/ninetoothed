@@ -246,9 +246,15 @@ def build(
             supports_cpp_export,
             write_dispatcher,
         )
-        from ninetoothed.backends.materializers.triton import publish_cpp_sources
+        from ninetoothed.backends.materializers.triton import (
+            has_standalone_cpp_sources,
+            publish_cpp_sources,
+        )
 
-        if supports_cpp_export(cpp_variants):
+        if supports_cpp_export(cpp_variants) and all(
+            has_standalone_cpp_sources(compilation)
+            for _, compilation, _ in cpp_variants
+        ):
             for _, compilation, _ in cpp_variants:
                 publish_cpp_sources(compilation, output_dir)
 

@@ -22,6 +22,7 @@ def register_pass_bundle(
 
 
 def register_passes(registry: "Registry") -> None:
+    from ninetoothed.backends.bang import register_ssa_passes as register_bang
     from ninetoothed.backends.cuda import register_ssa_passes as register_cuda
     from ninetoothed.backends.tilelang import register_ssa_passes as register_tilelang
     from ninetoothed.backends.triton import register_ssa_passes as register_triton
@@ -29,6 +30,7 @@ def register_passes(registry: "Registry") -> None:
     register_triton(registry)
     register_cuda(registry)
     register_tilelang(registry)
+    register_bang(registry)
     _validate_backend_pass_contracts(registry)
 
 

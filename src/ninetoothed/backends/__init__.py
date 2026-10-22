@@ -20,6 +20,7 @@ from ninetoothed.targets import (
 
 
 def create_default_registry() -> Registry:
+    from ninetoothed.backends.bang import BangBackend
     from ninetoothed.backends.cuda import CudaBackend
     from ninetoothed.backends.tilelang import TileLangBackend
     from ninetoothed.backends.triton import TritonBackend
@@ -28,6 +29,7 @@ def create_default_registry() -> Registry:
     registry.register(TritonBackend())
     registry.register(TileLangBackend())
     registry.register(CudaBackend())
+    registry.register(BangBackend())
 
     return registry
 
