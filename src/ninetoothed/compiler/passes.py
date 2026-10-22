@@ -17,11 +17,13 @@ pipelines, and deterministic target schedule selection.
 """
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from ninetoothed.backends.core import Target, normalize_target
+from ninetoothed.compiler.canonicalize import canonicalize_dtype_expressions
 from ninetoothed.compiler.layout import LayoutTransfer, analyze_layout_transfer
+from ninetoothed.compiler.reduction_geometry import prove_unit_parallel_reductions
 from ninetoothed.compiler.reductions import analyze_reductions
 from ninetoothed.dtype import normalize_dtype
 from ninetoothed.ir import ssa
@@ -91,6 +93,9 @@ class Pass:
     category = HARDWARE_INDEPENDENT
     phase = "generic"
     supported_backends: tuple[Target, ...] = ()
+    reads: tuple[str, ...] = ()
+    provides: tuple[str, ...] = ()
+    changes_ssa: bool = False
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         raise NotImplementedError
@@ -108,6 +113,9 @@ class Descriptor:
     default_enabled: bool = True
     description: str = ""
     tags: tuple[str, ...] = ()
+    reads: tuple[str, ...] = ()
+    provides: tuple[str, ...] = ()
+    changes_ssa: bool = False
 
     def create(self) -> Pass:
         return self.factory()
@@ -173,6 +181,9 @@ class Registry:
             else bool(True if default_enabled is None else default_enabled),
             description=doc,
             tags=tuple(tags),
+            reads=probe.reads,
+            provides=probe.provides,
+            changes_ssa=probe.changes_ssa,
         )
 
     def get(self, name: str) -> Descriptor:
@@ -227,17 +238,27 @@ class Pipeline:
         *,
         descriptors: tuple[Descriptor, ...] = (),
         spec: PipelineSpec | None = None,
+        registry: Registry | None = None,
     ):
         self.passes = passes
         self.descriptors = descriptors
         self.spec = spec
+        self.registry = registry
 
-    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
+    def run(
+        self,
+        program: ssa.Program,
+        context: Context,
+        *,
+        registry: Registry | None = None,
+    ) -> ssa.Program:
         current = ssa.verify_program(program)
         current = _with_metadata(current, pipeline_selection=self._pipeline_metadata())
 
         for pass_ in self.passes:
             current = pass_.run(current, context)
+
+            current = refresh_program_facts(current, context)
             ssa.verify_program(current)
             current = _with_metadata(
                 current,
@@ -287,13 +308,57 @@ class Canonicalize(Pass):
     category = HARDWARE_INDEPENDENT
     phase = "canonicalization"
 
+    changes_ssa = True
+
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         return _with_metadata(
-            program,
+            canonicalize_dtype_expressions(program),
             dialect="generic-ssa",
             canonical=True,
             coarse_operator_nodes=False,
         )
+
+
+FACT_NAMES = ("analysis",)
+
+
+def program_facts(program, name):
+    """Read a fact only from the SSA snapshot that established it."""
+    facts = program.facts
+
+    if facts.get("structure") != (program.inputs, program.outputs, program.blocks):
+        return {}
+    return facts.get(name, {})
+
+
+def refresh_program_facts(program, context):
+    """Rebuild existing analysis after target shape or layout changes."""
+    if "structure" in program.facts and (
+        program.facts.get("structure")
+        != (program.inputs, program.outputs, program.blocks)
+        or program.facts.get("tensors") != context.tensors
+        or program.facts.get("target") != context.resolved_target
+    ):
+        previous = program.metadata.get("analysis", {}).get("layout_transfer")
+        refreshed = AnalyzeEffects().run(program, context)
+
+        # Keep the public diagnostic after decomposition removes the view op.
+        # Fresh facts remain independent: a diagnostic is never a new proof.
+        if (
+            isinstance(previous, LayoutTransfer)
+            and not previous.schedulable
+            and refreshed.metadata["analysis"]["layout_transfer"] is None
+        ):
+            refreshed = _with_metadata(
+                refreshed,
+                analysis={
+                    **refreshed.metadata["analysis"],
+                    "layout_transfer": previous,
+                },
+            )
+
+        return refreshed
+    return program
 
 
 class AnalyzeEffects(Pass):
@@ -302,17 +367,21 @@ class AnalyzeEffects(Pass):
     name = "ssa.analyze_effects"
     category = HARDWARE_INDEPENDENT
     phase = "analysis"
+    provides = FACT_NAMES
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
+        unit_parallel = prove_unit_parallel_reductions(program)
         opcodes = tuple(_iter_opcodes(program))
         stores = sum(1 for opcode in opcodes if opcode == "mem.store")
         reductions = sum(1 for opcode in opcodes if opcode.startswith("reduce."))
         loops = sum(1 for opcode in opcodes if opcode == "scf.for")
         dot_input_dtypes = _linalg_input_dtypes(program)
-        reduction_analysis = analyze_reductions(program, context.tensors)
+        reduction_analysis = analyze_reductions(
+            program, context.tensors, unit_parallel=unit_parallel
+        )
         layout_transfer = analyze_layout_transfer(program, context.tensors)
 
-        return _with_metadata(
+        program = _with_metadata(
             program,
             analysis={
                 "operation_count": len(opcodes),
@@ -331,6 +400,16 @@ class AnalyzeEffects(Pass):
             },
         )
 
+        return replace(
+            program,
+            facts={
+                "structure": (program.inputs, program.outputs, program.blocks),
+                "tensors": context.tensors,
+                "target": context.resolved_target,
+                **{name: program.metadata[name] for name in FACT_NAMES},
+            },
+        )
+
 
 class DecomposeLinalg(Pass):
     """Lower high-level linalg ops into index/extract/store SSA operations."""
@@ -339,8 +418,17 @@ class DecomposeLinalg(Pass):
     category = HARDWARE_INDEPENDENT
     phase = "canonicalization"
 
+    changes_ssa = True
+
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         optimization = dict(program.metadata.get("optimization", {}))
+
+        # Accumulator precision is part of dot semantics, independent of tensorization.
+        dot_dtypes = _linalg_input_dtypes(program)
+
+        if dot_dtypes and all(dtype in {"float16", "bfloat16"} for dtype in dot_dtypes):
+            optimization["preserve_linalg"] = True
+            program = _with_metadata(program, optimization=optimization)
 
         if optimization.get("preserve_linalg"):
             return _with_metadata(
@@ -372,9 +460,11 @@ class SelectSchedule(Pass):
     name = "ssa.select_schedule"
     category = HARDWARE_INDEPENDENT
     phase = "schedule_intent"
+    reads = ("analysis",)
+    provides = ("schedule",)
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
-        analysis = dict(program.metadata.get("analysis", {}))
+        analysis = dict(program_facts(program, "analysis"))
         options = _pass_options(context, self.name)
         schedule = {
             "granularity": _schedule_granularity(analysis),
@@ -402,7 +492,7 @@ class SelectSchedule(Pass):
         ):
             schedule["layout_transfer"] = layout_transfer
 
-        return _with_metadata(program, schedule=schedule)
+        return _with_metadata(program, schedule=schedule, schedule_analysis=analysis)
 
 
 class OptimizeSchedule(Pass):
@@ -411,9 +501,11 @@ class OptimizeSchedule(Pass):
     name = "ssa.optimize_schedule"
     category = LANGUAGE_SPECIFIC
     phase = "optimization"
+    reads = ("analysis", "schedule")
+    provides = ("target_schedule",)
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
-        analysis = dict(program.metadata.get("analysis", {}))
+        analysis = dict(program_facts(program, "analysis"))
         schedule = dict(program.metadata.get("schedule", {}))
         proposed = _deduplicate_candidates(
             tuple(self.schedule_candidates(analysis, schedule, context))
@@ -523,11 +615,17 @@ class OptimizeSchedule(Pass):
         context: Context,
     ) -> ScheduleCandidate | None:
         """Select one legal candidate using explicit or default policy."""
-        if not candidates:
-            return None
-
         options = _pass_options(context, self.name, "ssa.optimize_schedule")
         requested = options.get("candidate")
+
+        if not candidates:
+            if requested is not None:
+                raise ValueError(
+                    f"Unknown schedule candidate `{requested}` for `{self.name}`. "
+                    "No proved schedule candidates are available."
+                )
+
+            return None
 
         if requested is None:
             return candidates[0]
@@ -557,6 +655,7 @@ class ValidateTargetCapabilities(Pass):
     name = "ssa.validate_target_capabilities"
     category = PLATFORM_SPECIFIC
     phase = "target_legality"
+    provides = ("target_capabilities",)
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         group = program.metadata.get("schedule", {}).get("row_group", {})
@@ -564,13 +663,24 @@ class ValidateTargetCapabilities(Pass):
         if group.get("enabled") and "mapping" not in group:
             raise ValueError("Row grouping must precede backend schedule optimization.")
 
+        snapshot = (
+            program.inputs,
+            program.outputs,
+            program.blocks,
+            context.resolved_target,
+        )
+
+        if program.facts.get("target_validation") == snapshot:
+            return program
+
         required = _required_capabilities(program)
         report = context.resolved_target.validate_capabilities(required)
 
-        return _with_metadata(
-            program,
-            required_capabilities=required,
-            target_capabilities=report,
+        return replace(
+            _with_metadata(
+                program, required_capabilities=required, target_capabilities=report
+            ),
+            facts={**program.facts, "target_validation": snapshot},
         )
 
 
@@ -579,11 +689,11 @@ def create_default_registry() -> Registry:
 
     registry = Registry()
     registry.register(Canonicalize, tags=("generic", "required"))
-    registry.register(DecomposeLinalg, tags=("generic", "linalg", "decomposition"))
     registry.register(AnalyzeEffects, tags=("generic", "analysis", "required"))
     registry.register(SelectSchedule, tags=("schedule",))
     registry.register(GroupReductionRows, tags=("schedule", "reduction"))
     _register_backend_passes(registry)
+    registry.register(DecomposeLinalg, tags=("generic", "linalg", "decomposition"))
     registry.register(
         ValidateTargetCapabilities,
         tags=("target", "capability", "legality", "required"),
@@ -615,8 +725,9 @@ def default_spec(
 ) -> PipelineSpec:
     """Return the default declarative pipeline for a backend."""
     backend_name = normalize_target(backend)
-    pass_names = _default_pass_names(backend_name)
-    _validate_passes(pass_names, backend_name, _default_registry(registry))
+    registry = _default_registry(registry)
+    pass_names = _default_pass_names(backend_name, registry)
+    _validate_passes(pass_names, backend_name, registry)
 
     return PipelineSpec(
         passes=pass_names,
@@ -653,7 +764,7 @@ def build(
     descriptors = tuple(registry.get(name) for name in normalized.passes)
     passes = tuple(descriptor.create() for descriptor in descriptors)
 
-    return Pipeline(passes, descriptors=descriptors, spec=normalized)
+    return Pipeline(passes, descriptors=descriptors, spec=normalized, registry=registry)
 
 
 def lower_for_target(
@@ -688,7 +799,10 @@ def lower_for_target(
             f"pass backend `{backend_name.value}`."
         )
 
-    registry = _default_registry(pass_registry)
+    registry = _default_registry(
+        pass_registry
+        or (pass_pipeline.registry if isinstance(pass_pipeline, Pipeline) else None)
+    )
     compiler_options = dict(compiler_options or {})
     kernel_metadata = dict(kernel_metadata or {})
     explicit_pass_options = _merge_pass_options(
@@ -704,11 +818,15 @@ def lower_for_target(
             compiler_options=compiler_options,
             kernel_metadata=kernel_metadata,
             tensors=tensors,
-            pass_options=explicit_pass_options,
+            pass_options=_merge_pass_options(
+                pass_pipeline.spec.pass_options if pass_pipeline.spec else {},
+                explicit_pass_options,
+            ),
+            pipeline_spec=pass_pipeline.spec,
         )
 
         lowered = _ensure_target_capabilities(
-            pass_pipeline.run(program, context), context
+            pass_pipeline.run(program, context, registry=registry), context
         )
 
         return _with_metadata(
@@ -761,7 +879,9 @@ def lower_for_target(
     if pipeline is None or merged_pass_options != default_pass_options:
         pipeline = build(spec, backend=backend_name, registry=registry)
 
-    lowered = _ensure_target_capabilities(pipeline.run(program, context), context)
+    lowered = _ensure_target_capabilities(
+        pipeline.run(program, context, registry=registry), context
+    )
 
     return _with_metadata(
         lowered,
@@ -826,7 +946,7 @@ def _normalize_pipeline_spec(
         passes = spec.get("passes")
 
         if passes is None:
-            passes = _default_pass_names(backend)
+            passes = _default_pass_names(backend, registry)
 
         normalized = PipelineSpec(
             passes=_ensure_target_capability_pass(tuple(str(name) for name in passes)),
@@ -862,19 +982,12 @@ def _validate_passes(
             )
 
 
-def _default_pass_names(backend: Target) -> tuple[str, ...]:
-    return (
-        "ssa.canonicalize",
-        "ssa.analyze_effects",
-        "ssa.select_schedule",
-        _backend_optimize_pass_name(backend),
-        "ssa.decompose_linalg",
-        "ssa.validate_target_capabilities",
+def _default_pass_names(backend: Target, registry: Registry) -> tuple[str, ...]:
+    return tuple(
+        descriptor.name
+        for descriptor in registry.descriptors(backend=backend)
+        if descriptor.default_enabled
     )
-
-
-def _backend_optimize_pass_name(backend: Target) -> str:
-    return f"ssa.{backend.value}.optimize_schedule"
 
 
 def _ensure_target_capability_pass(passes: tuple[str, ...]) -> tuple[str, ...]:
@@ -1012,6 +1125,11 @@ def _merge_pass_options(
 
     for option_map in options:
         for pass_name, pass_option in dict(option_map or {}).items():
+            if not isinstance(pass_option, Mapping):
+                raise ValueError(
+                    f"Options for SSA pass `{pass_name}` must be a mapping."
+                )
+
             merged[str(pass_name)] = _merge_nested(
                 merged.get(str(pass_name), {}), dict(pass_option)
             )
@@ -1523,10 +1641,8 @@ def _replace_program(
     blocks: tuple[ssa.Block, ...] | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> ssa.Program:
-    return ssa.Program(
-        kind=program.kind,
-        inputs=program.inputs,
-        outputs=program.outputs,
+    return replace(
+        program,
         blocks=program.blocks if blocks is None else blocks,
         metadata=program.metadata if metadata is None else dict(metadata),
     )

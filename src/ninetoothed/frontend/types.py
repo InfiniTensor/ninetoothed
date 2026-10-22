@@ -408,6 +408,17 @@ def _broadcast_type(lhs: ssa.Type, rhs: ssa.Type) -> ssa.Type:
     return ssa.Type(kind="tensor", shape=shape, dtype=dtype, attrs=attrs)
 
 
+def _select_type(condition: ssa.Type, lhs: ssa.Type, rhs: ssa.Type) -> ssa.Type:
+    """Broadcast all three select domains while promoting only data dtypes."""
+    data = _broadcast_type(lhs, rhs)
+    shape = _broadcast_shape(condition, data)
+    kind = (
+        "tensor" if condition.kind == "tensor" or data.kind == "tensor" else data.kind
+    )
+
+    return replace(data, kind=kind, shape=shape)
+
+
 def _math_result_type(name: str, operands: tuple[ssa.Value, ...]) -> ssa.Type:
     if not operands:
         return ssa.Type(kind="scalar", dtype="float32")
@@ -516,6 +527,7 @@ __all__ = [
     "_broadcast_shape",
     "_broadcast_shapes",
     "_broadcast_type",
+    "_select_type",
     "_math_result_type",
     "_promote_dtype",
     "_cast_type",

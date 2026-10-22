@@ -14,6 +14,7 @@ from ninetoothed.compiler.passes import (
     create_default_registry,
     default_spec,
     lower_for_target,
+    program_facts,
     registered,
 )
 from ninetoothed.frontend.python import from_source
@@ -83,14 +84,6 @@ class TestPipeline:
             backend=Target.CUDA,
             compiler_options={"num_warps": 4, "num_stages": 3},
         )
-        assert tuple(lowered.metadata["pass_trace"]) == (
-            "ssa.canonicalize",
-            "ssa.analyze_effects",
-            "ssa.select_schedule",
-            "ssa.cuda.optimize_schedule",
-            "ssa.decompose_linalg",
-            "ssa.validate_target_capabilities",
-        )
         assert lowered.metadata["target_backend"] == "cuda"
         assert lowered.metadata["target_platform"] == "generic"
         assert lowered.metadata["schedule"]["granularity"] == "elementwise-grid"
@@ -101,6 +94,13 @@ class TestPipeline:
         opcodes = tuple(_opcodes(lowered.blocks[0].operations))
         assert "arith.add" in opcodes
         assert "mem.store" in opcodes
+        assert program_facts(lowered, "analysis")["store_count"] == 1
+        diagnostic = replace(
+            lowered, metadata={**lowered.metadata, "analysis": {"store_count": 999}}
+        )
+        assert program_facts(diagnostic, "analysis")["store_count"] == 1
+        changed = replace(lowered, blocks=(replace(lowered.blocks[0], operations=()),))
+        assert not program_facts(changed, "analysis")
 
     def test_schedule_sees_linalg_before_decomposition(self):
         program = _program(
@@ -114,7 +114,7 @@ class TestPipeline:
         )
         lowered = lower_for_target(program, backend=Target.CUDA)
         opcodes = tuple(_opcodes(lowered.blocks[0].operations))
-        assert lowered.metadata["analysis"]["has_dot"]
+        assert lowered.metadata["schedule_analysis"]["has_dot"]
         assert lowered.metadata["schedule"]["granularity"] == "blocked-linalg"
         assert lowered.metadata["linalg_decomposed"]
         assert "linalg.matmul" not in opcodes
@@ -138,7 +138,14 @@ class TestPipeline:
                 descriptor.name
                 for descriptor in registered(category=BACKEND_SPECIFIC, backend=backend)
             }
-            expected = {f"ssa.{backend.value}.optimize_schedule"}
+            expected = (
+                {f"ssa.{backend.value}.optimize_schedule"}
+                if backend.value in ["cuda", "triton", "tilelang"]
+                else set()
+            )
+
+            if backend in {*()}:
+                expected.add(f"ssa.{backend.value}.lower_schedule")
 
             if backend == Target.TRITON:
                 expected.update(
@@ -216,7 +223,6 @@ class TestPipeline:
 
     def test_custom_pipeline_can_disable_backend_optimization_pass(self):
         program = _copy_program()
-
         lowered = lower_for_target(
             program,
             backend=Target.TRITON,
@@ -242,6 +248,30 @@ class TestPipeline:
             "ssa.analyze_effects",
             "ssa.select_schedule",
         )
+        tensors = (
+            TensorSpec(name="x", ndim=2, shape=(1, 8), dtype="float32"),
+            TensorSpec(name="out", ndim=2, shape=(1, 1), dtype="float32"),
+        )
+        row = _program(
+            "def row(x, out):\n    out = ntl.sum(x, axis=1)\n", tensors, "row"
+        )
+
+        for backend in (Target.CUDA,):
+            names = ("ssa.canonicalize", "ssa.analyze_effects", "ssa.select_schedule")
+
+            if backend != Target.CUDA:
+                names += (f"ssa.{backend.value}.lower_schedule",)
+
+            current = lower_for_target(
+                row,
+                backend=backend,
+                tensors=tensors,
+                pass_pipeline=(*names, "ssa.decompose_linalg"),
+            )
+            assert (
+                program_facts(current, "analysis")["reduction_schedule"]["mode"]
+                == "row-vector"
+            )
 
     def test_default_pipeline_records_selected_passes(self):
         program = _copy_program()

@@ -1,6 +1,10 @@
+import functools
+
 import ninetoothed.language as ntl
+from ninetoothed import Symbol, Tensor
+from ninetoothed.frontend.layout import tensor_specs
 from ninetoothed.frontend.python import from_application
-from ninetoothed.ir import TensorSpec
+from tests.test_attention import arrangement
 
 
 def reference_attention(q, k, v, is_causal, o):
@@ -30,13 +34,26 @@ def reference_attention(q, k, v, is_causal, o):
 
 
 def _attention_tensors():
-    return (
-        TensorSpec(ndim=4, shape=("B", "H", "M", "D"), dtype="float16", name="q"),
-        TensorSpec(ndim=4, shape=("B", "H", "N", "D"), dtype="float16", name="k"),
-        TensorSpec(ndim=4, shape=("B", "H", "N", "D"), dtype="float16", name="v"),
-        TensorSpec(ndim=0, dtype="bool", constexpr=True, name="is_causal"),
-        TensorSpec(ndim=4, shape=("B", "H", "M", "D"), dtype="float16", name="o"),
+    def source(name, rows):
+        return Tensor(
+            4,
+            shape=tuple(Symbol(dim) for dim in ("B", "H", rows, "D")),
+            dtype="float16",
+            name=name,
+        )
+
+    tensors = (
+        source("q", "M"),
+        source("k", "N"),
+        source("v", "N"),
+        Tensor(0, dtype="bool", constexpr=True, name="is_causal"),
+        source("o", "M"),
     )
+    arranged = functools.partial(arrangement, BLOCK_SIZE_M=64, BLOCK_SIZE_N=32)(
+        *tensors
+    )
+
+    return tensor_specs(("q", "k", "v", "is_causal", "o"), arranged)
 
 
 def _opcodes(operations):
@@ -58,7 +75,10 @@ def _operations(operations):
 class TestApplicationSSALowering:
     def test_reference_attention_lowers_to_fine_grained_region_ssa(self):
         program = from_application(
-            reference_attention, _attention_tensors(), kind="reference_attention"
+            reference_attention,
+            _attention_tensors(),
+            kind="reference_attention",
+            strict=True,
         )
         assert program is not None
         opcodes = tuple(_opcodes(program.blocks[0].operations))

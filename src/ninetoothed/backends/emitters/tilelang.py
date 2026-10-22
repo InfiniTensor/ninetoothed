@@ -111,6 +111,9 @@ class TileLangTarget(EmitterTarget):
         return f"{destination} = {value}"
 
     def literal(self, value: Any) -> str:
+        if value == "nan" or (isinstance(value, float) and math.isnan(value)):
+            return "float('nan')"
+
         if isinstance(value, float) and math.isinf(value):
             return "float('inf')" if value > 0 else "-float('inf')"
 
