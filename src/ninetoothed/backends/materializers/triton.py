@@ -1078,6 +1078,20 @@ def _cpp_source_bundle(library):
     return sources
 
 
+def has_standalone_cpp_sources(compilation) -> bool:
+    """Return whether the built artifact carries a standalone C++ bundle.
+
+    Artifacts built through vendor-specific paths (for example the Cambricon
+    MLU launcher) do not carry the NVIDIA-style C++ source bundle.
+    """
+    library = (
+        artifact_directory(compilation_cache_key(compilation))
+        / f"{compilation.artifact.kernel_name}.triton.so"
+    )
+
+    return _cpp_source_bundle(library) is not None
+
+
 def publish_cpp_sources(compilation, output_dir):
     """Publish standalone sources for a concrete Triton build variant."""
     from ninetoothed.backends.materializers.cpp import wrapper_source, write_header
