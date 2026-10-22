@@ -20,6 +20,11 @@ import re
 import statistics
 from pathlib import Path
 
+if __package__:
+    from .case_profiles import apply_profile
+else:
+    from case_profiles import apply_profile
+
 IMPLEMENTATIONS = ("baseline", "ninetoothed_adapted")
 TARGET_CASES = 465
 TARGET_OPERATORS = 41
@@ -182,6 +187,8 @@ def _input_contract(case):
 def _parameters(case):
     op, parameters = case["operator"], dict(case.get("parameters", {}))
     if op == "clamp":
+        if case.get("case_profile") == "common_contracts_v1":
+            return {"min": parameters["min"], "max": parameters["max"]}
         return {"min": -0.25, "max": 0.75}
     if op == "addmm":
         return {
@@ -195,6 +202,12 @@ def _parameters(case):
     if op == "rotary_position_embedding":
         parameters.setdefault("interleaved", False)
     if op == "dropout":
+        if case.get("case_profile") == "common_contracts_v1":
+            return {
+                "p": parameters["p"],
+                "training": parameters["training"],
+                "return_mask": False,
+            }
         return {
             "p": parameters.get("p", 0.25),
             "training": parameters.get("training", True),
@@ -288,6 +301,10 @@ def _audit_record(record, case, measurement, assignments):
         "batch",
         "weight_shape",
         "no_bias",
+        "case_profile",
+        "original_id",
+        "original_case",
+        "original_case_sha256",
     ):
         if field in case and record.get(field) != case[field]:
             errors.append(f"{field}: differs from plan")
@@ -705,6 +722,16 @@ def _markdown(summary):
         "使用显式host布局/参数适配和已披露编译兼容，不称未经适配的原始公开API成绩。",
         "",
     ]
+    if summary.get("case_profile") == "common_contracts_v1":
+        lines[2] = (
+            f"调整测例范围41类算子、453个case，共906条路径；收到 {coverage['observed_expected_paths']} 条唯一目标记录。"
+        )
+        lines[4] = (
+            f"有效配对 **{valid['valid_cases']}/453**，有有效结果的算子 **{valid['operators_with_valid_pairs']}/41**，完整覆盖算子 **{valid['fully_covered_operators']}/41**。"
+        )
+        lines[6] = (
+            f"调整范围指标：**{summary['adjusted_full_matrix']['status']}**；原CSV41类/465case指标仍为**NOT_ESTABLISHED**。clamp[-1,1]；max_pool2d仅值；dropout仅推理/p=0；reduction排除prod；addmm使用单位缩放；conv2d使用普通卷积。"
+        )
     for threshold in (85, 95):
         count = summary["operator_threshold_counts"][f"ge_{threshold}_percent"]
         lines.append(
@@ -768,15 +795,36 @@ def aggregate(input_dir, output_dir=None, *, require_full_plan=True):
     if not isinstance(environment, dict):
         raise ValueError("environment.json must be an object")
     errors = []
+    profile = environment.get("case_profile", "csv")
+    if profile not in {"csv", "common_contracts_v1"}:
+        raise ValueError(f"Unknown case profile: {profile!r}")
+    target_cases = 453 if profile == "common_contracts_v1" else TARGET_CASES
+    if profile == "csv" and any(case.get("case_profile") for case in plan):
+        errors.append("Adjusted cases cannot establish the original CSV scope")
+    if profile == "common_contracts_v1":
+        original_file = input_dir / "original-plan.json"
+        if not original_file.is_file():
+            errors.append("Adjusted profile requires the original plan")
+        else:
+            original_plan = _read(original_file)
+            if apply_profile(original_plan, profile) != plan:
+                errors.append("Adjusted plan differs from the declared profile")
+            digest = hashlib.sha256(
+                json.dumps(original_plan, sort_keys=True).encode()
+            ).hexdigest()
+            if environment.get("original_plan_sha256") != digest:
+                errors.append("Original plan provenance digest differs")
     counts = collections.Counter(case["id"] for case in plan)
     if any(count != 1 for count in counts.values()):
         raise ValueError("plan.json contains duplicate case IDs")
     plan_complete = (
-        len(plan) == TARGET_CASES
+        len(plan) == target_cases
         and len({case["operator"] for case in plan}) == TARGET_OPERATORS
     )
     if require_full_plan and not plan_complete:
-        errors.append("Plan does not cover all 41 operators / 465 target cases")
+        errors.append(
+            f"Plan does not cover all 41 operators / {target_cases} target cases"
+        )
     for field, expected in (
         ("case_count", len(plan)),
         ("operator_count", len({c["operator"] for c in plan})),
@@ -862,26 +910,28 @@ def aggregate(input_dir, output_dir=None, *, require_full_plan=True):
             )
     operators = _operator_table(rows)
     subset = _metrics(pairs, operators)
+    subset["target_cases"] = target_cases
     complete = (
         not errors
-        and len(pairs) == TARGET_CASES
+        and len(pairs) == target_cases
         and len(operators) == TARGET_OPERATORS
         and all(op["full_coverage"] for op in operators)
     )
     formal = {
-        "status": "ESTABLISHED" if complete else "NOT_ESTABLISHED",
+        "status": "ESTABLISHED" if complete and profile == "csv" else "NOT_ESTABLISHED",
         "target_cases": TARGET_CASES,
         "target_operators": TARGET_OPERATORS,
     }
     formal.update(
         {
-            key: value if complete else None
+            key: value if complete and profile == "csv" else None
             for key, value in subset.items()
             if key.endswith("percent") or key.startswith("sum_")
         }
     )
     summary = {
         "schema_version": 2,
+        "case_profile": profile,
         "measurement_identity": "Existing generated kernels with explicit host adapters and disclosed compiler compatibility; not pristine public APIs",
         "performance_definition": "paired baseline device median_us / ninetoothed device median_us * 100; larger is better",
         "metric_definitions": {
@@ -892,8 +942,8 @@ def aggregate(input_dir, output_dir=None, *, require_full_plan=True):
         },
         "coverage": {
             "target_operators": TARGET_OPERATORS,
-            "target_cases": TARGET_CASES,
-            "target_paths": TARGET_CASES * 2,
+            "target_cases": target_cases,
+            "target_paths": target_cases * 2,
             "plan_operators": len(operators),
             "plan_cases": len(plan),
             "plan_covers_full_target": plan_complete,
@@ -909,8 +959,8 @@ def aggregate(input_dir, output_dir=None, *, require_full_plan=True):
             "all_expected_paths_present_once": not missing
             and not duplicate
             and not unknown
-            and len(records) == TARGET_CASES * 2
-            and len(plan) == TARGET_CASES,
+            and len(records) == target_cases * 2
+            and len(plan) == target_cases,
         },
         "valid_subset": subset,
         "formal_full_matrix": formal,
@@ -942,6 +992,18 @@ def aggregate(input_dir, output_dir=None, *, require_full_plan=True):
         },
         "graph_notes": "graph_nodes counts logical calls; actual_triton_graph_launches=graph_nodes*launches_per_call, including all BMM batch kernels",
     }
+    if profile == "common_contracts_v1":
+        summary["adjusted_full_matrix"] = {
+            "case_profile": profile,
+            "status": "ESTABLISHED" if complete else "NOT_ESTABLISHED",
+            "target_cases": target_cases,
+            "target_operators": TARGET_OPERATORS,
+            **{
+                key: value if complete else None
+                for key, value in subset.items()
+                if key.endswith("percent") or key.startswith("sum_")
+            },
+        }
     output_dir.mkdir(parents=True, exist_ok=True)
     with (output_dir / "operator-comparison.csv").open(
         "w", encoding="utf-8-sig", newline=""

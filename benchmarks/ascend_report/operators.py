@@ -23,11 +23,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 if __package__:
+    from . import case_profiles
     from .affinity import apply_cpu_affinity, plan_cpu_affinity
     from .operator_adapters import UnsupportedCase, build_call
+    from .summarize import _input_contract, _parameters
 else:
+    import case_profiles
     from affinity import apply_cpu_affinity, plan_cpu_affinity
     from operator_adapters import UnsupportedCase, build_call
+    from summarize import _input_contract, _parameters
 
 CONFIG = {}
 PATHS = {}
@@ -58,6 +62,7 @@ def configure(config_file, device=None, devices=None):
     CONFIG["config_file"] = str(config_file)
     CONFIG.setdefault("operators", {})
     settings = dict(
+        case_profile="csv",
         warmup=50,
         device_samples=15,
         api_samples=60,
@@ -66,6 +71,7 @@ def configure(config_file, device=None, devices=None):
         devices=CONFIG.get("devices", [0]),
     )
     settings.update(CONFIG["operators"])
+    case_profiles.apply_profile([], settings["case_profile"])
     if devices is not None:
         settings["devices"] = devices
     CONFIG["operators"] = settings
@@ -206,6 +212,37 @@ def source_revisions():
 
 def verify_csv_record(record):
     if not CASES_CSV or record["status"] != "PASS":
+        return
+    original_case = record.get("original_case")
+    if record.get("case_profile") == case_profiles.COMMON_CONTRACTS_PROFILE:
+        if not isinstance(original_case, dict):
+            raise ValueError("Adjusted case has no original-case provenance")
+        transformed = case_profiles.apply_profile(
+            [original_case], case_profiles.COMMON_CONTRACTS_PROFILE
+        )
+        if len(transformed) != 1:
+            raise ValueError("An excluded case was measured")
+        for key, value in transformed[0].items():
+            if key != "parameters" and record.get(key) != value:
+                raise ValueError(f"Adjusted case differs from profile: {key}")
+        shapes, strides = _input_contract(transformed[0])
+        if (
+            [item["shape"] for item in record["inputs"]] != shapes
+            or [item["stride"] for item in record["inputs"]] != strides
+            or record["parameters"] != _parameters(transformed[0])
+        ):
+            raise ValueError("Measured inputs/parameters differ from adjusted plan")
+        original_shapes, original_strides = _input_contract(original_case)
+        csv_record = dict(
+            original_case,
+            inputs=[
+                {"shape": shape, "stride": stride}
+                for shape, stride in zip(original_shapes, original_strides)
+            ],
+            parameters=_parameters(original_case),
+            status="PASS",
+        )
+        verify_csv_record(csv_record)
         return
     expected = CASES_CSV[record["id"]]
     for key in ("operator", "dtype", "label", "layout"):
@@ -350,6 +387,7 @@ def worker(args):
         }
     )
     original_prepare = cases.prepare
+    original_verify = cases.verify
     for case in plan:
         for impl in ["baseline", "ninetoothed_adapted"]:
             destination = group / (case["id"] + "__" + impl + ".json")
@@ -363,7 +401,9 @@ def worker(args):
             prep_info, adapter_info = {}, {}
 
             def prepare(current_case, device):
-                p = original_prepare(current_case, device)
+                p = case_profiles.prepare(current_case, device, original_prepare)
+                if "case_profile_metadata" in p:
+                    prep_info["case_profile_metadata"] = p["case_profile_metadata"]
                 if impl != "baseline":
                     call, info = build_call(current_case, p)
                     for key in ["_capture_graph_buffers", "_assemble_graph_result"]:
@@ -398,6 +438,9 @@ def worker(args):
                 return p
 
             cases.prepare = prepare
+            cases.verify = lambda c, p, value, phase: case_profiles.verify(
+                c, p, value, phase, original_verify
+            )
             fatal = False
             try:
                 result = baseline.measure(case, options)
@@ -434,6 +477,7 @@ def worker(args):
                     fatal = True
             finally:
                 cases.prepare = original_prepare
+                cases.verify = original_verify
             result.update(
                 implementation=impl,
                 runtime=runtime,
@@ -617,12 +661,23 @@ def main():
         expected = {key for key, row in CASES_CSV.items() if row["operator"] in ops}
         if planned != expected:
             raise ValueError("Selected case plan differs from the supplied CSV")
+    original_plan = plan
+    profile = CONFIG["operators"]["case_profile"]
+    plan = case_profiles.apply_profile(original_plan, profile)
+    if not plan:
+        raise ValueError("Selected profile has no cases")
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=args.resume)
     hashes = source_hashes()
     script_hashes = {
         name: hashlib.sha256((Path(__file__).parent / name).read_bytes()).hexdigest()
-        for name in ["operators.py", "operator_adapters.py", "affinity.py"]
+        for name in [
+            "operators.py",
+            "operator_adapters.py",
+            "case_profiles.py",
+            "affinity.py",
+            "summarize.py",
+        ]
     }
     meta_path = out / "environment.json"
     if args.resume:
@@ -666,6 +721,11 @@ def main():
             script_sha256=script_hashes,
             assignment=assignment,
             case_count=len(plan),
+            case_profile=profile,
+            original_case_count=len(original_plan),
+            original_plan_sha256=hashlib.sha256(
+                json.dumps(original_plan, sort_keys=True).encode()
+            ).hexdigest(),
             operator_count=len(ops),
             measurement={
                 key: CONFIG["operators"][key]
@@ -682,6 +742,19 @@ def main():
         )
         baseline.write_json(meta_path, meta)
         baseline.write_json(out / "plan.json", plan)
+        baseline.write_json(out / "original-plan.json", original_plan)
+        if profile != "csv":
+            retained = {c.get("original_id", c["id"]) for c in plan}
+            baseline.write_json(
+                out / "case-adjustments.json",
+                dict(
+                    case_profile=profile,
+                    adjusted_cases=[c for c in plan if c.get("case_profile")],
+                    excluded_cases=[
+                        c for c in original_plan if c["id"] not in retained
+                    ],
+                ),
+            )
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(assignment)) as pool:
         futures = {
             pool.submit(run_card, d, group, args, out): d

@@ -13,6 +13,7 @@
   "cpu_affinity": "auto",
   "scheduling": {"TRITON_ALL_BLOCKS_PARALLEL": "0"},
   "operators": {
+    "case_profile": "csv",
     "warmup": 50,
     "device_samples": 15,
     "api_samples": 60,

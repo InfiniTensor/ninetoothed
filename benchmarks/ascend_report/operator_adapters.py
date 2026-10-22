@@ -16,6 +16,7 @@ poison/replay those buffers, and assemble a full tensor outside device timing.
 from __future__ import annotations
 
 import importlib
+import math
 from typing import Any, Callable
 
 
@@ -108,6 +109,14 @@ def _shape(x):
     return tuple(x.shape)
 
 
+def _matches_fixed_pair(value, expected):
+    return (type(value) is int and value == expected) or (
+        isinstance(value, (tuple, list))
+        and len(value) == 2
+        and all(type(item) is int and item == expected for item in value)
+    )
+
+
 def build_call(
     case: dict, prepared: dict, *, mode: str = "adapted"
 ) -> tuple[Callable, dict[str, Any]]:
@@ -127,26 +136,159 @@ def build_call(
     op = case["operator"]
     args = tuple(prepared["args"])
     params = dict(prepared.get("parameters", {}))
+    common_contract = case.get("case_profile") == "common_contracts_v1"
+
+    if common_contract:
+        meta.update(
+            case_profile="common_contracts_v1",
+            original_case_id=case.get("original_id"),
+        )
 
     # These reject before importing numerical dependencies or kernel modules.
-    if op == "clamp":
+    if op == "clamp" and not common_contract:
         _reject(
             meta,
             "Existing clamp is fixed to [-1,1]; CSV requires [-0.25,0.75]. No parameter-only adapter preserves the source algorithm.",
             "parameter_contract",
         )
-    if op == "dropout":
+    if op == "dropout" and not common_contract:
         _reject(
             meta,
             "Existing dropout is a rank-2 identity only, lacks RNG/seed/offset/returned mask and rejects stochastic training. It cannot supply the full CSV dropout contract.",
         )
-    if op == "max_pool2d":
+    if op == "max_pool2d" and not common_contract:
         _reject(
             meta,
             "Existing max_pool2d returns values only and fixes a different window. Its pooling helper can match values, but no existing kernel provides the required indices; full CSV contract is unsupported.",
         )
 
     import torch
+
+    if op == "clamp":
+        _check_keywords(meta, params, {"min", "max"})
+        _require(
+            meta,
+            type(params.get("min")) in (int, float)
+            and type(params.get("max")) in (int, float)
+            and params["min"] == -1
+            and params["max"] == 1,
+            "The common clamp contract requires min=-1 and max=1.",
+            "parameter_contract",
+        )
+        _require(meta, len(args) == 1, "Clamp expects one tensor input.")
+        x = args[0]
+        mod = _source(meta, "pointwise.clamp")
+        meta["native_contract_match"] = x.ndim == 1
+        meta["numeric_scope"] = "clamp_fixed_minus_one_to_one"
+        _adapt(
+            meta,
+            "parameter",
+            "Validate min=-1 and max=1, matching the unchanged source constants.",
+        )
+        _adapt(
+            meta,
+            "layout",
+            "Reshape input to rank one inside each public call, including any required materialization; restore the output shape with a view.",
+        )
+
+        def clamp_call():
+            flat = x.reshape(-1)
+            out = torch.empty(flat.shape, device=x.device, dtype=x.dtype)
+            mod.kernel(flat, out)
+
+            return out.reshape(_shape(x))
+
+        return clamp_call, meta
+
+    if op == "dropout":
+        _check_keywords(meta, params, {"p", "training", "return_mask"})
+        probability = params.get("p", 0.5)
+        training = params.get("training", False)
+        _require(
+            meta,
+            type(probability) in (int, float)
+            and math.isfinite(probability)
+            and 0 <= probability <= 1
+            and type(training) is bool
+            and params.get("return_mask", False) is False,
+            "The common dropout contract requires p in [0,1], Boolean training, and return_mask=False.",
+            "parameter_contract",
+        )
+        _require(
+            meta,
+            not training or probability == 0,
+            "Existing dropout supports inference or p=0 identity only; stochastic training is unsupported.",
+            "parameter_contract",
+        )
+        _require(
+            meta,
+            len(args) == 1 and args[0].ndim in (1, 2),
+            "Dropout requires one rank-one or rank-two tensor.",
+        )
+        x = args[0]
+        mod = _source(meta, "pointwise.dropout")
+        meta["native_contract_match"] = x.ndim == 2
+        meta["numeric_scope"] = (
+            "deterministic_identity_p0" if training else "inference_identity"
+        )
+        meta["numeric_notes"].append(
+            "Only the original deterministic identity kernel is measured; stochastic dropout, RNG state and returned masks are outside this profile."
+        )
+        _adapt(
+            meta,
+            "parameter",
+            "Validate the values-only identity contract and call the existing dropout.run with inplace=False.",
+        )
+        _adapt(
+            meta,
+            "layout",
+            "Reshape rank-one inputs to one row inside each public call and restore the original output shape; retain rank-two input strides.",
+        )
+
+        def dropout_call():
+            rows = x.reshape(1, -1) if x.ndim == 1 else x
+            out = mod.run(rows, p=probability, training=training, inplace=False)
+
+            return out.reshape(_shape(x))
+
+        return dropout_call, meta
+
+    if op == "max_pool2d":
+        _check_keywords(
+            meta, params, {"kernel_size", "stride", "padding", "return_indices"}
+        )
+        _require(
+            meta,
+            _matches_fixed_pair(params.get("kernel_size"), 3)
+            and _matches_fixed_pair(params.get("stride"), 2)
+            and _matches_fixed_pair(params.get("padding"), 1)
+            and params.get("return_indices", False) is False,
+            "The common max_pool2d contract requires kernel_size=3, stride=2, padding=1, and return_indices=False.",
+            "parameter_contract",
+        )
+        _require(
+            meta,
+            len(args) == 1 and args[0].ndim == 4,
+            "MaxPool2d requires one rank-four NCHW tensor.",
+        )
+        x = args[0]
+        mod = _source(meta, "layout.avg_pool2d")
+        meta["numeric_scope"] = "max_pool2d_values_only"
+        meta["numeric_notes"].append(
+            "Retain the existing max-reduction application and negative-infinity padding; indices are neither produced nor fabricated."
+        )
+        _adapt(
+            meta,
+            "dispatch",
+            "Call the existing pooling helper with kind='max', kernel_size=(3,3), stride=(2,2), and padding=(1,1).",
+        )
+
+        return (
+            lambda: mod._pool2d(
+                x, "max", kernel_size=(3, 3), stride=(2, 2), padding=(1, 1)
+            ),
+            meta,
+        )
 
     if op in _POINTWISE:
         _check_keywords(meta, params, ())

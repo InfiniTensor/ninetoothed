@@ -12,6 +12,30 @@ Run the complete measurement and statistics workflow:
 python benchmarks/ascend_report/run_report.py --config /path/to/config.json
 ```
 
+The default `operators.case_profile: "csv"` retains the original 465-case
+contracts. To measure all 41 operator categories using the existing kernels'
+common supported contracts, set `operators.case_profile: "common_contracts_v1"`
+and use a new output directory. This profile has 453 cases:
+
+| Operator | Adjusted contract |
+|---|---|
+| clamp | Bounds are `[-1, 1]`; original shapes and dtypes are retained. |
+| max_pool2d | Values only, `kernel_size=3`, `stride=2`, `padding=1`. |
+| dropout | Inference or `p=0`, values only; excludes the `p=1` case. No random training performance is claimed. |
+| reduction | sum, mean, min and max; excludes all 11 product reductions. |
+| addmm | `alpha=beta=1`, including the model prefill shape. |
+| conv2d | Ordinary convolution, stride/padding/dilation/groups all 1; the grouped case's weight input-channel dimension is adjusted accordingly. |
+
+All 99 retained cases in these six groups get distinct `__common_v1` IDs and
+retain their original definitions and hashes. `original-plan.json` and
+`case-adjustments.json` record the scope changes. Both backends use the same
+adjusted inputs, parameters and tensor-output checks; numerical source kernels
+are unchanged. The pinned baseline still internally writes pooling indices and
+dropout masks even when they are not returned. These costs remain in its timing.
+The adjusted profile has a separate `adjusted_full_matrix` metric and never
+establishes the original 465-case result. A six-operator subset can be measured
+with `--phase operators --ops clamp max_pool2d dropout reduction addmm conv2d`.
+
 The operator phase measures both implementations on the same physical card for each case, with 50 warmups, 15 device samples and 60 public-API samples by default. Generated-kernel graph replay and public calls retain the original case reference checks and tolerances. Existing host layout/parameter adapters, the masked-load `Tensor.to` compatibility shim and explicit NPU launcher-name shim are recorded in every result. Unsupported source contracts stay `UNSUPPORTED`; no numerical fallback is substituted.
 
 Operator groups are distributed across the configured cards. The model phase assigns stages to cards and runs one lane per card: a reference process and that card's stages, with both backends and all selected execution orders kept on the same physical card. CPU affinity is split into nonoverlapping groups by default and recorded; `cpu_affinity` can provide explicit per-card CPU lists. `operators.devices` or `e2e.devices` can override the global card list.
