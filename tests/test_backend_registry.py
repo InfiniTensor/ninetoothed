@@ -183,16 +183,17 @@ class TestRegistry:
         with pytest.raises(RuntimeError, match="Explicit CUDA compiler"):
             toolchain.find_nvcc()
 
-    def test_default_registry_reports_three_backends(self):
+    def test_default_registry_reports_four_backends(self):
         names = {capability.name for capability in backend_capabilities()}
         assert names == {
             Target.TRITON,
             Target.TILELANG,
             Target.CUDA,
+            Target.BANG,
         }
 
     def test_backends_reject_source_only_kernel_without_ssa(self):
-        for backend in ("triton", "cuda", "tilelang"):
+        for backend in ("triton", "cuda", "tilelang", "bang"):
             with pytest.raises(ValueError, match="requires ssa.Program"):
                 emit(_source_only_kernel(), backend)
 
@@ -201,6 +202,7 @@ class TestRegistry:
             "triton": ("python/triton", "tl.store(out + index, v0, mask=mask)"),
             "cuda": ("cuda/c++", "out[index] = v0;"),
             "tilelang": ("python/tilelang", "out_buf[index] = v0"),
+            "bang": ("bang/c++", "out[index] = v0;"),
         }
 
         for backend, (language, fragment) in expected.items():
@@ -235,6 +237,7 @@ class TestRegistry:
             "triton": "for v10_i in range(0, k, 1):",
             "cuda": "for (int64_t v10_i = 0; v10_i < k; v10_i += 1)",
             "tilelang": "for v10_i in T.serial(k)",
+            "bang": "for (int64_t v10_i = 0; v10_i < k; v10_i += 1)",
         }
 
         for backend, fragment in expected_fragments.items():
