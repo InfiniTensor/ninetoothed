@@ -7,7 +7,9 @@ expressions, loops, buffers, and launch wrappers.
 """
 
 import json
+import math
 import re
+import struct
 from dataclasses import replace
 from typing import Any, Mapping
 
@@ -1423,7 +1425,33 @@ def _constructor_value(op: ssa.Operation, value: str, ctx: _EmitContext) -> str:
                     if isinstance(literal, int)
                     else "float64"
                 )
-                value = ctx.target.vector_splat("()", value, source_dtype)
+                ref_info = _resolve_dtype(ref, ctx)
+
+                if (
+                    source_dtype == "float64"
+                    and ref_info.dtype is not None
+                    and str(ref_info.dtype).startswith("float")
+                ):
+                    # Materialize the literal directly in the reference dtype;
+                    # the fp64 round trip is semantics-preserving on NVIDIA
+                    # but not every vendor backend supports fp64 constants.
+                    return ctx.target.vector_splat("()", value, ref_info.dtype)
+
+                if (
+                    source_dtype == "float64"
+                    and ref_info.dtype is None
+                    and isinstance(literal, float)
+                    and math.isfinite(literal)
+                    and struct.unpack("f", struct.pack("f", literal))[0] == literal
+                ):
+                    # The reference dtype is only known at runtime, so the
+                    # constant cannot be spelled in it; fp32-exact literals
+                    # start from fp32 (whose constants every vendor backend
+                    # supports) and let the runtime cast finish.  Semantics
+                    # are unchanged because the literal survives fp32 exactly.
+                    value = ctx.target.vector_splat("()", value, "float32")
+                else:
+                    value = ctx.target.vector_splat("()", value, source_dtype)
             return ctx.target.cast_like(value, _resolve_dtype(ref, ctx).sample)
         return value
 
