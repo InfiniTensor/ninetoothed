@@ -97,7 +97,11 @@ def test_row_reduction_selection_preserves_fallback(backend):
 
     for physical_rows in (1, 2, 4):
         compilation = DEFAULT_COMPILER.compile(
-            _request(backend=backend, physical_rows=physical_rows)
+            _request(
+                backend=backend,
+                physical_rows=physical_rows,
+                width=512 if backend == "tilelang" else 16,
+            )
         )
         group = compilation.artifact.metadata["ssa_schedule"]["row_group"]
         assert group["enabled"] and group["rows"] == physical_rows

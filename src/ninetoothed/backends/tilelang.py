@@ -66,6 +66,12 @@ class TileLangOptimizeSchedule(OptimizeSchedule):
         return super().run(program, context)
 
     def lower_row_group(self, program, schedule, context):
+        if schedule.get("tilelang_cooperative_reduction"):
+            return {
+                "enabled": False,
+                "reason": "cooperative reduction has no grouped-row lowering",
+            }
+
         return {"mapping": "scalar-tile"}
 
     def schedule_candidates(
@@ -109,6 +115,17 @@ class TileLangOptimizeSchedule(OptimizeSchedule):
             and isinstance(reduction, Mapping)
             and reduction.get("mode") == "row-vector"
         ):
+            requested = None
+
+            for name in ("*", self.name, "ssa.optimize_schedule"):
+                requested = context.pass_options.get(name, {}).get(
+                    "candidate", requested
+                )
+
+            # Keep grouping by default; explicit candidates resolve the conflict.
+            if requested is None and schedule.get("row_group", {}).get("enabled"):
+                return ()
+
             extent = _static_extent(reduction.get("extent"))
 
             if extent is None or extent < 256:
@@ -145,7 +162,9 @@ class TileLangOptimizeSchedule(OptimizeSchedule):
                     tags=("cooperative-reduction",),
                 )
                 for threads in (128, 256, 512)
-                if domains and shared_bytes(threads) <= shared_limit
+                if domains
+                and extent % threads == 0
+                and shared_bytes(threads) <= shared_limit
             )
 
         if not analysis.get("tilelang_dot_accumulation") or not _dot_gemm_supported(

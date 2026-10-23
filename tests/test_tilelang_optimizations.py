@@ -15,17 +15,24 @@ def _require_tilelang():
 
 
 def _row_arrangement(x, out):
-    return x.tile((2, 65536)), out.tile((2,))
+    return x.tile((2, 512)), out.tile((2,))
 
 
 def _row_sum(x, out):
     out = ntl.sum(ntl.exp(x), axis=1)  # noqa: F841
 
 
+def _vector_arrangement(x, out):
+    return x.tile((512,)), out.tile((512,))
+
+
+def _scalar_sum(x, out):
+    out = ntl.sum(x)  # noqa: F841
+
+
 def test_tilelang_reduction_domain_and_storage():
     _require_tilelang()
-    # A partial tile also exceeds the cooperative path's shared-memory budget.
-    x = torch.zeros((2, 65535), device="cuda")
+    x = torch.zeros((2, 300), device="cuda")
     expected = x.exp().sum(1)
     out = torch.full_like(expected, -999)
     kernel = nt.make(
@@ -40,6 +47,22 @@ def test_tilelang_reduction_domain_and_storage():
     )
     kernel(x, out)
     torch.testing.assert_close(out, expected)
+    assert "T.reduce_sum(" in kernel._artifact.primary_source
+
+    # A scalar reduction must fill the entire destination tile on both backends.
+    x = torch.arange(512, device="cuda", dtype=torch.float32)
+
+    for backend in ("cuda", "tilelang"):
+        out = torch.full_like(x, float("nan"))
+        kernel = nt.make(
+            _vector_arrangement,
+            _scalar_sum,
+            tuple(nt.Tensor(shape=x.shape, dtype="float32") for _ in range(2)),
+            backend=backend,
+            max_num_configs=1,
+        )
+        kernel(x, out)
+        torch.testing.assert_close(out, x.sum().expand_as(x))
 
 
 def _attention_arrangement(q, k, v, is_causal, offset, out):

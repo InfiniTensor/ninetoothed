@@ -80,6 +80,11 @@ def _materialize(compilation, *, output_dir=None):
                 prim_func,
                 execution_backend="tvm_ffi",
                 target="cuda",
+                pass_configs=(
+                    {tilelang.PassConfigKey.TIR_DISABLE_VECTORIZE: True}
+                    if source_module._NT_DISABLE_VECTORIZE
+                    else {}
+                ),
             )
             bundled_library = getattr(kernel.adapter, "libpath", None)
 
