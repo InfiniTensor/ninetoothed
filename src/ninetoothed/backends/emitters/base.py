@@ -104,6 +104,12 @@ class EmitterTarget(ABC):
 
         return None
 
+    def materialized_element(self, name, coords):
+        """Read a target-owned tile value at explicit logical coordinates."""
+        del name, coords
+
+        return None
+
     def emit_block_dot(self, operation, context, coords=None):
         del operation, context, coords
 

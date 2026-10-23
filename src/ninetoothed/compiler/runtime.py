@@ -190,8 +190,20 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
     specializations: dict[tuple[tuple[str, str], ...], Handle] = {}
     handle = None
 
+    def update_handle(source_handle) -> None:
+        if handle is not None:
+            handle._artifact = source_handle._artifact
+            handle._kernel = source_handle._kernel
+            handle._source = source_handle._source
+            handle._library = source_handle._library
+            handle._ssa = source_handle._ssa
+            handle._pass_trace = source_handle._pass_trace
+            handle._launch_plan = source_handle._launch_plan
+            handle._built_artifact = source_handle._built_artifact
+
     def launch(*args, **kwargs):
         nonlocal handle
+
         public = _public_values(
             compilation.launch_abi,
             args,
@@ -224,15 +236,8 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
 
         specialized = specializations[key]
 
-        if handle is not None:
-            handle._artifact = specialized._artifact
-            handle._kernel = specialized._kernel
-            handle._source = specialized._source
-            handle._library = specialized._library
-            handle._ssa = specialized._ssa
-            handle._pass_trace = specialized._pass_trace
-            handle._launch_plan = specialized._launch_plan
-            handle._built_artifact = specialized._built_artifact
+        update_handle(specialized)
+
         return specialized(
             *args,
             **_filter_runtime_kwargs(specialized._compilation.launch_abi, kwargs),
@@ -661,12 +666,24 @@ class _PreparedBoundValue:
         ):
             return value, None
 
-        storage_numel = value.untyped_storage().nbytes() // value.element_size()
-        storage_offset = value.storage_offset()
+        is_contiguous = value.is_contiguous()
+
+        # A contiguous buffer's extent is just its element count; a strided
+        # view's extent is its elements' storage span, matching the access
+        # template's strided indexing.
+        if is_contiguous:
+            extent = value.numel()
+        elif value.numel() > 0:
+            extent = 1 + sum(
+                (dim - 1) * stride for dim, stride in zip(value.shape, value.stride())
+            )
+        else:
+            extent = 0
+
         flattened = value.as_strided(
-            (storage_numel - storage_offset,),
+            (extent,),
             (1,),
-            storage_offset=storage_offset,
+            storage_offset=value.storage_offset(),
         )
 
         return flattened, flattened
@@ -1171,6 +1188,7 @@ def _runtime_wrapper(
             keepalive.extend(flattened)
 
         result = function(*values) if low_level else function(*args, **kwargs)
+
         del keepalive
 
         if result is not None and not abi.outputs:
@@ -1381,21 +1399,27 @@ def _flatten_ffi_tensor_args(bindings, values):
             "jagged_values",
             "jagged_offsets",
         } and hasattr(value, "as_strided"):
-            storage_offset = value.storage_offset()
-            span = (
-                1
-                + sum(
-                    (size - 1) * stride
-                    for size, stride in zip(value.shape, value.stride())
+            is_contiguous = value.is_contiguous()
+
+            # A contiguous buffer's extent is just its element count; a strided
+            # view's extent is its elements' storage span, matching the access
+            # template's strided indexing.
+            if is_contiguous:
+                extent = value.numel()
+            elif value.numel() > 0:
+                extent = 1 + sum(
+                    (dim - 1) * stride
+                    for dim, stride in zip(value.shape, value.stride())
                 )
-                if value.numel()
-                else 0
-            )
+            else:
+                extent = 0
+
             value = value.as_strided(
-                (span,),
+                (extent,),
                 (1,),
-                storage_offset=storage_offset,
+                storage_offset=value.storage_offset(),
             )
+
             flattened.append(value)
 
         result.append(value)
