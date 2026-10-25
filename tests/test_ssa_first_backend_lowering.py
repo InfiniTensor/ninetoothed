@@ -894,7 +894,7 @@ def canonical_math_application(x, y, out):
     def test_public_lower_generates_ssa_reduction_for_native_backends(self):
         expected = {
             "triton": ("ssa-unified-triton-emitter", "@triton.jit"),
-            "cuda": ("ssa-unified-cuda-emitter", "__shfl_down_sync"),
+            "cuda": ("ssa-unified-cuda-emitter", "(x[v1_i] * y[v1_i])"),
             "tilelang": ("ssa-unified-tilelang-emitter", "x_buf[v1_i]"),
         }
 
