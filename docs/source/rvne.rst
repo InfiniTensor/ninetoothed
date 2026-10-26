@@ -2,14 +2,14 @@ RVNE Backend
 ============
 
 The ``rvne`` backend emits C++ for the RISC-V Zne extension and compiles it
-with the RVNE SDK. AOT handles execute through the SDK's user-mode QEMU using
+with the RVNE SDK. AOT execution runs through the SDK's user-mode QEMU using
 NumPy host arrays. Source generation does not need the SDK.
 
-The current backend provides serial RISC-V arithmetic, control flow and
-reductions, plus an explicit hardware spike accumulator. Integer LIF updates
-can be expressed with ordinary arithmetic, shifts and ``ntl.where`` and use
-explicit voltage/current input and output tensors. LIF currently uses scalar
-RISC-V arithmetic, rather than the dedicated hardware LIF instruction.
+The current backend provides scalar RV64 arithmetic, control flow and
+reductions. It also exposes one explicit packed spike-accumulation primitive
+that lowers to the RVNE ``calc_acc_32`` instruction. Integer LIF updates are
+currently expressed with ordinary arithmetic, shifts and ``ntl.where``; they
+do not yet use the dedicated hardware LIF instruction.
 
 Environment
 -----------
@@ -32,14 +32,16 @@ host; the generated RISC-V executable does not require Triton or PyTorch.
 AOT execution
 -------------
 
-Save the application in a Python file so the compiler can inspect its source:
+``aot`` is a public NineToothed compiler entrypoint and is intentionally
+imported from ``ninetoothed.compiler``. The RVNE backend does not introduce a
+separate compiler namespace. Save the application in a Python file so the
+compiler can inspect its source:
 
 .. code-block:: python
 
    import numpy as np
    from ninetoothed import Tensor
    from ninetoothed.compiler import aot
-   from ninetoothed.compiler.runtime import load_built_artifact
 
    def affine(
        x: Tensor(shape=(4,), dtype="int32"),
@@ -53,20 +55,30 @@ Save the application in a Python file so the compiler can inspect its source:
    kernel(x, out)
    np.testing.assert_array_equal(out, x * 3 + 7)
 
-   reloaded = load_built_artifact(kernel._built_artifact)
-   reloaded(x, out)
+The returned handle is the normal execution API. The output directory contains
+C++ source, an RV64 ELF executable and an ABI manifest. Each invocation
+serializes arguments into temporary files, starts QEMU, and copies successful
+results back into the supplied output arrays. This is a correctness and
+integration runner, not an on-device performance benchmark. A compiler or
+emulator failure raises an exception; unsuccessful execution does not replace
+host outputs.
 
-The output directory contains C++ source, an RV64 ELF executable and an ABI
-manifest. Each invocation serializes arguments into temporary files, starts
-QEMU, and copies successful results back into the supplied output arrays.
-This is a correctness and integration runner, not an on-device performance
-benchmark. A compiler or emulator failure raises an exception; unsuccessful
-execution does not replace host outputs.
+``load_built_artifact`` is an optional advanced entrypoint for reconstructing
+a callable handle from a previously built artifact after the original Python
+handle is gone. Normal AOT compilation and execution do not require it.
 
 Packed spike accumulation
 -------------------------
 
-``ntl.spike_accumulate(current, spikes, weight_low, weight_high)`` computes
+``ntl.spike_accumulate(current, spikes, weight_low, weight_high)`` is a narrow
+RVNE primitive, not the intended pattern for exposing every hardware feature.
+It exists so the first backend can state the exact packed INT4 ABI and avoid
+silently changing quantization semantics. Future backend work should recognize
+suitable quantized dot-product and convolution patterns and lower them to this
+operation rather than adding one frontend intrinsic per hardware feature.
+Automatic floating-point quantization is outside this backend.
+
+The primitive computes
 ``current + sum(spike[i] * weight[i] for i in range(32))`` using the RVNE
 ``calc_acc_32`` instruction. Operands have these exact types:
 
@@ -75,18 +87,20 @@ Packed spike accumulation
 * ``weight_low`` and ``weight_high``: ``uint64`` holding sixteen signed INT4
   weights each, with weight zero in the least significant nibble.
 
-Operands must broadcast to the current tensor's shape. This permits shared
-spike rows and weight columns without copying them for every output element.
-The result has the current tensor's shape and ``int32`` dtype. The helper initializes its
-temporary register operands on every call, reads NCR using
-``get_ncr_64``, and does not use the SDK's unsupported ``save_nc_32`` operation.
-It clobbers its temporary RVNE registers; it does not preserve an external
-hardware neuron context.
+Operands must broadcast to the current tensor's shape. The result has the
+current tensor's shape and ``int32`` dtype. The generated helper initializes
+its temporary RVNE registers on every call and reads NCR with ``get_ncr_64``.
+It does not preserve an external hardware neuron context.
+
+Host-side packing helpers are part of the backend-specific RVNE boundary:
 
 .. code-block:: python
 
+   import numpy as np
    import ninetoothed.language as ntl
-   from ninetoothed.rvne import pack_spikes, pack_weights
+   from ninetoothed import Tensor
+   from ninetoothed.backends.rvne import pack_spikes, pack_weights
+   from ninetoothed.compiler import aot
 
    def accumulate(
        current: Tensor(shape=(1,), dtype="int32"),
@@ -112,13 +126,14 @@ hardware neuron context.
    )
    np.testing.assert_array_equal(result, [-16])
 
-Packing operates on the last axis, pads incomplete words with zeros, and
-rejects nonbinary spikes, floating-point weights and integers outside
-``[-8, 7]``. It performs no implicit quantization. Pad weights to a multiple
-of 32 when pairing two weight words with each spike word. Larger dot products
-can loop over packed words while carrying the returned current. Convolution
-patches and dense layers can use the same primitive after explicit layout
-conversion; automatic float convolution quantization/fusion is not provided.
+``pack_spikes`` packs binary values into ``uint32`` words with spike zero in
+bit zero. ``pack_weights`` packs signed INT4 integers into ``uint64`` words,
+lowest nibble first. Both operate on the last axis and pad incomplete words
+with zero. They reject values outside their exact input domains and never
+threshold, round or quantize. Pad weights to a multiple of 32 when pairing
+two weight words with each spike word. Larger dot products can loop over
+packed words while carrying the returned current. Convolution patches and
+dense layers can use the same primitive after explicit layout conversion.
 
 Support and validation
 ----------------------
@@ -137,8 +152,8 @@ Supported element types are ``bool``, ``int32``, ``uint32``, ``int64``,
 subtraction, multiplication, comparisons, bitwise operations, selection and
 sum/min/max reductions. FP32 ``exp2`` and division are supported; floating
 division also accepts an integer scalar operand. Integer division, floor
-division and remainder are currently rejected; index calculations have
-separate integer floor/modulo handling.
+division and remainder are currently rejected; index calculations use
+helpers that preserve Python floor division and modulo semantics.
 
 CPU tests validate source generation and ABI handling without the SDK.
 Configuring the SDK additionally enables real cross-compilation and QEMU
@@ -152,8 +167,9 @@ These cover ordinary addition, dense matrix multiplication, sum/min/max,
 signed INT4 packing, masked tails, accumulated dot products larger than 1024
 inputs, explicit LIF state across time steps, blocked attention, failure
 handling and artifact reload. QEMU validation does not establish support or
-timing on a physical chip. Dedicated LIF instructions, hardware launch/context
-management, and register-resident batching remain separate optimization work.
+timing on a physical chip. Dedicated LIF instructions, hardware launch and
+context management, register-resident batching, and automatic recognition of
+quantized convolution/dot-product patterns remain future optimization work.
 
 Ordinary operator tests on QEMU
 ------------------------------
@@ -210,166 +226,3 @@ emitter uses serial RISC-V floating-point arithmetic and libm ``exp2f``;
 it does not provide the GPU memory scheduling or performance of an optimized
 GPU FlashAttention kernel. FP16/BF16 tensors remain unsupported by this
 backend. Physical-chip performance has not been validated.
-
-SConvLif model verification
---------------------------
-
-``examples/rvne/sconv_lif.py`` runs the supplied SConvLif reference model's
-complete four-step graph using NineToothed AOT operators and QEMU. The
-external model directory must contain ``yolo_origin.py`` with the supported
-``SConvLifOrigin`` model. Its source and weights are not distributed with
-NineToothed. This is an adapter for that model, not an ONNX model importer.
-
-The adapter uses the reference fixture's seed ``20260830`` and projects the
-initial weights to zero and one, as its ``check_models.py`` specifies. The
-input is ``[4,3,64,64]`` and the final output is ``[1,3,2,2,9]``. There is no
-trained checkpoint in this fixture, so it measures numerical correctness,
-not object-detection accuracy.
-
-.. code-block:: bash
-
-   export NINETOOTHED_RVNE_TOOLCHAIN=/path/to/toolchain
-   export NINETOOTHED_SCONVLIF_MODEL_DIR=/path/to/SConvLif
-   export PYTHONPATH="$PWD/src"
-
-   python examples/rvne/sconv_lif.py \
-     --model-dir "$NINETOOTHED_SCONVLIF_MODEL_DIR" \
-     --output-dir build/rvne-sconv-lif
-
-The model executes 40 convolutions, 12 max pools, and 36 LIF updates through
-QEMU, for 88 calls. Python handles scheduling, data layout, packing and the
-Detect output reshape. Convolutions use the RVNE spike accumulator; pooling
-and LIF use generated RISC-V integer arithmetic. The nine LIF layers retain
-independent voltage/current state across all four time steps.
-
-Each layer consumes the previous QEMU result. A separate CPU PyTorch model
-provides comparison values, never replacement activations. The verifier
-compares every convolution, pool, spike output, voltage/current state and
-Detect reshape, then the final output: 165 exact comparisons. Success prints:
-
-.. code-block:: text
-
-   PASS: 88 QEMU launches, 165 exact comparisons, 108 nonzero output values.
-
-The output directory contains:
-
-* ``report.json``: pass/fail status, all comparisons, reference source hash,
-  compiler identity, launch counts and artifact paths.
-* ``reference.npz``: input sequence and reference final output.
-* ``qemu_output.npz``: QEMU final output and all final LIF states.
-* ``kernels/``: generated C++, RISC-V ELF executables and ABI manifests.
-
-The report is reset to ``running`` at startup and records ``failed`` if
-compilation, execution or comparison raises an exception. Successful
-completion requires all 88 QEMU calls. The command exits with an error when
-validation fails.
-
-Packed weights are reused across time steps. Packed input windows and weights
-are stored separately and broadcast inside the generated kernel, avoiding
-copies of the weights for every output position. Reported staging bytes
-estimate explicit operator buffers and exclude model/reference storage,
-serialization temporaries and process RSS. Wall times include compilation,
-file transport and simulation, and do not measure physical-chip performance.
-
-To run the corresponding integration test with both environment variables
-set:
-
-.. code-block:: bash
-
-   python -m pytest -vv -ra tests/test_rvne_model.py
-
-Without the external model directory, only the full-model case skips. With
-the SDK configured, the remaining cases still run real QEMU checks for signed
-convolution, non-square kernels, stride/padding, pooling and LIF state.
-
-Native single-executable model
-------------------------------
-
-``examples/rvne/sconv_lif_native.py`` builds the same model as one statically
-linked RV64 ELF. Python prepares the fixture, generates NineToothed kernels
-and checks results. During inference, the target C++ program owns all four
-time steps, intermediate buffers and the nine independent voltage/current
-states. Packing, pooling gathers and the Detect layout conversion also run
-inside that program. One QEMU invocation completes all 88 operator calls.
-
-.. code-block:: bash
-
-   export PYTHONPATH="$PWD/src"
-   export NINETOOTHED_RVNE_TOOLCHAIN=/path/to/toolchain
-   export NINETOOTHED_SCONVLIF_MODEL_DIR=/path/to/SConvLif
-
-   python -m examples.rvne.sconv_lif_native \
-     --model-dir "$NINETOOTHED_SCONVLIF_MODEL_DIR" \
-     --output-dir build/rvne-sconv-lif-native
-
-Success requires 164 trace records containing every layer output and LIF
-state, plus the final output comparison:
-
-.. code-block:: text
-
-   PASS: one QEMU invocation, 88 native operator calls, 165 exact comparisons.
-
-To generate the executable and fixture without running QEMU, add
-``--build-only``. After building, inference can run directly from a shell
-without activating Python or importing PyTorch:
-
-.. code-block:: bash
-
-   "$NINETOOTHED_RVNE_TOOLCHAIN/qemu/bin/qemu-riscv64" \
-     -L "$NINETOOTHED_RVNE_TOOLCHAIN/xuantie-gnu-toolchain/sysroot" \
-     build/rvne-sconv-lif-native/bundle/sconv_lif.elf \
-     build/rvne-sconv-lif-native/input.bin \
-     build/rvne-sconv-lif-native/output.bin
-
-   cmp build/rvne-sconv-lif-native/output.bin \
-       build/rvne-sconv-lif-native/expected.bin
-
-The input and output files contain raw little-endian float32 values, with
-shapes ``[4,3,64,64]`` and ``[1,3,2,2,9]``. An optional third filename after
-the executable's output argument enables the binary stage trace. Weights
-are embedded in the ELF; ``weights.bin`` is a build input and is not needed
-when deploying the executable.
-
-The bundle preserves separate kernel translation units and ABI wrappers,
-then links them with ``native_runtime.cpp`` and the model driver. Its
-``native_manifest.json`` records source hashes, launch ABIs, embedded-weight
-hashes, compiler identity and ELF identity. External C files are compiled as
-GNU C11, including legacy ``asm`` extensions, and linked with C++17 code.
-
-The model driver exports the original ``main_graph`` C ABI. Defining
-``NINETOOTHED_NO_MAIN`` removes its command-line entry so an existing C
-``main`` can be linked instead. This driver is a native adaptation of the
-supplied graph; it is not a rebuilt output of the original ONNX/MLIR compiler.
-
-Compatibility with the original convolution ABI
-----------------------------------------------
-
-``native_runtime.h`` also exports the original square and non-square
-``conv_compute_currents_from_f32_ptr_defaultNP_f32out`` entrypoints. They
-accept caller-owned NCHW/OIHW float32 buffers and element counts, convert
-nonzero input to spikes, round finite weights halfway away from zero and
-clip to signed INT4, then call the matching NineToothed kernel. Caller-provided
-weights are used on each call. Count errors, non-finite weights and shapes
-without a compiled registry entry return an error without changing output.
-
-These adapters preserve the function interface for the shapes compiled into
-the bundle; they do not compile new shapes at inference time. Convolution
-resets RVNE neuron registers and parameters, matching the old SConv runtime's
-defaults. Persistent LIF state must stay in memory, and users must serialize
-access to the RVNE register file. The model driver satisfies this contract
-with separate input/output state buffers.
-
-.. code-block:: bash
-
-   python -m pytest -vv -ra tests/test_rvne_standalone.py
-
-The tests use a real GNU C caller, SDK compilation and QEMU to check the old
-ABI, fractional weights, nonbinary input, malformed arguments, register
-configuration left by previous calls, pooling and multi-step LIF. With the
-external model directory configured, they also verify the complete native
-model in one QEMU invocation and link the unchanged supplied ``main_test.c``
-against the new ``main_graph``. The latter runs from a directory containing
-only the executable and its input/reference data, with strict output checks.
-The original generated graph code can reuse
-the convolution ABI, but replacing its inlined pooling/LIF regions still
-requires corresponding graph-lowering changes.

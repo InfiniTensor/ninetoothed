@@ -90,6 +90,12 @@ class EmitterTarget(ABC):
         return operation.results[0].type
 
     def arithmetic_expr(self, operation, args, context) -> str | None:
+        """Render differing arithmetic semantics, or ``None`` for common syntax.
+
+        Backends use this when C/C++ operators do not match SSA semantics, for
+        example signed shifts, boolean inversion, mixed-type extrema and FP
+        division. ``None`` keeps those operations on the shared emitter path.
+        """
         del operation, args, context
 
         return None
@@ -166,6 +172,11 @@ class EmitterTarget(ABC):
         return value
 
     def render_index_expr(self, expression: str) -> str | None:
+        """Render differing index semantics, or ``None`` for C syntax.
+
+        Backends use this when C integer division or remainder would differ
+        from Python/SSA floor semantics. ``None`` uses the common C rendering.
+        """
         del expression
 
         return None

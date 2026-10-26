@@ -5,9 +5,9 @@ import pytest
 
 import ninetoothed.language as ntl
 from ninetoothed import Tensor
+from ninetoothed.backends.rvne import pack_spikes, pack_weights
 from ninetoothed.compiler import CompileRequest, compile_kernel
 from ninetoothed.compiler.runtime import materialize
-from ninetoothed.rvne import pack_spikes, pack_weights
 
 
 def _identity(*tensors):
