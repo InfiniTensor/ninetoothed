@@ -28,6 +28,7 @@ class ReductionDomain:
     input_shape: tuple[str, ...]
     result_shape: tuple[str, ...]
     scope: tuple[int, ...]
+    result_dtype: str | None = None
     store_shapes: tuple[tuple[str, ...], ...] = ()
     program_shapes: tuple[tuple[str, ...], ...] = ()
     program_constraints: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = ()
@@ -54,6 +55,7 @@ class ReductionDomain:
             "input_shape": self.input_shape,
             "result_shape": self.result_shape,
             "scope": self.scope,
+            "result_dtype": self.result_dtype,
             "store_shapes": self.store_shapes,
             "program_shapes": self.program_shapes,
             "program_constraints": self.program_constraints,
@@ -241,6 +243,7 @@ def _domain(
             input_shape=input_shape,
             result_shape=result_shape,
             scope=scope,
+            result_dtype=result.type.dtype,
             store_shapes=store_shapes,
             program_shapes=program_shapes,
             program_constraints=program_constraints,
@@ -291,7 +294,8 @@ def _consumer_contract(
                 if (
                     stored_type is not None
                     and target_shape is not None
-                    and stored_type.shape != target_shape
+                    and tuple(str(dim) for dim in stored_type.shape)
+                    != tuple(str(dim) for dim in target_shape)
                 ):
                     return False, (
                         "store target does not match the reduction value domain"

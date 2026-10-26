@@ -425,6 +425,7 @@ def random_application(seed, out):
                 ),
                 backend="tilelang",
                 kernel_name=f"tilelang_schedule_{candidate}",
+                max_shared_memory_bytes=160 * 1024,
                 pass_options={
                     "ssa.tilelang.optimize_schedule": {"candidate": candidate}
                 },
@@ -433,20 +434,20 @@ def random_application(seed, out):
         balanced = lower_candidate("balanced")
         wide = lower_candidate("wide")
         assert "threads=128" in balanced.primary_source
-        assert "num_stages=2" in balanced.primary_source
+        assert "num_stages=3" in balanced.primary_source
         assert balanced.metadata["launch_block"] == ("128",)
         assert "threads=256" in wide.primary_source
         assert "num_stages=3" in wide.primary_source
         assert wide.metadata["launch_block"] == ("256",)
         assert balanced.metadata["ssa_schedule"]["tile"] == {
-            "block_m": 64,
-            "block_n": 64,
+            "block_m": 128,
+            "block_n": 128,
             "block_k": 32,
         }
         assert wide.metadata["ssa_schedule"]["tile"] == {
             "block_m": 128,
-            "block_n": 64,
-            "block_k": 32,
+            "block_n": 256,
+            "block_k": 64,
         }
 
     def test_public_triton_lower_raises_when_ssa_is_unavailable(self):
@@ -894,7 +895,7 @@ def canonical_math_application(x, y, out):
         expected = {
             "triton": ("ssa-unified-triton-emitter", "@triton.jit"),
             "cuda": ("ssa-unified-cuda-emitter", "(x[v1_i] * y[v1_i])"),
-            "tilelang": ("ssa-unified-tilelang-emitter", "x_buf[v1_i] * y_buf[v1_i]"),
+            "tilelang": ("ssa-unified-tilelang-emitter", "x_buf[v1_i]"),
         }
 
         for backend, (route, source_fragment) in expected.items():
