@@ -559,20 +559,26 @@ class _ApplicationSSABuilder:
             if destination not in self.outputs:
                 self.outputs.append(destination)
 
-            index_values = tuple(
-                value.name
-                for value in self._lower_subscript_values(target.slice, operations, env)
+            indices = self._lower_subscript_values(target.slice, operations, env)
+            index_values = tuple(index.name for index in indices)
+            source = (
+                isinstance(target.value, ast.Attribute)
+                and target.value.attr == "source"
             )
-            target_type = _subscript_type(destination.type, target.slice)
+            target_type = _subscript_type(
+                destination.type,
+                target.slice,
+                source=source,
+                index_types=tuple(index.type for index in indices),
+            )
             operations.append(
                 ssa.Operation(
                     opcode="mem.store",
                     operands=(value.name, destination.name),
                     attrs={
-                        "subscript": _unparse(target.slice),
+                        "subscript": _subscript_contract(target.slice),
                         "indices": index_values,
-                        "source": isinstance(target.value, ast.Attribute)
-                        and target.value.attr == "source",
+                        "source": source,
                         "target_shape": tuple(target_type.shape),
                         "target_dtype_level": int(
                             target_type.attrs.get("dtype_level", 0)
@@ -615,19 +621,29 @@ class _ApplicationSSABuilder:
             if destination not in self.outputs:
                 self.outputs.append(destination)
 
-            index_values = tuple(
-                value.name
-                for value in self._lower_subscript_values(
-                    stmt.target.slice, operations, env
-                )
+            indices = self._lower_subscript_values(stmt.target.slice, operations, env)
+            index_values = tuple(index.name for index in indices)
+            source = (
+                isinstance(stmt.target.value, ast.Attribute)
+                and stmt.target.value.attr == "source"
             )
-            target_type = _subscript_type(destination.type, stmt.target.slice)
+            target_type = _subscript_type(
+                destination.type,
+                stmt.target.slice,
+                source=source,
+                index_types=tuple(index.type for index in indices),
+            )
             lhs = self._emit(
                 operations,
                 "tensor.extract" if index_values else "tensor.view",
                 operands=(destination.name, *index_values),
-                attrs={"subscript": _unparse(stmt.target.slice)},
-                result_type=target_type,
+                attrs={
+                    "subscript": _subscript_contract(stmt.target.slice),
+                    "source": source,
+                },
+                result_type=_subscript_type(
+                    destination.type, stmt.target.slice, source=source
+                ),
             )
             rhs = self._lower_expr(stmt.value, operations, env)
             result = self._emit(
@@ -644,8 +660,9 @@ class _ApplicationSSABuilder:
                     opcode="mem.store",
                     operands=(result.name, destination.name),
                     attrs={
-                        "subscript": _unparse(stmt.target.slice),
+                        "subscript": _subscript_contract(stmt.target.slice),
                         "indices": index_values,
+                        "source": source,
                         "target_shape": tuple(target_type.shape),
                         "target_dtype_level": int(
                             target_type.attrs.get("dtype_level", 0)
@@ -748,7 +765,7 @@ class _ApplicationSSABuilder:
         env: dict[str, ssa.Value],
     ) -> None:
         condition = self._ensure_bool_condition(
-            self._lower_expr(stmt.test, operations, env), env
+            self._lower_expr(stmt.test, operations, env), operations
         )
         known = self.constant_values.get(condition.name)
 
@@ -1061,17 +1078,15 @@ class _ApplicationSSABuilder:
             return shape_dim
 
         base = self._lower_expr(node.value, operations, env)
-        index_values = tuple(
-            value.name
-            for value in self._lower_subscript_values(node.slice, operations, env)
-        )
+        indices = self._lower_subscript_values(node.slice, operations, env)
+        index_values = tuple(index.name for index in indices)
         source = isinstance(node.value, ast.Attribute) and node.value.attr == "source"
 
         return self._emit(
             operations,
             "tensor.extract" if index_values else "tensor.view",
             operands=(base.name, *index_values),
-            attrs={"subscript": _unparse(node.slice), "source": source},
+            attrs={"subscript": _subscript_contract(node.slice), "source": source},
             result_type=_subscript_type(base.type, node.slice, source=source),
         )
 
@@ -1417,6 +1432,8 @@ class _ApplicationSSABuilder:
         dtype_ref = self.dtype_refs.get(target.name)
         attrs = {
             "shape": _unparse(node.args[0]) if node.args else None,
+            "shape_values": shape,
+            "element_dtype": result_dtype,
             "dtype": result_dtype,
             "dtype_ref": dtype_ref,
             "dtype_operand": target.name,
@@ -1531,6 +1548,7 @@ class _ApplicationSSABuilder:
                 operations,
                 "linalg.matmul" if name == "matmul" else "linalg.dot",
                 operands=(operands[0].name, operands[1].name),
+                attrs={"dtype_ref": operands[2].name},
                 result_type=operands[2].type,
             )
             self._store_intrinsic_result(operations, operands[2], result, name)
@@ -1560,6 +1578,7 @@ class _ApplicationSSABuilder:
                 operations,
                 "linalg.transpose",
                 operands=(operands[0].name,),
+                attrs={"dtype_ref": operands[1].name},
                 result_type=operands[1].type,
             )
             self._store_intrinsic_result(operations, operands[1], result, name)
@@ -1823,7 +1842,7 @@ class _ApplicationSSABuilder:
         return self.values[name]
 
     def _ensure_bool_condition(
-        self, value: ssa.Value, env: dict[str, ssa.Value]
+        self, value: ssa.Value, operations: list[ssa.Operation]
     ) -> ssa.Value:
         if value.type.dtype == "bool":
             return value
@@ -1831,21 +1850,14 @@ class _ApplicationSSABuilder:
         if value.type.kind != "scalar" or value.type.dtype not in {None, "symbol"}:
             return value
 
-        replacement = ssa.Value(
-            name=value.name,
-            type=ssa.Type(
-                kind="scalar",
-                shape=value.type.shape,
-                dtype="bool",
-                attrs=dict(value.type.attrs),
-            ),
-        )
-        self.values[value.name] = replacement
+        zero = self._constant(operations, 0)
 
-        for name, current in tuple(env.items()):
-            if current.name == value.name:
-                env[name] = replacement
-        return replacement
+        return self._emit(
+            operations,
+            "cmp.ne",
+            operands=(value.name, zero.name),
+            result_type=_bool_type(value, zero),
+        )
 
 
 class _AssignedNameVisitor(ast.NodeVisitor):
@@ -2105,6 +2117,20 @@ def _is_namespace_ref(node: ast.AST) -> bool:
     if isinstance(node, ast.Attribute):
         return _is_namespace_ref(node.value)
     return False
+
+
+def _subscript_contract(node: ast.AST) -> str:
+    """Describe view positions; computed indices are explicit SSA operands."""
+    elements = node.elts if isinstance(node, ast.Tuple) else (node,)
+    parts = tuple(
+        item
+        if isinstance(item, ast.Slice)
+        or (isinstance(item, ast.Constant) and item.value in (None, Ellipsis))
+        else ast.Name(id=f"_index_{position}", ctx=ast.Load())
+        for position, item in enumerate(elements)
+    )
+
+    return _unparse(ast.Tuple(elts=list(parts), ctx=ast.Load()))
 
 
 def _unparse(node: ast.AST) -> str:
