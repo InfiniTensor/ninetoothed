@@ -35,6 +35,7 @@ SCOPES = {
     4: "SiLU + RMSNorm + MLP gating Mul + TensorAdd + Neg + Sin + Cos",
     5: "Stage 4 + scaled dot product attention (prefill and cached decode)",
     6: "Stage 5 + all model Linear projections and language model head",
+    7: "Stage 6 + fused RoPE, EOS masking, preallocated KV cache",
 }
 ORDERS = {
     "forward": ("triton_then_ntops", ("triton", "ntops")),
@@ -113,7 +114,7 @@ def read_config(path):
         "model_id": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
         "model_revision": None,
         "cpu_threads": 1,
-        "stages": list(SCOPES),
+        "stages": [1, 2, 3, 4, 5, 6],
         "orders": ["forward"],
         "linear_tuning": "fixed",
         "linear_block_sizes": [32, 32, 32],
@@ -575,6 +576,90 @@ def stage_dispatch(adapter, stage):
                 if stage >= 4 and func in unary:
                     return adapter.call(unary[func], args[0])
 
+            if stage >= 7 and adapter.backend == "ntops":
+                generated = None
+                result = None
+
+                if func is torch.ops.aten.matmul.default and (
+                    tuple(args[0].shape) == (1, 64, 1)
+                    and tuple(args[1].shape) == (1, 1, args[1].shape[-1])
+                ):
+                    if __package__:
+                        from .e2e_rope import frequency_outer
+                    else:
+                        from e2e_rope import frequency_outer
+
+                    cache = getattr(adapter, "_rope_frequency_cache", None)
+                    if cache is None:
+                        positions = torch.arange(
+                            512, device=args[0].device, dtype=torch.float32
+                        )
+                        cache = (
+                            frequency_outer(args[0][0, :, 0], positions),
+                            positions,
+                        )
+                        adapter._rope_frequency_cache = cache
+
+                    requested = args[1][0, 0, :].to(torch.int64)
+                    result = cache[0].index_select(1, requested).unsqueeze(0)
+                    generated = "rope_frequency_outer"
+                elif "where" in str(func) and len(args) == 3:
+                    condition, first, second = args
+                    if isinstance(first, torch.Tensor):
+                        true_value, false_value = first, second
+                    else:
+                        true_value = torch.full_like(
+                            second, float(first), dtype=second.dtype
+                        )
+                        false_value = second
+                    if not isinstance(true_value, torch.Tensor):
+                        true_value = torch.full_like(
+                            false_value, float(true_value), dtype=false_value.dtype
+                        )
+                    if not isinstance(false_value, torch.Tensor):
+                        false_value = torch.full_like(
+                            true_value, float(false_value), dtype=true_value.dtype
+                        )
+                    if (
+                        true_value.shape != false_value.shape
+                        or true_value.dtype != false_value.dtype
+                    ):
+                        raise ValueError(
+                            "Generated EOS where requires same-shape and same-dtype operands."
+                        )
+
+                    generated = "eos_where"
+                    adapter.active_operation = "eos_where"
+                    module = importlib.import_module(
+                        "ntops_lab.kernels.pointwise.where_self"
+                    )
+                    result = module.run(
+                        condition.contiguous().view(-1),
+                        true_value.contiguous().view(-1),
+                        false_value.contiguous().view(-1),
+                    ).view(false_value.shape)
+                if generated is not None:
+                    if adapter.collect:
+                        adapter.active_operation = generated
+                        adapter.calls[generated] += 1
+                        adapter.shapes[
+                            generated
+                            + ":"
+                            + str(
+                                [
+                                    (
+                                        tuple(value.shape),
+                                        str(value.dtype),
+                                        tuple(value.stride()),
+                                    )
+                                    for value in args
+                                    if isinstance(value, torch.Tensor)
+                                ]
+                            )
+                        ] += 1
+
+                    return result
+
             if adapter.collect and func in (
                 torch.ops.aten.mm.default,
                 torch.ops.aten.bmm.default,
@@ -640,6 +725,7 @@ def patched(
     try:
         with contextlib.ExitStack() as patches:
             patches.enter_context(stage_dispatch(adapter, stage))
+
             if stage >= 5:
                 if __package__:
                     from .e2e_attention import Adapter as AttentionAdapter
@@ -649,6 +735,7 @@ def patched(
                 attention = AttentionAdapter(adapter.backend, torch, recorder=adapter)
                 adapter.core_operator_adapters["sdpa"] = attention
                 patches.enter_context(attention.patched())
+
             if stage >= 6:
                 if model is None:
                     raise ValueError("Linear replacement requires the loaded model.")
@@ -667,6 +754,13 @@ def patched(
                 )
                 adapter.core_operator_adapters["linear"] = linear
                 patches.enter_context(linear.patched(model))
+            if stage >= 7 and adapter.backend == "ntops":
+                if __package__:
+                    from .e2e_full import patched as full_patched
+                else:
+                    from e2e_full import patched as full_patched
+
+                patches.enter_context(full_patched(adapter, stage))
             yield
     finally:
         (
@@ -915,7 +1009,17 @@ def measure_worker(config, backend, stage, order, identity):
                 required.append("mlp_gating_mul")
 
             if stage >= 4:
-                required += ["neg", "sin", "cos"]
+                required += ["sin", "cos"]
+                if stage < 7:
+                    required.append("neg")
+
+            if stage >= 7:
+                required += [
+                    "rotary_embedding",
+                    "rope_frequency_outer",
+                    "eos_where",
+                    "kv_cache_copy",
+                ]
 
             if stage >= 5:
                 required.append("sdpa")
@@ -1011,6 +1115,18 @@ def measure_worker(config, backend, stage, order, identity):
             == outputs[0]["output_ids"],
             operator_calls=dict(adapter.calls),
             native_matrix_calls=dict(adapter.native_matrix_calls),
+            stage7_additional_replacement_coverage={
+                "fused_rope": stage >= 7
+                and adapter.calls.get("rotary_embedding", 0) > 0,
+                "rope_frequency_outer": stage >= 7
+                and adapter.calls.get("rope_frequency_outer", 0) > 0,
+                "eos_where": stage >= 7 and adapter.calls.get("eos_where", 0) > 0,
+                "preallocated_kv_cache": stage >= 7
+                and adapter.calls.get("kv_cache_copy", 0) > 0,
+                "gqa_head_expansion": "native repeat_interleave; generated kernel remains experimental",
+                "embedding": "native embedding; generated gather remains experimental",
+                "greedy_argmax": "native argmax; generated hierarchical reduction remains experimental",
+            },
             core_kernel_coverage=core_coverage,
             shape_calls=dict(adapter.shapes),
             jit_launches=dict(launches),

@@ -212,7 +212,7 @@ def test_text_sanity_accepts_unicode_without_judging_semantics():
     assert not runner.text_sanity([1], "Synthetic text.", 128)["passed"]
 
 
-@pytest.mark.parametrize("stages", [[], [0], [7], [1, 1], [True], "5,6"])
+@pytest.mark.parametrize("stages", [[], [0], [8], [1, 1], [True], "5,6"])
 def test_rejects_invalid_stage_selection(configuration, stages):
     configuration.raw["e2e"]["stages"] = stages
     runner.write_json(configuration.path, configuration.raw)
