@@ -319,11 +319,12 @@ def _augmented_values(x, out):
 
 def _scalar_boolean(x, out):
     n = x.source.shape[0]
+    m = n * 2
 
-    if n > 0 and n < 128:
+    if n and m:
         out = x
 
-    if n < 1 or n >= 128:
+    if n or m:
         out = x
 
     if not n:
@@ -343,11 +344,88 @@ def test_frontend_operation_types_match_shared_inference(application):
         )
     )
 
+    operations = module.program.blocks[0].operations
+    types = {value.name: value.type for value in module.program.inputs}
+
+    for op in operations:
+        if op.opcode in {"arith.and", "arith.or"}:
+            assert all(types[name].dtype == "bool" for name in op.operands)
+            numeric = next(item for item in operations if item.opcode == "shape.dim")
+            invalid = replace(op, operands=(numeric.results[0].name, op.operands[1]))
+            block = replace(
+                module.program.blocks[0],
+                operations=tuple(
+                    invalid if item is op else item for item in operations
+                ),
+            )
+
+            with pytest.raises(ssa.VerificationError, match="Logical operands"):
+                verify_module(
+                    replace(module, program=replace(module.program, blocks=(block,)))
+                )
+
+        types.update((value.name, value.type) for value in op.results)
+
     for backend in ("triton", "cuda", "tilelang"):
         compiled = compiler.compile(CompileRequest(frontend=module, backend=backend))
 
         if backend != "cuda":
             ast.parse(compiled.artifact.primary_source)
+
+
+def _pointer_assignment(x, out):
+    ptr = x.data_ptr()
+    ptr = ptr + 2
+    ptr = ptr - 1
+    out = ntl.load(ptr)  # noqa: F841
+
+
+def _pointer_augmented(x, out):
+    ptr = x.data_ptr()
+    ptr += 2
+    ptr -= 1
+    out = ntl.load(ptr)  # noqa: F841
+
+
+def test_pointer_augassign_matches_assignment_before_and_after_binding():
+    from ninetoothed.compiler.specialization import specialize_module
+
+    compiler = Compiler()
+    programs = []
+
+    for application in (_pointer_assignment, _pointer_augmented):
+        request = CompileRequest(
+            arrangement=_pair_arrangement,
+            application=application,
+            tensors=(nt.Tensor(1, name="x"), nt.Tensor(1, name="out")),
+            kernel_name="pointer_arithmetic",
+        )
+        unknown = compiler.frontend(request)
+        known = compiler.frontend(
+            replace(request, tensor_dtypes={"x": "float32", "out": "float32"})
+        )
+        bound = specialize_module(unknown, dtypes={"x": "float32", "out": "float32"})
+        stages = []
+
+        for module in (unknown, known, bound):
+            operations = module.program.blocks[0].operations
+            assert not any(
+                op.opcode in {"dtype.of", "tensor.cast"} for op in operations
+            )
+            assert all(
+                op.results[0].type.kind == "pointer"
+                for op in operations
+                if op.opcode in {"arith.add", "arith.sub"}
+            )
+            compiled = compiler.compile(
+                CompileRequest(frontend=module, backend="triton")
+            )
+            ast.parse(compiled.artifact.primary_source)
+            stages.append(compiled.artifact.primary_source)
+
+        programs.append(stages)
+
+    assert programs[0] == programs[1]
 
 
 def test_runtime_meta_defaults_finish_specialization(monkeypatch, tmp_path):

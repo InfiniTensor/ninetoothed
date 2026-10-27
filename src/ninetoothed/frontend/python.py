@@ -692,7 +692,9 @@ class _ApplicationSSABuilder:
             attrs={"python": f"{_unparse(stmt.target)} {_augop_symbol(stmt.op)}= ..."},
         )
 
-        if lhs.type.dtype is None or result_type.dtype != lhs.type.dtype:
+        if lhs.type.kind != "pointer" and (
+            lhs.type.dtype is None or result_type.dtype != lhs.type.dtype
+        ):
             dtype = self._emit(
                 operations,
                 "dtype.of",
@@ -984,7 +986,12 @@ class _ApplicationSSABuilder:
         )
 
     def _lower_bool_expr(self, node, operations, env) -> ssa.Value:
-        values = [self._lower_expr(value, operations, env) for value in node.values]
+        values = [
+            self._ensure_bool_condition(
+                self._lower_expr(value, operations, env), operations
+            )
+            for value in node.values
+        ]
 
         if not values:
             raise LoweringError("Empty BoolOp is unsupported.")
@@ -1859,7 +1866,7 @@ class _ApplicationSSABuilder:
         if value.type.dtype == "bool":
             return value
 
-        if value.type.kind != "scalar" or value.type.dtype not in {None, "symbol"}:
+        if value.type.kind not in {"scalar", "index", "tensor"}:
             return value
 
         zero = self._constant(operations, 0)

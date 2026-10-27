@@ -185,6 +185,14 @@ def verify_operation_types(
 
         expected = _binary_type(binary[name](), *(value.type for value in values))
     elif code.startswith("cmp.") or code in {"arith.and", "arith.or", "arith.not"}:
+        if code in {"arith.and", "arith.or"} and any(
+            value.type.kind not in {"scalar", "tensor"} or value.type.dtype != "bool"
+            for value in values
+        ):
+            raise ssa.VerificationError(
+                f"Logical operands must be boolean at {location}."
+            )
+
         if any(value.type.kind == "dtype" for value in values) and (
             code not in {"cmp.eq", "cmp.ne"}
             or any(value.type.kind != "dtype" for value in values)
