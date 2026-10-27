@@ -13,4 +13,5 @@ NineToothed Documentation
    installation
    basics
    build
+   rvne
    python_api
