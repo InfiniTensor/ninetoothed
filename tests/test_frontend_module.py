@@ -1,5 +1,6 @@
 """Mechanism-level checks for the neutral frontend/compiler boundary."""
 
+import ast
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -27,6 +28,26 @@ def _request(**kwargs):
         tensors=(nt.Tensor(1), nt.Tensor(1), nt.Tensor(1)),
         **kwargs,
     )
+
+
+class _FakeHandle:
+    def __init__(self, compilation):
+        self._compilation = compilation
+
+        for name in (
+            "artifact",
+            "kernel",
+            "source",
+            "library",
+            "ssa",
+            "pass_trace",
+            "launch_plan",
+            "built_artifact",
+        ):
+            setattr(self, f"_{name}", None)
+
+    def __call__(self, *args, **kwargs):
+        return args[-1]
 
 
 def test_frozen_module_compiles_without_reentering_python(monkeypatch):
@@ -126,29 +147,10 @@ def test_lazy_dtype_specializations_reuse_the_frozen_frontend(monkeypatch, tmp_p
     )
     instances = []
 
-    class FakeHandle:
-        def __init__(self, compilation):
-            self._compilation = compilation
-
-            for name in (
-                "artifact",
-                "kernel",
-                "source",
-                "library",
-                "ssa",
-                "pass_trace",
-                "launch_plan",
-                "built_artifact",
-            ):
-                setattr(self, f"_{name}", None)
-
-        def __call__(self, *args, **kwargs):
-            return args[-1]
-
     def materialize(compilation, **kwargs):
         instances.append(compilation)
 
-        return FakeHandle(compilation)
+        return _FakeHandle(compilation)
 
     monkeypatch.setattr(runtime, "materialize", materialize)
     handle = runtime._materialize_lazy(compiled)
@@ -236,3 +238,170 @@ def test_shared_physical_symbols_are_checked_after_specialization_and_reload():
 
     with pytest.raises(TypeError, match="Physical layout"):
         _public_values(composite_abi, repeated, {"n": 63}, specs=())
+
+
+def _pair_arrangement(x, out):
+    return x.tile((32,)), out.tile((32,))
+
+
+def _dtype_branch(x, out):
+    value = x + 2
+
+    if x.dtype == ntl.float16:
+        value = x.to(ntl.float32) + 1
+
+    out = value  # noqa: F841
+
+
+def _dtype_conditional_store(x, out):
+    out = x
+
+    if x.dtype == ntl.float16:
+        out[0] = x[0]
+
+    if x.dtype != ntl.float16:
+        pass
+
+
+def test_dtype_binding_preserves_type_selected_control_flow():
+    from ninetoothed.compiler.specialization import specialize_module
+    from ninetoothed.errors import LoweringError
+
+    compiler = Compiler()
+    request = CompileRequest(
+        arrangement=_pair_arrangement,
+        application=_dtype_branch,
+        tensors=(nt.Tensor(1), nt.Tensor(1, dtype="float32")),
+    )
+    frozen = compiler.frontend(request)
+
+    for dtype, delta in (("float16", 1), ("bfloat16", 2)):
+        direct = compiler.frontend(replace(request, tensor_dtypes={"x": dtype}))
+        specialized = specialize_module(frozen, dtypes={"x": dtype})
+
+        for module in (direct, specialized):
+            operations = module.program.blocks[0].operations
+            producers = {value.name: op for op in operations for value in op.results}
+            store = next(op for op in reversed(operations) if op.opcode == "mem.store")
+            result = producers[store.operands[0]]
+            assert not any(op.opcode == "scf.if" for op in operations)
+            assert producers[result.operands[1]].attrs["value"] == delta
+            assert result.results[0].type.dtype == ("float32" if delta == 1 else dtype)
+
+        with pytest.raises(LoweringError, match="Cannot rebind dtype"):
+            specialize_module(direct, dtypes={"x": "float32"})
+
+        effects = compiler.frontend(
+            replace(request, application=_dtype_conditional_store)
+        )
+        effects = specialize_module(effects, dtypes={"x": dtype})
+        stores = [
+            op
+            for op in effects.program.blocks[0].operations
+            if op.opcode == "mem.store"
+        ]
+        assert len(stores) == (2 if dtype == "float16" else 1)
+
+
+def _masked_values(x, out):
+    a = ntl.where(x > 0, 1.0, 0.0)
+    b = 0.0 if x > 0 else x
+    c = 1.0 if x > 0 else 0.0
+    out = a + b + c  # noqa: F841
+
+
+def _augmented_values(x, out):
+    value = x
+    value += 1.0
+    out = value
+    out[0] += 1.0
+
+
+def _scalar_boolean(x, out):
+    n = x.source.shape[0]
+
+    if n > 0 and n < 128:
+        out = x
+
+    if n < 1 or n >= 128:
+        out = x
+
+    if not n:
+        out = x  # noqa: F841
+
+
+@pytest.mark.parametrize(
+    "application", (_masked_values, _augmented_values, _scalar_boolean)
+)
+def test_frontend_operation_types_match_shared_inference(application):
+    compiler = Compiler()
+    module = compiler.frontend(
+        CompileRequest(
+            arrangement=_pair_arrangement,
+            application=application,
+            tensors=(nt.Tensor(1, dtype="float16"), nt.Tensor(1, dtype="float16")),
+        )
+    )
+
+    for backend in ("triton", "cuda", "tilelang"):
+        compiled = compiler.compile(CompileRequest(frontend=module, backend=backend))
+
+        if backend != "cuda":
+            ast.parse(compiled.artifact.primary_source)
+
+
+def test_runtime_meta_defaults_finish_specialization(monkeypatch, tmp_path):
+    from ninetoothed.backends import materializers
+    from ninetoothed.compiler import runtime
+
+    bm = nt.Symbol("BLOCK_SIZE_M", meta=True)
+    bn = nt.Symbol("BLOCK_SIZE_N", meta=True)
+
+    def arrangement(x, y, out):
+        return tuple(t.tile((bm, bn)) for t in (x, y, out))
+
+    compiled = Compiler().compile(
+        replace(
+            _request(backend="tilelang"),
+            arrangement=arrangement,
+            tensors=tuple(nt.Tensor(2, dtype="float32") for _ in range(3)),
+        )
+    )
+    instances = []
+
+    def materialize(compilation, **kwargs):
+        instances.append(compilation)
+
+        return _FakeHandle(compilation)
+
+    monkeypatch.setattr(
+        materializers,
+        "materializer_for",
+        lambda target: SimpleNamespace(jit_materialize=materialize),
+    )
+    monkeypatch.setattr(
+        runtime, "write_source", lambda *args, **kwargs: tmp_path / "lazy.py"
+    )
+    handle = runtime.materialize(compiled)
+    values = tuple(
+        SimpleNamespace(
+            shape=(64, 96), stride=lambda dim: (96, 1)[dim], dtype="float32"
+        )
+        for _ in range(3)
+    )
+    assert handle(*values) is values[-1]
+    assert handle(*values) is values[-1]
+    assert len(instances) == 1
+    assert not runtime._requires_runtime_specialization(instances[0])
+
+    block = nt.Symbol("BLOCK_SIZE", constexpr=True)
+
+    def legacy_arrangement(x, y, out):
+        return tuple(t.tile((block,)) for t in (x, y, out))
+
+    legacy = Compiler().compile(replace(_request(), arrangement=legacy_arrangement))
+    binding = next(
+        item for item in legacy.launch_abi.kernel_args if item.name == str(block)
+    )
+    assert runtime._binding_value(binding, {}) == 256
+    assert str(block) not in legacy.request.frontend.meta_domains

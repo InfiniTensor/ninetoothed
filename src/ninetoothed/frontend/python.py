@@ -17,10 +17,10 @@ from typing import Any
 
 from ninetoothed.dtype import normalize_dtype
 from ninetoothed.frontend.errors import LoweringError
-from ninetoothed.frontend.types import (
+from ninetoothed.ir import TensorSpec, ssa
+from ninetoothed.ir.type_inference import (
     _binary_type,
     _bool_type,
-    _broadcast_type,
     _cast_type,
     _load_type,
     _math_result_type,
@@ -28,11 +28,11 @@ from ninetoothed.frontend.types import (
     _next_dtype_shape,
     _offset_type,
     _reduce_type,
+    _select_type,
     _shape_dim_from_type,
     _subscript_type,
     _transpose_type,
 )
-from ninetoothed.ir import TensorSpec, ssa
 
 _DTYPE_NAMES = {
     "bool",
@@ -646,15 +646,7 @@ class _ApplicationSSABuilder:
                 ),
             )
             rhs = self._lower_expr(stmt.value, operations, env)
-            result = self._emit(
-                operations,
-                f"arith.{_binop_name(stmt.op)}",
-                operands=(lhs.name, rhs.name),
-                result_type=lhs.type,
-                attrs={
-                    "python": f"{_unparse(stmt.target)} {_augop_symbol(stmt.op)}= ..."
-                },
-            )
+            result = self._lower_augmented_value(stmt, lhs, rhs, operations)
             operations.append(
                 ssa.Operation(
                     opcode="mem.store",
@@ -687,14 +679,34 @@ class _ApplicationSSABuilder:
             raise LoweringError(f"Unknown AugAssign target {stmt.target.id!r}.")
 
         rhs = self._lower_expr(stmt.value, operations, env)
+        result = self._lower_augmented_value(stmt, lhs, rhs, operations)
+        env[stmt.target.id] = result
+
+    def _lower_augmented_value(self, stmt, lhs, rhs, operations):
+        result_type = _binary_type(stmt.op, lhs.type, rhs.type)
         result = self._emit(
             operations,
             f"arith.{_binop_name(stmt.op)}",
             operands=(lhs.name, rhs.name),
-            result_type=lhs.type,
-            attrs={"python": f"{stmt.target.id} {_augop_symbol(stmt.op)}= ..."},
+            result_type=result_type,
+            attrs={"python": f"{_unparse(stmt.target)} {_augop_symbol(stmt.op)}= ..."},
         )
-        env[stmt.target.id] = result
+
+        if lhs.type.dtype is None or result_type.dtype != lhs.type.dtype:
+            dtype = self._emit(
+                operations,
+                "dtype.of",
+                operands=(lhs.name,),
+                result_type=ssa.Type(kind="dtype", dtype=lhs.type.dtype),
+            )
+            result = self._emit(
+                operations,
+                "tensor.cast",
+                operands=(result.name, dtype.name),
+                result_type=_cast_type(result_type, lhs.type.dtype),
+            )
+
+        return result
 
     def _lower_for(
         self,
@@ -942,7 +954,9 @@ class _ApplicationSSABuilder:
             operations,
             f"arith.{_unaryop_name(node.op)}",
             operands=(operand.name,),
-            result_type=operand.type,
+            result_type=(
+                _bool_type(operand) if isinstance(node.op, ast.Not) else operand.type
+            ),
         )
 
         if isinstance(node.op, ast.Not) and self._is_dtype_condition(operand):
@@ -985,9 +999,7 @@ class _ApplicationSSABuilder:
                 operations,
                 f"arith.{_boolop_name(node.op)}",
                 operands=(result.name, rhs.name),
-                result_type=ssa.Type(
-                    kind="scalar" if is_dtype else "tensor", dtype="bool"
-                ),
+                result_type=_bool_type(result, rhs),
             )
 
             if is_dtype:
@@ -1068,7 +1080,7 @@ class _ApplicationSSABuilder:
             operations,
             "select.where",
             operands=(condition.name, body.name, orelse.name),
-            result_type=body.type,
+            result_type=_select_type(condition.type, body.type, orelse.type),
         )
 
     def _lower_subscript_expr(self, node, operations, env) -> ssa.Value:
@@ -1608,7 +1620,7 @@ class _ApplicationSSABuilder:
                 operations,
                 "select.where",
                 operands=tuple(value.name for value in operands),
-                result_type=_broadcast_type(operands[1].type, operands[2].type),
+                result_type=_select_type(*(value.type for value in operands)),
             )
 
         if name in {"maximum", "minimum"}:

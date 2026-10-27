@@ -146,6 +146,17 @@ def specialize_module(module, *, values=None, dtypes=None):
         if any(normalize_dtype(dtype) not in supported for dtype in dtypes.values()):
             raise LoweringError("Specialization contains an unsupported element dtype.")
 
+        for spec in tensors:
+            if (
+                spec.name in dtypes
+                and spec.dtype is not None
+                and normalize_dtype(dtypes[spec.name]) != normalize_dtype(spec.dtype)
+            ):
+                raise LoweringError(
+                    f"Cannot rebind dtype of frozen parameter {spec.name!r} "
+                    f"from {spec.dtype!r} to {dtypes[spec.name]!r}."
+                )
+
         tensors = tuple(
             replace(
                 spec,

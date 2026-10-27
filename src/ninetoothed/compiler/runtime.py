@@ -234,8 +234,15 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
                 )
                 | specialization_values,
             )
+            specialized = compile_kernel(request)
+
+            if _requires_runtime_specialization(specialized):
+                raise TypeError(
+                    "Runtime specialization left unresolved types or layout parameters."
+                )
+
             specializations[key] = materialize(
-                compile_kernel(request), output_dir=output_dir, mode=mode
+                specialized, output_dir=output_dir, mode=mode
             )
 
         specialized = specializations[key]
@@ -259,20 +266,6 @@ def _runtime_specialization_values(compilation, public) -> dict[str, Any]:
     for binding in compilation.launch_abi.kernel_args:
         if binding.name not in dynamic_parameters:
             continue
-
-        if binding.kind == "meta" and compilation.artifact.backend != Target.TRITON:
-            from ninetoothed.compiler.specialization import is_schedule_tile_parameter
-
-            domain = compilation.request.frontend.meta_domains.get(binding.name)
-
-            if (
-                domain is not None
-                and domain["scope"] == "triton_tuning"
-                and binding.name
-                not in compilation.kernel.metadata.get("bound_meta", {})
-                and is_schedule_tile_parameter(binding.name)
-            ):
-                continue
 
         value = _binding_value(binding, public)
 

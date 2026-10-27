@@ -50,14 +50,56 @@ def instantiate_program(program, tensors):
         name: ssa.Value(name=name, type=ssa.Type(kind="index", dtype="index"))
         for name in program.metadata.get("symbols", ())
     } | {value.name: value for value in inputs}
+    aliases = {}
+    conditions = {}
 
-    def block(region, visible, type_conditions=None):
+    def reference(name):
+        while name in aliases:
+            name = aliases[name]
+
+        return name
+
+    def typed(original, dtype):
+        return replace(
+            original,
+            shape=tuple(reference(dim) for dim in original.shape),
+            dtype=dtype,
+        )
+
+    def attributes(original):
+        attrs = dict(original)
+
+        for name in ("dtype_ref", "dtype_operand", "preserve_dtype"):
+            if name in attrs:
+                attrs[name] = reference(attrs[name])
+
+        for name in ("indices", "shape_values"):
+            if name in attrs:
+                attrs[name] = (
+                    reference(attrs[name])
+                    if isinstance(attrs[name], str)
+                    else tuple(reference(item) for item in attrs[name])
+                )
+
+        if "iter_args" in attrs:
+            attrs["iter_args"] = tuple(
+                dict(item) | {"initial": reference(item["initial"])}
+                for item in attrs["iter_args"]
+            )
+
+        return attrs
+
+    def block(region, visible):
         operations = []
         current = dict(visible)
-        conditions = dict(type_conditions or {})
         current.update((arg.name, arg) for arg in region.args)
 
         for operation in region.operations:
+            operation = replace(
+                operation,
+                operands=tuple(reference(name) for name in operation.operands),
+                attrs=attributes(operation.attrs),
+            )
             operands = tuple(current.get(name) for name in operation.operands)
             code = operation.opcode
             regions = operation.regions
@@ -67,22 +109,49 @@ def instantiate_program(program, tensors):
             if condition is not None and operation.results:
                 conditions[operation.results[0].name] = condition
 
+            if code == "scf.if" and operation.operands[0] in conditions:
+                branch = 0 if conditions[operation.operands[0]] else 1
+
+                if branch >= len(regions):
+                    continue
+
+                selected = block(regions[branch], current)
+                selected_operations = (
+                    selected.operations[:-1]
+                    if operation.results
+                    else selected.operations
+                )
+                operations.extend(selected_operations)
+                current.update(
+                    (value.name, value)
+                    for nested in selected_operations
+                    for value in nested.results
+                )
+
+                if operation.results:
+                    for result, yielded in zip(
+                        operation.results, selected.operations[-1].operands
+                    ):
+                        aliases[result.name] = reference(yielded)
+
+                continue
+
             if code == "scf.for":
                 body = regions[0]
                 args = (
                     body.args[0],
                     *(
-                        replace(arg, type=replace(arg.type, dtype=value.type.dtype))
+                        replace(arg, type=typed(arg.type, value.type.dtype))
                         for arg, value in zip(body.args[1:], operands[3:])
                     ),
                 )
-                regions = (block(replace(body, args=args), current, conditions),)
+                regions = (block(replace(body, args=args), current),)
                 results = tuple(
-                    replace(result, type=replace(result.type, dtype=value.type.dtype))
+                    replace(result, type=typed(result.type, value.type.dtype))
                     for result, value in zip(operation.results, operands[3:])
                 )
             elif code == "scf.if":
-                regions = tuple(block(body, current, conditions) for body in regions)
+                regions = tuple(block(body, current) for body in regions)
                 yielded = (
                     regions[0].operations[-1].operands if operation.results else ()
                 )
@@ -94,7 +163,7 @@ def instantiate_program(program, tensors):
                 results = tuple(
                     replace(
                         result,
-                        type=replace(result.type, dtype=defined[name].type.dtype),
+                        type=typed(result.type, defined[name].type.dtype),
                     )
                     for result, name in zip(operation.results, yielded)
                 )
@@ -102,11 +171,9 @@ def instantiate_program(program, tensors):
                 results = tuple(
                     replace(
                         result,
-                        type=replace(
+                        type=typed(
                             result.type,
-                            dtype=_dtype(
-                                operation, operands, current, result, conditions
-                            ),
+                            _dtype(operation, operands, current, result, conditions),
                         ),
                     )
                     for result in operation.results
@@ -127,7 +194,7 @@ def instantiate_program(program, tensors):
             program,
             inputs=inputs,
             blocks=blocks,
-            outputs=tuple(values[value.name] for value in program.outputs),
+            outputs=tuple(values[reference(value.name)] for value in program.outputs),
         )
     )
 

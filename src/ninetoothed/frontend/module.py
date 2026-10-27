@@ -61,6 +61,7 @@ def freeze_application(request):
         )
 
     domains = {}
+    defaults = {}
     symbols = set(program.metadata.get("symbols", ()))
 
     for tensor in arranged:
@@ -68,7 +69,7 @@ def freeze_application(request):
             key = str(symbol)
             symbols.add(key)
 
-            if not is_meta(key) or not hasattr(symbol, "lower_bound"):
+            if not hasattr(symbol, "lower_bound"):
                 continue
 
             low, high = int(symbol.lower_bound), int(symbol.upper_bound)
@@ -85,6 +86,11 @@ def freeze_application(request):
                     raise LoweringError(
                         f"Meta domain {key!r} contains no legal power-of-two value."
                     )
+
+            defaults[key] = default
+
+            if not is_meta(key):
+                continue
 
             domains[key] = {
                 "lower": low,
@@ -185,6 +191,7 @@ def freeze_application(request):
                 for key in symbols
             },
             meta_domains=domains,
+            parameter_defaults=defaults,
             source=source,
             constexpr_values={
                 name: getattr(getattr(tensor, "source", tensor), "value", None)

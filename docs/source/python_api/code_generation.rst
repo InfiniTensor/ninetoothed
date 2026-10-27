@@ -54,6 +54,13 @@ also operates on this frozen representation, rather than rerunning arrangement
 code. Treat arrangements as pure functions: Python side effects are not a
 runtime-specialization mechanism.
 
+A dtype can be bound when it is unknown, or supplied again with the same value.
+Changing an already known dtype is rejected: the frontend may already have
+selected a branch using that type. Specializing an unknown dtype resolves such
+type-dependent branches before verification. Parameter defaults are stored
+separately from tuning domains, so legacy constexpr defaults do not create
+additional tuning candidates.
+
 Frontend verification additionally checks source-view provenance. Subsequent SSA
 passes still verify operation signatures, shapes, dtypes, control flow and effects;
 new local values need not retain frontend source-view attributes.

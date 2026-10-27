@@ -3,7 +3,7 @@
 import keyword
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 
 from ninetoothed.dtype import normalize_dtype
 from ninetoothed.ir import ssa
@@ -22,6 +22,7 @@ class FrontendModule:
     symbols: tuple[str, ...]
     symbol_roles: Mapping = field(default_factory=dict)
     bindings: Mapping = field(default_factory=dict)
+    parameter_defaults: Mapping = field(default_factory=dict)
     meta_domains: Mapping = field(default_factory=dict)
     constexpr_values: Mapping = field(default_factory=dict)
     source: str = ""
@@ -34,6 +35,7 @@ class FrontendModule:
         for name in (
             "symbol_roles",
             "bindings",
+            "parameter_defaults",
             "meta_domains",
             "constexpr_values",
         ):
@@ -45,9 +47,12 @@ class FrontendModule:
 
     @property
     def meta_defaults(self):
+        defaults = dict(self.parameter_defaults) | {
+            name: domain["default"] for name, domain in self.meta_domains.items()
+        }
+
         return {
-            name: self.bindings.get(name, domain["default"])
-            for name, domain in self.meta_domains.items()
+            name: self.bindings.get(name, value) for name, value in defaults.items()
         }
 
 
@@ -356,6 +361,7 @@ def verify_module(module):
     ):
         raise ssa.VerificationError("Module meta symbols require bounded domains.")
 
+    validate_bindings(replace(module, bindings={}), module.parameter_defaults)
     validate_bindings(module, module.bindings)
 
     return module

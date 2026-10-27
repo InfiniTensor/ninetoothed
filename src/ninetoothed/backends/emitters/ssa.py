@@ -97,7 +97,6 @@ _BINARY = {
 _UNARY = {
     "neg": "-",
     "pos": "+",
-    "not": "!",
     "invert": "~",
 }
 
@@ -2105,6 +2104,9 @@ def _render_scalar_expr(
         return target.call(name, args)
 
     args = target.coerce_binary_args(op, args, ctx)
+
+    if name == "not":
+        return f"({args[0]} == 0)"
 
     if name in _UNARY:
         return f"({_UNARY[name]}{args[0]})"
