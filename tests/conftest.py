@@ -35,3 +35,18 @@ def _module_path_from_request(request):
 
 def _hash(string):
     return int(hashlib.sha256(string.encode("utf-8")).hexdigest(), 16) % 2**32
+
+
+@pytest.fixture(autouse=True)
+def select_device_backend(request, monkeypatch):
+    """Route generic NPU numerical tests through the Ascend backend."""
+    if getattr(request.node, "callspec", None) is not None:
+        if request.node.callspec.params.get("device") == "npu":
+            monkeypatch.setenv("NINETOOTHED_BACKEND", "ascend")
+            name = (
+                torch.npu.get_device_name(0)
+                .lower()
+                .removeprefix("ascend")
+                .split("-")[0]
+            )
+            monkeypatch.setenv("NINETOOTHED_PLATFORM", f"ascend-{name}")

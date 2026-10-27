@@ -23,6 +23,7 @@ from ninetoothed.compiler.cache import (
     cache_lock,
     compilation_cache_key,
     read_manifest,
+    triton_cache_directory,
     write_manifest,
     write_source,
 )
@@ -122,8 +123,9 @@ def _materialize(compilation):
         "triton.py",
         cache_key=cache_key,
     )
-    TRITON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("TRITON_CACHE_DIR", str(TRITON_CACHE_DIR))
+    cache_directory = triton_cache_directory(TRITON_CACHE_DIR)
+    cache_directory.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("TRITON_CACHE_DIR", str(cache_directory))
     module = import_python_module(source)
     launch = getattr(module, artifact.entrypoint)
     kernel = getattr(module, f"{artifact.kernel_name}_kernel", None)
@@ -947,8 +949,9 @@ def _compile_aot_library(compilation, source: Path, library: Path) -> None:
     num_warps, num_stages = _compile_schedule(compilation)
     library.parent.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
-    TRITON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    environment["TRITON_CACHE_DIR"] = str(TRITON_CACHE_DIR)
+    cache_directory = triton_cache_directory(TRITON_CACHE_DIR)
+    cache_directory.mkdir(parents=True, exist_ok=True)
+    environment.setdefault("TRITON_CACHE_DIR", str(cache_directory))
 
     with tempfile.TemporaryDirectory(dir=library.parent) as temporary_dir:
         temporary = Path(temporary_dir)
