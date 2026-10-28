@@ -41,7 +41,16 @@ def compilation_cache_key(compilation) -> str:
 
     return stable_digest(
         {
-            "schema": 3,
+            "schema": 4,
+            "frontend_module": {
+                key: value
+                for key, value in ir_to_dict(request.frontend).items()
+                if key != "source"
+            }
+            if getattr(request, "frontend", None) is not None
+            else None,
+            "specialization_values": getattr(request, "specialization_values", None),
+            "tensor_dtypes": getattr(request, "tensor_dtypes", None),
             "source": artifact.sources,
             "ssa": ir_to_dict(compilation.kernel.ssa),
             "launch_plan": ir_to_dict(compilation.launch_plan),

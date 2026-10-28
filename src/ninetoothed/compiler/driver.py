@@ -1,11 +1,7 @@
 """Unified NineToothed SSA compiler driver."""
 
-import copy
-import inspect
 import itertools
-import math
 import os
-import textwrap
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -16,10 +12,9 @@ from ninetoothed.backends.core import (
     Target,
     normalize_target,
 )
-from ninetoothed.frontend.layout import tensor_specs
-from ninetoothed.frontend.python import LoweringError, from_application
 from ninetoothed.ir import IndexExpr, Kernel, LaunchABI, LaunchBinding, LaunchPlan, ssa
-from ninetoothed.naming import is_meta, remove_prefixes
+from ninetoothed.ir.module import FrontendModule, validate_identifier, verify_module
+from ninetoothed.naming import remove_prefixes
 from ninetoothed.targets import (
     TargetContext,
     resolve_target_context,
@@ -27,17 +22,16 @@ from ninetoothed.targets import (
 )
 
 from .specialization import (
-    is_schedule_tile_parameter,
     scheduled_meta_defaults,
-    specialize_program,
-    specialize_tensor_specs,
+    specialize_module,
 )
 
 
 @dataclass(frozen=True, kw_only=True)
 class CompileRequest:
     arrangement: Any | None = None
-    application: Any
+    application: Any | None = None
+    frontend: FrontendModule | None = None
     tensors: tuple[Any, ...] = ()
     backend: Target | str | None = None
     platform: str | None = None
@@ -99,7 +93,25 @@ class Compiler:
     """Facade for pure SSA compilation and optional runtime materialization."""
 
     def compile(self, request: CompileRequest) -> Compilation:
-        return _compile_kernel(request)
+        return _compile_kernel(request, module=self.frontend(request))
+
+    def frontend(self, request: CompileRequest) -> FrontendModule:
+        """Freeze a Python application into verified, target-neutral IR."""
+        if request.frontend is not None:
+            if (
+                request.application is not None
+                or request.arrangement is not None
+                or request.tensors
+            ):
+                raise ValueError(
+                    "A frontend module cannot be combined with Python inputs."
+                )
+
+            return verify_module(request.frontend)
+
+        from ninetoothed.frontend.module import freeze_application
+
+        return freeze_application(request)
 
     def materialize(self, request, *, output_dir=None, mode="jit"):
         compilation = (
@@ -264,56 +276,16 @@ def lower(
     return artifact
 
 
-def _compile_kernel(request: CompileRequest) -> Compilation:
+def _compile_kernel(request: CompileRequest, *, module: FrontendModule) -> Compilation:
     """Compile an application through SSA and a selected backend, without fallback."""
-    application = request.application
-    params = tuple(inspect.signature(application).parameters)
-
-    if request.arrangement is None:
-        annotations = inspect.get_annotations(application, eval_str=False)
-
-        try:
-            arranged = tuple(copy.deepcopy(annotations[name]) for name in params)
-        except KeyError as exc:
-            raise LoweringError(
-                f"Cannot lower `{application.__name__}`: parameter `{exc.args[0]}` "
-                "does not have a Tensor annotation."
-            ) from exc
-    else:
-        symbolic_tensors = copy.deepcopy(request.tensors)
-        arranged_value = request.arrangement(*symbolic_tensors)
-        arranged = (
-            arranged_value if isinstance(arranged_value, tuple) else (arranged_value,)
-        )
-
-    if len(arranged) != len(params):
-        raise LoweringError(
-            f"Cannot lower `{application.__name__}`: arrangement returned "
-            f"{len(arranged)} values for {len(params)} parameters."
-        )
-
-    for name, tensor in zip(params, arranged):
-        dtype = (request.tensor_dtypes or {}).get(name)
-
-        if dtype is not None:
-            getattr(tensor, "source", tensor).dtype = dtype
-
-    specs = tensor_specs(params, arranged)
-    kernel_name = request.kernel_name or application.__name__
-    meta_defaults = _meta_defaults(arranged)
-
-    try:
-        program = from_application(application, specs, kind=kernel_name, strict=True)
-    except LoweringError as exc:
-        raise LoweringError(
-            f"Cannot lower `{application.__name__}` through the SSA backend path: {exc}."
-        ) from exc
-
-    if program is None:
-        raise LoweringError(
-            f"Cannot lower `{application.__name__}` through the SSA backend path: "
-            "source inspection did not produce ssa.Program."
-        )
+    params = module.public_args
+    specs, program = module.tensors, module.program
+    kernel_name = request.kernel_name or module.name
+    validate_identifier(kernel_name)
+    meta_defaults = module.meta_defaults
+    request = replace(
+        request, application=None, arrangement=None, tensors=(), frontend=module
+    )
 
     target_context = resolve_compile_target(
         request.backend,
@@ -323,18 +295,17 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
     target = target_context.backend
     request = _apply_target_compiler_options(request, target_context)
     _validate_tuning_options(target, request)
-    specialization_values = dict(request.specialization_values or {})
+    specialization_values = dict(module.bindings) | dict(
+        request.specialization_values or {}
+    )
 
-    if target != Target.TRITON:
-        specialization_values = {
-            name: value
-            for name, value in specialization_values.items()
-            if not is_schedule_tile_parameter(name)
-        }
+    if specialization_values or request.tensor_dtypes:
+        module = specialize_module(
+            module, values=specialization_values, dtypes=request.tensor_dtypes
+        )
+        specs, program = module.tensors, module.program
 
-    if specialization_values:
-        specs = specialize_tensor_specs(specs, specialization_values)
-        program = specialize_program(program, specialization_values)
+    meta_defaults = module.meta_defaults
 
     backend_options = (
         default_registry()
@@ -349,7 +320,7 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
     request = replace(request, backend_options=backend_options)
     kernel = Kernel(
         kernel_name=kernel_name,
-        source=_source(application),
+        source=module.source,
         source_language="ninetoothed-python",
         entrypoint=kernel_name,
         tensors=specs,
@@ -361,6 +332,7 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
             "ssa_pass_options": dict(request.pass_options or {}),
             "backend_options": backend_options,
             "target": target_context.as_metadata(),
+            "frontend_module_version": module.version,
         },
         metadata={
             "caller": request.caller,
@@ -370,23 +342,36 @@ def _compile_kernel(request: CompileRequest) -> Compilation:
             "specialization_values": specialization_values,
             "generation_py_fallback": False,
             "meta_defaults": meta_defaults,
+            "meta_domains": module.meta_domains,
+            "bound_meta": {
+                name: value
+                for name, value in module.bindings.items()
+                if name in module.meta_domains
+            },
             "target": target_context.as_metadata(),
         },
         ssa=program,
     )
     artifact = emit(kernel, backend=target, target_context=target_context)
     scheduled_defaults = scheduled_meta_defaults(
-        meta_defaults, artifact.metadata.get("ssa_schedule", {})
+        meta_defaults,
+        artifact.metadata.get("ssa_schedule", {}),
+        domains=module.meta_domains,
+        bindings=module.bindings,
     )
     launch_abi = _launch_abi(
         params,
         specs,
         artifact,
-        arranged,
+        module,
         program=program,
         meta_defaults=scheduled_defaults,
     )
-    launch_plan = _launch_plan(launch_abi, artifact, request, arranged)
+    launch_abi = replace(
+        launch_abi,
+        symbol_constraints=_symbol_constraints(request.frontend, module.bindings),
+    )
+    launch_plan = _launch_plan(launch_abi, artifact, request, module)
     kernel = replace(
         kernel,
         launch_abi=launch_abi,
@@ -427,11 +412,8 @@ def _launch_abi(
         str(binding["name"]): binding
         for binding in artifact.metadata.get("auxiliary_bindings", ())
     }
-    meta_defaults = dict(meta_defaults or _meta_defaults(arranged))
-    constexpr_values = {
-        name: getattr(getattr(tensor, "source", tensor), "value", None)
-        for name, tensor in zip(params, arranged)
-    }
+    meta_defaults = dict(meta_defaults or arranged.meta_defaults)
+    constexpr_values = arranged.constexpr_values
     output_names = tuple(artifact.metadata.get("outputs", ()))
     access_modes = _tensor_access_modes(program)
     bindings = []
@@ -573,7 +555,9 @@ def _tensor_access_modes(program: ssa.Program) -> dict[str, str]:
 
         producer = producers.get(name)
 
-        if producer is None or producer.opcode.startswith(("index.", "shape.")):
+        if producer is None or producer.opcode.startswith(
+            ("index.", "shape.", "dtype.")
+        ):
             return frozenset()
 
         nested_yields = (
@@ -972,24 +956,30 @@ def _layout_transfer_candidate_is_legal(layout_transfer, meta, private_meta):
     return numel <= 1 << 20
 
 
-def _meta_parameter_configurations(arranged) -> tuple[dict[str, int], ...]:
+def _meta_parameter_configurations(module) -> tuple[dict[str, int], ...]:
     symbols = {
-        str(symbol): symbol
-        for tensor in arranged
-        for symbol in tensor.names()
-        if is_meta(str(symbol))
+        name: domain
+        for name, domain in module.meta_domains.items()
+        if name not in module.bindings
     }
 
     if not symbols:
         return ({},)
 
     names = tuple(sorted(symbols))
-    values = tuple(_symbol_values(symbols[name]) for name in names)
+    values = tuple(
+        tuple(
+            value
+            for value in range(domain["lower"], domain["upper"] + 1)
+            if not domain["power_of_two"] or (value > 0 and value & (value - 1) == 0)
+        )
+        for domain in (symbols[name] for name in names)
+    )
     configurations = tuple(
         configuration
         for combination in itertools.product(*values)
         if _meta_configuration_is_legal(
-            arranged, configuration := dict(zip(names, combination))
+            module, configuration := dict(zip(names, combination))
         )
     )
 
@@ -1001,32 +991,23 @@ def _meta_parameter_configurations(arranged) -> tuple[dict[str, int], ...]:
     return configurations
 
 
-def _symbol_values(symbol) -> tuple[int, ...]:
-    values = range(int(symbol.lower_bound), int(symbol.upper_bound) + 1)
-
-    if getattr(symbol, "power_of_two", False):
-        return tuple(
-            value for value in values if value > 0 and value & (value - 1) == 0
-        )
-    return tuple(values)
-
-
-def _meta_configuration_is_legal(arranged, configuration) -> bool:
-    """Apply the old generator's conservative innermost-tile size bound."""
+def _meta_configuration_is_legal(module, configuration) -> bool:
+    """Check the existing innermost-tile budget using frozen layout data."""
     import sympy
 
-    max_num_elements = 2**15
-
-    for tensor in arranged:
-        expression = sympy.sympify(str(math.prod(tensor.innermost().shape)))
+    for spec in module.tensors:
+        shape = (
+            spec.layout.levels[-1].shape if spec.layout and spec.layout.levels else ()
+        )
+        expression = sympy.sympify(
+            " * ".join(f"({dim.render()})" for dim in shape) or "1"
+        )
         specialized = expression.subs(configuration)
 
         if specialized.free_symbols:
             continue
 
-        num_elements = int(specialized)
-
-        if not 1 <= num_elements <= max_num_elements:
+        if not 1 <= int(specialized) <= 2**15:
             return False
     return True
 
@@ -1090,27 +1071,6 @@ def _derived_binding(name: str, specs, constexpr_values):
     return None
 
 
-def _meta_defaults(arranged) -> dict[str, int]:
-    defaults = {}
-
-    for tensor in arranged:
-        for symbol in tensor.names():
-            name = str(symbol)
-
-            if not hasattr(symbol, "lower_bound"):
-                continue
-
-            lower = int(symbol.lower_bound)
-            upper = int(symbol.upper_bound)
-            value = min(max(256, lower), upper)
-
-            if getattr(symbol, "power_of_two", False):
-                value = 1 << max(0, value.bit_length() - 1)
-
-            defaults[name] = value
-    return defaults
-
-
 def _runtime_shape_params(specs) -> tuple[str, ...]:
     params = []
 
@@ -1142,7 +1102,72 @@ def _abi_dict(abi: LaunchABI) -> dict[str, Any]:
         "kernel_args": tuple(binding.__dict__ for binding in abi.kernel_args),
         "outputs": abi.outputs,
         "shape_params": abi.shape_params,
+        "symbol_constraints": abi.symbol_constraints,
     }
+
+
+def _symbol_constraints(module, bindings):
+    """Retain every physical observation of a shared or fixed source symbol."""
+    observations = {}
+    expressions = {}
+    expression_symbols = set()
+    ragged_observations = set()
+
+    def collect_symbols(expression):
+        if expression.op == "symbol":
+            expression_symbols.add(expression.value)
+
+        for operand in expression.operands:
+            collect_symbols(operand)
+
+    for spec in module.tensors:
+        for field, kind in (("source_shape", "shape"), ("source_strides", "stride")):
+            for dim, text in enumerate(spec.attrs.get(field, ())):
+                expression = IndexExpr.parse(text)
+                observation = {"tensor": spec.name, "kind": kind, "dim": dim}
+
+                # Jagged batch offsets are supplied separately. This zero is an
+                # access-map sentinel, not an observation of Tensor.stride(0).
+                if (
+                    spec.jagged_dim is not None
+                    and kind == "stride"
+                    and dim == 0
+                    and expression.op == "constant"
+                    and expression.value == 0
+                ):
+                    continue
+
+                if spec.jagged_dim == dim and kind == "shape":
+                    ragged_observations.add((spec.name, kind, dim))
+
+                if expression.op == "symbol":
+                    observations.setdefault(expression.value, []).append(observation)
+                elif expression.op != "constant" or kind == "stride":
+                    expressions.setdefault(expression.render(), []).append(observation)
+                    collect_symbols(expression)
+
+    direct = tuple(
+        {"symbol": symbol, "bindings": tuple(items), "value": bindings.get(symbol)}
+        for symbol, items in sorted(observations.items())
+        if len(items) > 1 or symbol in bindings or symbol in expression_symbols
+    )
+
+    constraints = direct + tuple(
+        {"expression": expression, "bindings": tuple(items), "values": dict(bindings)}
+        for expression, items in sorted(expressions.items())
+    )
+
+    for constraint in constraints:
+        for observation in constraint["bindings"]:
+            if (
+                tuple(observation[key] for key in ("tensor", "kind", "dim"))
+                in ragged_observations
+            ):
+                raise ValueError(
+                    "Physical equality constraints on a jagged sequence dimension "
+                    "require a per-sequence runtime contract."
+                )
+    return constraints
 
 
 def _launch_plan_dict(plan: LaunchPlan) -> dict[str, Any]:
@@ -1154,13 +1179,6 @@ def _launch_plan_dict(plan: LaunchPlan) -> dict[str, Any]:
         "specialization_key": plan.specialization_key,
         "tuning_candidates": plan.tuning_candidates,
     }
-
-
-def _source(application) -> str:
-    try:
-        return textwrap.dedent(inspect.getsource(application))
-    except OSError:
-        return f"def {application.__name__}(...):\n    pass\n"
 
 
 __all__ = [

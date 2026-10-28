@@ -1,6 +1,5 @@
 """Materialize backend artifacts into callable runtime handles."""
 
-import copy
 import ctypes
 import importlib.util
 import os
@@ -101,6 +100,7 @@ def materialize(
     mode: str = "jit",
 ) -> Handle:
     target = compilation.artifact.backend
+
     assert compilation.target is not None
     validate_artifact_materialization(compilation.artifact, mode=mode)
     compilation.target.validate_materialization(mode)
@@ -140,6 +140,7 @@ def _launch_abi_from_dict(value) -> LaunchABI:
         ),
         outputs=tuple(value.get("outputs", ())),
         shape_params=tuple(value.get("shape_params", ())),
+        symbol_constraints=tuple(value.get("symbol_constraints", ())),
     )
 
 
@@ -159,10 +160,11 @@ def _requires_runtime_specialization(compilation) -> bool:
     if any(tensor.dtype is None for tensor in compilation.kernel.tensors):
         return True
 
-    if compilation.request.specialization_values:
-        return False
+    bound = dict(compilation.kernel.metadata.get("specialization_values", {}))
+
     return compilation.artifact.backend == Target.TILELANG and any(
-        binding.kind
+        binding.name not in bound
+        and binding.kind
         in {
             "shape",
             "stride",
@@ -226,12 +228,21 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
 
             request = replace(
                 compilation.request,
-                tensors=copy.deepcopy(compilation.request.tensors),
-                tensor_dtypes=dtypes,
-                specialization_values=specialization_values,
+                tensor_dtypes=dict(compilation.request.tensor_dtypes or {}) | dtypes,
+                specialization_values=dict(
+                    compilation.request.specialization_values or {}
+                )
+                | specialization_values,
             )
+            specialized = compile_kernel(request)
+
+            if _requires_runtime_specialization(specialized):
+                raise TypeError(
+                    "Runtime specialization left unresolved types or layout parameters."
+                )
+
             specializations[key] = materialize(
-                compile_kernel(request), output_dir=output_dir, mode=mode
+                specialized, output_dir=output_dir, mode=mode
             )
 
         specialized = specializations[key]
@@ -1237,9 +1248,96 @@ def _public_values(
     if missing:
         raise TypeError(f"Missing kernel arguments: {', '.join(missing)}.")
 
-    _validate_runtime_values(values, specs, device_types=device_types)
+    _validate_runtime_values(
+        values,
+        specs,
+        device_types=device_types,
+    )
+
+    if abi.symbol_constraints:
+        symbols = {
+            binding.name: _binding_value(binding, values)
+            for binding in abi.kernel_args
+            if binding.kind == "meta"
+            and (binding.source in values or binding.value is not None)
+        }
+        _validate_symbol_constraints(values, abi.symbol_constraints, symbols=symbols)
 
     return values
+
+
+def _validate_symbol_constraints(values, constraints, *, symbols=None):
+    import operator
+
+    from ninetoothed.ir import IndexExpr
+    from ninetoothed.ir.module import evaluate_index_expression
+
+    try:
+        symbols = {
+            name: operator.index(value) for name, value in (symbols or {}).items()
+        }
+    except TypeError as exc:
+        raise TypeError("Physical layout meta-parameters must be integers.") from exc
+
+    for constraint in constraints:
+        if "expression" in constraint:
+            continue
+
+        observations = []
+
+        for binding in constraint["bindings"]:
+            value = values[binding["tensor"]]
+            dim = binding["dim"]
+            actual = int(
+                value.shape[dim] if binding["kind"] == "shape" else value.stride(dim)
+            )
+            observations.append((binding, actual))
+
+        expected = (
+            constraint["value"]
+            if constraint["value"] is not None
+            else observations[0][1]
+        )
+
+        if (
+            constraint["symbol"] in symbols
+            and symbols[constraint["symbol"]] != expected
+        ) or any(actual != expected for _binding, actual in observations):
+            rendered = ", ".join(
+                f"{item['tensor']}.{item['kind']}[{item['dim']}]={actual}"
+                for item, actual in observations
+            )
+            raise TypeError(
+                f"Symbol {constraint['symbol']!r} requires {expected}; {rendered}."
+            )
+
+        symbols[constraint["symbol"]] = expected
+
+    for constraint in constraints:
+        if "expression" not in constraint:
+            continue
+
+        try:
+            expected = evaluate_index_expression(
+                IndexExpr.parse(constraint["expression"]),
+                symbols | dict(constraint["values"]),
+            )
+        except (KeyError, ValueError, ZeroDivisionError) as exc:
+            raise TypeError(
+                f"Cannot bind physical layout expression {constraint['expression']!r}."
+            ) from exc
+
+        for binding in constraint["bindings"]:
+            value = values[binding["tensor"]]
+            dim = binding["dim"]
+            actual = int(
+                value.shape[dim] if binding["kind"] == "shape" else value.stride(dim)
+            )
+
+            if actual != expected:
+                raise TypeError(
+                    f"Physical layout {binding['tensor']}.{binding['kind']}[{dim}]={actual} differs from {constraint['expression']!r}={expected}."
+                )
 
 
 def _filter_runtime_kwargs(abi: LaunchABI, kwargs) -> dict[str, Any]:

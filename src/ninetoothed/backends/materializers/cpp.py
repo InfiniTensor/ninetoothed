@@ -129,6 +129,32 @@ def wrapper_source(compilation, enter_name, leave_name):
 
         pointer_checks.append(f"{public}.data == nullptr")
 
+    for constraint in abi.symbol_constraints:
+        if "expression" in constraint:
+            from ninetoothed.ir import IndexExpr
+            from ninetoothed.ir.module import evaluate_index_expression
+
+            try:
+                expected = evaluate_index_expression(
+                    IndexExpr.parse(constraint["expression"]), constraint["values"]
+                )
+            except (KeyError, ValueError, ZeroDivisionError) as exc:
+                raise ValueError(
+                    "C++ export requires specialization of composite physical layout guards; use the checked Python handle."
+                ) from exc
+
+            if int(expected) != expected or not -(1 << 63) <= expected < (1 << 63):
+                raise ValueError("C++ physical layout guards require int64 values.")
+        else:
+            expected = constraint["value"]
+
+        observed = [
+            f"{names[item['tensor']]}.{'shape' if item['kind'] == 'shape' else 'strides'}[{item['dim']}]"
+            for item in constraint["bindings"]
+        ]
+        expected = expected if expected is not None else observed[0]
+        checks.extend(f"{actual} != {expected}" for actual in observed)
+
     types = ["CUstream"]
     values = ["static_cast<CUstream>(stream)"]
 

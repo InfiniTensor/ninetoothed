@@ -1,8 +1,5 @@
-"""Frontend lowering exceptions."""
+"""Compatibility imports for shared lowering diagnostics."""
 
-
-class LoweringError(ValueError):
-    """Raised when a Python construct is outside the SSA frontend subset."""
-
+from ninetoothed.errors import LoweringError
 
 __all__ = ["LoweringError"]
