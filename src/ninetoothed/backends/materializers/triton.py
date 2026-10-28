@@ -58,6 +58,31 @@ class TritonMaterializer(Materializer):
         return _aot_materialize(compilation, output_dir=output_dir)
 
     def load_built_artifact(self, built: BuiltArtifact):
+        if built.binary_path is None and built.abi.get("named_layout") is not None:
+            from ninetoothed.compiler.runtime import (
+                _launch_abi_from_dict,
+                _runtime_specs,
+                _runtime_wrapper,
+                _verified_runtime_launch,
+                import_python_module,
+            )
+
+            source = write_source(
+                built.source.kernel_name,
+                built.source.primary_source,
+                "triton.py",
+                cache_key=built.cache_key,
+            )
+            module = import_python_module(source)
+
+            return _verified_runtime_launch(
+                _runtime_wrapper(
+                    getattr(module, built.source.entrypoint),
+                    _launch_abi_from_dict(built.abi),
+                    specs=_runtime_specs(built.source),
+                )
+            )
+
         if built.binary_path is None:
             raise ValueError("Triton built artifact does not contain an AOT binary.")
 

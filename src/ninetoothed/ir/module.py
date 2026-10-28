@@ -23,6 +23,7 @@ class FrontendModule:
     symbol_roles: Mapping = field(default_factory=dict)
     bindings: Mapping = field(default_factory=dict)
     parameter_defaults: Mapping = field(default_factory=dict)
+    named_layout: Mapping | None = None
     meta_domains: Mapping = field(default_factory=dict)
     constexpr_values: Mapping = field(default_factory=dict)
     source: str = ""
@@ -36,6 +37,7 @@ class FrontendModule:
             "symbol_roles",
             "bindings",
             "parameter_defaults",
+            "named_layout",
             "meta_domains",
             "constexpr_values",
         ):
@@ -363,6 +365,10 @@ def verify_module(module):
 
     validate_bindings(replace(module, bindings={}), module.parameter_defaults)
     validate_bindings(module, module.bindings)
+
+    from ninetoothed.ir.named_layout import verify_named_layout
+
+    verify_named_layout(module)
 
     return module
 

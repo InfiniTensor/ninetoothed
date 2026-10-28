@@ -10,6 +10,7 @@ Meta-Operations
    :toctree: generated
    :nosignatures:
 
+   ninetoothed.Tensor.axes
    ninetoothed.Tensor.tile
    ninetoothed.Tensor.expand
    ninetoothed.Tensor.unsqueeze

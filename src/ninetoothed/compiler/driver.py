@@ -13,7 +13,12 @@ from ninetoothed.backends.core import (
     normalize_target,
 )
 from ninetoothed.ir import IndexExpr, Kernel, LaunchABI, LaunchBinding, LaunchPlan, ssa
-from ninetoothed.ir.module import FrontendModule, validate_identifier, verify_module
+from ninetoothed.ir.module import (
+    FrontendModule,
+    evaluate_index_expression,
+    validate_identifier,
+    verify_module,
+)
 from ninetoothed.naming import remove_prefixes
 from ninetoothed.targets import (
     TargetContext,
@@ -293,6 +298,10 @@ def _compile_kernel(request: CompileRequest, *, module: FrontendModule) -> Compi
         compute_arch=request.compute_arch,
     )
     target = target_context.backend
+
+    if module.named_layout is not None and request.caller != "torch":
+        raise ValueError("Named programs require the checked Torch caller.")
+
     request = _apply_target_compiler_options(request, target_context)
     _validate_tuning_options(target, request)
     specialization_values = dict(module.bindings) | dict(
@@ -358,6 +367,7 @@ def _compile_kernel(request: CompileRequest, *, module: FrontendModule) -> Compi
         artifact.metadata.get("ssa_schedule", {}),
         domains=module.meta_domains,
         bindings=module.bindings,
+        layout_owned=module.named_layout is not None,
     )
     launch_abi = _launch_abi(
         params,
@@ -370,6 +380,7 @@ def _compile_kernel(request: CompileRequest, *, module: FrontendModule) -> Compi
     launch_abi = replace(
         launch_abi,
         symbol_constraints=_symbol_constraints(request.frontend, module.bindings),
+        named_layout=module.named_layout,
     )
     launch_plan = _launch_plan(launch_abi, artifact, request, module)
     kernel = replace(
@@ -831,6 +842,13 @@ def _triton_tuning_candidates(
         if meta:
             candidate["meta_parameters"] = meta
 
+        if schedule.get("layout_tile"):
+            values = dict(arranged.meta_defaults) | dict(arranged.bindings) | meta
+            candidate["tile"] = {
+                role: evaluate_index_expression(IndexExpr.parse(expression), values)
+                for role, expression in schedule["layout_tile"].items()
+            }
+
         if candidate not in candidates:
             candidates.append(candidate)
 
@@ -1103,6 +1121,7 @@ def _abi_dict(abi: LaunchABI) -> dict[str, Any]:
         "outputs": abi.outputs,
         "shape_params": abi.shape_params,
         "symbol_constraints": abi.symbol_constraints,
+        "named_layout": abi.named_layout,
     }
 
 

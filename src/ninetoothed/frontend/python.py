@@ -102,7 +102,23 @@ def from_source(
     if globalns is not None:
         func = _InlineHelperCalls(globalns).inline(func)
 
+    return _from_function(func, tensor_irs, kind=kind, strict=strict)
+
+
+def prepare_application(application):
+    """Share helper expansion with layout adapters; return a fresh AST and scope."""
+    source = textwrap.dedent(inspect.getsource(application))
+    tree = ast.parse(source)
+    func = next(node for node in tree.body if isinstance(node, ast.FunctionDef))
+    closure = inspect.getclosurevars(application)
+    scope = dict(application.__globals__) | closure.globals | closure.nonlocals
+
+    return _InlineHelperCalls(scope).inline(func), scope
+
+
+def _from_function(func, tensor_irs, *, kind, strict, named=False):
     builder = _ApplicationSSABuilder(func, tensor_irs, kind, strict=strict)
+    builder.named_layout = named
     builder.lower()
     program = builder.finish()
     ssa.verify_program(program)
@@ -1457,6 +1473,23 @@ class _ApplicationSSABuilder:
             "dtype_ref": dtype_ref,
             "dtype_operand": target.name,
         }
+
+        if getattr(self, "named_layout", False):
+            shape_node = node.args[0]
+
+            if (
+                isinstance(shape_node, ast.Attribute)
+                and shape_node.attr == "shape"
+                and isinstance(shape_node.value, ast.Name)
+                and shape_node.value.id in self.param_names
+            ):
+                attrs["shape_origins"] = tuple(
+                    (shape_node.value.id, dim) for dim in range(len(shape))
+                )
+            else:
+                raise _lowering_error(
+                    node, "Named constructor shape must be parameter.shape"
+                )
 
         if is_full:
             attrs["value"] = (

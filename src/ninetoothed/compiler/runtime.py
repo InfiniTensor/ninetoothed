@@ -21,6 +21,7 @@ from ninetoothed.compiler.cache import (
 )
 from ninetoothed.dtype import normalize_dtype
 from ninetoothed.ir import LaunchABI, LaunchBinding, ir_to_dict
+from ninetoothed.ir.frozen import freeze
 from ninetoothed.targets import (
     runtime_device_types,
     validate_artifact_materialization,
@@ -101,6 +102,15 @@ def materialize(
 ) -> Handle:
     target = compilation.artifact.backend
 
+    if compilation.launch_abi.named_layout is not None and (
+        mode != "jit"
+        or compilation.request.caller != "torch"
+        or target != Target.TRITON
+    ):
+        raise ValueError(
+            "Named S1 execution requires the checked Triton Torch JIT caller."
+        )
+
     assert compilation.target is not None
     validate_artifact_materialization(compilation.artifact, mode=mode)
     compilation.target.validate_materialization(mode)
@@ -127,7 +137,18 @@ def load_built_artifact(built: BuiltArtifact):
     """Load a materialized binary and restore its public Launch ABI callable."""
     from ninetoothed.backends.materializers import materializer_for
 
-    validate_artifact_materialization(built.source, mode="aot")
+    named = built.abi.get("named_layout")
+
+    if named is not None:
+        if built.binary_path is not None or built.source.backend != Target.TRITON:
+            raise ValueError("Named S1 reload requires a checked Triton JIT artifact.")
+
+        if named != built.source.metadata.get("launch_abi", {}).get("named_layout"):
+            raise ValueError("Named artifact ABI and source contracts differ.")
+
+    validate_artifact_materialization(
+        built.source, mode="jit" if named is not None else "aot"
+    )
 
     return materializer_for(built.source.backend).load_built_artifact(built)
 
@@ -141,6 +162,7 @@ def _launch_abi_from_dict(value) -> LaunchABI:
         outputs=tuple(value.get("outputs", ())),
         shape_params=tuple(value.get("shape_params", ())),
         symbol_constraints=tuple(value.get("symbol_constraints", ())),
+        named_layout=value.get("named_layout"),
     )
 
 
@@ -1248,11 +1270,27 @@ def _public_values(
     if missing:
         raise TypeError(f"Missing kernel arguments: {', '.join(missing)}.")
 
+    marked = {
+        spec.name: spec.attrs["named_layout"]
+        for spec in specs or ()
+        if "named_layout" in spec.attrs
+    }
+
+    if marked and (
+        abi.named_layout is None or freeze(marked) != abi.named_layout["parameters"]
+    ):
+        raise ValueError("Named runtime ABI cannot discard or change layout contracts.")
+
     _validate_runtime_values(
         values,
         specs,
         device_types=device_types,
     )
+
+    if abi.named_layout is not None:
+        from ninetoothed.compiler.named_runtime import validate_named_call
+
+        validate_named_call(values, abi)
 
     if abi.symbol_constraints:
         symbols = {

@@ -9,7 +9,11 @@ from ninetoothed.dtype import normalize_dtype
 from ninetoothed.errors import LoweringError
 from ninetoothed.ir import IndexExpr, Kernel, TensorSpec, ssa
 from ninetoothed.ir.instantiation import instantiate_program
-from ninetoothed.ir.module import validate_bindings, verify_module
+from ninetoothed.ir.module import (
+    evaluate_index_expression,
+    validate_bindings,
+    verify_module,
+)
 from ninetoothed.naming import remove_prefixes
 
 
@@ -72,7 +76,7 @@ def _specialize_contract_attrs(attributes, values, parameter):
     attrs = {
         key: item
         if (key.startswith("jagged_") and key.endswith("_param"))
-        or key in {"source_name", "layout_operations", "custom_tiling"}
+        or key in {"source_name", "layout_operations", "custom_tiling", "named_layout"}
         else _specialize_value(item, values)
         for key, item in attributes.items()
     }
@@ -93,6 +97,11 @@ def _specialize_contract_attrs(attributes, values, parameter):
                 attributes["access_templates"], attrs["access_templates"]
             )
         )
+
+    if "named_layout" in attributes:
+        from ninetoothed.ir.named_layout import specialize_binding
+
+        attrs["named_layout"] = specialize_binding(attributes["named_layout"], values)
 
     return attrs
 
@@ -175,6 +184,13 @@ def specialize_module(module, *, values=None, dtypes=None):
         bindings=dict(module.bindings) | values,
     )
 
+    if module.named_layout is not None:
+        from ninetoothed.ir.named_layout import specialize_contract
+
+        specialized = replace(
+            specialized, named_layout=specialize_contract(module.named_layout, values)
+        )
+
     return verify_module(specialized)
 
 
@@ -184,6 +200,7 @@ def scheduled_meta_defaults(
     *,
     domains=None,
     bindings=None,
+    layout_owned=False,
 ) -> dict[str, int]:
     """Apply a selected schedule's tile values to matching meta parameters."""
     result = dict(defaults)
@@ -193,28 +210,30 @@ def scheduled_meta_defaults(
     for name in result:
         if name in bindings:
             result[name] = bindings[name]
+
+        domain = (domains or {}).get(name, {})
+
+        if domain.get("scope") == "hard_layout":
+            value = result[name]
+
+            if (
+                type(value) is not int
+                or not domain["lower"] <= value <= domain["upper"]
+                or (domain["power_of_two"] and (value <= 0 or value & (value - 1)))
+            ):
+                raise LoweringError(
+                    f"Layout value violates hard meta domain for {name!r}."
+                )
+
+            continue
+
+        if name in bindings or layout_owned:
             continue
 
         schedule_name = _schedule_tile_name(name)
 
         if schedule_name in tile:
-            value = tile[schedule_name]
-            domain = (domains or {}).get(name)
-
-            if (
-                domain is not None
-                and domain["scope"] == "hard_layout"
-                and (
-                    type(value) is not int
-                    or not domain["lower"] <= value <= domain["upper"]
-                    or (domain["power_of_two"] and (value <= 0 or value & (value - 1)))
-                )
-            ):
-                raise LoweringError(
-                    f"Backend schedule violates hard meta domain for {name!r}."
-                )
-
-            result[name] = int(value)
+            result[name] = int(tile[schedule_name])
     return result
 
 
@@ -227,18 +246,20 @@ def specialize_schedule_tiles(kernel: Kernel) -> Kernel:
     defaults = dict(kernel.metadata.get("meta_defaults", {}))
     tile = dict(schedule.get("tile", {}))
     bindings = dict(kernel.metadata.get("bound_meta", {}))
+    layout_owned = any("named_layout" in spec.attrs for spec in kernel.tensors)
     selected_defaults = scheduled_meta_defaults(
         defaults,
         schedule,
         domains=kernel.metadata.get("meta_domains", {}),
         bindings=bindings,
+        layout_owned=layout_owned,
     )
     values = dict(kernel.metadata.get("specialization_values", {}))
     values.update(
         {
             name: selected_defaults[name]
             for name in defaults
-            if (schedule_name := _schedule_tile_name(name)) in tile
+            if layout_owned or _schedule_tile_name(name) in tile
         }
     )
 
@@ -246,11 +267,15 @@ def specialize_schedule_tiles(kernel: Kernel) -> Kernel:
         return kernel
 
     # A fixed logical tile cannot be overwritten by an optimization candidate.
-    for name, value in bindings.items():
-        schedule_name = _schedule_tile_name(name)
+    if not layout_owned:
+        for name, value in bindings.items():
+            schedule_name = _schedule_tile_name(name)
 
-        if schedule_name in tile:
-            tile[schedule_name] = value
+            if schedule_name in tile:
+                tile[schedule_name] = value
+
+    for role, expression in schedule.get("layout_tile", {}).items():
+        tile[role] = evaluate_index_expression(IndexExpr.parse(expression), values)
 
     program = specialize_program(kernel.ssa, values)
     program = replace(
