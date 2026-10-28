@@ -71,6 +71,52 @@ def _index_broadcast_shape(*shapes):
     return result
 
 
+def _normalize_subscript(type_, node, *, source=False):
+    """Canonicalize only slices proven to preserve their entire dimension."""
+    elements = node.elts if isinstance(node, ast.Tuple) else (node,)
+    shape = type_.attrs.get("source_shape", type_.shape) if source else type_.shape
+    consumed = sum(
+        not (isinstance(item, ast.Constant) and item.value in (None, Ellipsis))
+        for item in elements
+    )
+    normalized = []
+    dim = 0
+
+    for item in elements:
+        if isinstance(item, ast.Constant) and item.value is None:
+            normalized.append(item)
+
+            continue
+
+        if isinstance(item, ast.Constant) and item.value is Ellipsis:
+            dim += len(shape) - consumed
+        else:
+            if isinstance(item, ast.Slice):
+                full = (
+                    (item.lower is None or ast.unparse(item.lower) == "0")
+                    and (item.step is None or ast.unparse(item.step) == "1")
+                    and (
+                        item.upper is None
+                        or dim < len(shape)
+                        and ast.dump(item.upper)
+                        == ast.dump(ast.parse(str(shape[dim]), mode="eval").body)
+                    )
+                )
+
+                if full:
+                    item = ast.Slice()
+
+            dim += 1
+
+        normalized.append(item)
+
+    return (
+        ast.Tuple(elts=normalized, ctx=ast.Load())
+        if isinstance(node, ast.Tuple)
+        else normalized[0]
+    )
+
+
 def _subscript_type(
     type_: ssa.Type,
     slice_node: ast.AST,
@@ -78,6 +124,8 @@ def _subscript_type(
     source: bool = False,
     index_types: tuple[ssa.Type, ...] = (),
 ) -> ssa.Type:
+    slice_node = _normalize_subscript(type_, slice_node, source=source)
+
     if type_.kind != "tensor":
         if index_types or not (
             isinstance(slice_node, ast.Constant) and slice_node.value is Ellipsis

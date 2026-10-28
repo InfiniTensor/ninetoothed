@@ -26,6 +26,7 @@ from ninetoothed.ir.type_inference import (
     _math_result_type,
     _matmul_type,
     _next_dtype_shape,
+    _normalize_subscript,
     _offset_type,
     _reduce_type,
     _select_type,
@@ -592,7 +593,9 @@ class _ApplicationSSABuilder:
                     opcode="mem.store",
                     operands=(value.name, destination.name),
                     attrs={
-                        "subscript": _subscript_contract(target.slice),
+                        "subscript": _subscript_contract(
+                            target.slice, destination.type, source=source
+                        ),
                         "indices": index_values,
                         "source": source,
                         "target_shape": tuple(target_type.shape),
@@ -654,7 +657,9 @@ class _ApplicationSSABuilder:
                 "tensor.extract" if index_values else "tensor.view",
                 operands=(destination.name, *index_values),
                 attrs={
-                    "subscript": _subscript_contract(stmt.target.slice),
+                    "subscript": _subscript_contract(
+                        stmt.target.slice, destination.type, source=source
+                    ),
                     "source": source,
                 },
                 result_type=_subscript_type(
@@ -668,7 +673,9 @@ class _ApplicationSSABuilder:
                     opcode="mem.store",
                     operands=(result.name, destination.name),
                     attrs={
-                        "subscript": _subscript_contract(stmt.target.slice),
+                        "subscript": _subscript_contract(
+                            stmt.target.slice, destination.type, source=source
+                        ),
                         "indices": index_values,
                         "source": source,
                         "target_shape": tuple(target_type.shape),
@@ -1121,7 +1128,10 @@ class _ApplicationSSABuilder:
             operations,
             "tensor.extract" if index_values else "tensor.view",
             operands=(base.name, *index_values),
-            attrs={"subscript": _subscript_contract(node.slice), "source": source},
+            attrs={
+                "subscript": _subscript_contract(node.slice, base.type, source=source),
+                "source": source,
+            },
             result_type=_subscript_type(base.type, node.slice, source=source),
         )
 
@@ -1266,12 +1276,13 @@ class _ApplicationSSABuilder:
 
         if method in _SUPPORTED_MATH_CALLS:
             args = tuple(self._lower_expr(arg, operations, env) for arg in node.args)
+            operands = (receiver, *args)
 
             return self._emit(
                 operations,
                 f"math.{method}",
-                operands=(receiver.name, *(arg.name for arg in args)),
-                result_type=receiver.type,
+                operands=tuple(value.name for value in operands),
+                result_type=_math_result_type(method, operands),
             )
         return None
 
@@ -2171,8 +2182,9 @@ def _is_namespace_ref(node: ast.AST) -> bool:
     return False
 
 
-def _subscript_contract(node: ast.AST) -> str:
+def _subscript_contract(node: ast.AST, type_: ssa.Type, *, source=False) -> str:
     """Describe view positions; computed indices are explicit SSA operands."""
+    node = _normalize_subscript(type_, node, source=source)
     elements = node.elts if isinstance(node, ast.Tuple) else (node,)
     parts = tuple(
         item
