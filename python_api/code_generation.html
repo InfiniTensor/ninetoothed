@@ -444,6 +444,66 @@
 </tbody>
 </table>
 </div>
+<section id="frozen-frontend-modules">
+<h2>Frozen frontend modules<a class="headerlink" href="#frozen-frontend-modules" title="Link to this heading">#</a></h2>
+<p>The compiler can capture an arrangement and application once, then compile the
+result for different targets or specialize its dtypes without inspecting Python
+again. Existing <code class="docutils literal notranslate"><span class="pre">make</span></code>, <code class="docutils literal notranslate"><span class="pre">lower</span></code>, <code class="docutils literal notranslate"><span class="pre">jit</span></code> and <code class="docutils literal notranslate"><span class="pre">aot</span></code> entry points remain
+available; they use the same frontend boundary internally.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">ninetoothed</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nt</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">ninetoothed.compiler</span><span class="w"> </span><span class="kn">import</span> <span class="n">Compiler</span><span class="p">,</span> <span class="n">CompileRequest</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">arrangement</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">output</span><span class="p">):</span>
+    <span class="k">return</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">t</span><span class="o">.</span><span class="n">tile</span><span class="p">((</span><span class="mi">32</span><span class="p">,))</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">output</span><span class="p">))</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">application</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">output</span><span class="p">):</span>
+    <span class="n">output</span> <span class="o">=</span> <span class="n">x</span> <span class="o">+</span> <span class="n">y</span>
+
+<span class="n">compiler</span> <span class="o">=</span> <span class="n">Compiler</span><span class="p">()</span>
+<span class="n">module</span> <span class="o">=</span> <span class="n">compiler</span><span class="o">.</span><span class="n">frontend</span><span class="p">(</span><span class="n">CompileRequest</span><span class="p">(</span>
+    <span class="n">arrangement</span><span class="o">=</span><span class="n">arrangement</span><span class="p">,</span>
+    <span class="n">application</span><span class="o">=</span><span class="n">application</span><span class="p">,</span>
+    <span class="n">tensors</span><span class="o">=</span><span class="nb">tuple</span><span class="p">(</span><span class="n">nt</span><span class="o">.</span><span class="n">Tensor</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">)),</span>
+<span class="p">))</span>
+<span class="n">compiled</span> <span class="o">=</span> <span class="n">compiler</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="n">CompileRequest</span><span class="p">(</span>
+    <span class="n">frontend</span><span class="o">=</span><span class="n">module</span><span class="p">,</span>
+    <span class="n">backend</span><span class="o">=</span><span class="s2">"triton"</span><span class="p">,</span>
+    <span class="n">tensor_dtypes</span><span class="o">=</span><span class="p">{</span><span class="s2">"x"</span><span class="p">:</span> <span class="s2">"float32"</span><span class="p">,</span> <span class="s2">"y"</span><span class="p">:</span> <span class="s2">"float32"</span><span class="p">,</span> <span class="s2">"output"</span><span class="p">:</span> <span class="s2">"float32"</span><span class="p">},</span>
+<span class="p">))</span>
+<span class="n">kernel</span> <span class="o">=</span> <span class="n">compiler</span><span class="o">.</span><span class="n">materialize</span><span class="p">(</span><span class="n">compiled</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">Compiler.frontend</span></code> produces a verified <code class="docutils literal notranslate"><span class="pre">FrontendModule</span></code> containing tensor
+specifications, structured layouts, SSA computation, symbols and specialization
+domains. It contains no live Tensor objects, Python callbacks or backend source.
+Its optional source text is diagnostic only. Supplying <code class="docutils literal notranslate"><span class="pre">frontend</span></code> together with
+an arrangement, application or Tensor arguments is an error.</p>
+<p>Compilation verifies this contract again before specialization and backend
+passes. <code class="docutils literal notranslate"><span class="pre">tensor_dtypes</span></code> binds public parameter names; <code class="docutils literal notranslate"><span class="pre">specialization_values</span></code>
+binds declared index, extent, stride or meta symbols. Runtime dtype specialization
+also operates on this frozen representation, rather than rerunning arrangement
+code. Treat arrangements as pure functions: Python side effects are not a
+runtime-specialization mechanism.</p>
+<p>A dtype can be bound when it is unknown, or supplied again with the same value.
+Changing an already known dtype is rejected: the frontend may already have
+selected a branch using that type. Specializing an unknown dtype resolves such
+type-dependent branches before verification. Parameter defaults are stored
+separately from tuning domains, so legacy constexpr defaults do not create
+additional tuning candidates.</p>
+<p>Frontend verification additionally checks source-view provenance. Subsequent SSA
+passes still verify operation signatures, shapes, dtypes, control flow and effects;
+new local values need not retain frontend source-view attributes.</p>
+<p>Shared or fixed physical shape and stride symbols are retained in the launch
+ABI and checked before execution, including after artifact reload. C++ export
+preserves direct symbol equality checks and constant or fully specialized
+composite checks. Composite physical guards that still require runtime symbol
+evaluation must be specialized before C++ export. A source artifact alone is
+not a checked executable.</p>
+<p>This boundary does not introduce named axes, change the meaning of <code class="docutils literal notranslate"><span class="pre">tile</span></code> or
+other layout primitives, or add optimization passes. A future frontend must
+produce the same verified module contract; backend code generation does not
+depend on its surface syntax.</p>
+</section>
 </section>
 
 
@@ -484,6 +544,18 @@
                 <dialog id="pst-secondary-sidebar-modal"></dialog>
                 <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
 
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#frozen-frontend-modules">Frozen frontend modules</a></li>
+</ul>
+  </nav></div>
 
   <div class="sidebar-secondary-item">
 
