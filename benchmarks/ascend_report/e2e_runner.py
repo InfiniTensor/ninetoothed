@@ -479,11 +479,22 @@ class Adapters:
         torch = self.torch
 
         if self.collect:
-            self.active_operation = name
+            self.active_operation = scope or name
             self.calls[scope or name] += 1
             shapes = [(tuple(x.shape), str(x.dtype), tuple(x.stride())) for x in args]
             self.shapes[name + ":" + str(shapes)] += 1
 
+        if (
+            getattr(self, "_direct_stage7", False)
+            and self.backend == "ntops"
+            and name in ("add", "mul")
+        ):
+            if __package__:
+                from .e2e_pointwise import binary
+            else:
+                from e2e_pointwise import binary
+
+            return binary(name, *args)
         with torch._C._DisableTorchDispatch():
             x = args[0]
             shape = tuple(x.shape)
@@ -1069,11 +1080,12 @@ def measure_worker(config, backend, stage, order, identity):
                 required += [
                     "rotary_embedding",
                     "rope_frequency_outer",
-                    "eos_where",
                     "kv_cache_copy",
                     "gqa_head_expansion",
                     "embedding_gather",
                     "greedy_argmax",
+                    "token_store",
+                    "position_iota",
                 ]
 
             if stage >= 5:
@@ -1107,13 +1119,21 @@ def measure_worker(config, backend, stage, order, identity):
                         if key.startswith(name + ":")
                     )
                     for name in (
+                        "rms_norm",
+                        "silu",
+                        "cos",
+                        "sin",
                         "rotary_embedding",
                         "rope_frequency_outer",
-                        "eos_where",
                         "kv_cache_copy",
                         "gqa_head_expansion",
                         "embedding_gather",
                         "greedy_argmax",
+                        "tensor_add",
+                        "mlp_gating_mul",
+                        "token_store",
+                        "position_iota",
+                        "attention_layout",
                     )
                 }
                 if not all(stage7_kernel_launches.values()):
@@ -1194,11 +1214,15 @@ def measure_worker(config, backend, stage, order, identity):
             stage7_kernel_launches=dict(stage7_kernel_launches),
             native_matrix_calls=dict(adapter.native_matrix_calls),
             stage7_additional_replacement_coverage={
+                "rms_norm": stage >= 7 and adapter.calls.get("rms_norm", 0) > 0,
+                "silu": stage >= 7 and adapter.calls.get("silu", 0) > 0,
+                "cos": stage >= 7 and adapter.calls.get("cos", 0) > 0,
+                "sin": stage >= 7 and adapter.calls.get("sin", 0) > 0,
                 "fused_rope": stage >= 7
                 and adapter.calls.get("rotary_embedding", 0) > 0,
                 "rope_frequency_outer": stage >= 7
                 and adapter.calls.get("rope_frequency_outer", 0) > 0,
-                "eos_where": stage >= 7 and adapter.calls.get("eos_where", 0) > 0,
+                "eos_where": False,  # The custom greedy loop omits EOS before min_new_tokens instead of masking logits.
                 "preallocated_kv_cache": stage >= 7
                 and adapter.calls.get("kv_cache_copy", 0) > 0,
                 "gqa_head_expansion": stage >= 7
@@ -1207,6 +1231,11 @@ def measure_worker(config, backend, stage, order, identity):
                 and adapter.calls.get("embedding_gather", 0) > 0,
                 "greedy_argmax": stage >= 7
                 and adapter.calls.get("greedy_argmax", 0) > 0,
+                "token_store": stage >= 7 and adapter.calls.get("token_store", 0) > 0,
+                "position_iota": stage >= 7
+                and adapter.calls.get("position_iota", 0) > 0,
+                "attention_layout": stage >= 7
+                and adapter.calls.get("attention_layout", 0) > 0,
             },
             core_kernel_coverage=core_coverage,
             shape_calls=dict(adapter.shapes),
