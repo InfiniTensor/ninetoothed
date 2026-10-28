@@ -35,7 +35,7 @@ SCOPES = {
     4: "SiLU + RMSNorm + MLP gating Mul + TensorAdd + Neg + Sin + Cos",
     5: "Stage 4 + scaled dot product attention (prefill and cached decode)",
     6: "Stage 5 + all model Linear projections and language model head",
-    7: "Stage 6 + fused RoPE, EOS masking, preallocated KV cache",
+    7: "Stage 6 + fused RoPE, GQA expansion, embedding gather, greedy argmax, EOS masking, preallocated KV cache",
 }
 ORDERS = {
     "forward": ("triton_then_ntops", ("triton", "ntops")),
@@ -580,10 +580,47 @@ def stage_dispatch(adapter, stage):
                 generated = None
                 result = None
 
+                if func is torch.ops.aten.embedding.default:
+                    weight, indices = args[:2]
+                    if args[2:] not in ((), (None, False, False), (-1, False, False)):
+                        raise ValueError(
+                            "Generated embedding requires default embedding metadata."
+                        )
+
+                    adapter.active_operation = "embedding_gather"
+                    if __package__:
+                        from .e2e_embedding import embedding
+                    else:
+                        from e2e_embedding import embedding
+
+                    result = embedding(weight, indices)
+                    generated = "embedding_gather"
+                elif "argmax" in str(func):
+                    scores = args[0]
+                    dimension = args[1] if len(args) > 1 else kwargs.get("dim", None)
+                    keepdim = args[2] if len(args) > 2 else kwargs.get("keepdim", False)
+                    if dimension not in (-1, scores.ndim - 1):
+                        raise ValueError(
+                            "Generated greedy argmax requires the vocabulary dimension."
+                        )
+
+                    adapter.active_operation = "greedy_argmax"
+                    if __package__:
+                        from .e2e_argmax import argmax
+                    else:
+                        from e2e_argmax import argmax
+
+                    result = argmax(scores.reshape(-1))
+                    if keepdim:
+                        result = result.view(scores.shape[:-1] + (1,))
+                    elif scores.ndim > 1:
+                        result = result.view(scores.shape[:-1])
+                    generated = "greedy_argmax"
                 if func is torch.ops.aten.matmul.default and (
                     tuple(args[0].shape) == (1, 64, 1)
                     and tuple(args[1].shape) == (1, 1, args[1].shape[-1])
                 ):
+                    adapter.active_operation = "rope_frequency_outer"
                     if __package__:
                         from .e2e_rope import frequency_outer
                     else:
@@ -595,13 +632,20 @@ def stage_dispatch(adapter, stage):
                             512, device=args[0].device, dtype=torch.float32
                         )
                         cache = (
-                            frequency_outer(args[0][0, :, 0], positions),
+                            frequency_outer(args[0][0, :, 0], positions)
+                            .transpose(0, 1)
+                            .contiguous(),
                             positions,
                         )
                         adapter._rope_frequency_cache = cache
 
                     requested = args[1][0, 0, :].to(torch.int64)
-                    result = cache[0].index_select(1, requested).unsqueeze(0)
+                    if __package__:
+                        from .e2e_embedding import embedding
+                    else:
+                        from e2e_embedding import embedding
+
+                    result = embedding(cache[0], requested).transpose(0, 1).unsqueeze(0)
                     generated = "rope_frequency_outer"
                 elif "where" in str(func) and len(args) == 3:
                     condition, first, second = args
@@ -735,6 +779,14 @@ def patched(
                 attention = AttentionAdapter(adapter.backend, torch, recorder=adapter)
                 adapter.core_operator_adapters["sdpa"] = attention
                 patches.enter_context(attention.patched())
+
+                if stage >= 7 and adapter.backend == "ntops":
+                    if __package__:
+                        from .e2e_gqa import repeat_kv_heads
+                    else:
+                        from e2e_gqa import repeat_kv_heads
+
+                    attention._generated_gqa = repeat_kv_heads
 
             if stage >= 6:
                 if model is None:
@@ -1019,6 +1071,9 @@ def measure_worker(config, backend, stage, order, identity):
                     "rope_frequency_outer",
                     "eos_where",
                     "kv_cache_copy",
+                    "gqa_head_expansion",
+                    "embedding_gather",
+                    "greedy_argmax",
                 ]
 
             if stage >= 5:
@@ -1043,6 +1098,28 @@ def measure_worker(config, backend, stage, order, identity):
                     f"Requested patches did not execute: {adapter.calls}"
                 )
 
+            stage7_kernel_launches = {}
+            if stage >= 7:
+                stage7_kernel_launches = {
+                    name: sum(
+                        count
+                        for key, count in launches.items()
+                        if key.startswith(name + ":")
+                    )
+                    for name in (
+                        "rotary_embedding",
+                        "rope_frequency_outer",
+                        "eos_where",
+                        "kv_cache_copy",
+                        "gqa_head_expansion",
+                        "embedding_gather",
+                        "greedy_argmax",
+                    )
+                }
+                if not all(stage7_kernel_launches.values()):
+                    raise RuntimeError(
+                        f"Requested stage-seven kernels did not launch: {stage7_kernel_launches}"
+                    )
             if stage >= 3 and not any(
                 key.startswith("tensor_add") for key in adapter.calls
             ):
@@ -1114,6 +1191,7 @@ def measure_worker(config, backend, stage, order, identity):
             counted_tokens_match_samples=counted_output["output_ids"]
             == outputs[0]["output_ids"],
             operator_calls=dict(adapter.calls),
+            stage7_kernel_launches=dict(stage7_kernel_launches),
             native_matrix_calls=dict(adapter.native_matrix_calls),
             stage7_additional_replacement_coverage={
                 "fused_rope": stage >= 7
@@ -1123,9 +1201,12 @@ def measure_worker(config, backend, stage, order, identity):
                 "eos_where": stage >= 7 and adapter.calls.get("eos_where", 0) > 0,
                 "preallocated_kv_cache": stage >= 7
                 and adapter.calls.get("kv_cache_copy", 0) > 0,
-                "gqa_head_expansion": "native repeat_interleave; generated kernel remains experimental",
-                "embedding": "native embedding; generated gather remains experimental",
-                "greedy_argmax": "native argmax; generated hierarchical reduction remains experimental",
+                "gqa_head_expansion": stage >= 7
+                and adapter.calls.get("gqa_head_expansion", 0) > 0,
+                "embedding": stage >= 7
+                and adapter.calls.get("embedding_gather", 0) > 0,
+                "greedy_argmax": stage >= 7
+                and adapter.calls.get("greedy_argmax", 0) > 0,
             },
             core_kernel_coverage=core_coverage,
             shape_calls=dict(adapter.shapes),

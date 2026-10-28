@@ -389,8 +389,19 @@ class Adapter:
                 self._observations[descriptor] += 1
 
             if plan.repeat_kv != 1:
-                key = key.repeat_interleave(plan.repeat_kv, dim=1)
-                value = value.repeat_interleave(plan.repeat_kv, dim=1)
+                repeat = getattr(self, "_generated_gqa", None)
+
+                if repeat is None:
+                    key = key.repeat_interleave(plan.repeat_kv, dim=1)
+                    value = value.repeat_interleave(plan.repeat_kv, dim=1)
+                else:
+                    if self.recorder is not None and self.recorder.collect:
+                        self.recorder.active_operation = "gqa_head_expansion"
+                        self.recorder.calls["gqa_head_expansion"] += 2
+                    key = repeat(key, plan.repeat_kv)
+                    value = repeat(value, plan.repeat_kv)
+                    if self.recorder is not None and self.recorder.collect:
+                        self.recorder.active_operation = "sdpa"
 
             # The pinned baseline uses the key's batch/head offset for both KV pointers.
             if key.stride()[:2] != value.stride()[:2]:
@@ -424,7 +435,7 @@ class Adapter:
             "patch_point": "torch.nn.functional.scaled_dot_product_attention",
             "source_imports": self.source_imports,
             "layout": "Preserve Q/K/V strides when KV batch/head strides match; otherwise make both KV tensors contiguous symmetrically.",
-            "gqa": "repeat_interleave KV heads identically for both kernels before setting enable_gqa=False.",
+            "gqa": "Use the generated stage-seven repeat kernel when installed; otherwise repeat_interleave KV heads identically.",
             "mask": "Only exact all-visible or square lower-triangular masks are reduced; other masks raise UnsupportedAttention.",
             "causal": "Square prefill preserves causal=True; cached query-length-one decode preserves causal=False and all KV entries.",
             "scale": "Forward explicit finite scale; None resolves to head_dim**-0.5.",
