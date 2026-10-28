@@ -1,17 +1,12 @@
 import ast
 import inspect
 import itertools
-import tkinter
-from tkinter import ttk
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from mpl_toolkits.axes_grid1 import Divider, Size
-
-from ninetoothed.debugging import simulate_arrangement
 
 
 def visualize(tensor, color=None, save_path=None):
@@ -54,6 +49,13 @@ def visualize_arrangement(arrangement, tensors):
     :param arrangement: The arrangement of the tensors.
     :param tensors: The tensors.
     """
+    import tkinter
+    from tkinter import ttk
+
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+    from ninetoothed.debugging import simulate_arrangement
+
     source_tensors, target_tensors = simulate_arrangement(arrangement, tensors)
 
     param_names = inspect.signature(arrangement).parameters.keys()
