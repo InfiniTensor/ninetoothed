@@ -451,7 +451,7 @@ class _VerifiedRuntimeCall:
         scalar_sources = {
             binding.source
             for binding in abi.kernel_args
-            if binding.kind in {"scalar", "constexpr", "meta"}
+            if binding.kind in {"scalar", "constexpr", "meta", "row_span"}
         }
         positional_names = abi.public_args[: len(args)]
         positional = tuple(
@@ -1256,7 +1256,7 @@ def _public_values(
     accepted = set(abi.public_args) | {
         binding.source
         for binding in abi.kernel_args
-        if binding.kind == "meta" and binding.source is not None
+        if binding.kind in {"meta", "row_span"} and binding.source is not None
     }
     unknown = tuple(name for name in kwargs if name not in accepted)
 
@@ -1285,6 +1285,11 @@ def _public_values(
         values,
         specs,
         device_types=device_types,
+        memory_sources={
+            binding.source
+            for binding in abi.kernel_args
+            if binding.kind in {"tensor", "jagged_values", "jagged_offsets"}
+        },
     )
 
     if abi.named_layout is not None:
@@ -1296,7 +1301,7 @@ def _public_values(
         symbols = {
             binding.name: _binding_value(binding, values)
             for binding in abi.kernel_args
-            if binding.kind == "meta"
+            if binding.kind in {"meta", "row_span"}
             and (binding.source in values or binding.value is not None)
         }
         _validate_symbol_constraints(values, abi.symbol_constraints, symbols=symbols)
@@ -1382,13 +1387,15 @@ def _filter_runtime_kwargs(abi: LaunchABI, kwargs) -> dict[str, Any]:
     accepted = set(abi.public_args) | {
         binding.source
         for binding in abi.kernel_args
-        if binding.kind == "meta" and binding.source is not None
+        if binding.kind in {"meta", "row_span"} and binding.source is not None
     }
 
     return {name: value for name, value in kwargs.items() if name in accepted}
 
 
-def _validate_runtime_values(values, specs, *, device_types=("cuda",)) -> None:
+def _validate_runtime_values(
+    values, specs, *, device_types=("cuda",), memory_sources=()
+) -> None:
     expected_device = None
     device_types = tuple(
         dict.fromkeys(str(device_type).lower() for device_type in device_types)
@@ -1404,14 +1411,17 @@ def _validate_runtime_values(values, specs, *, device_types=("cuda",)) -> None:
             value,
             expected_device,
             device_types=device_types,
+            memory=spec.name in memory_sources,
         )
         _validate_dtype_contract(spec, value)
 
 
-def _validate_tensor_contract(spec, value, expected_device, *, device_types):
+def _validate_tensor_contract(
+    spec, value, expected_device, *, device_types, memory=False
+):
     source_ndim = int(spec.attrs.get("source_ndim", spec.ndim))
 
-    if source_ndim == 0:
+    if source_ndim == 0 and not memory:
         return expected_device
 
     shape = getattr(value, "shape", None)
@@ -1574,6 +1584,13 @@ def _binding_value(binding: LaunchBinding, public):
 
     if binding.kind == "stride":
         return public[binding.source].stride(binding.dim)
+
+    if binding.kind == "row_span":
+        if binding.source in public:
+            return public[binding.source]
+
+        # Empty tensors still need a positive tile width for grid expressions.
+        return max(1, int(public[binding.value].shape[binding.dim]))
 
     if binding.kind == "meta":
         if binding.source in public:

@@ -470,6 +470,23 @@ def _launch_abi(
 
     for name in shape_params:
         binding = _derived_binding(name, specs, constexpr_values)
+
+        if binding is None and artifact.backend == Target.CUDA:
+            reduction = artifact.metadata.get("ssa_schedule", {}).get("reduction", {})
+            domains = (
+                artifact.metadata.get("ssa_metadata", {})
+                .get("analysis", {})
+                .get("reduction_domains", ())
+            )
+            row_domain = any(
+                domain.get("axis") == 1
+                and tuple(map(str, domain.get("input_shape", ()))) == ("1", name)
+                for domain in domains
+            )
+
+            if reduction.get("mode") == "row-vector" or row_domain:
+                binding = _row_span_meta_binding(name, arranged, specs)
+
         bindings.append(
             binding
             or LaunchBinding(
@@ -667,6 +684,7 @@ def _launch_plan(
             "shape",
             "stride",
             "meta",
+            "row_span",
             "jagged_values_numel",
             "jagged_offsets_numel",
             "jagged_max_seq_len",
@@ -1042,6 +1060,111 @@ def _configuration_values(value, scheduled, *, default: int) -> tuple[int, ...]:
     if not normalized or any(item < 1 for item in normalized):
         raise ValueError("Triton launch configurations must contain positive integers.")
     return normalized
+
+
+def _row_span_meta_binding(name, module, specs):
+    """Bind a ``(1, meta)`` tile's meta symbol to the source row extent.
+
+    Row-vector tiles such as ``input.tile((1, BLOCK_SIZE))`` intend one
+    tile to span the full reduction axis; deriving the meta value from
+    the runtime shape keeps row reductions and broadcasts correct when
+    the caller does not pass the meta parameter explicitly (the static
+    default of 256 would otherwise silently truncate the axis).
+    """
+    if name in module.bindings or module.named_layout is not None:
+        return None
+
+    for spec in specs:
+        attrs = spec.attrs
+        shapes = attrs.get("dtype_shapes", ())
+        tile = tuple(map(str, shapes[-1] if shapes else spec.shape))
+
+        if len(tile) != 2 or tile[0] != "1" or tile[1] != name:
+            continue
+
+        if not attrs.get("source_shape"):
+            continue
+
+        if not _canonical_row_span_mapping(name, attrs):
+            continue
+
+        return LaunchBinding(
+            name=name,
+            kind="row_span",
+            source=remove_prefixes(name),
+            value=spec.name,
+            dim=1,
+        )
+
+    return None
+
+
+def _canonical_row_span_mapping(name, attrs):
+    """Require the meta row width to visit the physical source's last axis."""
+    templates = attrs.get("access_templates", ())
+    source_shape = attrs.get("source_shape", ())
+
+    if len(templates) != 1 or len(source_shape) != 2:
+        return False
+
+    offsets = templates[0].get("offsets", ())
+
+    if len(offsets) != 2:
+        return False
+
+    import re
+
+    import sympy
+
+    texts = (name, *map(str, source_shape), *map(str, offsets))
+    names = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", " ".join(texts)))
+    symbols = {
+        item: sympy.Symbol(item, integer=True)
+        for item in names - {"floor", "ceiling", "Mod", "Max", "Min", "Abs"}
+    }
+
+    # A physical extent is positive in a nonempty row. This proves that
+    # ceil(extent / extent) is one in the frontend's tiled access map.
+    for dimension in source_shape:
+        text = str(dimension)
+
+        if text in symbols:
+            symbols[text] = sympy.Symbol(text, integer=True, positive=True)
+
+    symbols.setdefault("value_0", sympy.Symbol("value_0", integer=True))
+    symbols.setdefault("value_1", sympy.Symbol("value_1", integer=True))
+    symbols.setdefault("outer_index", sympy.Symbol("outer_index", integer=True))
+
+    try:
+        width = sympy.sympify(str(source_shape[1]), locals=symbols)
+        substitutions = {symbols[name]: width, symbols["value_0"]: 0}
+
+        def normalize(offset):
+            expression = sympy.sympify(str(offset), locals=symbols).subs(substitutions)
+
+            if width.is_positive is True:
+                # Older SymPy versions do not reduce the tiled row count
+                # consistently. For a positive integer width this floor is zero.
+                floors = {}
+
+                for term in expression.atoms(sympy.floor):
+                    if sympy.simplify(term.args[0] - (width - 1) / width) == 0:
+                        floors[term] = sympy.Integer(0)
+                    elif sympy.simplify(term.args[0] + 1 / width) == 0:
+                        floors[term] = sympy.Integer(-1)
+
+                expression = expression.xreplace(floors)
+
+            return sympy.simplify(expression)
+
+        return all(
+            sympy.simplify(normalize(offset) - expected) == 0
+            for offset, expected in zip(
+                offsets, (symbols["outer_index"], symbols["value_1"])
+            )
+        )
+    except (KeyError, TypeError, ValueError, SyntaxError, sympy.SympifyError):
+        return False
 
 
 def _derived_binding(name: str, specs, constexpr_values):

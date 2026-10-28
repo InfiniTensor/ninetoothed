@@ -1,6 +1,6 @@
 """Backend-neutral state shared while traversing SSA regions."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from ninetoothed.backends.emitters.base import EmitterTarget
@@ -65,6 +65,7 @@ class EmitContext:
     reduce_index: str | None = None
     reduce_flattened: bool = False
     bindings: Mapping[str, str] | None = None
+    binding_coordinates: Mapping[str, tuple[str, ...]] | None = None
     type_values: dict[str, ValueType | None] | None = None
     type_initials: Mapping[str, str] | None = None
     vector_bindings: frozenset[str] = frozenset()
@@ -81,6 +82,7 @@ class EmitContext:
     cooperative_reduction_program: bool = False
     scheduled_reductions: frozenset[str] = frozenset()
     reduction_schedule: Mapping[str, Any] | None = None
+    collective_lines: list[str] = field(default_factory=list)
 
     def child(
         self,
@@ -112,6 +114,7 @@ class EmitContext:
             "reduce_index": self.reduce_index,
             "reduce_flattened": self.reduce_flattened,
             "bindings": self.bindings,
+            "binding_coordinates": self.binding_coordinates,
             "type_values": self.type_values if lines is None else {},
             "type_initials": self.type_initials,
             "vector_bindings": self.vector_bindings,
@@ -128,6 +131,7 @@ class EmitContext:
             "cooperative_reduction_program": self.cooperative_reduction_program,
             "scheduled_reductions": self.scheduled_reductions,
             "reduction_schedule": self.reduction_schedule,
+            "collective_lines": self.collective_lines,
         }
         data.update(kwargs)
 

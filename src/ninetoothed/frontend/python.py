@@ -1222,6 +1222,9 @@ class _ApplicationSSABuilder:
 
         if literal == "inf":
             return self._constant(operations, float("inf"))
+
+        if literal == "nan":
+            return self._constant(operations, float("nan"))
         return None
 
     def _lower_tensor_method_call(self, node, operations, env):
@@ -1816,7 +1819,9 @@ class _ApplicationSSABuilder:
 
         attr_value: Any = value
 
-        if isinstance(value, float) and not math.isfinite(value):
+        if isinstance(value, float) and math.isnan(value):
+            attr_value = "nan"
+        elif isinstance(value, float) and not math.isfinite(value):
             attr_value = "-inf" if value < 0 else "inf"
 
         result = self._emit(

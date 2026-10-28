@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ninetoothed.compiler.effects import pure_expression
+from ninetoothed.compiler.reduction_geometry import prove_unit_parallel_reductions
 from ninetoothed.ir import ssa
 
 _ELEMENTWISE_USERS = frozenset(
@@ -66,7 +68,9 @@ class ReductionDomain:
         }
 
 
-def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
+def analyze_reductions(
+    program: ssa.Program, tensors=(), *, unit_parallel=None
+) -> Mapping[str, Any]:
     """Return reduction domains and a conservative shared schedule contract."""
     value_types = _value_types(program)
     scoped_operations = tuple(_walk_program(program))
@@ -74,6 +78,12 @@ def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
     definitions = _definitions(scoped_operations)
     forwarded_values = _forwarded_values(program)
     tensor_specs = {tensor.name: tensor for tensor in tensors}
+
+    if unit_parallel is None:
+        unit_parallel = prove_unit_parallel_reductions(program)
+
+    unit_parallel = frozenset(unit_parallel)
+    unit_parallel_stores = _unit_parallel_stores(program, value_types, tensor_specs)
     domains = []
     rejections = []
 
@@ -99,6 +109,10 @@ def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
             definitions,
             forwarded_values,
             tensor_specs,
+            allow_unit_parallel=bool(
+                operation.results and operation.results[0].name in unit_parallel
+            )
+            or unit_parallel_stores,
         )
         domains.append(domain)
 
@@ -111,7 +125,85 @@ def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
         "reduction_domains": tuple(domain.as_metadata() for domain in domains),
         "reduction_rejections": tuple(rejections),
         "reduction_schedule": schedule,
+        "unit_parallel_store_contract": unit_parallel_stores,
     }
+
+
+def _unit_parallel_stores(program, value_types, tensor_specs):
+    """Prove scalar-in-one-row broadcasting without inventing reuse facts.
+
+    Reuse retains its single-store/effect barrier. This separate geometric
+    contract admits multiple same-domain outputs, with no output reads, no
+    regions/unknown effects and complete static physical row widths.
+    """
+    if len(program.blocks) != 1:
+        return False
+
+    operations = program.blocks[0].operations
+    stores = tuple(op for op in operations if op.opcode == "mem.store")
+
+    if len(stores) < 2 or any(
+        op.regions or (op.opcode != "mem.store" and not pure_expression(op))
+        for op in operations
+    ):
+        return False
+
+    targets = set()
+    domains = set()
+
+    for store in stores:
+        if len(store.operands) != 2 or set(store.attrs) - {"target", "target_shape"}:
+            return False
+
+        target = store.operands[1]
+        type_ = value_types.get(target)
+        stored = value_types.get(store.operands[0])
+
+        if type_ is None or stored is None or target in targets:
+            return False
+
+        domain = tuple(map(str, store.attrs.get("target_shape", type_.shape)))
+
+        if (
+            len(domain) != 2
+            or domain[0] != "1"
+            or _static_integer_expression(domain[1]) is None
+            or _static_integer_expression(domain[1]) <= 0
+            or tuple(map(str, type_.shape)) != domain
+            or tuple(map(str, stored.shape)) != domain
+        ):
+            return False
+
+        targets.add(target)
+        domains.add(domain)
+
+    if len(domains) != 1:
+        return False
+
+    domain = next(iter(domains))
+
+    if any(
+        name in targets
+        for op in operations
+        if op.opcode != "mem.store"
+        for name in op.operands
+    ):
+        return False
+
+    for value in program.inputs:
+        if value.type.kind != "tensor":
+            continue
+
+        if tuple(map(str, value.type.shape)) != domain:
+            return False
+
+        spec = tensor_specs.get(value.name)
+        attrs = {**value.type.attrs, **({} if spec is None else spec.attrs)}
+        source = attrs.get("source_shape", value.type.shape)
+
+        if len(source) != 2 or str(source[-1]) != domain[-1]:
+            return False
+    return True
 
 
 def _validate_scalar_fallback(operation):
@@ -141,6 +233,8 @@ def _domain(
     definitions,
     forwarded_values,
     tensor_specs,
+    *,
+    allow_unit_parallel=False,
 ):
     if len(operation.operands) != 1 or len(operation.results) != 1:
         raise ValueError(
@@ -201,6 +295,7 @@ def _domain(
         input_shape=input_shape,
         result_shape=result_shape,
         value_types=value_types,
+        allow_unit_parallel=allow_unit_parallel,
     )
     stores = _reachable_stores(
         result.name,
@@ -261,10 +356,18 @@ def _consumer_contract(
     input_shape,
     result_shape,
     value_types,
+    allow_unit_parallel=False,
 ):
     broadcast_shape = input_shape[:axis] + ("1",) + input_shape[axis + 1 :]
     allowed_shapes = {(), result_shape, broadcast_shape, input_shape}
-    pending = [(result, _is_right_aligned(axis, input_shape, result_shape))]
+    pending = [
+        (
+            result,
+            _is_right_aligned(
+                axis, input_shape, result_shape, allow_unit_parallel=allow_unit_parallel
+            ),
+        )
+    ]
     seen = set()
 
     while pending:
@@ -296,6 +399,13 @@ def _consumer_contract(
                     and target_shape is not None
                     and tuple(str(dim) for dim in stored_type.shape)
                     != tuple(str(dim) for dim in target_shape)
+                    and not (
+                        allow_unit_parallel
+                        and all(
+                            str(size) == "1"
+                            for size in (*stored_type.shape, *target_shape)
+                        )
+                    )
                 ):
                     return False, (
                         "store target does not match the reduction value domain"
@@ -549,12 +659,19 @@ def _static_integer_expression(expression):
         return None
 
 
-def _is_right_aligned(axis, input_shape, result_shape):
+def _is_right_aligned(axis, input_shape, result_shape, *, allow_unit_parallel=False):
     if not result_shape:
         return True
 
     mapped_axes = tuple(range(len(input_shape) - len(result_shape), len(input_shape)))
     parallel_axes = tuple(index for index in range(len(input_shape)) if index != axis)
+
+    if allow_unit_parallel and all(
+        input_shape[index] == "1" for index in parallel_axes
+    ):
+        # One logical point on every parallel axis makes the result a scalar
+        # within this application tile, even after right-aligned broadcasting.
+        return True
 
     return mapped_axes == parallel_axes
 

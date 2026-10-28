@@ -95,14 +95,23 @@ class GroupReductionRows(Pass):
             for op in operations
         ):
             reason = "only broadcast-axis views are grouped"
-        elif stores[0] is not operations[-1] or set(stores[0].attrs) - {"target"}:
+        elif stores[0] is not operations[-1] or set(stores[0].attrs) - {
+            "target",
+            "target_shape",
+        }:
             reason = "requires one terminal whole-output store"
         else:
             values = {value.name: value for value in program.inputs}
             values.update((v.name, v) for op in operations for v in op.results)
             output = stores[0].operands[1]
 
-            if any(output in op.operands for op in operations[:-1]):
+            target_shape = stores[0].attrs.get("target_shape")
+
+            if target_shape is not None and tuple(map(str, target_shape)) != tuple(
+                map(str, values[output].type.shape)
+            ):
+                reason = "requires a whole-output store domain"
+            elif any(output in op.operands for op in operations[:-1]):
                 reason = "output is also read"
             elif tuple(map(str, values[output].type.shape)) != tuple(
                 reduction.get("value_shape", ())
