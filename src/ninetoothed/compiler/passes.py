@@ -17,16 +17,16 @@ pipelines, and deterministic target schedule selection.
 """
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from ninetoothed.backends.core import Target, normalize_target
 from ninetoothed.compiler.layout import LayoutTransfer, analyze_layout_transfer
 from ninetoothed.compiler.reductions import analyze_reductions
-from ninetoothed.compiler.specialization import scheduled_meta_defaults
 from ninetoothed.dtype import normalize_dtype
 from ninetoothed.errors import LoweringError
 from ninetoothed.ir import ssa
+from ninetoothed.ir.module import evaluate_index_expression
 from ninetoothed.targets import TargetContext, resolve_target_context
 
 HARDWARE_INDEPENDENT = "hardware_independent"
@@ -417,6 +417,11 @@ class OptimizeSchedule(Pass):
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         analysis = dict(program.metadata.get("analysis", {}))
         schedule = dict(program.metadata.get("schedule", {}))
+        layout_tile = _layout_tile_expressions(program, context)
+        values = dict(context.kernel_metadata.get("meta_defaults", {})) | dict(
+            context.kernel_metadata.get("bound_meta", {})
+        )
+        schedule = _bind_layout_schedule(schedule, layout_tile, values)
         proposed = _deduplicate_candidates(
             tuple(self.schedule_candidates(analysis, schedule, context))
         )
@@ -424,6 +429,10 @@ class OptimizeSchedule(Pass):
         rejected = []
 
         for candidate in proposed:
+            candidate = replace(
+                candidate,
+                schedule=_bind_layout_schedule(candidate.schedule, layout_tile, values),
+            )
             reason = _candidate_rejection_reason(candidate, analysis, context)
 
             if reason is None:
@@ -431,20 +440,11 @@ class OptimizeSchedule(Pass):
             else:
                 rejected.append(candidate.as_metadata() | {"reason": reason})
 
-        if (
-            proposed
-            and not legal
-            and any(
-                domain["scope"] == "hard_layout"
-                for domain in context.kernel_metadata.get("meta_domains", {}).values()
-            )
-        ):
+        if proposed and not legal and layout_tile:
             reasons = "; ".join(
                 f"{item['name']}: {item['reason']}" for item in rejected
             )
-            raise LoweringError(
-                f"No legal schedule satisfies hard layout constraints ({reasons})."
-            )
+            raise LoweringError(f"No legal schedule candidate remains ({reasons}).")
 
         selected = self.select_candidate(tuple(legal), context)
 
@@ -490,6 +490,9 @@ class OptimizeSchedule(Pass):
         optimized_schedule = _merge_nested(
             schedule,
             dict(optimization.get("schedule", {})),
+        )
+        optimized_schedule = _bind_layout_schedule(
+            optimized_schedule, layout_tile, values
         )
         reduction = analysis.get("reduction_schedule")
 
@@ -972,21 +975,68 @@ def _deduplicate_candidates(
     return tuple(unique)
 
 
+def _layout_tile_expressions(program, context):
+    """Read declared block roles from SSA types, never user symbol spellings."""
+    if not any("named_layout" in spec.attrs for spec in context.tensors):
+        return {}
+
+    types = _program_value_types(program)
+    contractions = set()
+
+    def visit(block):
+        for operation in block.operations:
+            if operation.opcode in {"linalg.dot", "linalg.matmul"}:
+                lhs, rhs = (types[name].shape for name in operation.operands[:2])
+
+                if len(lhs) != 2 or len(rhs) != 2:
+                    raise LoweringError(
+                        "Layout scheduling requires rank-two contractions."
+                    )
+
+                contractions.add((lhs[0], rhs[1], lhs[1]))
+
+            for region in operation.regions:
+                visit(region)
+
+    for block in program.blocks:
+        visit(block)
+
+    if len(contractions) > 1:
+        raise LoweringError("Layout scheduling requires consistent contraction tiles.")
+
+    if contractions:
+        return dict(zip(("block_m", "block_n", "block_k"), next(iter(contractions))))
+
+    if len(program.outputs) == 1 and len(program.outputs[0].type.shape) == 2:
+        return dict(zip(("block_m", "block_n"), program.outputs[0].type.shape))
+    return {}
+
+
+def _bind_layout_schedule(schedule, expressions, values):
+    if not expressions:
+        return schedule
+
+    from ninetoothed.ir import IndexExpr
+
+    tile = {
+        role: evaluate_index_expression(IndexExpr.parse(expression), values)
+        for role, expression in expressions.items()
+    }
+
+    if any(type(value) is not int or value <= 0 for value in tile.values()):
+        raise LoweringError("Layout scheduling requires positive integer tiles.")
+
+    return dict(schedule) | {
+        "tile": dict(schedule.get("tile", {})) | tile,
+        "layout_tile": dict(expressions),
+    }
+
+
 def _candidate_rejection_reason(
     candidate: ScheduleCandidate,
     analysis: Mapping[str, Any],
     context: Context,
 ) -> str | None:
-    try:
-        scheduled_meta_defaults(
-            context.kernel_metadata.get("meta_defaults", {}),
-            candidate.schedule,
-            domains=context.kernel_metadata.get("meta_domains", {}),
-            bindings=context.kernel_metadata.get("bound_meta", {}),
-        )
-    except LoweringError as exc:
-        return str(exc)
-
     constraints = dict(candidate.constraints)
     backend_options = dict(context.compiler_options.get("backend_options", {}))
     required_capability = constraints.get("minimum_compute_capability")

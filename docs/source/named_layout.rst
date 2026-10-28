@@ -53,6 +53,14 @@ one ``tile``. Names are unique nonempty strings. ``axes("mk")`` denotes one
 axis, not two. A transpose input must explicitly permute its logical layout;
 alignment never substitutes a matrix transpose merely because sizes match.
 
+Declared tile sizes belong to the layout, not to a backend preset list. Fixed
+integers, bounded compile-time symbols and explicit specialization use the same
+layout rules regardless of symbol spelling. Backend candidates provide execution
+strategies for that layout; their effective tile metadata is derived from SSA
+block shapes. A missing preset is not a target capability failure. Actual target
+and resource restrictions still apply. Runtime tuning candidates retain their
+own resolved tile values when a layout symbol has multiple legal values.
+
 All positive-rank arguments in a named arrangement must be named. Scalars
 need not be named. Same-name axes require equal logical extents and equal
 tile sizes. Only an absent axis broadcasts; a same-name size-one axis is not

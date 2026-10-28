@@ -14,6 +14,7 @@ from ninetoothed.compiler.cache import compilation_cache_key
 from ninetoothed.compiler.runtime import _launch_abi_from_dict, _runtime_wrapper
 from ninetoothed.errors import LoweringError
 from ninetoothed.ir.module import verify_module
+from ninetoothed.naming import is_meta
 
 
 def gemm_layout(a, b, out):
@@ -95,28 +96,56 @@ def test_named_annotations_match_the_arrangement_entrypoint():
     )
 
 
-def test_named_schedule_filters_hard_tile_constraints_before_selection():
-    block = nt.Symbol("BLOCK_M", meta=True, lower_bound=64, upper_bound=64)
-
+def test_named_schedule_uses_layout_tiles_not_symbol_names_or_presets():
     def layout(a, b, out):
         return (
-            a.axes("m", "k").tile((block, 32)),
-            b.axes("k", "n").tile((32, 64)),
-            out.axes("m", "n").tile((block, 64)),
+            a.axes("rows", "inner").tile((block, 32)),
+            b.axes("inner", "columns").tile((32, 64)),
+            out.axes("rows", "columns").tile((block, 64)),
         )
 
+    for block in (
+        128,
+        nt.Symbol("BLOCK_M", meta=True, lower_bound=128, upper_bound=128),
+        nt.Symbol("BM", meta=True, lower_bound=128, upper_bound=128),
+        nt.Symbol("BLOCK_N", constexpr=True, lower_bound=128, upper_bound=128),
+    ):
+        compiled = Compiler().compile(request(layout))
+        metadata = compiled.artifact.metadata["ssa_metadata"]
+        expected = {"block_m": 128, "block_n": 64, "block_k": 32}
+        assert metadata["schedule"]["tile"] == expected
+        assert all(
+            item["schedule"]["tile"] == expected
+            for item in metadata["schedule_candidates"]
+        )
+        assert all(
+            item["tile"] == expected for item in compiled.launch_plan.tuning_candidates
+        )
+
+        if isinstance(block, nt.Symbol) and is_meta(str(block)):
+            fixed = Compiler().compile(
+                replace(request(layout), specialization_values={str(block): 128})
+            )
+            assert fixed.artifact.metadata["ssa_schedule"]["tile"] == expected
+
+    for backend in ("cuda", "tilelang"):
+        generated = Compiler().compile(replace(request(layout), backend=backend))
+        assert generated.artifact.metadata["ssa_schedule"]["tile"] == expected
+
+    block = nt.Symbol("BLOCK_M", meta=True, lower_bound=64, upper_bound=128)
     compiled = Compiler().compile(request(layout))
-    metadata = compiled.artifact.metadata["ssa_metadata"]
-    assert metadata["selected_schedule_candidate"] == "wide"
-    assert compiled.artifact.metadata["ssa_schedule"]["tile"]["block_m"] == 64
-    rejected = metadata["rejected_schedule_candidates"]
-    assert {item["name"] for item in rejected} == {"balanced", "small"}
-    assert all("hard meta domain" in item["reason"] for item in rejected)
+    assert {
+        item["tile"]["block_m"] for item in compiled.launch_plan.tuning_candidates
+    } == {64, 128}
 
-    block = nt.Symbol("BLOCK_M", meta=True, lower_bound=128, upper_bound=128)
-
-    with pytest.raises(LoweringError, match="No legal schedule"):
-        Compiler().compile(request(layout))
+    with pytest.raises(LoweringError, match="threads, target limit"):
+        Compiler().compile(
+            replace(
+                request(layout, dtype="float16"),
+                backend="cuda",
+                backend_options={"max_threads_per_block": 128},
+            )
+        )
 
 
 def test_axes_and_public_meta_operation_boundary():
@@ -293,10 +322,24 @@ def fused(a, b, bias, residual, out):
 @pytest.mark.parametrize("dtype", (torch.float16, torch.bfloat16, torch.float32))
 def test_named_gemm_runtime_and_reload(dtype):
     compiler = Compiler()
-    args = request(
-        transposed_layout if dtype == torch.float32 else gemm_layout,
-        dtype=str(dtype).split(".")[-1],
-    )
+
+    def symbolic_layout(a, b, out):
+        block = nt.Symbol("BM", meta=True, lower_bound=128, upper_bound=128)
+
+        return (
+            a.axes("m", "k").tile((block, 32)),
+            b.axes("k", "n").tile((32, 64)),
+            out.axes("m", "n").tile((block, 64)),
+        )
+
+    layout = gemm_layout
+
+    if dtype == torch.float32:
+        layout = transposed_layout
+    elif dtype == torch.float16:
+        layout = symbolic_layout
+
+    args = request(layout, dtype=str(dtype).split(".")[-1])
     compilation = compiler.compile(args)
     kernel = compiler.materialize(compilation)
     # Noncontiguous positive strides and all three tails, exact input products.

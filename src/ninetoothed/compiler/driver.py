@@ -13,7 +13,12 @@ from ninetoothed.backends.core import (
     normalize_target,
 )
 from ninetoothed.ir import IndexExpr, Kernel, LaunchABI, LaunchBinding, LaunchPlan, ssa
-from ninetoothed.ir.module import FrontendModule, validate_identifier, verify_module
+from ninetoothed.ir.module import (
+    FrontendModule,
+    evaluate_index_expression,
+    validate_identifier,
+    verify_module,
+)
 from ninetoothed.naming import remove_prefixes
 from ninetoothed.targets import (
     TargetContext,
@@ -362,6 +367,7 @@ def _compile_kernel(request: CompileRequest, *, module: FrontendModule) -> Compi
         artifact.metadata.get("ssa_schedule", {}),
         domains=module.meta_domains,
         bindings=module.bindings,
+        layout_owned=module.named_layout is not None,
     )
     launch_abi = _launch_abi(
         params,
@@ -835,6 +841,13 @@ def _triton_tuning_candidates(
 
         if meta:
             candidate["meta_parameters"] = meta
+
+        if schedule.get("layout_tile"):
+            values = dict(arranged.meta_defaults) | dict(arranged.bindings) | meta
+            candidate["tile"] = {
+                role: evaluate_index_expression(IndexExpr.parse(expression), values)
+                for role, expression in schedule["layout_tile"].items()
+            }
 
         if candidate not in candidates:
             candidates.append(candidate)
