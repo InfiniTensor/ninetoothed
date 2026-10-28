@@ -44,11 +44,43 @@ def freeze_application(request):
         if dtype is not None:
             getattr(tensor, "source", tensor).dtype = dtype
 
+    named = None
+    function = None
+
+    if any(getattr(tensor, "_named_layout", None) is not None for tensor in arranged):
+        from ninetoothed.frontend.named_layout import normalize, validate_scope
+        from ninetoothed.frontend.python import prepare_application
+
+        function, scope = prepare_application(application)
+
+        validate_scope(function, scope)
+        arranged, named = normalize(function, params, arranged)
+
     specs = tensor_specs(params, arranged)
+
+    if named is not None:
+        specs = tuple(
+            replace(
+                spec,
+                attrs=dict(spec.attrs)
+                | {"named_layout": named["parameters"][spec.name]},
+            )
+            if spec.name in named["parameters"]
+            else spec
+            for spec in specs
+        )
+
     name = request.kernel_name or application.__name__
 
     try:
-        program = from_application(application, specs, kind=name, strict=True)
+        if function is None:
+            program = from_application(application, specs, kind=name, strict=True)
+        else:
+            from ninetoothed.frontend.python import _from_function
+
+            program = _from_function(
+                function, specs, kind=name, strict=True, named=True
+            )
     except LoweringError as exc:
         raise LoweringError(
             f"Cannot lower `{application.__name__}` through the SSA backend path: {exc}."
@@ -97,7 +129,7 @@ def freeze_application(request):
                 "upper": high,
                 "power_of_two": power,
                 "default": default,
-                "scope": "triton_tuning",
+                "scope": "hard_layout" if named is not None else "triton_tuning",
             }
 
     roles = {}
@@ -192,6 +224,7 @@ def freeze_application(request):
             },
             meta_domains=domains,
             parameter_defaults=defaults,
+            named_layout=named,
             source=source,
             constexpr_values={
                 name: getattr(getattr(tensor, "source", tensor), "value", None)

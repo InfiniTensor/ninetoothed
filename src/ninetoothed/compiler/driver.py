@@ -293,6 +293,10 @@ def _compile_kernel(request: CompileRequest, *, module: FrontendModule) -> Compi
         compute_arch=request.compute_arch,
     )
     target = target_context.backend
+
+    if module.named_layout is not None and request.caller != "torch":
+        raise ValueError("Named programs require the checked Torch caller.")
+
     request = _apply_target_compiler_options(request, target_context)
     _validate_tuning_options(target, request)
     specialization_values = dict(module.bindings) | dict(
@@ -370,6 +374,7 @@ def _compile_kernel(request: CompileRequest, *, module: FrontendModule) -> Compi
     launch_abi = replace(
         launch_abi,
         symbol_constraints=_symbol_constraints(request.frontend, module.bindings),
+        named_layout=module.named_layout,
     )
     launch_plan = _launch_plan(launch_abi, artifact, request, module)
     kernel = replace(
@@ -1103,6 +1108,7 @@ def _abi_dict(abi: LaunchABI) -> dict[str, Any]:
         "outputs": abi.outputs,
         "shape_params": abi.shape_params,
         "symbol_constraints": abi.symbol_constraints,
+        "named_layout": abi.named_layout,
     }
 
 

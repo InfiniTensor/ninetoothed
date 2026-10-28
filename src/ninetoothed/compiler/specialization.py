@@ -72,7 +72,7 @@ def _specialize_contract_attrs(attributes, values, parameter):
     attrs = {
         key: item
         if (key.startswith("jagged_") and key.endswith("_param"))
-        or key in {"source_name", "layout_operations", "custom_tiling"}
+        or key in {"source_name", "layout_operations", "custom_tiling", "named_layout"}
         else _specialize_value(item, values)
         for key, item in attributes.items()
     }
@@ -93,6 +93,11 @@ def _specialize_contract_attrs(attributes, values, parameter):
                 attributes["access_templates"], attrs["access_templates"]
             )
         )
+
+    if "named_layout" in attributes:
+        from ninetoothed.ir.named_layout import specialize_binding
+
+        attrs["named_layout"] = specialize_binding(attributes["named_layout"], values)
 
     return attrs
 
@@ -174,6 +179,13 @@ def specialize_module(module, *, values=None, dtypes=None):
         program=program,
         bindings=dict(module.bindings) | values,
     )
+
+    if module.named_layout is not None:
+        from ninetoothed.ir.named_layout import specialize_contract
+
+        specialized = replace(
+            specialized, named_layout=specialize_contract(module.named_layout, values)
+        )
 
     return verify_module(specialized)
 

@@ -8,6 +8,11 @@ import ninetoothed.naming as naming
 from ninetoothed.symbol import Symbol
 
 
+class _SourceIdentity:
+    def __deepcopy__(self, memo):
+        return self
+
+
 class Tensor:
     """A class used to represent a symbolic tensor.
 
@@ -99,6 +104,11 @@ class Tensor:
         else:
             self.source = self
 
+        self._source_identity = (
+            source._source_identity if source is not None else _SourceIdentity()
+        )
+        self._named_layout = None
+
         if target_dims is not None:
             self.target_dims = target_dims
         else:
@@ -185,6 +195,13 @@ class Tensor:
     def _meta_operation(func):
         @functools.wraps(func)
         def wrapper(self, *args, **kwargs):
+            named = self._named_layout
+
+            if named is not None:
+                from ninetoothed.frontend.named_layout import transform_axes
+
+                named = transform_axes(self, func.__name__, args, kwargs)
+
             if self.source is self:
                 self = copy.deepcopy(self)
 
@@ -192,10 +209,42 @@ class Tensor:
 
             result._history.extend(self._history)
             result._history.append((func, args, kwargs))
+            result._named_layout = named
 
             return result
 
         return wrapper
+
+    def axes(self, *names):
+        """Name root logical dimensions before optional permute and one tile.
+
+        A string is one axis name: ``axes("m", "k")`` names two dimensions.
+        Unnamed tensors retain their existing meta-operation semantics.
+        """
+        if self.source is not self or self._history or isinstance(self.dtype, Tensor):
+            raise ValueError("Tensor.axes() requires an untransformed root Tensor.")
+
+        if self._named_layout is not None:
+            raise ValueError("Tensor.axes() cannot rename an already named Tensor.")
+
+        if (
+            len(names) != self.ndim
+            or any(not isinstance(name, str) or not name.strip() for name in names)
+            or len(set(names)) != len(names)
+        ):
+            raise ValueError(
+                "Tensor.axes() requires one unique nonempty name per dimension."
+            )
+
+        result = copy.deepcopy(self)
+        result._named_layout = {
+            "axes": names,
+            "order": tuple(range(self.ndim)),
+            "tile": (),
+            "permuted": False,
+        }
+
+        return result
 
     @_meta_operation
     def tile(self, tile_shape, strides=None, dilation=None, floor_mode=False):

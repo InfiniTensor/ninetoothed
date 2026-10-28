@@ -204,12 +204,14 @@ class LaunchABI:
     outputs: tuple[str, ...] = ()
     shape_params: tuple[str, ...] = ()
     symbol_constraints: tuple[Mapping[str, Any], ...] = ()
+    named_layout: Mapping[str, Any] | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "public_args", tuple(self.public_args))
         object.__setattr__(self, "kernel_args", tuple(self.kernel_args))
         object.__setattr__(self, "outputs", tuple(self.outputs))
         object.__setattr__(self, "shape_params", tuple(self.shape_params))
+        object.__setattr__(self, "named_layout", freeze(self.named_layout))
         object.__setattr__(
             self,
             "symbol_constraints",
