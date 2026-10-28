@@ -45,7 +45,7 @@
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="ninetoothed.Tensor.tile" href="generated/ninetoothed.Tensor.tile.html" />
+    <link rel="next" title="ninetoothed.Tensor.axes" href="generated/ninetoothed.Tensor.axes.html" />
     <link rel="prev" title="ninetoothed.make" href="generated/ninetoothed.make.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -147,6 +147,13 @@
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../basics.html">
     The Basics
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../named_layout.html">
+    Named layouts
   </a>
 </li>
 
@@ -274,6 +281,13 @@
 
 
 <li class="nav-item ">
+  <a class="nav-link nav-internal" href="../named_layout.html">
+    Named layouts
+  </a>
+</li>
+
+
+<li class="nav-item ">
   <a class="nav-link nav-internal" href="../build.html">
     Ahead-of-Time Kernel Building
   </a>
@@ -350,6 +364,7 @@
 </ul>
 </details></li>
 <li class="toctree-l1 current active has-children"><a class="current reference internal" href="#">Tensor</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="generated/ninetoothed.Tensor.axes.html">ninetoothed.Tensor.axes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="generated/ninetoothed.Tensor.tile.html">ninetoothed.Tensor.tile</a></li>
 <li class="toctree-l2"><a class="reference internal" href="generated/ninetoothed.Tensor.expand.html">ninetoothed.Tensor.expand</a></li>
 <li class="toctree-l2"><a class="reference internal" href="generated/ninetoothed.Tensor.unsqueeze.html">ninetoothed.Tensor.unsqueeze</a></li>
@@ -455,28 +470,31 @@
 <h2>Meta-Operations<a class="headerlink" href="#meta-operations" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="autosummary longtable table autosummary">
 <tbody>
-<tr class="row-odd"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.tile.html#ninetoothed.Tensor.tile" title="ninetoothed.Tensor.tile"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.tile</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.axes.html#ninetoothed.Tensor.axes" title="ninetoothed.Tensor.axes"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.axes</span></code></a></p></td>
+<td><p>Name root logical dimensions before optional permute and one tile.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.tile.html#ninetoothed.Tensor.tile" title="ninetoothed.Tensor.tile"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.tile</span></code></a></p></td>
 <td><p>Tile the tensor into a hierarchical tensor.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.expand.html#ninetoothed.Tensor.expand" title="ninetoothed.Tensor.expand"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.expand</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.expand.html#ninetoothed.Tensor.expand" title="ninetoothed.Tensor.expand"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.expand</span></code></a></p></td>
 <td><p>Expand the specified singleton dimensions of the tensor.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.unsqueeze.html#ninetoothed.Tensor.unsqueeze" title="ninetoothed.Tensor.unsqueeze"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.unsqueeze</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.unsqueeze.html#ninetoothed.Tensor.unsqueeze" title="ninetoothed.Tensor.unsqueeze"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.unsqueeze</span></code></a></p></td>
 <td><p>Insert a singleton dimension in the tensor.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.squeeze.html#ninetoothed.Tensor.squeeze" title="ninetoothed.Tensor.squeeze"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.squeeze</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.squeeze.html#ninetoothed.Tensor.squeeze" title="ninetoothed.Tensor.squeeze"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.squeeze</span></code></a></p></td>
 <td><p>Remove the specified singleton dimensions of the tensor.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.permute.html#ninetoothed.Tensor.permute" title="ninetoothed.Tensor.permute"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.permute</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.permute.html#ninetoothed.Tensor.permute" title="ninetoothed.Tensor.permute"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.permute</span></code></a></p></td>
 <td><p>Permute the dimensions of the tensor.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.flatten.html#ninetoothed.Tensor.flatten" title="ninetoothed.Tensor.flatten"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.flatten</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.flatten.html#ninetoothed.Tensor.flatten" title="ninetoothed.Tensor.flatten"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.flatten</span></code></a></p></td>
 <td><p>Flatten the specified dimensions of the tensor.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.ravel.html#ninetoothed.Tensor.ravel" title="ninetoothed.Tensor.ravel"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.ravel</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.ravel.html#ninetoothed.Tensor.ravel" title="ninetoothed.Tensor.ravel"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.ravel</span></code></a></p></td>
 <td><p>Flatten the hierarchy of the tensor.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.pad.html#ninetoothed.Tensor.pad" title="ninetoothed.Tensor.pad"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.pad</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="generated/ninetoothed.Tensor.pad.html#ninetoothed.Tensor.pad" title="ninetoothed.Tensor.pad"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ninetoothed.Tensor.pad</span></code></a></p></td>
 <td><p>Pad the tensor with the specified padding.</p></td>
 </tr>
 </tbody>
@@ -519,11 +537,11 @@
       </div>
     </a>
     <a class="right-next"
-       href="generated/ninetoothed.Tensor.tile.html"
+       href="generated/ninetoothed.Tensor.axes.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">ninetoothed.Tensor.tile</p>
+        <p class="prev-next-title">ninetoothed.Tensor.axes</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>

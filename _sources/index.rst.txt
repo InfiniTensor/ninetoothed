@@ -12,5 +12,6 @@ NineToothed Documentation
 
    installation
    basics
+   named_layout
    build
    python_api

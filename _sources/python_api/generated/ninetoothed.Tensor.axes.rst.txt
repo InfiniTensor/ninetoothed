@@ -1,0 +1,6 @@
+﻿ninetoothed.Tensor.axes
+=======================
+
+.. currentmodule:: ninetoothed
+
+.. automethod:: Tensor.axes
