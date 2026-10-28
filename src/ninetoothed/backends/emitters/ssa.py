@@ -907,6 +907,13 @@ def _render_body(
         reduction_schedule=reduction_schedule,
     )
 
+    if vector_program and reduction_schedule is not None:
+        # A scheduled row reduction belongs to the outer vector program. Emit it
+        # before entering an SCF loop so a lazy use inside the loop cannot
+        # rebuild the reduction from the loop's scalar extraction coordinates.
+        for result in reduction_schedule.get("reductions", ()):
+            _emit_value(str(result), ctx)
+
     if cooperative_reduction_program:
         _emit_cooperative_reduction_program(operations, ctx)
 
@@ -1150,6 +1157,7 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
             )
 
         store_index = _materialize_index_expr(store_index, ctx)
+        indexed_store = bool(op.attrs.get("indices"))
 
         if op.attrs.get("source"):
             mask = _source_bounds_mask(
@@ -1158,9 +1166,14 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
                 base_mask=_mask_for_coords(rendered, ctx),
             )
         else:
+            base_mask = (
+                None
+                if indexed_store or extract_indices
+                else _mask_for_axes(_value_axes(tensor, ctx), ctx)
+            )
             mask = _store_mask(
                 ctx.target,
-                _mask_for_axes(_value_axes(tensor, ctx), ctx),
+                base_mask,
                 info,
                 view_index,
                 ctx=ctx,
@@ -2631,6 +2644,7 @@ def _masked_load(
     ctx: _EmitContext,
 ) -> str:
     other = _load_other(info)
+
     load = ctx.target.load(name, source_index, mask=mask, other=other)
 
     if ctx.target.c_style_syntax and mask is not None:
@@ -2639,6 +2653,7 @@ def _masked_load(
 
         if info is not None:
             other_value = ctx.target.cast(info.dtype, other_value)
+
         return f"(({predicate}) ? ({load}) : ({other_value}))"
 
     if ctx.target.tir_value_semantics and mask is not None:
