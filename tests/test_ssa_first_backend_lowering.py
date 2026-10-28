@@ -100,6 +100,23 @@ def row_sum_static_dtype_application(x, y):
     y = acc  # noqa: F841
 
 
+def scalar_pair_store_arrangement(x, out):
+    return x.tile((1, 128)), out.tile((1, 128))
+
+
+def scalar_pair_store_application(x, out):
+    for i in range(64):
+        out[0, i] = x[0, i] + x[0, i + 64]
+        out[0, i + 64] = x[0, i + 64] + x[0, i]
+
+
+def scalar_pair_reduction_application(x, out):
+    scale = ntl.sum(x * x)
+
+    for i in range(64):
+        out[0, i] = x[0, i] * scale
+
+
 def _ssa_kernel(
     source: str, kernel_name: str, tensors: tuple[TensorSpec, ...]
 ) -> Kernel:
@@ -144,6 +161,22 @@ def _triton_load_mask(source: str, *, tensor: str | None = None) -> ast.AST | No
 
     return next(
         (keyword.value for keyword in load.keywords if keyword.arg == "mask"), None
+    )
+
+
+def _triton_store_mask(source: str) -> ast.AST | None:
+    store = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "tl"
+        and node.func.attr == "store"
+    )
+
+    return next(
+        (keyword.value for keyword in store.keywords if keyword.arg == "mask"), None
     )
 
 
@@ -1280,6 +1313,41 @@ def nested_dtype_application(x, y):
         assert not any(
             isinstance(node, ast.Name) and node.id == "mask" for node in ast.walk(mask)
         )
+
+    def test_scalar_subscript_store_drops_vector_mask(self):
+        artifact = lower_application(
+            scalar_pair_store_arrangement,
+            scalar_pair_store_application,
+            (Tensor(2, other=0), Tensor(2)),
+            backend="triton",
+            kernel_name="scalar_pair_store",
+        )
+        mask = _triton_store_mask(artifact.primary_source)
+        assert mask is not None
+        assert not any(
+            isinstance(node, ast.Name) and node.id == "mask" for node in ast.walk(mask)
+        )
+
+    def test_scheduled_reduction_is_emitted_before_scalar_loop(self):
+        artifact = lower_application(
+            scalar_pair_store_arrangement,
+            scalar_pair_reduction_application,
+            (Tensor(2, other=0), Tensor(2)),
+            backend="triton",
+            kernel_name="scalar_pair_reduction",
+        )
+        source = artifact.primary_source
+        reduction_line = next(
+            number
+            for number, line in enumerate(source.splitlines(), 1)
+            if "tl.sum(" in line
+        )
+        loop_line = next(
+            number
+            for number, line in enumerate(source.splitlines(), 1)
+            if "for " in line and "range(0, 64" in line
+        )
+        assert reduction_line < loop_line
 
     def test_scalar_source_load_drops_vector_mask(self):
         kernel = _ssa_kernel(
