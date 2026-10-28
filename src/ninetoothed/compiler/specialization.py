@@ -121,6 +121,12 @@ def specialize_program(program: ssa.Program, values: Mapping[str, Any]) -> ssa.P
 def specialize_module(module, *, values=None, dtypes=None):
     """Bind a verified module without invoking an arrangement or Python parser."""
     verify_module(module)
+
+    return _specialize_verified_module(module, values=values, dtypes=dtypes)
+
+
+def _specialize_verified_module(module, *, values=None, dtypes=None):
+    """Specialize an input already checked at the compiler boundary."""
     values, dtypes = dict(values or {}), dict(dtypes or {})
 
     if set(dtypes) - set(module.public_args):

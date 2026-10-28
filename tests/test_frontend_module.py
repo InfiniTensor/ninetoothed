@@ -331,8 +331,12 @@ def _scalar_boolean(x, out):
         out = x  # noqa: F841
 
 
+def _math_method(x, out):
+    out = x.pow(1.5)  # noqa: F841
+
+
 @pytest.mark.parametrize(
-    "application", (_masked_values, _augmented_values, _scalar_boolean)
+    "application", (_masked_values, _augmented_values, _scalar_boolean, _math_method)
 )
 def test_frontend_operation_types_match_shared_inference(application):
     compiler = Compiler()
@@ -371,6 +375,44 @@ def test_frontend_operation_types_match_shared_inference(application):
 
         if backend != "cuda":
             ast.parse(compiled.artifact.primary_source)
+
+
+def _identity_slices(x, out):
+    value = x[0:32:1]
+    out[:32] = value
+    out[0:32:1] += x.source[:32]
+
+
+def _cropped_slice(x, out):
+    out = x[:16]  # noqa: F841
+
+
+def test_identity_slices_keep_the_frozen_view_contract():
+    compiler = Compiler()
+    request = CompileRequest(
+        arrangement=_pair_arrangement,
+        application=_identity_slices,
+        tensors=tuple(nt.Tensor(shape=(32,)) for _ in range(2)),
+    )
+    module = compiler.frontend(request)
+    subscripts = [
+        op.attrs["subscript"]
+        for op in module.program.blocks[0].operations
+        if "subscript" in op.attrs
+    ]
+    assert subscripts and set(subscripts) == {"(:,)"}
+
+    for backend in ("triton", "cuda", "tilelang"):
+        compiler.compile(
+            CompileRequest(
+                frontend=module,
+                backend=backend,
+                tensor_dtypes={"x": "float16", "out": "float32"},
+            )
+        )
+
+    with pytest.raises(ssa.VerificationError, match="Only full slices"):
+        compiler.frontend(replace(request, application=_cropped_slice))
 
 
 def _pointer_assignment(x, out):
