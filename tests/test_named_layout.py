@@ -57,6 +57,68 @@ def request(arrangement=gemm_layout, application=gemm, *, dtype="float32"):
     )
 
 
+def test_named_annotations_match_the_arrangement_entrypoint():
+    def annotated(
+        x: nt.Tensor(1, dtype="float32", name="x").axes("n").tile((32,)),
+        out: nt.Tensor(1, dtype="float32", name="out").axes("n").tile((32,)),
+    ):
+        out = x  # noqa: F841
+
+    def layout(x, out):
+        return x.axes("n").tile((32,)), out.axes("n").tile((32,))
+
+    def application(x, out):
+        out = x  # noqa: F841
+
+    compiler = Compiler()
+    annotated_result = compiler.compile(
+        CompileRequest(application=annotated, kernel_name="named_copy")
+    )
+    arranged_result = compiler.compile(
+        CompileRequest(
+            arrangement=layout,
+            application=application,
+            tensors=(
+                nt.Tensor(1, dtype="float32", name="x"),
+                nt.Tensor(1, dtype="float32", name="out"),
+            ),
+            kernel_name="named_copy",
+        )
+    )
+    assert (
+        annotated_result.request.frontend.named_layout
+        == arranged_result.request.frontend.named_layout
+    )
+    assert (
+        annotated_result.artifact.primary_source
+        == arranged_result.artifact.primary_source
+    )
+
+
+def test_named_schedule_filters_hard_tile_constraints_before_selection():
+    block = nt.Symbol("BLOCK_M", meta=True, lower_bound=64, upper_bound=64)
+
+    def layout(a, b, out):
+        return (
+            a.axes("m", "k").tile((block, 32)),
+            b.axes("k", "n").tile((32, 64)),
+            out.axes("m", "n").tile((block, 64)),
+        )
+
+    compiled = Compiler().compile(request(layout))
+    metadata = compiled.artifact.metadata["ssa_metadata"]
+    assert metadata["selected_schedule_candidate"] == "wide"
+    assert compiled.artifact.metadata["ssa_schedule"]["tile"]["block_m"] == 64
+    rejected = metadata["rejected_schedule_candidates"]
+    assert {item["name"] for item in rejected} == {"balanced", "small"}
+    assert all("hard meta domain" in item["reason"] for item in rejected)
+
+    block = nt.Symbol("BLOCK_M", meta=True, lower_bound=128, upper_bound=128)
+
+    with pytest.raises(LoweringError, match="No legal schedule"):
+        Compiler().compile(request(layout))
+
+
 def test_axes_and_public_meta_operation_boundary():
     root = nt.Tensor(2)
 

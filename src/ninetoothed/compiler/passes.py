@@ -23,7 +23,9 @@ from typing import Any, Mapping
 from ninetoothed.backends.core import Target, normalize_target
 from ninetoothed.compiler.layout import LayoutTransfer, analyze_layout_transfer
 from ninetoothed.compiler.reductions import analyze_reductions
+from ninetoothed.compiler.specialization import scheduled_meta_defaults
 from ninetoothed.dtype import normalize_dtype
+from ninetoothed.errors import LoweringError
 from ninetoothed.ir import ssa
 from ninetoothed.targets import TargetContext, resolve_target_context
 
@@ -428,6 +430,21 @@ class OptimizeSchedule(Pass):
                 legal.append(candidate)
             else:
                 rejected.append(candidate.as_metadata() | {"reason": reason})
+
+        if (
+            proposed
+            and not legal
+            and any(
+                domain["scope"] == "hard_layout"
+                for domain in context.kernel_metadata.get("meta_domains", {}).values()
+            )
+        ):
+            reasons = "; ".join(
+                f"{item['name']}: {item['reason']}" for item in rejected
+            )
+            raise LoweringError(
+                f"No legal schedule satisfies hard layout constraints ({reasons})."
+            )
 
         selected = self.select_candidate(tuple(legal), context)
 
@@ -960,6 +977,16 @@ def _candidate_rejection_reason(
     analysis: Mapping[str, Any],
     context: Context,
 ) -> str | None:
+    try:
+        scheduled_meta_defaults(
+            context.kernel_metadata.get("meta_defaults", {}),
+            candidate.schedule,
+            domains=context.kernel_metadata.get("meta_domains", {}),
+            bindings=context.kernel_metadata.get("bound_meta", {}),
+        )
+    except LoweringError as exc:
+        return str(exc)
+
     constraints = dict(candidate.constraints)
     backend_options = dict(context.compiler_options.get("backend_options", {}))
     required_capability = constraints.get("minimum_compute_capability")

@@ -60,13 +60,14 @@ def _names(layout):
 
 def validate_scope(function, scope):
     """Require intrinsic calls to resolve to their real language namespace."""
+    body = ast.Module(body=function.body, type_ignores=[])
     assigned = {arg.arg for arg in function.args.args} | {
         node.id
-        for node in ast.walk(function)
+        for node in ast.walk(body)
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
     }
 
-    for node in ast.walk(function):
+    for node in ast.walk(body):
         if not isinstance(node, ast.Call):
             continue
 
