@@ -2018,7 +2018,9 @@ def _element_binary(
         )
         mask = " && ".join(f"({item})" for item in masks)
 
-        return f"(({mask}) ? ({result}) : 0.0)"
+        zero = ctx.target.cast_like("0", result)
+
+        return f"(({mask}) ? ({result}) : ({zero}))"
     return result
 
 
@@ -2203,6 +2205,14 @@ def _loop_bound_vector_element(
 
 
 def _render_scalar_expr(
+    op: ssa.Operation, args: tuple[str, ...], ctx: _EmitContext
+) -> str:
+    value = _render_unchecked_scalar_expr(op, args, ctx)
+
+    return ctx.target.check_numeric_result(op, value, ctx)
+
+
+def _render_unchecked_scalar_expr(
     op: ssa.Operation, args: tuple[str, ...], ctx: _EmitContext
 ) -> str:
     opcode = op.opcode
@@ -3889,6 +3899,7 @@ def _source_index(info: _TensorInfo | None, view_index: str) -> str:
 
 
 def _template_with_extract_indices(
+    info: _TensorInfo | None,
     template: Mapping[str, Any],
     extract_indices: tuple[str, ...],
     value_coords: tuple[str, ...],
@@ -3904,16 +3915,29 @@ def _template_with_extract_indices(
         return template, False
 
     offsets = tuple(str(offset) for offset in template.get("offsets", ()))
+    attrs = {} if info is None or info.attrs is None else info.attrs
+    levels = attrs.get("dtype_target_dims", ())
+    level = int(template.get("level", 0))
+    dimensions = tuple(str(dim) for dim in levels[level]) if level < len(levels) else ()
+    source_coords = (*extract_indices, *value_coords)
 
-    if len(offsets) < len(extract_indices):
+    if (
+        "layout_operations" not in attrs
+        or set(attrs["layout_operations"]) - {"tile"}
+        or attrs.get("custom_tiling")
+        or len(levels) != 1
+        or template.get("jagged")
+        or dimensions != tuple(str(dim) for dim in range(len(offsets)))
+        or len(source_coords) != len(offsets)
+    ):
         return template, False
 
     return (
         {
             **template,
-            "offsets": (*extract_indices, *value_coords),
+            "offsets": source_coords,
             "extract_override": True,
-            "mask": "True",
+            "mask": _source_bounds_mask(info, source_coords, base_mask=None) or "True",
         },
         True,
     )
@@ -3944,7 +3968,7 @@ def _source_index_for_value(
 
     if extract_indices:
         overridden_template = _template_with_extract_indices(
-            template, extract_indices, value_coords
+            info, template, extract_indices, value_coords
         )
         template = overridden_template[0]
 
@@ -4232,7 +4256,7 @@ def _combined_mask(
 
         if template is not None and extract_indices:
             overridden_template = _template_with_extract_indices(
-                template, extract_indices, value_coords
+                info, template, extract_indices, value_coords
             )
 
             if overridden_template[1]:
