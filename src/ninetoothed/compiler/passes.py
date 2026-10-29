@@ -23,7 +23,6 @@ from typing import Any, Mapping
 from ninetoothed.backends.core import Target, normalize_target
 from ninetoothed.compiler.canonicalize import canonicalize_dtype_expressions
 from ninetoothed.compiler.layout import LayoutTransfer, analyze_layout_transfer
-from ninetoothed.compiler.reduction_geometry import find_single_store_row_reductions
 from ninetoothed.compiler.reductions import analyze_reductions
 from ninetoothed.dtype import normalize_dtype
 from ninetoothed.errors import LoweringError
@@ -303,9 +302,6 @@ class Canonicalize(Pass):
         )
 
 
-FACT_NAMES = ("analysis",)
-
-
 def program_facts(program, name):
     """Read a fact only from the SSA snapshot that established it."""
     facts = program.facts
@@ -327,27 +323,9 @@ def _facts_are_current(program, context):
 def refresh_program_facts(program, context):
     """Rebuild existing analysis before consumption after SSA or context changes."""
     if "structure" in program.facts and not _facts_are_current(program, context):
-        previous = program.metadata.get("analysis", {}).get("layout_transfer")
-        refreshed = _refresh_schedule_contract(
+        return _refresh_schedule_contract(
             program, AnalyzeEffects().run(program, context), context
         )
-
-        # Keep the public diagnostic after decomposition removes the view op.
-        # Fresh facts remain independent: a diagnostic is never a new proof.
-        if (
-            isinstance(previous, LayoutTransfer)
-            and not previous.schedulable
-            and refreshed.metadata["analysis"]["layout_transfer"] is None
-        ):
-            refreshed = _with_metadata(
-                refreshed,
-                analysis={
-                    **refreshed.metadata["analysis"],
-                    "layout_transfer": previous,
-                },
-            )
-
-        return refreshed
     return program
 
 
@@ -449,30 +427,18 @@ def _refresh_schedule_contract(previous, current, context):
 
     reason = "schedule invalidated by updated SSA or layout analysis"
     candidates = tuple(current.metadata.get("schedule_candidates", ()))
-    selected = current.metadata.get("selected_schedule_candidate")
-
-    for candidate in candidates:
-        if candidate["name"] == selected:
-            for key in candidate["schedule"]:
-                schedule.pop(key, None)
-
-    optimization = dict(current.metadata.get("optimization", {}))
-
-    for key in optimization.pop("schedule", {}):
-        schedule.pop(key, None)
-
-    optimization.pop("preserve_linalg", None)
-
-    for key in ("row_group", "block_reductions", "singleton_dot"):
-        if schedule.get(key, {}).get("enabled"):
-            schedule[key] = {"enabled": False, "reason": reason}
-
-    schedule["granularity"] = _schedule_granularity(analysis)
+    neutral = SelectSchedule().run(current, context)
+    schedule = dict(neutral.metadata["schedule"])
+    schedule.update(
+        (name, {"enabled": False, "reason": reason})
+        for name in ("row_group", "block_reductions", "singleton_dot")
+        if current.metadata["schedule"].get(name, {}).get("enabled")
+    )
 
     return _with_metadata(
-        current,
+        neutral,
         schedule=schedule,
-        optimization=optimization,
+        optimization={},
         schedule_candidates=(),
         selected_schedule_candidate=None,
         rejected_schedule_candidates=tuple(
@@ -493,15 +459,12 @@ class AnalyzeEffects(Pass):
         if _facts_are_current(program, context):
             return program
 
-        row_reductions = find_single_store_row_reductions(program)
         opcodes = tuple(_iter_opcodes(program))
         stores = sum(1 for opcode in opcodes if opcode == "mem.store")
         reductions = sum(1 for opcode in opcodes if opcode.startswith("reduce."))
         loops = sum(1 for opcode in opcodes if opcode == "scf.for")
         dot_input_dtypes = _linalg_input_dtypes(program)
-        reduction_analysis = analyze_reductions(
-            program, context.tensors, single_store_rows=row_reductions
-        )
+        reduction_analysis = analyze_reductions(program, context.tensors)
         layout_transfer = analyze_layout_transfer(program, context.tensors)
 
         program = _with_metadata(
@@ -534,7 +497,7 @@ class AnalyzeEffects(Pass):
                 "structure": (program.inputs, program.outputs, program.blocks),
                 "tensors": context.tensors,
                 "target": context.resolved_target.as_metadata(),
-                **{name: program.metadata[name] for name in FACT_NAMES},
+                "analysis": program.metadata["analysis"],
             },
         )
 
@@ -803,24 +766,10 @@ class ValidateTargetCapabilities(Pass):
             raise ValueError("Row grouping must precede backend schedule optimization.")
 
         required = _required_capabilities(program)
-        snapshot = (
-            program.inputs,
-            program.outputs,
-            program.blocks,
-            context.resolved_target.as_metadata(),
-            required,
-        )
-
-        if program.facts.get("target_validation") == snapshot:
-            return program
-
         report = context.resolved_target.validate_capabilities(required)
 
-        return replace(
-            _with_metadata(
-                program, required_capabilities=required, target_capabilities=report
-            ),
-            facts={**program.facts, "target_validation": snapshot},
+        return _with_metadata(
+            program, required_capabilities=required, target_capabilities=report
         )
 
 

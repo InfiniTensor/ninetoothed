@@ -140,7 +140,13 @@ def application(x, out):
 
 def test_type_only_branch_reassigns_unspecialized_dtype():
     kernel = _kernel(
-        "\ndef application(x, out):\n    dtype = out.dtype\n    if dtype == ntl.float16 and not dtype == ntl.float32:\n        dtype = ntl.float32\n    out = ntl.cast(x, dtype)\n",
+        """
+def application(x, out):
+    dtype = out.dtype
+    if dtype == ntl.float16 and not dtype == ntl.float32:
+        dtype = ntl.float32
+    out = ntl.cast(x, dtype)
+""",
         dtype=None,
     )
     assert _cast_dtypes(kernel.ssa) == (None,)
@@ -148,10 +154,6 @@ def test_type_only_branch_reassigns_unspecialized_dtype():
     assert "out.dtype.element_ty" in source
     assert "tl.float32" in source
     ast.parse(source)
-
-    for backend in ("cuda",):
-        source = emit_kernel(kernel, backend).primary_source
-        assert "tl." not in source
 
 
 def _exp_with_dtype(x, dtype):

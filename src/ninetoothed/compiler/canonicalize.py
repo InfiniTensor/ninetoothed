@@ -10,24 +10,13 @@ def canonicalize_dtype_expressions(program):
     are removed; tensor arithmetic, memory effects and regions retain order.
     """
     references = ("dtype_ref", "dtype_source", "dtype_operand")
-
-    def walk(operations):
-        for operation in operations:
-            yield operation
-
-            for region in operation.regions:
-                yield from walk(region.operations)
+    used = {value.name for value in program.outputs}
 
     def rewrite(block):
-        nonlocal removed
         operations = []
 
-        for operation in block.operations:
-            current = replace(
-                operation,
-                regions=tuple(rewrite(region) for region in operation.regions),
-            )
-
+        # SSA definitions dominate their uses, including captures in nested regions.
+        for current in reversed(block.operations):
             if (
                 current.opcode
                 in {"tensor.cast", "tensor.zeros", "tensor.empty", "tensor.full"}
@@ -50,31 +39,29 @@ def canonicalize_dtype_expressions(program):
                 )
                 current = replace(current, attrs=attrs, operands=operands)
 
-            operations.append(current)
+            if current.opcode in {
+                "dtype.constant",
+                "dtype.of",
+                "dtype.select",
+            } and not any(result.name in used for result in current.results):
+                continue
 
-        used = {name for operation in walk(operations) for name in operation.operands}
-        used.update(value.name for value in program.outputs)
-        used.update(
-            operation.attrs[key]
-            for operation in walk(operations)
-            for key in references
-            if operation.attrs.get(key) is not None
-        )
-        retained = tuple(
-            operation
-            for operation in operations
-            if operation.opcode not in {"dtype.constant", "dtype.of", "dtype.select"}
-            or any(result.name in used for result in operation.results)
-        )
-        removed |= len(retained) != len(operations)
+            used.update(current.operands)
+            used.update(
+                current.attrs[key]
+                for key in references
+                if current.attrs.get(key) is not None
+            )
+            operations.append(
+                replace(
+                    current,
+                    regions=tuple(rewrite(region) for region in current.regions),
+                )
+            )
 
-        return replace(block, operations=retained)
+        return replace(block, operations=tuple(reversed(operations)))
 
-    while True:
-        removed = False
-        program = replace(
-            program, blocks=tuple(rewrite(block) for block in program.blocks)
-        )
-
-        if not removed:
-            return program
+    return replace(
+        program,
+        blocks=tuple(rewrite(block) for block in reversed(program.blocks))[::-1],
+    )

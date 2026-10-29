@@ -17,6 +17,9 @@ from ninetoothed.backends.emitters.analysis import (
     atomic_output_tensors as _atomic_output_tensors,
 )
 from ninetoothed.backends.emitters.analysis import (
+    operation_value_references as _operation_value_references,
+)
+from ninetoothed.backends.emitters.analysis import (
     program_value_types as _program_value_types,
 )
 from ninetoothed.backends.emitters.analysis import schedule_int as _schedule_int
@@ -3185,7 +3188,9 @@ def _prepare_scalar_carry_analysis(operations, ctx):
             loops.append(op)
 
         pending.extend(
-            ctx.operations[name] for name in op.operands if name in ctx.operations
+            ctx.operations[name]
+            for name in _operation_value_references(op)
+            if name in ctx.operations
         )
         pending.extend(
             inner
@@ -3195,7 +3200,9 @@ def _prepare_scalar_carry_analysis(operations, ctx):
         )
 
     if loops:
-        ctx.scalar_carry_analysis = ScalarCarryProjectionAnalysis(ctx.program)
+        ctx.scalar_carry_analysis = ScalarCarryProjectionAnalysis(
+            ctx.program, _is_top_level_effect, live_operations=seen
+        )
 
         for op in loops:
             ctx.scalar_carry_analysis.for_loop(op, tuple(map(str, ctx.output_axes)))
@@ -3212,7 +3219,9 @@ def _scalar_loop_carry_coordinates(op, ctx):
         return {}
 
     if ctx.scalar_carry_analysis is None:
-        ctx.scalar_carry_analysis = ScalarCarryProjectionAnalysis(ctx.program)
+        ctx.scalar_carry_analysis = ScalarCarryProjectionAnalysis(
+            ctx.program, _is_top_level_effect
+        )
 
     projections = ctx.scalar_carry_analysis.for_loop(
         op, tuple(map(str, ctx.output_axes))
@@ -3443,39 +3452,38 @@ def _emit_loop_bound(name: str, ctx: _EmitContext) -> str:
 
 
 def _emit_scf_if_statement(op: ssa.Operation, ctx: _EmitContext) -> None:
-    condition = _emit_value(op.operands[0], ctx)
+    _emit_if_regions(op, _emit_value(op.operands[0], ctx), ctx)
+
+
+def _emit_if_regions(op, condition, ctx, emit_yields=None):
+    """Emit each selected region's effects once, then consume its yield slots."""
     ctx.lines.append(_if_header(condition, ctx.target))
-    then_lines: list[str] = []
-    then_ctx = ctx.child(
-        lines=then_lines,
-        memo=dict(ctx.memo),
-        local_suffix=_nested_local_suffix(ctx, "then"),
-    )
 
-    if op.regions:
-        for inner_op in op.regions[0].operations:
-            if _is_top_level_effect(inner_op):
-                _emit_operation(inner_op, then_ctx)
+    for region_index, region in enumerate(op.regions[:2]):
+        if region_index == 1:
+            ctx.lines.append("} else {" if ctx.target.c_style_syntax else "else:")
 
-    ctx.lines.extend(
-        _indent_lines(then_lines or _empty_block_lines(ctx.target), ctx.target)
-    )
-
-    if len(op.regions) > 1:
-        ctx.lines.append("} else {" if ctx.target.c_style_syntax else "else:")
-        else_lines: list[str] = []
-        else_ctx = ctx.child(
-            lines=else_lines,
+        lines: list[str] = []
+        child = ctx.child(
+            lines=lines,
             memo=dict(ctx.memo),
-            local_suffix=_nested_local_suffix(ctx, "else"),
+            local_suffix=_nested_local_suffix(ctx, f"if_{region.name}"),
         )
+        yields = ()
 
-        for inner_op in op.regions[1].operations:
+        for inner_op in region.operations:
+            if inner_op.opcode == "scf.yield":
+                yields = inner_op.operands
+                continue
+
             if _is_top_level_effect(inner_op):
-                _emit_operation(inner_op, else_ctx)
+                _emit_operation(inner_op, child)
+
+        if emit_yields is not None:
+            emit_yields(yields, child)
 
         ctx.lines.extend(
-            _indent_lines(else_lines or _empty_block_lines(ctx.target), ctx.target)
+            _indent_lines(lines or _empty_block_lines(ctx.target), ctx.target)
         )
 
     if ctx.target.c_style_syntax:
@@ -3495,35 +3503,25 @@ def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
         for result in op.results
     }
     has_projection = any(value is not None for value in projected.values())
+    condition_groups = {}
+
+    for index, result in enumerate(op.results):
+        condition_coords = (
+            _broadcast_coords(
+                coordinates[result.name],
+                tuple(map(str, result.type.shape)),
+                condition_axes,
+            )
+            if condition_axes and has_projection
+            else None
+        )
+        condition_groups.setdefault(condition_coords, []).append(index)
 
     if condition_axes and has_projection and _is_top_level_effect(op):
-        reference = op.results[0]
-        condition_coords = _broadcast_coords(
-            coordinates[reference.name],
-            tuple(map(str, reference.type.shape)),
-            condition_axes,
-        )
-
-        if condition_coords != _current_coords(condition_axes, ctx):
+        if set(condition_groups) != {_current_coords(condition_axes, ctx)}:
             raise ValueError(
                 "Effectful tensor conditions cannot change their execution coordinates."
             )
-
-    if condition_axes and has_projection and len(set(coordinates.values())) > 1:
-        if _is_top_level_effect(op):
-            raise ValueError(
-                "Effectful tensor conditions require one coordinate domain."
-            )
-
-        for index, result in enumerate(op.results):
-            coords = coordinates[result.name]
-            child = _scalar_carry_context(ctx, result.type, coords, result.name)
-            ctx.memo[result.name] = _scf_if_element(op, index, coords, child)
-
-            if ctx.target.c_style_syntax and not ctx.target.vector_value_semantics:
-                ctx.scalar_value_coordinates[result.name] = coords
-
-        return
 
     result_locals: dict[str, str] = {}
 
@@ -3549,81 +3547,54 @@ def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
         if ctx.target.c_style_syntax and not ctx.target.vector_value_semantics:
             ctx.scalar_value_coordinates[result.name] = coordinates[result.name]
 
-    if condition_axes and has_projection:
-        reference = op.results[0]
-        condition_coords = _broadcast_coords(
-            coordinates[reference.name],
-            tuple(map(str, reference.type.shape)),
-            condition_axes,
-        )
-        condition_ctx = _scalar_carry_context(
-            ctx, ctx.value_types[op.operands[0]], condition_coords, "if_condition"
-        )
-        condition = _emit_element(op.operands[0], condition_coords, condition_ctx)
-    else:
-        condition = _emit_value(op.operands[0], ctx)
-
-    ctx.lines.append(_if_header(condition, ctx.target))
-
-    for region_index, region in enumerate(op.regions[:2]):
-        if region_index == 1:
-            ctx.lines.append("} else {" if ctx.target.c_style_syntax else "else:")
-
-        lines: list[str] = []
-        child = ctx.child(
-            lines=lines,
-            memo=dict(ctx.memo),
-            local_suffix=_nested_local_suffix(ctx, f"if_{region.name}"),
-        )
-        yields: tuple[str, ...] = ()
-
-        for inner_op in region.operations:
-            if inner_op.opcode == "scf.yield":
-                yields = inner_op.operands
-                continue
-
-            if _is_top_level_effect(inner_op):
-                _emit_operation(inner_op, child)
-
-        for result, yielded in zip(op.results, yields):
-            coordinates = _projected_value_coordinates(result.name, ctx)
-
-            if coordinates is None:
-                value = _emit_value(yielded, child)
-            else:
-                projected = _scalar_carry_context(
-                    child, result.type, coordinates, result.name
-                )
-                value = _emit_element(yielded, coordinates, projected)
-
-            lines.append(
-                _assign_scalar(
-                    ctx.target,
-                    result_locals[result.name],
-                    value,
-                    mutable=_uses_mutable_scalar_slots(ctx.target),
-                )
+    for condition_coords, indices in condition_groups.items():
+        if condition_coords is None:
+            condition = _emit_value(op.operands[0], ctx)
+        else:
+            condition_ctx = _scalar_carry_context(
+                ctx,
+                ctx.value_types[op.operands[0]],
+                condition_coords,
+                op.results[indices[0]].name + "_condition",
             )
+            condition = _emit_element(op.operands[0], condition_coords, condition_ctx)
 
-        ctx.lines.extend(
-            _indent_lines(lines or _empty_block_lines(ctx.target), ctx.target)
-        )
+        def emit_yields(yields, child):
+            for index in indices:
+                result = op.results[index]
+                coords = projected[result.name]
+                value = (
+                    _emit_value(yields[index], child)
+                    if coords is None
+                    else _emit_element(
+                        yields[index],
+                        coords,
+                        _scalar_carry_context(child, result.type, coords, result.name),
+                    )
+                )
+                child.lines.append(
+                    _assign_scalar(
+                        ctx.target,
+                        result_locals[result.name],
+                        value,
+                        mutable=_uses_mutable_scalar_slots(ctx.target),
+                    )
+                )
 
-    if ctx.target.c_style_syntax:
-        ctx.lines.append("}")
+        _emit_if_regions(op, condition, ctx, emit_yields)
 
 
 def _scf_if_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     condition = _emit_value(op.operands[0], ctx)
 
     if len(op.regions) == 1:
-        then_value = _region_yield_expr(op.regions[0], ctx)
+        then_value = _region_yield(op.regions[0], ctx)
 
         return ctx.target.where(condition, then_value, "0.0")
 
     then_region, else_region = op.regions[:2]
-    then_value = _region_yield_expr(then_region, ctx)
-    else_value = _region_yield_expr(else_region, ctx)
+    then_value = _region_yield(then_region, ctx)
+    else_value = _region_yield(else_region, ctx)
 
     return ctx.target.where(condition, then_value, else_value)
 
@@ -3644,13 +3615,19 @@ def _scf_if_element(
     condition = _element_if_condition(op, result_index, coords, ctx)
 
     if len(op.regions) == 1:
-        then_value = _region_yield_element(op.regions[0], result_index, coords, ctx)
+        then_value = _region_yield(
+            op.regions[0], ctx, result_index=result_index, coords=coords
+        )
 
         return ctx.target.where(condition, then_value, "0.0")
 
     then_region, else_region = op.regions[:2]
-    then_value = _region_yield_element(then_region, result_index, coords, ctx)
-    else_value = _region_yield_element(else_region, result_index, coords, ctx)
+    then_value = _region_yield(
+        then_region, ctx, result_index=result_index, coords=coords
+    )
+    else_value = _region_yield(
+        else_region, ctx, result_index=result_index, coords=coords
+    )
 
     return ctx.target.where(condition, then_value, else_value)
 
@@ -3658,11 +3635,6 @@ def _scf_if_element(
 def _scf_if_element_control_flow(
     op: ssa.Operation, result_index: int, coords: tuple[str, ...], ctx: _EmitContext
 ) -> str:
-    if not op.results:
-        _emit_scf_if_statement(op, ctx)
-
-        return "0.0"
-
     result = op.results[result_index]
     local = f"{_local_symbol(result.name, ctx)}_if_{len(ctx.lines)}"
     init = _zero_value(result.type, ctx.target)
@@ -3682,79 +3654,30 @@ def _scf_if_element_control_flow(
         result_expr = local
 
     condition = _element_if_condition(op, result_index, coords, ctx)
-    ctx.lines.append(_if_header(condition, ctx.target))
 
-    for region_index, region in enumerate(op.regions[:2]):
-        if region_index == 1:
-            ctx.lines.append("} else {" if ctx.target.c_style_syntax else "else:")
-
-        lines: list[str] = []
-        child = ctx.child(
-            lines=lines,
-            memo=dict(ctx.memo),
-            local_suffix=_nested_local_suffix(ctx, f"if_{region.name}"),
-        )
-        yielded = None
-
-        for inner_op in region.operations:
-            if inner_op.opcode == "scf.yield":
-                yielded = inner_op.operands[result_index] if inner_op.operands else None
-                continue
-
-            if _is_top_level_effect(inner_op):
-                _emit_operation(inner_op, child)
-
-        if yielded is not None:
+    def emit_yields(yields, child):
+        if yields:
+            yielded = yields[result_index]
             value = (
                 _emit_element(yielded, coords, child)
                 if yielded.startswith("%")
                 else _emit_value(yielded, child)
             )
-            lines.append(_assign_scalar(ctx.target, local, value, mutable=mutable))
+            child.lines.append(
+                _assign_scalar(ctx.target, local, value, mutable=mutable)
+            )
 
-        ctx.lines.extend(
-            _indent_lines(lines or _empty_block_lines(ctx.target), ctx.target)
-        )
+    _emit_if_regions(op, condition, ctx, emit_yields)
 
-    if len(op.regions) == 1:
-        ctx.lines.append("} else {" if ctx.target.c_style_syntax else "else:")
-        ctx.lines.extend(_indent_lines(_empty_block_lines(ctx.target), ctx.target))
-
-    if ctx.target.c_style_syntax:
-        ctx.lines.append("}")
     return result_expr
 
 
-def _region_yield_expr(region: ssa.Block, ctx: _EmitContext) -> str:
-    lines: list[str] = []
-    child = ctx.child(
-        lines=lines,
-        memo=dict(ctx.memo),
-        local_suffix=_nested_local_suffix(ctx, f"expr_{region.name}"),
-    )
-    yielded = None
-
-    for op in region.operations:
-        if op.opcode == "scf.yield":
-            yielded = op.operands[0] if op.operands else None
-            continue
-
-        if _is_top_level_effect(op):
-            _emit_operation(op, child)
-
-    if yielded is None:
-        ctx.lines.extend(lines)
-
-        return "0.0"
-
-    value = _emit_value(yielded, child)
-    ctx.lines.extend(lines)
-
-    return value
-
-
-def _region_yield_element(
-    region: ssa.Block, result_index: int, coords: tuple[str, ...], ctx: _EmitContext
+def _region_yield(
+    region: ssa.Block,
+    ctx: _EmitContext,
+    *,
+    result_index: int = 0,
+    coords: tuple[str, ...] | None = None,
 ) -> str:
     lines: list[str] = []
     child = ctx.child(
@@ -3779,7 +3702,7 @@ def _region_yield_element(
 
     value = (
         _emit_element(yielded, coords, child)
-        if yielded.startswith("%")
+        if coords is not None and yielded.startswith("%")
         else _emit_value(yielded, child)
     )
     ctx.lines.extend(lines)

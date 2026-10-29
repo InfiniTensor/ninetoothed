@@ -6,10 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ninetoothed.compiler.effects import pure_expression
-from ninetoothed.compiler.reduction_geometry import (
-    find_single_store_row_reductions,
-    reduction_inputs_share_domain,
-)
+from ninetoothed.compiler.reduction_geometry import reduction_inputs_share_domain
 from ninetoothed.ir import ssa
 
 _ELEMENTWISE_USERS = frozenset(
@@ -38,7 +35,6 @@ class ReductionDomain:
     program_shapes: tuple[tuple[str, ...], ...] = ()
     program_constraints: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = ()
     program_compatible: bool = True
-    requires_reduction_domain_mask: bool = False
 
     @property
     def extent(self) -> str:
@@ -66,16 +62,13 @@ class ReductionDomain:
             "program_shapes": self.program_shapes,
             "program_constraints": self.program_constraints,
             "program_compatible": self.program_compatible,
-            "requires_reduction_domain_mask": self.requires_reduction_domain_mask,
             "extent": self.extent,
             "parallel_axes": self.parallel_axes,
             "parallel_shape": self.parallel_shape,
         }
 
 
-def analyze_reductions(
-    program: ssa.Program, tensors=(), *, single_store_rows=None
-) -> Mapping[str, Any]:
+def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
     """Return reduction domains and a conservative shared schedule contract."""
     value_types = _value_types(program)
     scoped_operations = tuple(_walk_program(program))
@@ -84,12 +77,13 @@ def analyze_reductions(
     forwarded_values = _forwarded_values(program)
     tensor_specs = {tensor.name: tensor for tensor in tensors}
 
-    if single_store_rows is None:
-        single_store_rows = find_single_store_row_reductions(program)
-
-    single_store_rows = frozenset(single_store_rows)
-    single_row_stores = _can_broadcast_single_row_results(
-        program, value_types, tensor_specs
+    operations = program.blocks[0].operations if len(program.blocks) == 1 else ()
+    single_store = bool(
+        operations
+        and operations[-1].opcode == "mem.store"
+        and len(operations[-1].operands) == 2
+        and not set(operations[-1].attrs) - {"target", "target_shape"}
+        and all(pure_expression(op) for op in operations[:-1])
     )
     uniform_domain = reduction_inputs_share_domain(
         tuple(op for op, _scope in scoped_operations), value_types, tensors
@@ -104,12 +98,13 @@ def analyze_reductions(
         if operation.opcode not in _SUPPORTED_REDUCTIONS:
             raise ValueError(f"Unsupported SSA reduction `{operation.opcode}`.")
 
-        if operation.operands:
-            operand_type = value_types.get(operation.operands[0])
+        operand_type = (
+            value_types.get(operation.operands[0]) if operation.operands else None
+        )
 
-            if operand_type is not None and operand_type.kind == "scalar":
-                _validate_scalar_fallback(operation)
-                continue
+        if operand_type is not None and operand_type.kind == "scalar":
+            _validate_scalar_fallback(operation)
+            continue
 
         domain, rejection = _domain(
             operation,
@@ -120,13 +115,14 @@ def analyze_reductions(
             forwarded_values,
             tensor_specs,
             allow_single_row_broadcast=uniform_domain
+            and single_store
+            and operand_type is not None
+            and len(operand_type.shape) == 2
             and (
-                bool(
-                    operation.results and operation.results[0].name in single_store_rows
-                )
-                or single_row_stores
+                operation.attrs.get("axis") in {-1, 1}
+                or operation.attrs.get("axis") is None
+                and str(operand_type.shape[0]) == "1"
             ),
-            uniform_domain=uniform_domain,
         )
         domains.append(domain)
 
@@ -135,88 +131,14 @@ def analyze_reductions(
 
     schedule = _schedule_contract(tuple(domains), tuple(rejections))
 
+    if schedule["mode"] == "row-vector":
+        schedule["requires_reduction_domain_mask"] = uniform_domain
+
     return {
         "reduction_domains": tuple(domain.as_metadata() for domain in domains),
         "reduction_rejections": tuple(rejections),
         "reduction_schedule": schedule,
     }
-
-
-def _can_broadcast_single_row_results(program, value_types, tensor_specs):
-    """Prove scalar-in-one-row broadcasting without inventing reuse facts.
-
-    Reuse retains its single-store/effect barrier. This separate geometric
-    contract admits multiple same-domain outputs, with no output reads, no
-    regions/unknown effects and complete static physical row widths.
-    """
-    if len(program.blocks) != 1:
-        return False
-
-    operations = program.blocks[0].operations
-    stores = tuple(op for op in operations if op.opcode == "mem.store")
-
-    if len(stores) < 2 or any(
-        op.regions or (op.opcode != "mem.store" and not pure_expression(op))
-        for op in operations
-    ):
-        return False
-
-    targets = set()
-    domains = set()
-
-    for store in stores:
-        if len(store.operands) != 2 or set(store.attrs) - {"target", "target_shape"}:
-            return False
-
-        target = store.operands[1]
-        type_ = value_types.get(target)
-        stored = value_types.get(store.operands[0])
-
-        if type_ is None or stored is None or target in targets:
-            return False
-
-        domain = tuple(map(str, store.attrs.get("target_shape", type_.shape)))
-
-        if (
-            len(domain) != 2
-            or domain[0] != "1"
-            or _static_integer_expression(domain[1]) is None
-            or _static_integer_expression(domain[1]) <= 0
-            or tuple(map(str, type_.shape)) != domain
-            or tuple(map(str, stored.shape)) != domain
-        ):
-            return False
-
-        targets.add(target)
-        domains.add(domain)
-
-    if len(domains) != 1:
-        return False
-
-    domain = next(iter(domains))
-
-    if any(
-        name in targets
-        for op in operations
-        if op.opcode != "mem.store"
-        for name in op.operands
-    ):
-        return False
-
-    for value in program.inputs:
-        if value.type.kind != "tensor":
-            continue
-
-        if tuple(map(str, value.type.shape)) != domain:
-            return False
-
-        spec = tensor_specs.get(value.name)
-        attrs = {**value.type.attrs, **({} if spec is None else spec.attrs)}
-        source = attrs.get("source_shape", value.type.shape)
-
-        if len(source) != 2 or str(source[-1]) != domain[-1]:
-            return False
-    return True
 
 
 def _validate_scalar_fallback(operation):
@@ -248,7 +170,6 @@ def _domain(
     tensor_specs,
     *,
     allow_single_row_broadcast=False,
-    uniform_domain=False,
 ):
     if len(operation.operands) != 1 or len(operation.results) != 1:
         raise ValueError(
@@ -311,7 +232,6 @@ def _domain(
         value_types=value_types,
         allow_single_row_broadcast=allow_single_row_broadcast,
     )
-    requires_reduction_domain_mask = uniform_domain
     stores = _reachable_stores(
         result.name,
         users,
@@ -358,7 +278,6 @@ def _domain(
             program_shapes=program_shapes,
             program_constraints=program_constraints,
             program_compatible=program_compatible,
-            requires_reduction_domain_mask=requires_reduction_domain_mask,
         ),
         rejection,
     )
@@ -795,9 +714,6 @@ def _schedule_contract(domains, rejections):
         "program_shape": domain.program_shapes[0],
         "program_constraints": domain.program_constraints,
         "reductions": tuple(item.result for item in live_domains),
-        "requires_reduction_domain_mask": any(
-            item.requires_reduction_domain_mask for item in live_domains
-        ),
     }
 
 

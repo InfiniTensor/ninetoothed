@@ -8,10 +8,22 @@ from ninetoothed.compiler.effects import broadcast_view_parts, is_pointwise_expr
 from ninetoothed.ir import Kernel, ssa
 
 
+def operation_value_references(operation):
+    """Include SSA values used by indexed stores as well as ordinary operands."""
+    indices = (
+        operation.attrs.get("indices", ()) if operation.opcode == "mem.store" else ()
+    )
+
+    return operation.operands + (
+        (indices,) if isinstance(indices, str) else tuple(indices)
+    )
+
+
 class ScalarCarryProjectionAnalysis:
     """Resolve scalarized carry uses by lexical SSA identity, once per domain."""
 
-    def __init__(self, program):
+    def __init__(self, program, is_effectful, *, live_operations=None):
+        self.is_effectful = is_effectful
         self.uses = defaultdict(list)
         self.results = {}
         self.operands = {}
@@ -33,18 +45,20 @@ class ScalarCarryProjectionAnalysis:
                 self.types[ref] = value.type
 
             for operation in block.operations:
-                inputs = tuple(
-                    visible.get(name, (0, name)) for name in operation.operands
+                references = tuple(
+                    visible.get(name, (0, name))
+                    for name in operation_value_references(operation)
                 )
                 outputs = tuple((id(block), value.name) for value in operation.results)
                 self.results[id(operation)] = outputs
-                self.operands[id(operation)] = inputs
+                self.operands[id(operation)] = references[: len(operation.operands)]
 
                 for slot, ref in enumerate(outputs):
                     self.definitions[ref] = (operation, slot)
 
-                for index, ref in enumerate(inputs):
-                    self.uses[ref].append((operation, index))
+                if live_operations is None or id(operation) in live_operations:
+                    for index, ref in enumerate(references):
+                        self.uses[ref].append((operation, index))
 
                 if operation.opcode == "scf.yield":
                     self.yield_owners[id(operation)] = (owner, block)
@@ -84,7 +98,7 @@ class ScalarCarryProjectionAnalysis:
             seeds = (
                 self.results[id(loop)][slot],
                 self.arguments[id(loop.regions[0])][slot + 1],
-                *self._initial_control_values(self.operands[id(loop)][slot + 3], axes),
+                *self._initial_effect_values(self.operands[id(loop)][slot + 3], axes),
             )
             pending = deque(seeds)
             seen = set()
@@ -210,8 +224,8 @@ class ScalarCarryProjectionAnalysis:
 
         return result
 
-    def _initial_control_values(self, initial, axes):
-        """Find materialized initializers through coordinate-preserving value edges."""
+    def _initial_effect_values(self, initial, axes):
+        """Find effectful initializers through coordinate-preserving value edges."""
         pending = [initial]
         seen = set()
         result = set()
@@ -230,7 +244,9 @@ class ScalarCarryProjectionAnalysis:
             op, slot = self.definitions[ref]
 
             if op.opcode in {"scf.if", "scf.for"}:
-                result.add(ref)
+                if self.is_effectful(op):
+                    result.add(ref)
+
                 pending.extend(
                     self.operands[id(region.operations[-1])][slot]
                     for region in op.regions
@@ -238,6 +254,8 @@ class ScalarCarryProjectionAnalysis:
 
                 if op.opcode == "scf.for":
                     pending.append(self.operands[id(op)][slot + 3])
+                else:
+                    pending.append(self.operands[id(op)][0])
             elif is_pointwise_expression(op) or broadcast_view_parts(op) == (
                 ":",
             ) * len(axes):

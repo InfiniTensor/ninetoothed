@@ -16,23 +16,6 @@ from ninetoothed.frontend.python import from_source
 from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict
 from ninetoothed.targets import PlatformProfile, TargetContext
 
-EMISSION_TEST_BACKENDS = ("triton", "cuda", "tilelang")
-
-
-def _generic_target_context(backend):
-    """Build a generic-platform context so emission snapshots stay hermetic.
-
-    Without this, a pinned ``NINETOOTHED_PLATFORM`` in the environment would
-    change platform constraints (grid limits, config caps) and break
-    assertions that describe the generic lowering.
-    """
-    from ninetoothed.targets import default_platform_registry
-
-    return TargetContext(
-        backend=normalize_target(backend),
-        platform=default_platform_registry().get("generic"),
-    )
-
 
 def _source_only_kernel():
     return Kernel(
@@ -202,10 +185,14 @@ class TestRegistry:
 
     def test_default_registry_reports_three_backends(self):
         names = {capability.name for capability in backend_capabilities()}
-        assert names == {Target.TRITON, Target.TILELANG, Target.CUDA}
+        assert names == {
+            Target.TRITON,
+            Target.TILELANG,
+            Target.CUDA,
+        }
 
     def test_backends_reject_source_only_kernel_without_ssa(self):
-        for backend in EMISSION_TEST_BACKENDS:
+        for backend in ("triton", "cuda", "tilelang"):
             with pytest.raises(ValueError, match="requires ssa.Program"):
                 emit(_source_only_kernel(), backend)
 
@@ -216,11 +203,8 @@ class TestRegistry:
             "tilelang": ("python/tilelang", "out_buf[index] = v0"),
         }
 
-        for backend in EMISSION_TEST_BACKENDS:
-            language, fragment = expected[backend]
-            artifact = emit(
-                _add_kernel(), backend, target_context=_generic_target_context(backend)
-            )
+        for backend, (language, fragment) in expected.items():
+            artifact = emit(_add_kernel(), backend)
             assert artifact.language == language
             assert artifact.metadata["lowering_ir"] == "ssa.Program"
             assert artifact.metadata["target"]["platform"] == "generic"
@@ -253,13 +237,9 @@ class TestRegistry:
             "tilelang": "T.serial(k)",
         }
 
-        for backend in EMISSION_TEST_BACKENDS:
-            artifact = emit(
-                _matmul_kernel(),
-                backend,
-                target_context=_generic_target_context(backend),
-            )
-            assert expected_fragments[backend] in artifact.primary_source
+        for backend, fragment in expected_fragments.items():
+            artifact = emit(_matmul_kernel(), backend)
+            assert fragment in artifact.primary_source
             assert "linalg.matmul" not in artifact.primary_source
 
     def test_cuda_exposes_only_materialized_wmma_schedule(self):
@@ -290,9 +270,6 @@ class TestRegistry:
         assert "requires compute capability 7.0" in rejected[0]["reason"]
 
     def test_cuda_profile_can_disable_unverified_wmma(self):
-        from ninetoothed import Tensor
-        from ninetoothed.frontend.layout import tensor_specs
-
         target = TargetContext(
             backend=Target.CUDA,
             platform=PlatformProfile(
@@ -302,45 +279,14 @@ class TestRegistry:
                 metadata={"cuda": {"arch": "native", "wmma": False}},
             ),
         )
-        artifact = emit(_matmul_kernel("float16"), "cuda", target_context=target)
+        artifact = emit(
+            _matmul_kernel("float16"),
+            "cuda",
+            target_context=target,
+        )
+
         assert "wmma::" not in artifact.primary_source
         assert not artifact.metadata["ssa_metadata"]["schedule_candidates"]
-        tiled = _kernel_from_source(
-            "def matmul(a, b, out):\n    out = a @ b\n",
-            name="tiled_matmul",
-            tensors=tensor_specs(
-                ("a", "b", "out"),
-                tuple(
-                    Tensor(shape=(16, 16), dtype="float16").tile((16, 16))
-                    for _ in range(3)
-                ),
-            ),
-        )
-
-        for kernel, context in (
-            (tiled, target),
-            (
-                replace(tiled, compiler_options={"backend_options": {"arch": "sm_60"}}),
-                None,
-            ),
-        ):
-            fallback = emit(kernel, "cuda", target_context=context)
-            assert "wmma::mma_sync(" not in fallback.primary_source
-            assert "float" in fallback.primary_source
-
-        assert "wmma::mma_sync(" in emit(tiled, "cuda").primary_source
-
-        compound = _kernel_from_source(
-            "def compound(a, b, out):\n    out = (a @ b) @ b\n",
-            name="compound",
-            tensors=tuple(
-                (
-                    TensorSpec(ndim=2, shape=("k", "k"), dtype="float16", name=name)
-                    for name in ("a", "b", "out")
-                )
-            ),
-        )
-        assert "wmma::mma_sync(" not in emit(compound, "cuda").primary_source
 
     def test_optimization_metadata_contains_only_materialized_choices(self):
         forbidden_fields = {

@@ -3,7 +3,7 @@ import pytest
 from ninetoothed import Tensor
 from ninetoothed.backends.core import Target
 from ninetoothed.compiler.layout import LayoutTransfer, analyze_layout_transfer
-from ninetoothed.compiler.passes import lower_for_target, program_facts
+from ninetoothed.compiler.passes import lower_for_target
 from ninetoothed.frontend.layout import tensor_specs
 from ninetoothed.frontend.python import from_source
 from ninetoothed.ir import AccessMap, IndexExpr, TensorLayout, TensorSpec
@@ -220,11 +220,9 @@ def test_static_mismatch_is_rejected_from_layout_schedule(specs, source, reason)
     program = _program(source, specs)
 
     lowered = lower_for_target(program, backend=Target.TRITON, tensors=specs)
-    transfer = lowered.metadata["analysis"]["layout_transfer"]
+    transfer = analyze_layout_transfer(program, specs)
 
     assert not transfer.schedulable
-    current_transfer = program_facts(lowered, "analysis")["layout_transfer"]
-    assert current_transfer is None or not current_transfer.schedulable
     assert transfer.failure_reason == reason
     assert lowered.metadata["schedule"]["granularity"] == "elementwise-grid"
     assert "layout_transfer" not in lowered.metadata["schedule"]

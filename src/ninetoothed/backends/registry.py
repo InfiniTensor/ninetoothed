@@ -52,7 +52,4 @@ def _validate_backend_pass_contracts(registry: "Registry") -> None:
 
 
 def _required_backend_pass_names(backend: Target) -> tuple[str, ...]:
-    if backend.value == "cuda":
-        return ()
-
     return (f"ssa.{backend.value}.optimize_schedule",)
