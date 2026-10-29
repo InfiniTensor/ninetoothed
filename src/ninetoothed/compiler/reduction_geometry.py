@@ -2,10 +2,14 @@
 
 from functools import cache
 
-from ninetoothed.compiler.effects import pure_expression
+from ninetoothed.compiler.effects import (
+    broadcast_view_parts,
+    is_pointwise_expression,
+    pure_expression,
+)
 
 
-def prove_unit_parallel_reductions(program):
+def find_single_store_row_reductions(program):
     """Identify a pure, same-row reduction DAG before one terminal store.
 
     The plan is intentionally independent of dtype and backend syntax. It
@@ -126,7 +130,7 @@ def prove_unit_parallel_reductions(program):
     return tuple(operation.results[0].name for operation in reductions)
 
 
-def matching_reduction_domains(operations, value_types, tensors):
+def reduction_inputs_share_domain(operations, value_types, tensors):
     """Prove matching source-bound domains for regular, single-level tiles."""
     inputs = {tensor.name: tensor for tensor in tensors}
     producers = {value.name: op for op in operations for value in op.results}
@@ -139,7 +143,15 @@ def matching_reduction_domains(operations, value_types, tensors):
             if tensor.attrs.get("source_ndim", tensor.ndim) == 0:
                 return frozenset()
 
+            if tensor.attrs.get("other") is not None and tuple(
+                map(str, tensor.attrs.get("source_shape", ()))
+            ) != tuple(map(str, tensor.attrs.get("application_shape", tensor.shape))):
+                return None
+
             layout = tensor.layout
+
+            if layout is None and not tensor.attrs:
+                return frozenset({(tuple(map(str, tensor.shape)), "True")})
 
             if (
                 layout is None
@@ -170,11 +182,29 @@ def matching_reduction_domains(operations, value_types, tensors):
         if op.opcode.startswith(("dtype.", "shape.", "reduce.")):
             return frozenset()
 
+        dependencies = tuple(domains(operand) for operand in op.operands)
+        parts = broadcast_view_parts(op)
+
+        if op.opcode in {"tensor.zeros", "tensor.full"} and all(
+            dependency == frozenset() for dependency in dependencies
+        ):
+            return frozenset()
+
+        if (
+            parts is not None
+            and dependencies
+            and all(dependency == frozenset() for dependency in dependencies)
+        ):
+            return frozenset()
+
+        if not is_pointwise_expression(op) and not (
+            parts is not None and all(part == ":" for part in parts)
+        ):
+            return None
+
         result = frozenset()
 
-        for operand in op.operands:
-            dependency = domains(operand)
-
+        for operand, dependency in zip(op.operands, dependencies):
             if dependency is None or (
                 dependency and value_types[operand].shape != value_types[name].shape
             ):

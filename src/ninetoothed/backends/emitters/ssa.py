@@ -12,6 +12,7 @@ from dataclasses import replace
 from typing import Any, Mapping
 
 from ninetoothed.backends.core import Artifact
+from ninetoothed.backends.emitters.analysis import ScalarCarryProjectionAnalysis
 from ninetoothed.backends.emitters.analysis import (
     atomic_output_tensors as _atomic_output_tensors,
 )
@@ -68,8 +69,13 @@ from ninetoothed.backends.emitters.expressions import (
 from ninetoothed.backends.emitters.expressions import (
     valid_symbol as _valid_symbol,
 )
-from ninetoothed.compiler.passes import Context, _program_target, refresh_program_facts
+from ninetoothed.compiler.effects import is_pointwise_expression
+from ninetoothed.compiler.passes import (
+    Context,
+    refresh_program_facts,
+)
 from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict, ssa
+from ninetoothed.targets import _target_context_from_snapshot
 
 _BINARY = {
     "add": "+",
@@ -111,7 +117,7 @@ def emit(kernel: Kernel, target: EmitterTarget) -> Artifact:
 
     context = Context(
         backend=target.backend,
-        target=_program_target(kernel.ssa),
+        target=_target_context_from_snapshot(kernel.ssa.facts.get("target")),
         compiler_options=kernel.compiler_options,
         kernel_metadata=kernel.metadata,
         tensors=kernel.tensors,
@@ -185,6 +191,12 @@ def _row_reduction_schedule(
     schedule = program.metadata.get("schedule", {})
 
     if not isinstance(schedule, Mapping):
+        return None
+
+    # A proved block plan owns its coordinates; row-vector lowering is an alternative.
+    if target.vector_value_semantics and schedule.get("block_reductions", {}).get(
+        "enabled"
+    ):
         return None
 
     reduction = schedule.get("reduction", {})
@@ -448,7 +460,7 @@ def _render_source(
         and not cooperative_reduction_program
     )
     native_block_program = bool(
-        target.supports_native_block(kernel)
+        target.can_emit_native_matmul(kernel)
         and split_outer_inner
         and len(value_axes) == 2
         and has_dot
@@ -511,7 +523,7 @@ def _render_source(
     elif native_block_program:
         axes = value_axes
         total = _target_index_expr(target, _product(value_axes))
-        tile_m, tile_n = target.native_block_tile(kernel, value_axes)
+        tile_m, tile_n = target.native_matmul_tile_shape(kernel, value_axes)
         tile_rows = f"(({value_axes[0]}) + {tile_m - 1}) / {tile_m}"
         tile_cols = f"(({value_axes[1]}) + {tile_n - 1}) / {tile_n}"
         grid_total = _target_index_expr(
@@ -1729,8 +1741,11 @@ def _cast_dot_operand(
 
 
 def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
-    if ctx.binding_coordinates and name in ctx.binding_coordinates:
-        required = ctx.binding_coordinates[name]
+    if (
+        ctx.binding_coordinate_constraints
+        and name in ctx.binding_coordinate_constraints
+    ):
+        required = ctx.binding_coordinate_constraints[name]
 
         if tuple(item.strip("() ") for item in coords) != tuple(
             item.strip("() ") for item in required
@@ -1873,7 +1888,14 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
         return _emit_linalg_dot(op, ctx, coords=coords)
 
     if op.opcode == "scf.if":
-        return _scf_if_element(op, coords, ctx)
+        return _scf_if_element(
+            op,
+            next(
+                index for index, result in enumerate(op.results) if result.name == name
+            ),
+            coords,
+            ctx,
+        )
 
     if op.opcode == "scf.for":
         return _emit_value(name, ctx)
@@ -2069,7 +2091,9 @@ def _reduction_input_mask(
             )
 
     if op is not None and (
-        op.opcode.startswith(("arith.", "math.", "cmp.")) or op.opcode == "select.where"
+        op.opcode.startswith(("arith.", "math.", "cmp."))
+        or op.opcode == "select.where"
+        or is_pointwise_expression(op)
     ):
         result_axes = _value_axes(name, ctx)
         masks = [
@@ -3109,196 +3133,77 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
     return acc_expr
 
 
-def _scalar_loop_carry_coordinates(
-    op: ssa.Operation, ctx: _EmitContext
-) -> dict[str, tuple[str, ...]]:
-    """Prove the projection of lower-rank state held in native scalar slots.
-
-    A shape alone cannot distinguish row state from right-aligned column
-    state on square domains. Follow same-shape pointwise consumers until an
-    explicit singleton view, a broadcast or a store determines the axis.
-    No whole-vector read or multiple projection can use one scalar slot.
-    """
+def _scalar_loop_carry_coordinates(op, ctx):
     if not ctx.target.c_style_syntax or ctx.target.vector_value_semantics:
         return {}
 
-    operations = tuple(
-        operation
-        for block in ctx.program.blocks
-        for operation in _walk_ops(block.operations)
+    if not any(
+        value.type.shape and len(value.type.shape) < len(ctx.output_axes)
+        for value in op.results
+    ):
+        return {}
+
+    if ctx.scalar_carry_analysis is None:
+        ctx.scalar_carry_analysis = ScalarCarryProjectionAnalysis(ctx.program)
+
+    projections = ctx.scalar_carry_analysis.for_loop(
+        op, tuple(map(str, ctx.output_axes))
     )
-    result = {}
-    region_yield = op.regions[0].operations[-1]
-    forwarded = {
-        id(region.operations[-1]): tuple(
-            zip(region.operations[-1].operands, parent.results)
-        )
-        for parent in operations
-        if parent.opcode == "scf.if" and parent.results
-        for region in parent.regions
-    }
-    math_names = {
-        "abs",
-        "ceil",
-        "cos",
-        "erf",
-        "exp",
-        "exp2",
-        "expm1",
-        "floor",
-        "log",
-        "log2",
-        "log1p",
-        "pow",
-        "reciprocal",
-        "round",
-        "rsqrt",
-        "sigmoid",
-        "sin",
-        "sqrt",
-        "tanh",
-        "trunc",
+    coordinates = ctx.coordinate_exprs or _current_coords(ctx.output_axes, ctx)
+
+    return {
+        name: tuple("0" if axis is None else coordinates[axis] for axis in projection)
+        for name, projection in projections.items()
     }
 
-    for value, attr in zip(op.results, op.attrs.get("iter_args", ())):
-        axes = tuple(map(str, value.type.shape))
 
-        if not axes or len(axes) >= len(ctx.output_axes):
-            continue
+def _projected_value_coordinates(name, ctx):
+    if (
+        ctx.binding_coordinate_constraints
+        and name in ctx.binding_coordinate_constraints
+    ):
+        return ctx.binding_coordinate_constraints[name]
 
-        block_arg = str(attr["block_arg"])
-        members = {value.name, block_arg}
+    if ctx.scalar_carry_analysis is None:
+        return None
 
-        def pointwise(operation):
-            return not operation.regions and (
-                operation.opcode.startswith(("arith.", "cmp.", "math."))
-                or operation.opcode == "tensor.cast"
-                or operation.opcode == "select.where"
-                or operation.opcode.startswith("call.")
-                and operation.opcode[5:] in math_names
-            )
+    projection = ctx.scalar_carry_analysis.for_value(
+        name, tuple(map(str, ctx.output_axes))
+    )
 
-        while True:
-            previous = len(members)
+    if projection is None:
+        return None
 
-            for operation in operations:
-                for source, target in forwarded.get(id(operation), ()):
-                    if source in members and tuple(map(str, target.type.shape)) == axes:
-                        members.add(target.name)
+    coordinates = ctx.coordinate_exprs or _current_coords(ctx.output_axes, ctx)
 
-                if operation.opcode == "scf.if" and operation.operands[0] in members:
-                    members.update(
-                        result.name
-                        for result in operation.results
-                        if tuple(map(str, result.type.shape)) == axes
-                    )
-
-                if (
-                    pointwise(operation)
-                    and len(operation.results) == 1
-                    and tuple(map(str, operation.results[0].type.shape)) == axes
-                    and any(operand in members for operand in operation.operands)
-                ):
-                    members.add(operation.results[0].name)
-
-            if len(members) == previous:
-                break
-
-        projections = set()
-
-        for operation in operations:
-            operands = tuple(
-                operand for operand in operation.operands if operand in members
-            )
-
-            if not operands or operation is op or operation is region_yield:
-                continue
-
-            if operation.opcode in {"dtype.of", "shape.dim", "tensor.stride"}:
-                continue
-
-            if operation.opcode == "scf.yield" and all(
-                any(
-                    source == operand and target.name in members
-                    for source, target in forwarded.get(id(operation), ())
-                )
-                for operand in operands
-            ):
-                continue
-
-            if (
-                operation.opcode == "scf.if"
-                and operation.results
-                and all(value.name in members for value in operation.results)
-            ):
-                continue
-
-            if (
-                pointwise(operation)
-                and len(operation.results) == 1
-                and tuple(map(str, operation.results[0].type.shape)) == axes
-            ):
-                continue
-
-            if operation.opcode == "mem.store":
-                projections.add(_current_coords(axes, ctx))
-                continue
-
-            if len(operation.results) == 1:
-                consumer_axes = tuple(map(str, operation.results[0].type.shape))
-
-                if _axes_compatible_suffix(
-                    consumer_axes, tuple(map(str, ctx.output_axes))
-                ):
-                    coordinates = _current_coords(consumer_axes, ctx)
-
-                    if operation.opcode == "tensor.view":
-                        parts = tuple(
-                            part.strip()
-                            for part in str(operation.attrs.get("subscript", ""))
-                            .strip("()")
-                            .split(",")
-                        )
-
-                        if "None" in parts and all(
-                            part.strip() in {":", "None"} for part in parts
-                        ):
-                            projections.add(
-                                _view_base_coords(operation, coordinates, ctx)
-                            )
-                            continue
-                    elif pointwise(operation):
-                        projections.add(
-                            _broadcast_coords(coordinates, consumer_axes, axes)
-                        )
-                        continue
-
-            raise ValueError(
-                f"Scalar loop carry {value.name} has an unproven coordinate consumer "
-                f"{operation.opcode}."
-            )
-
-        if len(projections) > 1:
-            raise ValueError(
-                f"Scalar loop carry {value.name} requires multiple coordinate projections."
-            )
-
-        coordinates = next(iter(projections), _current_coords(axes, ctx))
-        result[value.name] = coordinates
-        result[block_arg] = coordinates
-
-    return result
+    return tuple("0" if axis is None else coordinates[axis] for axis in projection)
 
 
 def _scalar_carry_context(ctx, type_, coordinates, suffix):
+    linear = _linearized_index(coordinates, tuple(map(str, type_.shape)))
+
     return ctx.child(
         memo={
             name: expression
             for name, expression in ctx.memo.items()
             if not _value_axes(name, ctx)
+            or (
+                (
+                    name in (ctx.binding_coordinate_constraints or {})
+                    or (
+                        ctx.operations.get(name) is not None
+                        and ctx.operations[name].opcode == "scf.if"
+                    )
+                )
+                and _projected_value_coordinates(name, ctx) == coordinates
+            )
         },
         output_axes=tuple(map(str, type_.shape)),
         coordinate_exprs=coordinates,
+        index_expr=linear,
+        inner_index_expr=linear,
+        row_expr=coordinates[0] if len(coordinates) > 1 else None,
+        col_expr=coordinates[1] if len(coordinates) > 1 else None,
         local_suffix=_nested_local_suffix(ctx, suffix),
     )
 
@@ -3315,8 +3220,11 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
     step = _emit_loop_bound(op.operands[2], ctx)
     iter_attrs = tuple(op.attrs.get("iter_args", ()))
     carry_coordinates = _scalar_loop_carry_coordinates(op, ctx)
-    binding_coordinates = {**(ctx.binding_coordinates or {}), **carry_coordinates}
-    ctx.binding_coordinates = binding_coordinates
+    binding_coordinate_constraints = {
+        **(ctx.binding_coordinate_constraints or {}),
+        **carry_coordinates,
+    }
+    ctx.binding_coordinate_constraints = binding_coordinate_constraints
     result_names = tuple(result.name for result in op.results)
     loop_locals: dict[str, str] = {}
     result_locals: dict[str, str] = {}
@@ -3392,7 +3300,7 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
         lines=body_lines,
         memo=dict(ctx.memo),
         bindings=loop_bindings,
-        binding_coordinates=binding_coordinates,
+        binding_coordinate_constraints=binding_coordinate_constraints,
         vector_bindings=frozenset(vector_bindings),
         local_suffix=_nested_local_suffix(ctx, local),
     )
@@ -3406,6 +3314,17 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
 
         if _is_top_level_effect(inner_op):
             _emit_operation(inner_op, body)
+
+    # Materialize multi-result control flow once before projecting its yields.
+    for yielded in yields:
+        producer = ctx.operations.get(yielded)
+
+        if (
+            producer is not None
+            and producer.opcode == "scf.if"
+            and len(producer.results) > 1
+        ):
+            _emit_value(yielded, body)
 
     next_locals: list[tuple[str, str]] = []
 
@@ -3494,6 +3413,32 @@ def _emit_scf_if_statement(op: ssa.Operation, ctx: _EmitContext) -> None:
 
 
 def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
+    projected = {
+        result.name: _projected_value_coordinates(result.name, ctx)
+        for result in op.results
+    }
+    condition_axes = _value_axes(op.operands[0], ctx)
+    coordinates = {
+        result.name: projected[result.name]
+        if projected[result.name] is not None
+        else _current_coords(tuple(map(str, result.type.shape)), ctx)
+        for result in op.results
+    }
+    has_projection = any(value is not None for value in projected.values())
+
+    if condition_axes and has_projection and len(set(coordinates.values())) > 1:
+        if _is_top_level_effect(op):
+            raise ValueError(
+                "Effectful tensor conditions require one coordinate domain."
+            )
+
+        for index, result in enumerate(op.results):
+            coords = coordinates[result.name]
+            child = _scalar_carry_context(ctx, result.type, coords, result.name)
+            ctx.memo[result.name] = _scf_if_element(op, index, coords, child)
+
+        return
+
     result_locals: dict[str, str] = {}
 
     for result in op.results:
@@ -3515,7 +3460,20 @@ def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
 
             ctx.memo[result.name] = local
 
-    condition = _emit_value(op.operands[0], ctx)
+    if condition_axes and has_projection:
+        reference = op.results[0]
+        condition_coords = _broadcast_coords(
+            coordinates[reference.name],
+            tuple(map(str, reference.type.shape)),
+            condition_axes,
+        )
+        condition_ctx = _scalar_carry_context(
+            ctx, ctx.value_types[op.operands[0]], condition_coords, "if_condition"
+        )
+        condition = _emit_element(op.operands[0], condition_coords, condition_ctx)
+    else:
+        condition = _emit_value(op.operands[0], ctx)
+
     ctx.lines.append(_if_header(condition, ctx.target))
 
     for region_index, region in enumerate(op.regions[:2]):
@@ -3539,11 +3497,21 @@ def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
                 _emit_operation(inner_op, child)
 
         for result, yielded in zip(op.results, yields):
+            coordinates = _projected_value_coordinates(result.name, ctx)
+
+            if coordinates is None:
+                value = _emit_value(yielded, child)
+            else:
+                projected = _scalar_carry_context(
+                    child, result.type, coordinates, result.name
+                )
+                value = _emit_element(yielded, coordinates, projected)
+
             lines.append(
                 _assign_scalar(
                     ctx.target,
-                    result_locals.get(result.name, _local_symbol(result.name, ctx)),
-                    _emit_value(yielded, child),
+                    result_locals[result.name],
+                    value,
                     mutable=_uses_mutable_scalar_slots(ctx.target),
                 )
             )
@@ -3571,35 +3539,42 @@ def _scf_if_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     return ctx.target.where(condition, then_value, else_value)
 
 
+def _element_if_condition(op, result_index, coords, ctx):
+    axes = tuple(map(str, op.results[result_index].type.shape))
+    condition_coords = _broadcast_coords(coords, axes, _value_axes(op.operands[0], ctx))
+
+    return _emit_element(op.operands[0], condition_coords, ctx)
+
+
 def _scf_if_element(
-    op: ssa.Operation, coords: tuple[str, ...], ctx: _EmitContext
+    op: ssa.Operation, result_index: int, coords: tuple[str, ...], ctx: _EmitContext
 ) -> str:
     if not ctx.target.vector_value_semantics:
-        return _scf_if_element_control_flow(op, coords, ctx)
+        return _scf_if_element_control_flow(op, result_index, coords, ctx)
 
-    condition = _emit_value(op.operands[0], ctx)
+    condition = _element_if_condition(op, result_index, coords, ctx)
 
     if len(op.regions) == 1:
-        then_value = _region_yield_element(op.regions[0], coords, ctx)
+        then_value = _region_yield_element(op.regions[0], result_index, coords, ctx)
 
         return ctx.target.where(condition, then_value, "0.0")
 
     then_region, else_region = op.regions[:2]
-    then_value = _region_yield_element(then_region, coords, ctx)
-    else_value = _region_yield_element(else_region, coords, ctx)
+    then_value = _region_yield_element(then_region, result_index, coords, ctx)
+    else_value = _region_yield_element(else_region, result_index, coords, ctx)
 
     return ctx.target.where(condition, then_value, else_value)
 
 
 def _scf_if_element_control_flow(
-    op: ssa.Operation, coords: tuple[str, ...], ctx: _EmitContext
+    op: ssa.Operation, result_index: int, coords: tuple[str, ...], ctx: _EmitContext
 ) -> str:
     if not op.results:
         _emit_scf_if_statement(op, ctx)
 
         return "0.0"
 
-    result = op.results[0]
+    result = op.results[result_index]
     local = f"{_local_symbol(result.name, ctx)}_if_{len(ctx.lines)}"
     init = _zero_value(result.type, ctx.target)
 
@@ -3617,7 +3592,7 @@ def _scf_if_element_control_flow(
         ctx.lines.append(ctx.target.local_decl(result.type, local, init))
         result_expr = local
 
-    condition = _emit_value(op.operands[0], ctx)
+    condition = _element_if_condition(op, result_index, coords, ctx)
     ctx.lines.append(_if_header(condition, ctx.target))
 
     for region_index, region in enumerate(op.regions[:2]):
@@ -3634,7 +3609,7 @@ def _scf_if_element_control_flow(
 
         for inner_op in region.operations:
             if inner_op.opcode == "scf.yield":
-                yielded = inner_op.operands[0] if inner_op.operands else None
+                yielded = inner_op.operands[result_index] if inner_op.operands else None
                 continue
 
             if _is_top_level_effect(inner_op):
@@ -3690,7 +3665,7 @@ def _region_yield_expr(region: ssa.Block, ctx: _EmitContext) -> str:
 
 
 def _region_yield_element(
-    region: ssa.Block, coords: tuple[str, ...], ctx: _EmitContext
+    region: ssa.Block, result_index: int, coords: tuple[str, ...], ctx: _EmitContext
 ) -> str:
     lines: list[str] = []
     child = ctx.child(
@@ -3702,7 +3677,7 @@ def _region_yield_element(
 
     for op in region.operations:
         if op.opcode == "scf.yield":
-            yielded = op.operands[0] if op.operands else None
+            yielded = op.operands[result_index] if op.operands else None
             continue
 
         if _is_top_level_effect(op):

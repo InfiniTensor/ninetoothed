@@ -15,6 +15,7 @@ from ninetoothed.ir.module import (
     verify_module,
 )
 from ninetoothed.naming import remove_prefixes
+from ninetoothed.targets import _target_context_from_snapshot
 
 
 def specialize_tensor_specs(
@@ -285,14 +286,13 @@ def specialize_schedule_tiles(kernel: Kernel) -> Kernel:
 
     from ninetoothed.compiler.passes import (
         Context,
-        _program_target,
         refresh_program_facts,
     )
 
     tensors = specialize_tensor_specs(kernel.tensors, values)
     context = Context(
         backend=kernel.compiler_options["target"]["backend"],
-        target=_program_target(kernel.ssa),
+        target=_target_context_from_snapshot(kernel.ssa.facts.get("target")),
         compiler_options=kernel.compiler_options,
         kernel_metadata=kernel.metadata,
         tensors=tensors,

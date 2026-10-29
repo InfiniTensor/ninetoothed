@@ -23,13 +23,13 @@ from typing import Any, Mapping
 from ninetoothed.backends.core import Target, normalize_target
 from ninetoothed.compiler.canonicalize import canonicalize_dtype_expressions
 from ninetoothed.compiler.layout import LayoutTransfer, analyze_layout_transfer
-from ninetoothed.compiler.reduction_geometry import prove_unit_parallel_reductions
+from ninetoothed.compiler.reduction_geometry import find_single_store_row_reductions
 from ninetoothed.compiler.reductions import analyze_reductions
 from ninetoothed.dtype import normalize_dtype
 from ninetoothed.errors import LoweringError
 from ninetoothed.ir import ssa
 from ninetoothed.ir.module import evaluate_index_expression
-from ninetoothed.targets import PlatformProfile, TargetContext, resolve_target_context
+from ninetoothed.targets import TargetContext, resolve_target_context
 
 HARDWARE_INDEPENDENT = "hardware_independent"
 LANGUAGE_SPECIFIC = "language_specific"
@@ -95,9 +95,6 @@ class Pass:
     category = HARDWARE_INDEPENDENT
     phase = "generic"
     supported_backends: tuple[Target, ...] = ()
-    reads: tuple[str, ...] = ()
-    provides: tuple[str, ...] = ()
-    changes_ssa: bool = False
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         raise NotImplementedError
@@ -115,9 +112,6 @@ class Descriptor:
     default_enabled: bool = True
     description: str = ""
     tags: tuple[str, ...] = ()
-    reads: tuple[str, ...] = ()
-    provides: tuple[str, ...] = ()
-    changes_ssa: bool = False
 
     def create(self) -> Pass:
         return self.factory()
@@ -183,9 +177,6 @@ class Registry:
             else bool(True if default_enabled is None else default_enabled),
             description=doc,
             tags=tuple(tags),
-            reads=probe.reads,
-            provides=probe.provides,
-            changes_ssa=probe.changes_ssa,
         )
 
     def get(self, name: str) -> Descriptor:
@@ -247,27 +238,20 @@ class Pipeline:
         self.spec = spec
         self.registry = registry
 
-    def run(
-        self,
-        program: ssa.Program,
-        context: Context,
-        *,
-        registry: Registry | None = None,
-    ) -> ssa.Program:
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         current = ssa.verify_program(program)
         current = _with_metadata(current, pipeline_selection=self._pipeline_metadata())
 
         for pass_ in self.passes:
-            current = pass_.run(current, context)
-
             current = refresh_program_facts(current, context)
+            current = pass_.run(current, context)
             ssa.verify_program(current)
             current = _with_metadata(
                 current,
                 pass_trace=tuple(current.metadata.get("pass_trace", ()))
                 + (pass_.name,),
             )
-        return current
+        return refresh_program_facts(current, context)
 
     def _pipeline_metadata(self) -> Mapping[str, Any]:
         if self.spec is None:
@@ -310,8 +294,6 @@ class Canonicalize(Pass):
     category = HARDWARE_INDEPENDENT
     phase = "canonicalization"
 
-    changes_ssa = True
-
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         return _with_metadata(
             canonicalize_dtype_expressions(program),
@@ -333,30 +315,22 @@ def program_facts(program, name):
     return facts.get(name, {})
 
 
-def _program_target(program):
-    """Restore the target from its pickle-safe fact snapshot, without discovery."""
-    snapshot = program.facts.get("target")
-
-    if snapshot is None:
-        return None
-
-    return TargetContext(
-        backend=snapshot["backend"],
-        platform=PlatformProfile(**snapshot["profile"]),
-        compute_arch=snapshot["compute_arch"],
+def _facts_are_current(program, context):
+    return (
+        program.facts.get("structure")
+        == (program.inputs, program.outputs, program.blocks)
+        and program.facts.get("tensors") == context.tensors
+        and program.facts.get("target") == context.resolved_target.as_metadata()
     )
 
 
 def refresh_program_facts(program, context):
-    """Rebuild existing analysis after target shape or layout changes."""
-    if "structure" in program.facts and (
-        program.facts.get("structure")
-        != (program.inputs, program.outputs, program.blocks)
-        or program.facts.get("tensors") != context.tensors
-        or program.facts.get("target") != context.resolved_target.as_metadata()
-    ):
+    """Rebuild existing analysis before consumption after SSA or context changes."""
+    if "structure" in program.facts and not _facts_are_current(program, context):
         previous = program.metadata.get("analysis", {}).get("layout_transfer")
-        refreshed = AnalyzeEffects().run(program, context)
+        refreshed = _refresh_schedule_contract(
+            program, AnalyzeEffects().run(program, context), context
+        )
 
         # Keep the public diagnostic after decomposition removes the view op.
         # Fresh facts remain independent: a diagnostic is never a new proof.
@@ -377,23 +351,156 @@ def refresh_program_facts(program, context):
     return program
 
 
+def _refresh_schedule_contract(previous, current, context):
+    if "schedule" not in current.metadata:
+        return current
+
+    analysis = program_facts(current, "analysis")
+    old_analysis = previous.facts.get("analysis", {})
+    schedule = dict(current.metadata["schedule"])
+    old_reduction = dict(schedule.get("reduction", {}))
+    reduction = dict(analysis["reduction_schedule"])
+    schedule["reduction"] = reduction
+
+    def geometry(value):
+        return {
+            key: item
+            for key, item in value.items()
+            if key not in {"reductions", "requires_reduction_domain_mask", "reason"}
+        }
+
+    def dtypes(facts):
+        return tuple(
+            domain["result_dtype"]
+            for domain in facts.get("reduction_domains", ())
+            if domain["store_shapes"]
+        )
+
+    invalid = (
+        previous.facts.get("target") != current.facts.get("target")
+        or geometry(old_reduction) != geometry(reduction)
+        or dtypes(old_analysis) != dtypes(analysis)
+        or (
+            analysis.get("has_dot")
+            and old_analysis.get("dot_input_dtypes") != analysis.get("dot_input_dtypes")
+        )
+        or old_analysis.get("non_store_memory_ops", ())
+        != analysis.get("non_store_memory_ops", ())
+        or old_analysis.get("store_count") != analysis.get("store_count")
+    )
+    group = schedule.get("row_group", {})
+
+    if group.get("enabled") and not invalid:
+        from ninetoothed.compiler.row_reductions import GroupReductionRows
+
+        grouped = (
+            GroupReductionRows()
+            .run(
+                _with_metadata(current, schedule=schedule),
+                replace(
+                    context,
+                    pass_options={
+                        **context.pass_options,
+                        GroupReductionRows.name: {"rows": group["rows"]},
+                    },
+                ),
+            )
+            .metadata["schedule"]["row_group"]
+        )
+        schedule["row_group"] = {**group, **grouped}
+        invalid = not grouped["enabled"]
+
+    transfer = analysis.get("layout_transfer")
+
+    block = schedule.get("block_reductions", {})
+
+    if block.get("enabled") and not invalid:
+        from ninetoothed.backends.triton_reductions import (
+            TritonBlockReductions,
+            analyze_block_reductions,
+        )
+
+        schedule["block_reductions"] = analyze_block_reductions(
+            _with_metadata(current, schedule=schedule),
+            replace(
+                context,
+                pass_options={
+                    **context.pass_options,
+                    TritonBlockReductions.name: {
+                        key: block[key]
+                        for key in ("max_block_elements", "max_total_elements")
+                        if key in block
+                    },
+                },
+            ),
+            allow_row_vector=True,
+        )
+        invalid = not schedule["block_reductions"]["enabled"]
+
+    if "layout_transfer" in schedule:
+        if isinstance(transfer, LayoutTransfer) and transfer.schedulable:
+            schedule["layout_transfer"] = transfer
+        else:
+            schedule.pop("layout_transfer")
+            invalid = True
+
+    if not invalid:
+        return _with_metadata(current, schedule=schedule)
+
+    reason = "schedule invalidated by updated SSA or layout analysis"
+    candidates = tuple(current.metadata.get("schedule_candidates", ()))
+    selected = current.metadata.get("selected_schedule_candidate")
+
+    for candidate in candidates:
+        if candidate["name"] == selected:
+            for key in candidate["schedule"]:
+                schedule.pop(key, None)
+
+    optimization = dict(current.metadata.get("optimization", {}))
+
+    for key in optimization.pop("schedule", {}):
+        schedule.pop(key, None)
+
+    optimization.pop("preserve_linalg", None)
+
+    for key in ("row_group", "block_reductions", "singleton_dot"):
+        if schedule.get(key, {}).get("enabled"):
+            schedule[key] = {"enabled": False, "reason": reason}
+
+    schedule["granularity"] = _schedule_granularity(analysis)
+
+    return _with_metadata(
+        current,
+        schedule=schedule,
+        optimization=optimization,
+        schedule_candidates=(),
+        selected_schedule_candidate=None,
+        rejected_schedule_candidates=tuple(
+            current.metadata.get("rejected_schedule_candidates", ())
+        )
+        + tuple({**candidate, "reason": reason} for candidate in candidates),
+    )
+
+
 class AnalyzeEffects(Pass):
     """Collect dataflow facts needed by schedule selection."""
 
     name = "ssa.analyze_effects"
     category = HARDWARE_INDEPENDENT
     phase = "analysis"
-    provides = FACT_NAMES
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
-        unit_parallel = prove_unit_parallel_reductions(program)
+        if _facts_are_current(program, context):
+            return program
+
+        row_reductions = find_single_store_row_reductions(program)
         opcodes = tuple(_iter_opcodes(program))
         stores = sum(1 for opcode in opcodes if opcode == "mem.store")
         reductions = sum(1 for opcode in opcodes if opcode.startswith("reduce."))
         loops = sum(1 for opcode in opcodes if opcode == "scf.for")
         dot_input_dtypes = _linalg_input_dtypes(program)
         reduction_analysis = analyze_reductions(
-            program, context.tensors, unit_parallel=unit_parallel
+            program, context.tensors, single_store_rows=row_reductions
         )
         layout_transfer = analyze_layout_transfer(program, context.tensors)
 
@@ -404,6 +511,11 @@ class AnalyzeEffects(Pass):
                 "store_count": stores,
                 "reduction_count": reductions,
                 "loop_count": loops,
+                "non_store_memory_ops": tuple(
+                    code
+                    for code in opcodes
+                    if code.startswith("mem.") and code != "mem.store"
+                ),
                 "has_dot": "linalg.dot" in opcodes or "linalg.matmul" in opcodes,
                 "dot_input_dtypes": dot_input_dtypes,
                 "dot_supports_low_precision_intrinsic": bool(dot_input_dtypes)
@@ -433,8 +545,6 @@ class DecomposeLinalg(Pass):
     name = "ssa.decompose_linalg"
     category = HARDWARE_INDEPENDENT
     phase = "canonicalization"
-
-    changes_ssa = True
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         optimization = dict(program.metadata.get("optimization", {}))
@@ -476,8 +586,6 @@ class SelectSchedule(Pass):
     name = "ssa.select_schedule"
     category = HARDWARE_INDEPENDENT
     phase = "schedule_intent"
-    reads = ("analysis",)
-    provides = ("schedule",)
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         analysis = dict(program_facts(program, "analysis"))
@@ -508,7 +616,7 @@ class SelectSchedule(Pass):
         ):
             schedule["layout_transfer"] = layout_transfer
 
-        return _with_metadata(program, schedule=schedule, schedule_analysis=analysis)
+        return _with_metadata(program, schedule=schedule)
 
 
 class OptimizeSchedule(Pass):
@@ -517,8 +625,6 @@ class OptimizeSchedule(Pass):
     name = "ssa.optimize_schedule"
     category = LANGUAGE_SPECIFIC
     phase = "optimization"
-    reads = ("analysis", "schedule")
-    provides = ("target_schedule",)
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         analysis = dict(program_facts(program, "analysis"))
@@ -689,7 +795,6 @@ class ValidateTargetCapabilities(Pass):
     name = "ssa.validate_target_capabilities"
     category = PLATFORM_SPECIFIC
     phase = "target_legality"
-    provides = ("target_capabilities",)
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         group = program.metadata.get("schedule", {}).get("row_group", {})
@@ -861,7 +966,7 @@ def lower_for_target(
         )
 
         lowered = _ensure_target_capabilities(
-            pass_pipeline.run(program, context, registry=registry), context
+            pass_pipeline.run(program, context), context
         )
 
         return _with_metadata(
@@ -914,9 +1019,7 @@ def lower_for_target(
     if pipeline is None or merged_pass_options != default_pass_options:
         pipeline = build(spec, backend=backend_name, registry=registry)
 
-    lowered = _ensure_target_capabilities(
-        pipeline.run(program, context, registry=registry), context
-    )
+    lowered = _ensure_target_capabilities(pipeline.run(program, context), context)
 
     return _with_metadata(
         lowered,

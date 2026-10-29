@@ -451,7 +451,7 @@ class _VerifiedRuntimeCall:
         scalar_sources = {
             binding.source
             for binding in abi.kernel_args
-            if binding.kind in {"scalar", "constexpr", "meta", "row_span"}
+            if binding.kind in {"scalar", "constexpr", "meta"}
         }
         positional_names = abi.public_args[: len(args)]
         positional = tuple(
@@ -1256,7 +1256,7 @@ def _public_values(
     accepted = set(abi.public_args) | {
         binding.source
         for binding in abi.kernel_args
-        if binding.kind in {"meta", "row_span"} and binding.source is not None
+        if binding.kind == "meta" and binding.source is not None
     }
     unknown = tuple(name for name in kwargs if name not in accepted)
 
@@ -1301,7 +1301,7 @@ def _public_values(
         symbols = {
             binding.name: _binding_value(binding, values)
             for binding in abi.kernel_args
-            if binding.kind in {"meta", "row_span"}
+            if binding.kind == "meta"
             and (binding.source in values or binding.value is not None)
         }
         _validate_symbol_constraints(values, abi.symbol_constraints, symbols=symbols)
@@ -1387,7 +1387,7 @@ def _filter_runtime_kwargs(abi: LaunchABI, kwargs) -> dict[str, Any]:
     accepted = set(abi.public_args) | {
         binding.source
         for binding in abi.kernel_args
-        if binding.kind in {"meta", "row_span"} and binding.source is not None
+        if binding.kind == "meta" and binding.source is not None
     }
 
     return {name: value for name, value in kwargs.items() if name in accepted}
@@ -1584,13 +1584,6 @@ def _binding_value(binding: LaunchBinding, public):
 
     if binding.kind == "stride":
         return public[binding.source].stride(binding.dim)
-
-    if binding.kind == "row_span":
-        if binding.source in public:
-            return public[binding.source]
-
-        # Empty tensors still need a positive tile width for grid expressions.
-        return max(1, int(public[binding.value].shape[binding.dim]))
 
     if binding.kind == "meta":
         if binding.source in public:

@@ -115,7 +115,9 @@ class TestPipeline:
         )
         lowered = lower_for_target(program, backend=Target.CUDA)
         opcodes = tuple(_opcodes(lowered.blocks[0].operations))
-        assert lowered.metadata["schedule_analysis"]["has_dot"]
+        assert lowered.metadata["pass_trace"].index(
+            "ssa.select_schedule"
+        ) < lowered.metadata["pass_trace"].index("ssa.decompose_linalg")
         assert lowered.metadata["schedule"]["granularity"] == "blocked-linalg"
         assert lowered.metadata["linalg_decomposed"]
         assert "linalg.matmul" not in opcodes

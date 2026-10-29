@@ -7,8 +7,8 @@ from typing import Any
 
 from ninetoothed.compiler.effects import pure_expression
 from ninetoothed.compiler.reduction_geometry import (
-    matching_reduction_domains,
-    prove_unit_parallel_reductions,
+    find_single_store_row_reductions,
+    reduction_inputs_share_domain,
 )
 from ninetoothed.ir import ssa
 
@@ -38,7 +38,7 @@ class ReductionDomain:
     program_shapes: tuple[tuple[str, ...], ...] = ()
     program_constraints: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = ()
     program_compatible: bool = True
-    mask_input: bool = False
+    requires_reduction_domain_mask: bool = False
 
     @property
     def extent(self) -> str:
@@ -66,7 +66,7 @@ class ReductionDomain:
             "program_shapes": self.program_shapes,
             "program_constraints": self.program_constraints,
             "program_compatible": self.program_compatible,
-            "mask_input": self.mask_input,
+            "requires_reduction_domain_mask": self.requires_reduction_domain_mask,
             "extent": self.extent,
             "parallel_axes": self.parallel_axes,
             "parallel_shape": self.parallel_shape,
@@ -74,7 +74,7 @@ class ReductionDomain:
 
 
 def analyze_reductions(
-    program: ssa.Program, tensors=(), *, unit_parallel=None
+    program: ssa.Program, tensors=(), *, single_store_rows=None
 ) -> Mapping[str, Any]:
     """Return reduction domains and a conservative shared schedule contract."""
     value_types = _value_types(program)
@@ -84,12 +84,14 @@ def analyze_reductions(
     forwarded_values = _forwarded_values(program)
     tensor_specs = {tensor.name: tensor for tensor in tensors}
 
-    if unit_parallel is None:
-        unit_parallel = prove_unit_parallel_reductions(program)
+    if single_store_rows is None:
+        single_store_rows = find_single_store_row_reductions(program)
 
-    unit_parallel = frozenset(unit_parallel)
-    unit_parallel_stores = _unit_parallel_stores(program, value_types, tensor_specs)
-    uniform_domain = matching_reduction_domains(
+    single_store_rows = frozenset(single_store_rows)
+    single_row_stores = _can_broadcast_single_row_results(
+        program, value_types, tensor_specs
+    )
+    uniform_domain = reduction_inputs_share_domain(
         tuple(op for op, _scope in scoped_operations), value_types, tensors
     )
     domains = []
@@ -117,10 +119,13 @@ def analyze_reductions(
             definitions,
             forwarded_values,
             tensor_specs,
-            allow_unit_parallel=bool(
-                operation.results and operation.results[0].name in unit_parallel
-            )
-            or unit_parallel_stores,
+            allow_single_row_broadcast=uniform_domain
+            and (
+                bool(
+                    operation.results and operation.results[0].name in single_store_rows
+                )
+                or single_row_stores
+            ),
             uniform_domain=uniform_domain,
         )
         domains.append(domain)
@@ -134,11 +139,10 @@ def analyze_reductions(
         "reduction_domains": tuple(domain.as_metadata() for domain in domains),
         "reduction_rejections": tuple(rejections),
         "reduction_schedule": schedule,
-        "unit_parallel_store_contract": unit_parallel_stores,
     }
 
 
-def _unit_parallel_stores(program, value_types, tensor_specs):
+def _can_broadcast_single_row_results(program, value_types, tensor_specs):
     """Prove scalar-in-one-row broadcasting without inventing reuse facts.
 
     Reuse retains its single-store/effect barrier. This separate geometric
@@ -243,7 +247,7 @@ def _domain(
     forwarded_values,
     tensor_specs,
     *,
-    allow_unit_parallel=False,
+    allow_single_row_broadcast=False,
     uniform_domain=False,
 ):
     if len(operation.operands) != 1 or len(operation.results) != 1:
@@ -305,21 +309,9 @@ def _domain(
         input_shape=input_shape,
         result_shape=result_shape,
         value_types=value_types,
-        allow_unit_parallel=allow_unit_parallel,
+        allow_single_row_broadcast=allow_single_row_broadcast,
     )
-    # A newly admitted scalar broadcast must retain the scalar fallback's
-    # reduction domain, including masking before nonlinear terms are summed.
-    mask_input = uniform_domain or (
-        allow_unit_parallel
-        and not _consumer_contract(
-            result.name,
-            users,
-            axis=axis,
-            input_shape=input_shape,
-            result_shape=result_shape,
-            value_types=value_types,
-        )[0]
-    )
+    requires_reduction_domain_mask = uniform_domain
     stores = _reachable_stores(
         result.name,
         users,
@@ -366,7 +358,7 @@ def _domain(
             program_shapes=program_shapes,
             program_constraints=program_constraints,
             program_compatible=program_compatible,
-            mask_input=mask_input,
+            requires_reduction_domain_mask=requires_reduction_domain_mask,
         ),
         rejection,
     )
@@ -380,7 +372,7 @@ def _consumer_contract(
     input_shape,
     result_shape,
     value_types,
-    allow_unit_parallel=False,
+    allow_single_row_broadcast=False,
 ):
     broadcast_shape = input_shape[:axis] + ("1",) + input_shape[axis + 1 :]
     allowed_shapes = {(), result_shape, broadcast_shape, input_shape}
@@ -388,7 +380,10 @@ def _consumer_contract(
         (
             result,
             _is_right_aligned(
-                axis, input_shape, result_shape, allow_unit_parallel=allow_unit_parallel
+                axis,
+                input_shape,
+                result_shape,
+                allow_single_row_broadcast=allow_single_row_broadcast,
             ),
         )
     ]
@@ -424,7 +419,7 @@ def _consumer_contract(
                     and tuple(str(dim) for dim in stored_type.shape)
                     != tuple(str(dim) for dim in target_shape)
                     and not (
-                        allow_unit_parallel
+                        allow_single_row_broadcast
                         and all(
                             str(size) == "1"
                             for size in (*stored_type.shape, *target_shape)
@@ -683,14 +678,16 @@ def _static_integer_expression(expression):
         return None
 
 
-def _is_right_aligned(axis, input_shape, result_shape, *, allow_unit_parallel=False):
+def _is_right_aligned(
+    axis, input_shape, result_shape, *, allow_single_row_broadcast=False
+):
     if not result_shape:
         return True
 
     mapped_axes = tuple(range(len(input_shape) - len(result_shape), len(input_shape)))
     parallel_axes = tuple(index for index in range(len(input_shape)) if index != axis)
 
-    if allow_unit_parallel and all(
+    if allow_single_row_broadcast and all(
         input_shape[index] == "1" for index in parallel_axes
     ):
         # One logical point on every parallel axis makes the result a scalar
@@ -798,7 +795,9 @@ def _schedule_contract(domains, rejections):
         "program_shape": domain.program_shapes[0],
         "program_constraints": domain.program_constraints,
         "reductions": tuple(item.result for item in live_domains),
-        "mask_input": any(item.mask_input for item in live_domains),
+        "requires_reduction_domain_mask": any(
+            item.requires_reduction_domain_mask for item in live_domains
+        ),
     }
 
 

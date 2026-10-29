@@ -50,7 +50,7 @@ class EmitterTarget(ABC):
     native_block_matmul: bool = False
     max_vector_numel: int | None = None
 
-    def supports_native_block(self, kernel) -> bool:
+    def can_emit_native_matmul(self, kernel) -> bool:
         return self.native_block_matmul
 
     def symbol(self, name: str) -> str:
@@ -77,11 +77,12 @@ class EmitterTarget(ABC):
             f"Emitter {type(self).__name__} has no native block coordinate domain."
         )
 
-    def native_block_tile(self, kernel, axes: tuple[str, ...]) -> tuple[int, int]:
-        """Return the logical output extent owned by one collective block."""
-        del kernel, axes
-
-        return 16, 16
+    def native_matmul_tile_shape(
+        self, kernel, axes: tuple[str, ...]
+    ) -> tuple[int, int]:
+        raise NotImplementedError(
+            f"Emitter {type(self).__name__} has no native matmul tile."
+        )
 
     def block_shape(self, axes: tuple[str, ...]) -> str:
         raise NotImplementedError(

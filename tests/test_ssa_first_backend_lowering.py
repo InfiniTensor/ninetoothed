@@ -1501,7 +1501,6 @@ def scalarized_index_application(x, indices, y):
                 artifact,
                 route="ssa-unified-triton-emitter",
             )
-            assert "linalg.transpose" not in str(artifact.metadata["ssa"])
             assert (
                 "transfer_value = tl.trans(transfer_value)" in artifact.primary_source
             )

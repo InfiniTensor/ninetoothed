@@ -45,7 +45,7 @@ class CudaTarget(EmitterTarget):
     c_style_syntax: bool = True
     native_block_matmul: bool = True
 
-    def supports_native_block(self, kernel) -> bool:
+    def can_emit_native_matmul(self, kernel) -> bool:
         operations = tuple(
             operation
             for block in kernel.ssa.blocks
@@ -65,6 +65,9 @@ class CudaTarget(EmitterTarget):
                 operation.opcode.startswith("reduce.") for operation in operations
             )
         )
+
+    def native_matmul_tile_shape(self, kernel, axes):
+        return 16, 16
 
     def native_block_coords(self, axes):
         if len(axes) != 2:
@@ -482,9 +485,9 @@ def _emit_cuda_cooperative_reduction(
     term = _emit_element(operand, coordinates, body)
     term = ctx.target.cast(accumulator_dtype, term)
 
-    if schedule.get("mask_input") or ctx.program.metadata.get("schedule", {}).get(
-        "row_group", {}
-    ).get("enabled"):
+    if schedule.get("requires_reduction_domain_mask") or ctx.program.metadata.get(
+        "schedule", {}
+    ).get("row_group", {}).get("enabled"):
         mask = _reduction_input_mask(operand, coordinates, body)
 
         if mask is not None:

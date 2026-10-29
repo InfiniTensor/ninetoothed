@@ -2,7 +2,7 @@ import pytest
 import torch
 
 import ninetoothed.language as ntl
-from ninetoothed import Tensor
+from ninetoothed import Symbol, Tensor
 from ninetoothed.compiler import lower, make
 from tests.utils import get_available_devices
 
@@ -100,6 +100,49 @@ def _branch_carry(x, y, out):
     out = y + acc  # noqa: F841
 
 
+def _multiple_carries(x, y, out):
+    a = x
+    b = x * 2
+
+    for i in range(2):
+        if i > 0:
+            a = a + 1
+            b = b + 10
+        else:
+            a = a + 2
+            b = b + 20
+
+    out = y + a + b  # noqa: F841
+
+
+def _sequential_carries(x, y, out):
+    acc = x
+
+    for i in range(2):
+        acc = acc + 1
+
+    for j in range(2):
+        acc = acc + 2
+
+    out = y + acc  # noqa: F841
+
+
+def _meta_arrangement(x, out, width=Symbol("ROW_WIDTH", constexpr=True)):
+    return x.tile((1, width)), out.tile((1, width))
+
+
+def _row_sum(x, out):
+    out = x + ntl.sum(x, axis=1)[:, None]  # noqa: F841
+
+
+def _transpose_arrangement(x, out):
+    return x.tile((4, 4)), out.tile((4,))
+
+
+def _transpose_sum(x, out):
+    out = ntl.sum(x + x.T, axis=1)  # noqa: F841
+
+
 @pytest.mark.parametrize("backend", ("cuda", "triton", "tilelang"))
 @pytest.mark.parametrize("device", get_available_devices())
 def test_scalar_row_lowering_runtime(device, backend):
@@ -129,19 +172,58 @@ def test_scalar_row_lowering_runtime(device, backend):
             out, torch.tensor(expected, device=device), equal_nan=True
         )
 
+    x = torch.arange(4, dtype=torch.float32, device=device)
+    y = torch.arange(16, dtype=torch.float32, device=device).reshape(4, 4)
+    out = torch.empty_like(y)
+
+    for application, scale, offset in (
+        (_branch_carry, 1, 3),
+        (_multiple_carries, 3, 33),
+        (_sequential_carries, 1, 6),
+    ):
+        kernel = make(
+            _carry_arrangement,
+            application,
+            (
+                Tensor(shape=(4,), dtype="float32"),
+                Tensor(shape=(4, 4), dtype="float32"),
+                Tensor(shape=(4, 4), dtype="float32"),
+            ),
+            backend=backend,
+            max_num_configs=1,
+        )
+        kernel(x, y, out)
+        torch.testing.assert_close(out, y + x * scale + offset)
+
+    x = torch.cat((torch.zeros(256, device=device), torch.ones(256, device=device)))[
+        None, :
+    ]
+    out = torch.empty_like(x)
     kernel = make(
-        _carry_arrangement,
-        _branch_carry,
+        _meta_arrangement,
+        _row_sum,
         (
-            Tensor(shape=(4,), dtype="float32"),
-            Tensor(shape=(4, 4), dtype="float32"),
-            Tensor(shape=(4, 4), dtype="float32"),
+            Tensor(shape=(1, 512), dtype="float32"),
+            Tensor(shape=(1, 512), dtype="float32"),
         ),
         backend=backend,
         max_num_configs=1,
     )
-    x = torch.arange(4, dtype=torch.float32, device=device)
-    y = torch.arange(16, dtype=torch.float32, device=device).reshape(4, 4)
-    out = torch.empty_like(y)
-    kernel(x, y, out)
-    torch.testing.assert_close(out, y + x + 3)
+    kernel(x, out)
+    torch.testing.assert_close(out, torch.cat((x[:, :256], x[:, 256:] + 256), dim=1))
+
+    if backend == "cuda":
+        kernel = make(
+            _transpose_arrangement,
+            _transpose_sum,
+            (
+                Tensor(shape=(2, 4), dtype="float32", other=0),
+                Tensor(shape=(2,), dtype="float32"),
+            ),
+            backend=backend,
+            max_num_configs=1,
+        )
+        x = torch.arange(1, 9, device=device, dtype=torch.float32).reshape(2, 4)
+        out = torch.empty(2, device=device)
+        kernel(x, out)
+        torch.testing.assert_close(out, torch.tensor([16.0, 34.0], device=device))

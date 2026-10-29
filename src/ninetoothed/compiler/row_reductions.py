@@ -3,7 +3,7 @@
 from dataclasses import replace
 
 from ninetoothed.compiler.passes import HARDWARE_INDEPENDENT, Pass
-from ninetoothed.compiler.reduction_geometry import matching_reduction_domains
+from ninetoothed.compiler.reduction_geometry import reduction_inputs_share_domain
 
 
 class GroupReductionRows(Pass):
@@ -117,7 +117,7 @@ class GroupReductionRows(Pass):
                 reduction.get("value_shape", ())
             ):
                 reason = "requires output to match the reduction input domain"
-            elif not matching_reduction_domains(
+            elif not reduction_inputs_share_domain(
                 operations,
                 {name: value.type for name, value in values.items()},
                 context.tensors,
