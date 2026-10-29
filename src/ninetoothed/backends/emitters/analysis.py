@@ -14,6 +14,8 @@ class ScalarCarryProjectionAnalysis:
     def __init__(self, program):
         self.uses = defaultdict(list)
         self.results = {}
+        self.operands = {}
+        self.definitions = {}
         self.arguments = {}
         self.yield_owners = {}
         self.types = {}
@@ -36,6 +38,10 @@ class ScalarCarryProjectionAnalysis:
                 )
                 outputs = tuple((id(block), value.name) for value in operation.results)
                 self.results[id(operation)] = outputs
+                self.operands[id(operation)] = inputs
+
+                for slot, ref in enumerate(outputs):
+                    self.definitions[ref] = (operation, slot)
 
                 for index, ref in enumerate(inputs):
                     self.uses[ref].append((operation, index))
@@ -78,6 +84,7 @@ class ScalarCarryProjectionAnalysis:
             seeds = (
                 self.results[id(loop)][slot],
                 self.arguments[id(loop.regions[0])][slot + 1],
+                *self._initial_control_values(self.operands[id(loop)][slot + 3], axes),
             )
             pending = deque(seeds)
             seen = set()
@@ -190,9 +197,51 @@ class ScalarCarryProjectionAnalysis:
             result[loop.regions[0].args[slot + 1].name] = projection
 
             for ref in seen:
-                self.value_projections[(output_axes, ref)] = projection
+                previous = self.value_projections.setdefault(
+                    (output_axes, ref), projection
+                )
+
+                if previous != projection:
+                    raise ValueError(
+                        "A materialized SSA value requires multiple coordinate projections."
+                    )
 
         self.cache[key] = result
+
+        return result
+
+    def _initial_control_values(self, initial, axes):
+        """Find materialized initializers through coordinate-preserving value edges."""
+        pending = [initial]
+        seen = set()
+        result = set()
+
+        while pending:
+            ref = pending.pop()
+
+            if ref in seen or ref not in self.definitions:
+                continue
+
+            seen.add(ref)
+
+            if tuple(map(str, self.types[ref].shape)) != axes:
+                continue
+
+            op, slot = self.definitions[ref]
+
+            if op.opcode in {"scf.if", "scf.for"}:
+                result.add(ref)
+                pending.extend(
+                    self.operands[id(region.operations[-1])][slot]
+                    for region in op.regions
+                )
+
+                if op.opcode == "scf.for":
+                    pending.append(self.operands[id(op)][slot + 3])
+            elif is_pointwise_expression(op) or broadcast_view_parts(op) == (
+                ":",
+            ) * len(axes):
+                pending.extend(self.operands[id(op)])
 
         return result
 

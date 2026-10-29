@@ -1,6 +1,6 @@
 """Backend-neutral state shared while traversing SSA regions."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Mapping
 
 from ninetoothed.backends.emitters.base import EmitterTarget
@@ -54,6 +54,7 @@ class EmitContext:
     value_types: Mapping[str, ssa.Type]
     lines: list[str]
     memo: dict[str, str]
+    scalar_value_coordinates: dict[str, tuple[str, ...]] = field(default_factory=dict)
     tensor_infos: Mapping[str, TensorInfo]
     output: str
     output_axes: tuple[str, ...]
@@ -103,6 +104,13 @@ class EmitContext:
             "value_types": self.value_types,
             "lines": self.lines if lines is None else lines,
             "memo": self.memo if memo is None else memo,
+            "scalar_value_coordinates": self.scalar_value_coordinates
+            if memo is None
+            else {
+                name: coords
+                for name, coords in self.scalar_value_coordinates.items()
+                if name in memo
+            },
             "tensor_infos": self.tensor_infos,
             "output": self.output,
             "output_axes": self.output_axes,

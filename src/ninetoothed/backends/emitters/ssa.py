@@ -926,6 +926,8 @@ def _render_body(
         reduction_schedule=reduction_schedule,
     )
 
+    _prepare_scalar_carry_analysis(operations, ctx)
+
     if vector_program and reduction_schedule is not None:
         # A scheduled row reduction belongs to the outer vector program. Emit it
         # before entering an SCF loop so a lazy use inside the loop cannot
@@ -1775,8 +1777,15 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
         if not coords:
             return bound
 
-    if name in ctx.memo and coords == _current_coords(_value_axes(name, ctx), ctx):
-        return ctx.memo[name]
+    if name in ctx.memo:
+        materialized_coords = ctx.scalar_value_coordinates.get(name)
+
+        if coords == (
+            materialized_coords
+            if materialized_coords is not None
+            else _current_coords(_value_axes(name, ctx), ctx)
+        ):
+            return ctx.memo[name]
 
     if not name.startswith("%"):
         if name not in ctx.tensor_infos:
@@ -1792,6 +1801,15 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
 
     if op is None:
         return _emit_value(name, ctx)
+
+    if (
+        ctx.target.c_style_syntax
+        and not ctx.target.vector_value_semantics
+        and _is_top_level_effect(op)
+    ):
+        raise ValueError(
+            f"Cannot recompute effectful SSA value {name} at different coordinates."
+        )
 
     if op.opcode.startswith("dtype."):
         return _resolve_dtype(name, ctx).sample
@@ -3133,6 +3151,56 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
     return acc_expr
 
 
+def _prepare_scalar_carry_analysis(operations, ctx):
+    """Plan live carry initializers before any producer effects are emitted."""
+    if not ctx.target.c_style_syntax or ctx.target.vector_value_semantics:
+        return
+
+    if not any(
+        op.opcode == "scf.for"
+        and any(
+            value.type.shape and len(value.type.shape) < len(ctx.output_axes)
+            for value in op.results
+        )
+        for op in ctx.operations.values()
+    ):
+        return
+
+    pending = [op for op in operations if _is_top_level_effect(op)]
+    seen = set()
+    loops = []
+
+    while pending:
+        op = pending.pop()
+
+        if id(op) in seen:
+            continue
+
+        seen.add(id(op))
+
+        if op.opcode in {"dtype.of", "shape.dim", "tensor.stride"}:
+            continue
+
+        if op.opcode == "scf.for":
+            loops.append(op)
+
+        pending.extend(
+            ctx.operations[name] for name in op.operands if name in ctx.operations
+        )
+        pending.extend(
+            inner
+            for region in op.regions
+            for inner in region.operations
+            if inner.opcode == "scf.yield" or _is_top_level_effect(inner)
+        )
+
+    if loops:
+        ctx.scalar_carry_analysis = ScalarCarryProjectionAnalysis(ctx.program)
+
+        for op in loops:
+            ctx.scalar_carry_analysis.for_loop(op, tuple(map(str, ctx.output_axes)))
+
+
 def _scalar_loop_carry_coordinates(op, ctx):
     if not ctx.target.c_style_syntax or ctx.target.vector_value_semantics:
         return {}
@@ -3180,7 +3248,8 @@ def _projected_value_coordinates(name, ctx):
 
 
 def _scalar_carry_context(ctx, type_, coordinates, suffix):
-    linear = _linearized_index(coordinates, tuple(map(str, type_.shape)))
+    axes = tuple(map(str, type_.shape))
+    linear = _linearized_index(coordinates, axes)
 
     return ctx.child(
         memo={
@@ -3188,17 +3257,12 @@ def _scalar_carry_context(ctx, type_, coordinates, suffix):
             for name, expression in ctx.memo.items()
             if not _value_axes(name, ctx)
             or (
-                (
-                    name in (ctx.binding_coordinate_constraints or {})
-                    or (
-                        ctx.operations.get(name) is not None
-                        and ctx.operations[name].opcode == "scf.if"
-                    )
-                )
-                and _projected_value_coordinates(name, ctx) == coordinates
+                _axes_compatible_suffix(_value_axes(name, ctx), axes)
+                and ctx.scalar_value_coordinates.get(name)
+                == _broadcast_coords(coordinates, axes, _value_axes(name, ctx))
             )
         },
-        output_axes=tuple(map(str, type_.shape)),
+        output_axes=axes,
         coordinate_exprs=coordinates,
         index_expr=linear,
         inner_index_expr=linear,
@@ -3271,6 +3335,12 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
             result_expr = result_local
 
         ctx.memo[result] = result_expr
+
+        if ctx.target.c_style_syntax and not ctx.target.vector_value_semantics:
+            ctx.scalar_value_coordinates[result] = carry_coordinates.get(
+                result, _current_coords(tuple(map(str, value.type.shape)), ctx)
+            )
+
         loop_locals[str(attr["block_arg"])] = result_expr
         loop_locals[result] = result_expr
 
@@ -3426,6 +3496,19 @@ def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
     }
     has_projection = any(value is not None for value in projected.values())
 
+    if condition_axes and has_projection and _is_top_level_effect(op):
+        reference = op.results[0]
+        condition_coords = _broadcast_coords(
+            coordinates[reference.name],
+            tuple(map(str, reference.type.shape)),
+            condition_axes,
+        )
+
+        if condition_coords != _current_coords(condition_axes, ctx):
+            raise ValueError(
+                "Effectful tensor conditions cannot change their execution coordinates."
+            )
+
     if condition_axes and has_projection and len(set(coordinates.values())) > 1:
         if _is_top_level_effect(op):
             raise ValueError(
@@ -3436,6 +3519,9 @@ def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
             coords = coordinates[result.name]
             child = _scalar_carry_context(ctx, result.type, coords, result.name)
             ctx.memo[result.name] = _scf_if_element(op, index, coords, child)
+
+            if ctx.target.c_style_syntax and not ctx.target.vector_value_semantics:
+                ctx.scalar_value_coordinates[result.name] = coords
 
         return
 
@@ -3459,6 +3545,9 @@ def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
                 ctx.lines.append(ctx.target.local_decl(result.type, local, init))
 
             ctx.memo[result.name] = local
+
+        if ctx.target.c_style_syntax and not ctx.target.vector_value_semantics:
+            ctx.scalar_value_coordinates[result.name] = coordinates[result.name]
 
     if condition_axes and has_projection:
         reference = op.results[0]

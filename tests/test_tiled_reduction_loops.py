@@ -127,6 +127,26 @@ def _sequential_carries(x, y, out):
     out = y + acc  # noqa: F841
 
 
+def _initializer_arrangement(x, y, side, flag, out):
+    return x.tile((4,)), y.tile((4, 4)), side.tile((4, 4)), flag, out.tile((4, 4))
+
+
+def _effectful_initializer(x, y, side, flag, out):
+    acc = x
+
+    if flag:
+        side = side + 1
+        acc = x + 1
+    else:
+        side = side + 2
+        acc = x + 2
+
+    for i in range(2):
+        acc = acc + 3
+
+    out = y + acc  # noqa: F841
+
+
 def _meta_arrangement(x, out, width=Symbol("ROW_WIDTH", constexpr=True)):
     return x.tile((1, width)), out.tile((1, width))
 
@@ -194,6 +214,27 @@ def test_scalar_row_lowering_runtime(device, backend):
         )
         kernel(x, y, out)
         torch.testing.assert_close(out, y + x * scale + offset)
+
+    kernel = make(
+        _initializer_arrangement,
+        _effectful_initializer,
+        (
+            Tensor(shape=(4,), dtype="float32"),
+            Tensor(shape=(4, 4), dtype="float32"),
+            Tensor(shape=(4, 4), dtype="float32"),
+            Tensor(0, dtype="bool"),
+            Tensor(shape=(4, 4), dtype="float32"),
+        ),
+        backend=backend,
+        max_num_configs=1,
+    )
+
+    for flag in (True, False):
+        side = torch.zeros_like(y)
+        increment = 1 if flag else 2
+        kernel(x, y, side, flag, out)
+        torch.testing.assert_close(side, torch.full_like(side, increment))
+        torch.testing.assert_close(out, y + x + increment + 6)
 
     x = torch.cat((torch.zeros(256, device=device), torch.ones(256, device=device)))[
         None, :
