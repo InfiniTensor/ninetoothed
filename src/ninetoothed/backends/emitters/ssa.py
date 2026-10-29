@@ -68,7 +68,7 @@ from ninetoothed.backends.emitters.expressions import (
 from ninetoothed.backends.emitters.expressions import (
     valid_symbol as _valid_symbol,
 )
-from ninetoothed.compiler.passes import Context, refresh_program_facts
+from ninetoothed.compiler.passes import Context, _program_target, refresh_program_facts
 from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict, ssa
 
 _BINARY = {
@@ -111,7 +111,7 @@ def emit(kernel: Kernel, target: EmitterTarget) -> Artifact:
 
     context = Context(
         backend=target.backend,
-        target=kernel.ssa.facts.get("target"),
+        target=_program_target(kernel.ssa),
         compiler_options=kernel.compiler_options,
         kernel_metadata=kernel.metadata,
         tensors=kernel.tensors,
@@ -3129,6 +3129,14 @@ def _scalar_loop_carry_coordinates(
     )
     result = {}
     region_yield = op.regions[0].operations[-1]
+    forwarded = {
+        id(region.operations[-1]): tuple(
+            zip(region.operations[-1].operands, parent.results)
+        )
+        for parent in operations
+        if parent.opcode == "scf.if" and parent.results
+        for region in parent.regions
+    }
     math_names = {
         "abs",
         "ceil",
@@ -3174,6 +3182,17 @@ def _scalar_loop_carry_coordinates(
             previous = len(members)
 
             for operation in operations:
+                for source, target in forwarded.get(id(operation), ()):
+                    if source in members and tuple(map(str, target.type.shape)) == axes:
+                        members.add(target.name)
+
+                if operation.opcode == "scf.if" and operation.operands[0] in members:
+                    members.update(
+                        result.name
+                        for result in operation.results
+                        if tuple(map(str, result.type.shape)) == axes
+                    )
+
                 if (
                     pointwise(operation)
                     and len(operation.results) == 1
@@ -3195,7 +3214,23 @@ def _scalar_loop_carry_coordinates(
             if not operands or operation is op or operation is region_yield:
                 continue
 
-            if operation.opcode in {"shape.dim", "tensor.stride"}:
+            if operation.opcode in {"dtype.of", "shape.dim", "tensor.stride"}:
+                continue
+
+            if operation.opcode == "scf.yield" and all(
+                any(
+                    source == operand and target.name in members
+                    for source, target in forwarded.get(id(operation), ())
+                )
+                for operand in operands
+            ):
+                continue
+
+            if (
+                operation.opcode == "scf.if"
+                and operation.results
+                and all(value.name in members for value in operation.results)
+            ):
                 continue
 
             if (

@@ -29,7 +29,7 @@ from ninetoothed.dtype import normalize_dtype
 from ninetoothed.errors import LoweringError
 from ninetoothed.ir import ssa
 from ninetoothed.ir.module import evaluate_index_expression
-from ninetoothed.targets import TargetContext, resolve_target_context
+from ninetoothed.targets import PlatformProfile, TargetContext, resolve_target_context
 
 HARDWARE_INDEPENDENT = "hardware_independent"
 LANGUAGE_SPECIFIC = "language_specific"
@@ -333,13 +333,27 @@ def program_facts(program, name):
     return facts.get(name, {})
 
 
+def _program_target(program):
+    """Restore the target from its pickle-safe fact snapshot, without discovery."""
+    snapshot = program.facts.get("target")
+
+    if snapshot is None:
+        return None
+
+    return TargetContext(
+        backend=snapshot["backend"],
+        platform=PlatformProfile(**snapshot["profile"]),
+        compute_arch=snapshot["compute_arch"],
+    )
+
+
 def refresh_program_facts(program, context):
     """Rebuild existing analysis after target shape or layout changes."""
     if "structure" in program.facts and (
         program.facts.get("structure")
         != (program.inputs, program.outputs, program.blocks)
         or program.facts.get("tensors") != context.tensors
-        or program.facts.get("target") != context.resolved_target
+        or program.facts.get("target") != context.resolved_target.as_metadata()
     ):
         previous = program.metadata.get("analysis", {}).get("layout_transfer")
         refreshed = AnalyzeEffects().run(program, context)
@@ -407,7 +421,7 @@ class AnalyzeEffects(Pass):
             facts={
                 "structure": (program.inputs, program.outputs, program.blocks),
                 "tensors": context.tensors,
-                "target": context.resolved_target,
+                "target": context.resolved_target.as_metadata(),
                 **{name: program.metadata[name] for name in FACT_NAMES},
             },
         )
@@ -688,7 +702,7 @@ class ValidateTargetCapabilities(Pass):
             program.inputs,
             program.outputs,
             program.blocks,
-            context.resolved_target,
+            context.resolved_target.as_metadata(),
             required,
         )
 

@@ -54,6 +54,8 @@ class CudaTarget(EmitterTarget):
 
         return (
             self.native_block_matmul
+            and kernel.ssa.metadata.get("schedule", {}).get("mma_shape")
+            == {"m": 16, "n": 16, "k": 16}
             and sum(
                 operation.opcode in {"linalg.dot", "linalg.matmul"}
                 for operation in operations
@@ -78,6 +80,9 @@ class CudaTarget(EmitterTarget):
         return f"{name} = {value};"
 
     def literal(self, value: Any) -> str:
+        if value == "nan" or (isinstance(value, float) and math.isnan(value)):
+            return "NAN"
+
         if (
             isinstance(value, int)
             and not isinstance(value, bool)
@@ -477,7 +482,9 @@ def _emit_cuda_cooperative_reduction(
     term = _emit_element(operand, coordinates, body)
     term = ctx.target.cast(accumulator_dtype, term)
 
-    if ctx.program.metadata.get("schedule", {}).get("row_group", {}).get("enabled"):
+    if schedule.get("mask_input") or ctx.program.metadata.get("schedule", {}).get(
+        "row_group", {}
+    ).get("enabled"):
         mask = _reduction_input_mask(operand, coordinates, body)
 
         if mask is not None:

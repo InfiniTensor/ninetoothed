@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from ninetoothed.compiler.effects import pure_expression
-from ninetoothed.compiler.reduction_geometry import prove_unit_parallel_reductions
+from ninetoothed.compiler.reduction_geometry import (
+    matching_reduction_domains,
+    prove_unit_parallel_reductions,
+)
 from ninetoothed.ir import ssa
 
 _ELEMENTWISE_USERS = frozenset(
@@ -35,6 +38,7 @@ class ReductionDomain:
     program_shapes: tuple[tuple[str, ...], ...] = ()
     program_constraints: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = ()
     program_compatible: bool = True
+    mask_input: bool = False
 
     @property
     def extent(self) -> str:
@@ -62,6 +66,7 @@ class ReductionDomain:
             "program_shapes": self.program_shapes,
             "program_constraints": self.program_constraints,
             "program_compatible": self.program_compatible,
+            "mask_input": self.mask_input,
             "extent": self.extent,
             "parallel_axes": self.parallel_axes,
             "parallel_shape": self.parallel_shape,
@@ -84,6 +89,9 @@ def analyze_reductions(
 
     unit_parallel = frozenset(unit_parallel)
     unit_parallel_stores = _unit_parallel_stores(program, value_types, tensor_specs)
+    uniform_domain = matching_reduction_domains(
+        tuple(op for op, _scope in scoped_operations), value_types, tensors
+    )
     domains = []
     rejections = []
 
@@ -113,6 +121,7 @@ def analyze_reductions(
                 operation.results and operation.results[0].name in unit_parallel
             )
             or unit_parallel_stores,
+            uniform_domain=uniform_domain,
         )
         domains.append(domain)
 
@@ -235,6 +244,7 @@ def _domain(
     tensor_specs,
     *,
     allow_unit_parallel=False,
+    uniform_domain=False,
 ):
     if len(operation.operands) != 1 or len(operation.results) != 1:
         raise ValueError(
@@ -297,6 +307,19 @@ def _domain(
         value_types=value_types,
         allow_unit_parallel=allow_unit_parallel,
     )
+    # A newly admitted scalar broadcast must retain the scalar fallback's
+    # reduction domain, including masking before nonlinear terms are summed.
+    mask_input = uniform_domain or (
+        allow_unit_parallel
+        and not _consumer_contract(
+            result.name,
+            users,
+            axis=axis,
+            input_shape=input_shape,
+            result_shape=result_shape,
+            value_types=value_types,
+        )[0]
+    )
     stores = _reachable_stores(
         result.name,
         users,
@@ -343,6 +366,7 @@ def _domain(
             program_shapes=program_shapes,
             program_constraints=program_constraints,
             program_compatible=program_compatible,
+            mask_input=mask_input,
         ),
         rejection,
     )
@@ -774,6 +798,7 @@ def _schedule_contract(domains, rejections):
         "program_shape": domain.program_shapes[0],
         "program_constraints": domain.program_constraints,
         "reductions": tuple(item.result for item in live_domains),
+        "mask_input": any(item.mask_input for item in live_domains),
     }
 
 

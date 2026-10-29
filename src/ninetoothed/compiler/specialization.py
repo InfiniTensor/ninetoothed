@@ -283,12 +283,16 @@ def specialize_schedule_tiles(kernel: Kernel) -> Kernel:
         metadata=dict(program.metadata) | {"schedule": schedule | {"tile": tile}},
     )
 
-    from ninetoothed.compiler.passes import Context, refresh_program_facts
+    from ninetoothed.compiler.passes import (
+        Context,
+        _program_target,
+        refresh_program_facts,
+    )
 
     tensors = specialize_tensor_specs(kernel.tensors, values)
     context = Context(
         backend=kernel.compiler_options["target"]["backend"],
-        target=kernel.ssa.facts.get("target"),
+        target=_program_target(kernel.ssa),
         compiler_options=kernel.compiler_options,
         kernel_metadata=kernel.metadata,
         tensors=tensors,

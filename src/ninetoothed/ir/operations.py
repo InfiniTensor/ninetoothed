@@ -343,7 +343,7 @@ def verify_operation_types(
                     type(value) in {int, float}
                     and dtype in {"float16", "bfloat16", "float32", "float64"}
                 )
-                or (value in ("inf", "-inf") and dtype in {"float32", "float64"})
+                or (value in ("inf", "-inf", "nan") and dtype in {"float32", "float64"})
                 or (value is None and dtype == "none")
                 or (type(value) is str and dtype == "symbol")
             )

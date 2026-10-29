@@ -1,9 +1,9 @@
 """Backend-neutral grouping of already arranged independent reduction rows."""
 
 from dataclasses import replace
-from functools import cache
 
 from ninetoothed.compiler.passes import HARDWARE_INDEPENDENT, Pass
+from ninetoothed.compiler.reduction_geometry import matching_reduction_domains
 
 
 class GroupReductionRows(Pass):
@@ -117,7 +117,11 @@ class GroupReductionRows(Pass):
                 reduction.get("value_shape", ())
             ):
                 reason = "requires output to match the reduction input domain"
-            elif not _matching_reduction_domains(operations, values, context.tensors):
+            elif not matching_reduction_domains(
+                operations,
+                {name: value.type for name, value in values.items()},
+                context.tensors,
+            ):
                 reason = (
                     "requires matching reduction input domains without broadcasting"
                 )
@@ -146,59 +150,3 @@ class GroupReductionRows(Pass):
         return replace(
             program, metadata=dict(program.metadata) | {"schedule": schedule}
         )
-
-
-def _matching_reduction_domains(operations, values, tensors):
-    """Prove mask agreement without introducing broadcast-domain analysis."""
-    inputs = {tensor.name: tensor for tensor in tensors}
-    producers = {value.name: op for op in operations for value in op.results}
-
-    @cache
-    def domains(name):
-        if name in inputs:
-            tensor = inputs[name]
-
-            if tensor.attrs.get("source_ndim", tensor.ndim) == 0:
-                return frozenset()
-
-            layout = tensor.layout
-
-            if layout is None or len(layout.value_accesses) != 1:
-                return None
-
-            return frozenset(
-                {
-                    (
-                        tuple(dim.render() for dim in layout.application_shape),
-                        layout.value_accesses[0].predicate.render(),
-                    )
-                }
-            )
-
-        op = producers.get(name)
-
-        if op is None:
-            return None if name.startswith("%") else frozenset()
-
-        if op.opcode.startswith(("dtype.", "shape.", "reduce.")):
-            return frozenset()
-
-        result = frozenset()
-
-        for operand in op.operands:
-            dependency = domains(operand)
-
-            if dependency is None or (
-                dependency and values[operand].type.shape != values[name].type.shape
-            ):
-                return None
-
-            result |= dependency
-
-        return result if len(result) <= 1 else None
-
-    return all(
-        domains(op.operands[0]) is not None
-        for op in operations
-        if op.opcode.startswith("reduce.")
-    )

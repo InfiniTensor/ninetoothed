@@ -290,6 +290,9 @@ class TestRegistry:
         assert "requires compute capability 7.0" in rejected[0]["reason"]
 
     def test_cuda_profile_can_disable_unverified_wmma(self):
+        from ninetoothed import Tensor
+        from ninetoothed.frontend.layout import tensor_specs
+
         target = TargetContext(
             backend=Target.CUDA,
             platform=PlatformProfile(
@@ -302,6 +305,31 @@ class TestRegistry:
         artifact = emit(_matmul_kernel("float16"), "cuda", target_context=target)
         assert "wmma::" not in artifact.primary_source
         assert not artifact.metadata["ssa_metadata"]["schedule_candidates"]
+        tiled = _kernel_from_source(
+            "def matmul(a, b, out):\n    out = a @ b\n",
+            name="tiled_matmul",
+            tensors=tensor_specs(
+                ("a", "b", "out"),
+                tuple(
+                    Tensor(shape=(16, 16), dtype="float16").tile((16, 16))
+                    for _ in range(3)
+                ),
+            ),
+        )
+
+        for kernel, context in (
+            (tiled, target),
+            (
+                replace(tiled, compiler_options={"backend_options": {"arch": "sm_60"}}),
+                None,
+            ),
+        ):
+            fallback = emit(kernel, "cuda", target_context=context)
+            assert "wmma::mma_sync(" not in fallback.primary_source
+            assert "float" in fallback.primary_source
+
+        assert "wmma::mma_sync(" in emit(tiled, "cuda").primary_source
+
         compound = _kernel_from_source(
             "def compound(a, b, out):\n    out = (a @ b) @ b\n",
             name="compound",

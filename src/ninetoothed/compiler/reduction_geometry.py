@@ -1,5 +1,7 @@
 """Prove complete row producer and store geometry without choosing reuse."""
 
+from functools import cache
+
 from ninetoothed.compiler.effects import pure_expression
 
 
@@ -122,3 +124,68 @@ def prove_unit_parallel_reductions(program):
         return ()
 
     return tuple(operation.results[0].name for operation in reductions)
+
+
+def matching_reduction_domains(operations, value_types, tensors):
+    """Prove matching source-bound domains for regular, single-level tiles."""
+    inputs = {tensor.name: tensor for tensor in tensors}
+    producers = {value.name: op for op in operations for value in op.results}
+
+    @cache
+    def domains(name):
+        if name in inputs:
+            tensor = inputs[name]
+
+            if tensor.attrs.get("source_ndim", tensor.ndim) == 0:
+                return frozenset()
+
+            layout = tensor.layout
+
+            if (
+                layout is None
+                or len(layout.levels) != 1
+                or len(layout.value_accesses) != 1
+                or tensor.jagged_dim is not None
+                or tensor.attrs.get("custom_tiling", True)
+                or tensor.attrs.get("layout_operations") is None
+                or set(tensor.attrs["layout_operations"])
+                - {"tile", "expand", "unsqueeze", "squeeze"}
+            ):
+                return None
+
+            return frozenset(
+                {
+                    (
+                        tuple(dim.render() for dim in layout.application_shape),
+                        layout.value_accesses[0].predicate.render(),
+                    )
+                }
+            )
+
+        op = producers.get(name)
+
+        if op is None:
+            return None if name.startswith("%") else frozenset()
+
+        if op.opcode.startswith(("dtype.", "shape.", "reduce.")):
+            return frozenset()
+
+        result = frozenset()
+
+        for operand in op.operands:
+            dependency = domains(operand)
+
+            if dependency is None or (
+                dependency and value_types[operand].shape != value_types[name].shape
+            ):
+                return None
+
+            result |= dependency
+
+        return result if len(result) <= 1 else None
+
+    return all(
+        domains(op.operands[0]) is not None
+        for op in operations
+        if op.opcode.startswith("reduce.")
+    )
