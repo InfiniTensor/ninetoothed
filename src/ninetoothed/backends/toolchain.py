@@ -344,3 +344,222 @@ def bangc_compiler_identity(*, required: bool = False) -> dict[str, Any]:
 @lru_cache(maxsize=32)
 def _cncc_identity(path: str, size: int, mtime_ns: int) -> dict[str, Any]:
     return _local_compiler_identity(path, size, mtime_ns, label="BangC")
+
+
+_ASCENDC_ARCH_ALIASES = {
+    "dav-c220": "dav-c220",
+    "dav_c220": "dav-c220",
+    "ascend910b": "dav-c220",
+    "910b": "dav-c220",
+    "ascend910b1": "dav-c220",
+    "ascend910b2": "dav-c220",
+    "ascend910b2c": "dav-c220",
+    "ascend910b3": "dav-c220",
+    "ascend910b4": "dav-c220",
+}
+
+
+def normalize_ascendc_arch(value: Any) -> str:
+    """Return a validated ccec ``--cce-aicore-arch`` value."""
+    if not isinstance(value, str):
+        raise TypeError("The AscendC `arch` backend option must be a string.")
+
+    arch = value.strip().lower()
+
+    if arch == "native":
+        return arch
+
+    resolved = _ASCENDC_ARCH_ALIASES.get(arch)
+
+    if resolved is None:
+        raise ValueError(
+            "The AscendC `arch` backend option must be `native` or an "
+            "Ascend 910B family name (`dav-c220`, `ascend910b`, ...)."
+        )
+
+    return resolved
+
+
+def resolve_ascendc_arch(arch: str) -> str:
+    """Resolve `native` to a concrete ccec architecture value."""
+    arch = normalize_ascendc_arch(arch)
+
+    if arch != "native":
+        return arch
+
+    explicit = os.environ.get("NINETOOTHED_ASCENDC_ARCH")
+
+    if explicit and normalize_ascendc_arch(explicit) != "native":
+        return normalize_ascendc_arch(explicit)
+
+    home = _ascend_home_path()
+
+    if home is not None:
+        soc_file = home / "compiler" / "ascendc" / "soc_version.info"
+
+        try:
+            soc = soc_file.read_text(encoding="utf-8").strip().splitlines()[0]
+
+            return normalize_ascendc_arch(soc)
+        except (OSError, IndexError):
+            pass
+
+    return "dav-c220"
+
+
+def _ascend_home_path() -> Path | None:
+    for variable in ("ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME"):
+        value = os.environ.get(variable)
+
+        if value:
+            return Path(value)
+    return None
+
+
+def _ccec_include_dirs(home: Path) -> tuple[str, ...]:
+    tikcpp = home / "compiler" / "tikcpp"
+
+    return (
+        str(tikcpp),
+        str(tikcpp / "tikcfw"),
+        str(tikcpp / "tikcfw" / "impl"),
+        str(tikcpp / "tikcfw" / "interface"),
+        str(home / "include"),
+    )
+
+
+def _cxx_system_include_dirs() -> tuple[str, ...]:
+    include_root = Path("/usr/include/c++")
+
+    if not include_root.is_dir():
+        return ()
+
+    version_dirs = sorted(
+        (entry for entry in include_root.iterdir() if entry.is_dir()),
+        key=lambda entry: entry.name,
+        reverse=True,
+    )
+
+    if not version_dirs:
+        return ()
+
+    cxx = version_dirs[0]
+    triplet = Path("/usr/include/x86_64-linux-gnu/c++") / cxx.name
+
+    dirs = [str(cxx)]
+
+    if triplet.is_dir():
+        dirs.append(str(triplet))
+    return tuple(dirs)
+
+
+def find_ccec() -> str:
+    """Locate the CANN AscendC compiler (ccec)."""
+    explicit = os.environ.get("NINETOOTHED_ASCENDC_COMPILER")
+
+    if explicit is not None:
+        return _validated_compiler(explicit, explicit=True)
+
+    home = _ascend_home_path()
+    candidates = [shutil.which("ccec")]
+
+    if home is not None:
+        candidates += [
+            str(home / "x86_64-linux" / "ccec_compiler" / "bin" / "ccec"),
+            str(home / "compiler" / "ccec_compiler" / "bin" / "ccec"),
+        ]
+
+    candidates += [
+        "/usr/local/Ascend/ascend-toolkit/latest/x86_64-linux/ccec_compiler/bin/ccec",
+        "/usr/local/Ascend/ascend-toolkit/latest/compiler/ccec_compiler/bin/ccec",
+    ]
+
+    for candidate in candidates:
+        if candidate:
+            try:
+                return _validated_compiler(candidate, explicit=False)
+            except RuntimeError:
+                continue
+
+    raise RuntimeError(
+        "AscendC backend requires the CANN ccec compiler; set "
+        "NINETOOTHED_ASCENDC_COMPILER, ASCEND_HOME_PATH, or install the "
+        "Ascend toolkit."
+    )
+
+
+def _ascend_home_for(compiler: str) -> Path:
+    candidate = Path(compiler).resolve()
+
+    for _ in range(8):
+        if (candidate / "compiler" / "tikcpp").is_dir() and (
+            candidate / "include" / "ascendc"
+        ).is_dir():
+            return candidate
+
+        if candidate.parent == candidate:
+            break
+
+        candidate = candidate.parent
+
+    return _ascend_home_path() or Path("/usr/local/Ascend/ascend-toolkit/latest")
+
+
+def ascendc_compile_command(
+    source: str | Path,
+    output: str | Path,
+    *,
+    arch: str,
+    ccec: str | None = None,
+) -> tuple[str, ...]:
+    """Construct the shared-library command used by the AscendC materializer."""
+    compiler = ccec or find_ccec()
+    home = _ascend_home_for(compiler)
+    command = [
+        compiler,
+        "-O2",
+        "-std=c++17",
+        "-xcce",
+        f"--cce-aicore-arch={normalize_ascendc_arch(arch)}",
+        "--cce-auto-sync",
+        "-DL2_CACHE_HINT",
+    ]
+    command += [f"-I{directory}" for directory in _ccec_include_dirs(home)]
+
+    for directory in _cxx_system_include_dirs():
+        command += ["-isystem", directory]
+
+    command += [
+        "-Wno-macro-redefined",
+        "-shared",
+        "-fPIC",
+        str(source),
+        "-o",
+        str(output),
+        f"-L{home / 'lib64'}",
+        "-lruntime",
+        "-lascendcl",
+        "-l:libstdc++.so.6",
+    ]
+
+    return tuple(command)
+
+
+def ascendc_compiler_identity(*, required: bool = False) -> dict[str, Any]:
+    """Return the resolved AscendC compiler identity used in cache keys."""
+    try:
+        compiler = find_ccec()
+    except RuntimeError:
+        if required or os.environ.get("NINETOOTHED_ASCENDC_COMPILER") is not None:
+            raise
+        return {"available": False}
+
+    path = Path(compiler).resolve(strict=True)
+    stat = path.stat()
+
+    return _ccec_identity(str(path), stat.st_size, stat.st_mtime_ns)
+
+
+@lru_cache(maxsize=32)
+def _ccec_identity(path: str, size: int, mtime_ns: int) -> dict[str, Any]:
+    return _local_compiler_identity(path, size, mtime_ns, label="AscendC")

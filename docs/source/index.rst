@@ -14,5 +14,6 @@ NineToothed Documentation
    basics
    named_layout
    bangc
+   ascendc
    build
    python_api

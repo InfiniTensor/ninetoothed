@@ -122,6 +122,27 @@ class TestPipeline:
         assert "arith.mul" in opcodes
         assert "arith.add" in opcodes
 
+        for extent in ("8", "0"):
+            program = _program(
+                "\ndef matmul(a, b, out):\n    out = a @ b\n",
+                (
+                    TensorSpec(ndim=2, shape=("5", extent), dtype="float32", name="a"),
+                    TensorSpec(ndim=2, shape=(extent, "3"), dtype="float32", name="b"),
+                    TensorSpec(ndim=2, shape=("5", "3"), dtype="float32", name="out"),
+                ),
+                "matmul",
+            )
+            lowered = lower_for_target(program, backend=Target.ASCENDC)
+            operations = lowered.blocks[0].operations
+            loop = next(op for op in operations if op.opcode == "scf.for")
+            bound = next(
+                op
+                for op in operations
+                if any(value.name == loop.operands[1] for value in op.results)
+            )
+            assert bound.opcode == "arith.constant"
+            assert bound.attrs["value"] == int(extent)
+
     def test_pass_registry_classifies_and_registers_backend_contracts(self):
         independent = {
             descriptor.name for descriptor in registered(category=HARDWARE_INDEPENDENT)
@@ -160,6 +181,7 @@ class TestPipeline:
             "ssa.triton.singleton_dot",
             "ssa.cuda.optimize_schedule",
             "ssa.tilelang.optimize_schedule",
+            "ssa.ascendc.optimize_schedule",
             "ssa.bangc.optimize_schedule",
         }
 

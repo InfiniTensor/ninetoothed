@@ -7,6 +7,7 @@ simultaneous region yields, and reuses scratch slots by SSA last use.
 
 from collections import Counter
 from dataclasses import dataclass
+from functools import cache
 from math import prod
 
 from ninetoothed.backends.emitters import ssa as common
@@ -23,7 +24,7 @@ class ScalarTilePlan:
     scratch_bytes: int
 
 
-def plan_scalar_tiles(context, target, *, storage, budget):
+def plan_scalar_tiles(context, target, *, storage, budget, inline_elementwise=False):
     if any(
         name.startswith("nt_")
         for name in (*context.variables, *context.outputs, *context.shape_params)
@@ -56,6 +57,58 @@ def plan_scalar_tiles(context, target, *, storage, budget):
 
     if any(op.opcode == "mem.store" for op in all_ops if op not in operations):
         return None
+
+    yielded = {
+        name for op in all_ops if op.opcode == "scf.yield" for name in op.operands
+    }
+    pure = {
+        "arith.add",
+        "arith.sub",
+        "arith.mul",
+        "arith.div",
+        "arith.truediv",
+        "arith.floordiv",
+        "arith.mod",
+        "arith.neg",
+        "arith.cast",
+        "arith.bitand",
+        "arith.bitor",
+        "arith.bitxor",
+        "arith.lshift",
+        "arith.rshift",
+        "cmp.eq",
+        "cmp.ne",
+        "cmp.lt",
+        "cmp.le",
+        "cmp.gt",
+        "cmp.ge",
+        "tensor.zeros",
+        "tensor.empty",
+    }
+    inline = {
+        op.results[0].name: op
+        for op in all_ops
+        if inline_elementwise
+        and op.opcode in pure
+        and not op.regions
+        and len(op.results) == 1
+        and op.results[0].type.kind == "tensor"
+        and op.results[0].type.shape
+        and op.results[0].name not in yielded
+    }
+
+    @cache
+    def dependencies(name):
+        op = inline.get(name)
+
+        return (
+            tuple(leaf for operand in op.operands for leaf in dependencies(operand))
+            if op is not None
+            else (name,)
+        )
+
+    def operands(op):
+        return tuple(leaf for name in op.operands for leaf in dependencies(name))
 
     initial = {}
 
@@ -174,9 +227,17 @@ def plan_scalar_tiles(context, target, *, storage, budget):
             fill(buffer, value, axes, local)
 
     def render(ops, local, protected=frozenset()):
-        uses = Counter(operand for op in walk_ops(ops) for operand in op.operands)
+        uses = Counter(
+            operand
+            for op in walk_ops(ops)
+            if not (op.results and op.results[0].name in inline)
+            for operand in operands(op)
+        )
 
         for op in ops:
+            if op.results and op.results[0].name in inline:
+                continue
+
             if op.opcode == "scf.yield":
                 continue
 
@@ -276,7 +337,7 @@ def plan_scalar_tiles(context, target, *, storage, budget):
                 else:
                     common.emit_value(name, local)
 
-            for operand in op.operands:
+            for operand in operands(op):
                 uses[operand] -= 1
 
                 if uses[operand] == 0 and operand not in protected:

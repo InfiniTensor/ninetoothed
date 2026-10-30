@@ -512,15 +512,25 @@ def create_default_platform_registry() -> PlatformRegistry:
             metadata={"triton_grid_limit": 65535},
         ),
         PlatformProfile(
+            name="ascend-910b2c",
+            accelerator_vendor="ascend",
+            accelerator_name="910b2c",
+            compute_arch="ascend910b2c",
+            device_types=("npu",),
+            backend_modes=_backend_modes((Target.ASCENDC,)),
+        ),
+        PlatformProfile(
             name="ascend-910b3",
             accelerator_vendor="ascend",
             accelerator_name="910b3",
             compute_arch="ascend910b3",
             device_types=("npu",),
-            backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
-            unsupported_capabilities=frozenset({"math.pow"}),
+            backend_modes={
+                **_backend_modes((Target.TRITON,), modes=("jit",)),
+                **_backend_modes((Target.ASCENDC,)),
+            },
             backend_unsupported_capabilities={
-                Target.TRITON.value: frozenset({"dtype.fp8"})
+                Target.TRITON.value: frozenset({"dtype.fp8", "math.pow"})
             },
             constraints={"compiler_options": {"triton": {"max_num_configs": 1}}},
             metadata={"triton_block_size": 512},
@@ -531,8 +541,13 @@ def create_default_platform_registry() -> PlatformRegistry:
             accelerator_name="910b4",
             compute_arch="ascend910b4",
             device_types=("npu",),
-            backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
-            unsupported_capabilities=frozenset({"math.pow"}),
+            backend_modes={
+                **_backend_modes((Target.TRITON,), modes=("jit",)),
+                **_backend_modes((Target.ASCENDC,)),
+            },
+            backend_unsupported_capabilities={
+                Target.TRITON.value: frozenset({"math.pow"})
+            },
             constraints={"compiler_options": {"triton": {"max_num_configs": 1}}},
             metadata={"triton_block_size": 512},
         ),
@@ -773,12 +788,18 @@ def runtime_device_types(value: Any) -> tuple[str, ...]:
     context = getattr(value, "target", None)
 
     if isinstance(context, TargetContext):
+        if context.backend == Target.ASCENDC:
+            return ("npu",)
+
         if context.backend == Target.BANGC:
             return ("mlu",)
         return context.device_types if context.backend == Target.TRITON else ("cuda",)
 
     artifact = getattr(value, "artifact", value)
     backend = getattr(getattr(artifact, "backend", None), "value", None)
+
+    if backend == Target.ASCENDC.value:
+        return ("npu",)
 
     if backend == Target.BANGC.value:
         return ("mlu",)

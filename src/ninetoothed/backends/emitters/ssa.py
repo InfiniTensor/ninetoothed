@@ -1506,7 +1506,7 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
         return _emit_value(op.operands[0], ctx)
 
     if opcode in {"tensor.zeros", "tensor.empty"}:
-        return _constructor_value(op, "0.0", ctx)
+        return _constructor_value(op, ctx.target.literal(0.0), ctx)
 
     if opcode == "tensor.full":
         if op.operands:
@@ -1672,7 +1672,7 @@ def _emit_linalg_dot(
     local = f"{_local_symbol(op.results[0].name, ctx)}_dot"
     accumulator_dtype = _dot_accumulator_dtype(op, ctx)
     acc_type = ssa.Type(kind="scalar", dtype=accumulator_dtype)
-    init = "0.0"
+    init = ctx.target.literal(0.0)
 
     if ctx.target.vector_value_semantics and ctx.mask_expr is not None:
         dtype = _normalize_dtype(acc_type.dtype or "float32")
@@ -1711,7 +1711,7 @@ def _emit_linalg_dot(
 
     if product_masks:
         product_mask = " && ".join(f"({mask})" for mask in product_masks)
-        product = f"(({product_mask}) ? ({product}) : 0.0)"
+        product = f"(({product_mask}) ? ({product}) : {ctx.target.literal(0.0)})"
 
     body_lines.append(
         _assign_scalar(
@@ -1863,7 +1863,7 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
         )
 
     if op.opcode in {"tensor.zeros", "tensor.empty"}:
-        return _constructor_value(op, "0.0", ctx)
+        return _constructor_value(op, ctx.target.literal(0.0), ctx)
 
     if op.opcode == "tensor.full":
         if op.operands:
@@ -2504,6 +2504,8 @@ def _serial_reduction_init(
 ) -> tuple[ssa.Type, str]:
     operator = op.opcode[len("reduce.") :]
 
+    result_type = ctx.target.reduction_compute_type(result_type)
+
     if result_type.dtype is None or ctx.target.vector_value_semantics:
         source = _resolve_dtype(op.operands[0], ctx)
         dtype = ctx.target.value_dtype(source.sample)
@@ -2635,7 +2637,7 @@ def _emit_reduce_element(
 
     if ctx.target.c_style_syntax:
         ctx.lines.append("}")
-    return acc_expr
+    return ctx.target.reduction_result(acc_expr, op.results[0].type)
 
 
 def _emit_offset_element(
@@ -3196,7 +3198,7 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
 
     if ctx.target.c_style_syntax:
         ctx.lines.append("}")
-    return acc_expr
+    return ctx.target.reduction_result(acc_expr, op.results[0].type)
 
 
 def _prepare_scalar_carry_analysis(operations, ctx):
@@ -3635,7 +3637,7 @@ def _scf_if_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     if len(op.regions) == 1:
         then_value = _region_yield(op.regions[0], ctx)
 
-        return ctx.target.where(condition, then_value, "0.0")
+        return ctx.target.where(condition, then_value, ctx.target.literal(0.0))
 
     then_region, else_region = op.regions[:2]
     then_value = _region_yield(then_region, ctx)
@@ -3664,7 +3666,7 @@ def _scf_if_element(
             op.regions[0], ctx, result_index=result_index, coords=coords
         )
 
-        return ctx.target.where(condition, then_value, "0.0")
+        return ctx.target.where(condition, then_value, ctx.target.literal(0.0))
 
     then_region, else_region = op.regions[:2]
     then_value = _region_yield(
@@ -3743,7 +3745,7 @@ def _region_yield(
     if yielded is None:
         ctx.lines.extend(lines)
 
-        return "0.0"
+        return ctx.target.literal(0.0)
 
     value = (
         _emit_element(yielded, coords, child)
@@ -4859,7 +4861,7 @@ def _zero_value(type_: ssa.Type, target: _Target) -> str:
 
     if _normalize_dtype(type_.dtype) == "bool":
         return "false" if target.c_style_syntax else "False"
-    return "0.0"
+    return target.literal(0.0)
 
 
 def _uses_mutable_scalar_slots(target: _Target) -> bool:

@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from ninetoothed.backends.toolchain import (
+    ascendc_compiler_identity,
     bangc_compiler_identity,
     cuda_compiler_identity,
+    resolve_ascendc_arch,
     resolve_bangc_arch,
 )
 from ninetoothed.ir import ir_to_dict
@@ -223,6 +225,13 @@ def _architecture(compilation) -> Mapping[str, Any]:
     if target.get("platform") not in {None, "generic"} or target.get("compute_arch"):
         return architecture
 
+    if backend == "ascendc":
+        architecture["ascendc_target"] = resolve_ascendc_arch(
+            backend_options.get("arch", "native")
+        )
+
+        return architecture
+
     if backend == "bangc":
         architecture["bangc_target"] = resolve_bangc_arch(
             backend_options.get("arch", "native")
@@ -259,6 +268,18 @@ def _target_metadata(compilation) -> Mapping[str, Any]:
 def compilation_toolchain_identity(compilation) -> Mapping[str, Any]:
     """Return external compiler identity that affects emitted binaries."""
     backend = compilation.artifact.backend.value
+
+    if backend == "ascendc":
+        return {
+            "ascendc": dict(
+                ascendc_compiler_identity(),
+                arch=resolve_ascendc_arch(
+                    dict(compilation.request.backend_options or {}).get(
+                        "arch", "native"
+                    )
+                ),
+            )
+        }
 
     if backend == "bangc":
         return {

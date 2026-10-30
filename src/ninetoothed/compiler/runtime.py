@@ -214,6 +214,7 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
     artifact = compilation.artifact
     suffix = {
         Target.CUDA: "cu",
+        Target.ASCENDC: "ascendc",
         Target.BANGC: "mlu",
         Target.TILELANG: "tilelang.py",
     }[artifact.backend]

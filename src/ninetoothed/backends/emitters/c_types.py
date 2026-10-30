@@ -61,6 +61,48 @@ class CComputedTypesMixin:
         return f"::{name}"
 
 
+class CScalarArithmeticMixin(CComputedTypesMixin):
+    """C++ scalar values, conversions and reduction identities for native targets."""
+
+    def cast_like(self, value, reference):
+        return f"{self.global_helper('_nt_cast_like')}<{self.value_dtype(reference)}>({value})"
+
+    def inline_constant(self, value, type_: ssa.Type) -> str:
+        dtype = "int64" if type_.kind == "index" else type_.dtype
+
+        return self.cast(dtype, self.literal(value))
+
+    def reduction_identity(self, dtype: str, operator: str, shape: str) -> str:
+        del shape
+
+        if operator == "sum":
+            accumulator = (
+                f"std::conditional<std::is_integral<{dtype}>::value && "
+                f"(sizeof({dtype}) < 4), int32_t, {dtype}>::type"
+            )
+
+            return f"static_cast<{accumulator}>(0)"
+
+        if operator not in {"max", "min"}:
+            raise ValueError(f"Unsupported C++ reduction operator: {operator!r}.")
+
+        bound = "low" if operator == "max" else "high"
+
+        return f"{self.global_helper('_nt_reduction_bounds')}<{dtype}>::{bound}()"
+
+    def true_divide(self, lhs: str, rhs: str) -> str:
+        return f"{self.global_helper('_nt_true_divide')}({lhs}, {rhs})"
+
+    def reduce_update_typed(self, operator, acc, term, dtype):
+        if dtype is None:
+            term = self.cast_like(term, acc)
+
+            if operator == "sum":
+                return f"({acc} + {term})"
+            return f"{self.global_helper('_nt_reduce_' + operator)}({acc}, {term})"
+        return self.reduce_update(operator, acc, term)
+
+
 def render_c_type_support(
     body: str,
     qualifier: str,
