@@ -117,6 +117,27 @@ def scalar_pair_reduction_application(x, out):
         out[0, i] = x[0, i] * scale
 
 
+def dynamic_table_arrangement(positions, table, output):
+    return positions, table.tile((1, 64)), output.tile((64,))
+
+
+def dynamic_table_application(positions, table, output):
+    output = table[positions, :]  # noqa: F841
+
+
+def scalar_dynamic_table_arrangement(positions, table, output):
+    return positions.tile((1, 1, 64)), table.tile((1, 64)), output.tile((64,))
+
+
+def scalar_dynamic_table_application(positions, table, output):
+    position = ntl.max(positions)
+    output = table[position, :]  # noqa: F841
+
+
+def dynamic_table_runtime_arrangement(positions, table, output):
+    return positions, table.tile((1, 64)), output.tile((1, 64))
+
+
 def _ssa_kernel(
     source: str, kernel_name: str, tensors: tuple[TensorSpec, ...]
 ) -> Kernel:
@@ -235,6 +256,46 @@ def random_application(seed, out):
         assert "ninetoothed_curand_uniform" in source
         assert "curandStatePhilox4_32_10_t" in source
         assert "curand_init" in source
+
+    def test_scalar_extract_selects_dynamic_table_row(self):
+        artifact = lower_application(
+            dynamic_table_arrangement,
+            dynamic_table_application,
+            (
+                Tensor(0, dtype="int64"),
+                Tensor(2, dtype="bfloat16"),
+                Tensor(1, dtype="bfloat16"),
+            ),
+            backend="triton",
+            kernel_name="dynamic_table_row",
+        )
+
+        table_load = next(
+            line
+            for line in artifact.primary_source.splitlines()
+            if "tl.load(table +" in line
+        )
+        assert "positions" in table_load
+
+    def test_scalar_extract_selects_reduced_dynamic_table_row(self):
+        artifact = lower_application(
+            scalar_dynamic_table_arrangement,
+            scalar_dynamic_table_application,
+            (
+                Tensor(3, dtype="int64"),
+                Tensor(2, dtype="bfloat16"),
+                Tensor(1, dtype="bfloat16"),
+            ),
+            backend="triton",
+            kernel_name="scalar_dynamic_table_row",
+        )
+
+        table_load = next(
+            line
+            for line in artifact.primary_source.splitlines()
+            if "tl.load(table +" in line
+        )
+        assert "v0" in table_load
 
     def test_public_lower_generates_fused_expression_without_kernel_template(self):
         expected = {
@@ -1724,6 +1785,50 @@ def test_dynamic_integer_reduction_preserves_large_values_and_tail(tmp_path):
         torch.cuda.synchronize()
         assert out_max.item() == max(values)
         assert out_min.item() == min(values)
+
+
+def test_dynamic_table_extraction_uses_index_for_every_output_row(tmp_path):
+    import importlib.util
+
+    import torch
+
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA GPU required")
+
+    artifact = lower_application(
+        dynamic_table_runtime_arrangement,
+        dynamic_table_application,
+        (
+            Tensor(0, dtype="int64"),
+            Tensor(2, dtype="bfloat16"),
+            Tensor(shape=(2, 64), dtype="bfloat16"),
+        ),
+        backend="triton",
+        kernel_name="dynamic_table_runtime",
+    )
+    path = tmp_path / "dynamic_table_runtime.py"
+    path.write_text(artifact.primary_source)
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    table = torch.arange(128, device="cuda", dtype=torch.float32)
+    table = table.reshape(2, 64).to(torch.bfloat16)
+    output = torch.empty((2, 64), device="cuda", dtype=torch.bfloat16)
+    module.launch_dynamic_table_runtime(
+        1,
+        table,
+        output,
+        table.shape[0],
+        table.shape[1],
+        table.stride(0),
+        table.stride(1),
+        output.stride(0),
+        output.stride(1),
+    )
+    torch.cuda.synchronize()
+
+    assert torch.equal(output, table[1].expand(2, 64))
 
 
 def test_source_offset_emission_maps_compact_coordinates_to_template():

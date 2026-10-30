@@ -1430,6 +1430,14 @@ def _is_bool_scalar_value(name: str, ctx: _EmitContext) -> bool:
     )
 
 
+def _is_constant_zero_index(name: str, ctx: _EmitContext) -> bool:
+    producer = ctx.operations.get(name)
+
+    if producer is None or producer.opcode != "arith.constant":
+        return False
+    return _is_zero_expr(str(producer.attrs.get("value")))
+
+
 def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     target = ctx.target
     opcode = op.opcode
@@ -1513,7 +1521,26 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
 
         index = _linearized_index(indices, _value_axes(tensor, ctx))
 
-        return _load_tensor(tensor, index, ctx)
+        result_rank = len(op.results[0].type.shape) if op.results else 0
+        explicit_count = max(0, len(indices) - result_rank)
+        info = ctx.tensor_infos.get(tensor)
+        source_axes = _source_axes(info, fallback=())
+        value_coords = _current_coords(source_axes[explicit_count:], ctx)
+        extract_indices = indices[:explicit_count]
+
+        if all(
+            _is_constant_zero_index(operand, ctx)
+            for operand in op.operands[1 : 1 + len(extract_indices)]
+        ):
+            extract_indices = ()
+
+        return _load_tensor(
+            tensor,
+            index,
+            ctx,
+            extract_indices=extract_indices,
+            value_coords=value_coords,
+        )
 
     if opcode == "tensor.cast":
         return _cast_value(op, _emit_value(op.operands[0], ctx), ctx)
@@ -3739,11 +3766,25 @@ def _tensor_value(name: str, ctx: _EmitContext) -> str:
     return _load_tensor(name, _default_tensor_index(name, ctx), ctx)
 
 
-def _load_tensor(name: str, view_index: str, ctx: _EmitContext) -> str:
+def _load_tensor(
+    name: str,
+    view_index: str,
+    ctx: _EmitContext,
+    *,
+    extract_indices: tuple[str, ...] = (),
+    value_coords: tuple[str, ...] = (),
+) -> str:
     info = ctx.tensor_infos.get(name)
     source_index = _target_index_expr(
         ctx.target,
-        _source_index_for_value(info, view_index, ctx, level=_dtype_level(name, ctx)),
+        _source_index_for_value(
+            info,
+            view_index,
+            ctx,
+            level=_dtype_level(name, ctx),
+            extract_indices=extract_indices,
+            value_coords=value_coords,
+        ),
     )
     source_index = _materialize_index_expr(source_index, ctx)
     mask = _combined_mask(
@@ -3752,6 +3793,8 @@ def _load_tensor(name: str, view_index: str, ctx: _EmitContext) -> str:
         info,
         view_index,
         ctx=ctx,
+        extract_indices=extract_indices,
+        value_coords=value_coords,
     )
 
     return _masked_load(name, source_index, mask, info, ctx)
@@ -3845,6 +3888,37 @@ def _source_index(info: _TensorInfo | None, view_index: str) -> str:
     return _replace_index_symbol(expr, view_index)
 
 
+def _template_with_extract_indices(
+    template: Mapping[str, Any],
+    extract_indices: tuple[str, ...],
+    value_coords: tuple[str, ...],
+) -> tuple[Mapping[str, Any], bool]:
+    if all(_is_zero_expr(index) for index in extract_indices):
+        return template, False
+
+    template_uses_extract_indices = any(
+        f"extract_0_{index}" in str(template) for index in range(len(extract_indices))
+    )
+
+    if template_uses_extract_indices:
+        return template, False
+
+    offsets = tuple(str(offset) for offset in template.get("offsets", ()))
+
+    if len(offsets) < len(extract_indices):
+        return template, False
+
+    return (
+        {
+            **template,
+            "offsets": (*extract_indices, *value_coords),
+            "extract_override": True,
+            "mask": "True",
+        },
+        True,
+    )
+
+
 def _source_index_for_value(
     info: _TensorInfo | None,
     view_index: str,
@@ -3867,6 +3941,16 @@ def _source_index_for_value(
         if len(value_coords) == len(shape)
         else _coords_from_linear(view_index, shape, ctx.target)
     )
+
+    if extract_indices:
+        overridden_template = _template_with_extract_indices(
+            template, extract_indices, value_coords
+        )
+        template = overridden_template[0]
+
+        if overridden_template[1]:
+            coords = (*extract_indices, *coords[len(extract_indices) :])
+
     replacements = {"outer_index": ctx.outer_index_expr}
     replacements.update({f"value_{index}": coord for index, coord in enumerate(coords)})
     replacements.update(_jagged_extent_replacements(ctx))
@@ -3961,7 +4045,7 @@ def _source_index_from_offsets(
     replacements: Mapping[str, str],
     ctx: _EmitContext,
 ) -> str | None:
-    if ctx.target.vector_value_semantics:
+    if ctx.target.vector_value_semantics and not template.get("extract_override"):
         return None
 
     offsets = tuple(str(offset) for offset in template.get("offsets", ()))
@@ -4145,6 +4229,14 @@ def _combined_mask(
             else int(level or 0)
         )
         template = _access_template(info, dtype_level)
+
+        if template is not None and extract_indices:
+            overridden_template = _template_with_extract_indices(
+                template, extract_indices, value_coords
+            )
+
+            if overridden_template[1]:
+                template = overridden_template[0]
 
         if template is not None:
             shape = (
