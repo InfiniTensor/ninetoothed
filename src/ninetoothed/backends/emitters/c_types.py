@@ -44,10 +44,14 @@ class CComputedTypesMixin:
 
         if (
             declared is not None
+            and declared.kind in {"scalar", "tensor"}
             and operation.opcode.startswith("arith.")
             and declared.dtype in {"float16", "bfloat16"}
         ):
-            return self.cast(declared.dtype, value)
+            rounded = self.cast(declared.dtype, value)
+            computed = self.arithmetic_result_type(operation, context)
+
+            return self.cast(computed.dtype, rounded)
         return value
 
     def global_helper(self, name: str) -> str:

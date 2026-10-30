@@ -17,7 +17,6 @@ def materialize_native_library(
     compile_library,
     wrapper,
     output_dir=None,
-    wrapper_options=None,
 ):
     """Build and bind a native library using one resolved SDK identity."""
     from ninetoothed.compiler.cache import (
@@ -77,7 +76,6 @@ def materialize_native_library(
         function,
         compilation.launch_abi,
         compilation.kernel.tensors,
-        **(wrapper_options or {}),
     )
 
     return Handle(
@@ -111,7 +109,7 @@ def _bind_native_function(path, entrypoint, *, snapshot=False):
     return function
 
 
-def load_native_artifact(built, wrapper, *, validate=None, wrapper_options=None):
+def load_native_artifact(built, wrapper):
     """Rebind the saved ABI after target validation, without analyzing SSA."""
     if built.binary_path is None:
         raise ValueError(
@@ -122,14 +120,11 @@ def load_native_artifact(built, wrapper, *, validate=None, wrapper_options=None)
 
     abi, specs = _launch_abi_from_dict(built.abi), _runtime_specs(built.source)
 
-    if validate is not None:
-        validate(built, abi, specs)
-
     function = _bind_native_function(
         built.binary_path, built.source.entrypoint, snapshot=True
     )
 
-    return wrapper(function, abi, specs, **(wrapper_options or {}))
+    return wrapper(function, abi, specs)
 
 
 @contextmanager

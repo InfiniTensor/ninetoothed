@@ -21,6 +21,15 @@ def _rounded_arithmetic(x, y, z, out):
     out = (x + y) * z  # noqa: F841
 
 
+def _positive_sum(x, out):
+    out = ntl.sum(ntl.where(x > 0, x + x, 0.0), axis=1)  # noqa: F841
+
+
+def _atomic_offset(x, out):
+    ntl.atomic_add(out.source.data_ptr() + 1, x)
+    ntl.atomic_add(out.source.data_ptr(), 0.0)
+
+
 def _add(x, y, out):
     out = x + y  # noqa: F841
 
@@ -98,6 +107,35 @@ def test_cuda_native_numeric_semantics():
         out = torch.empty_like(x)
         kernel(x, y, z, out)
         torch.testing.assert_close(out, (x + y) * z, atol=0, rtol=0)
+
+        atomic = nt.make(
+            _arrangement,
+            _atomic_offset,
+            (nt.Tensor(1, dtype=str(dtype)), nt.Tensor(1, dtype=str(dtype))),
+            backend="cuda",
+            max_num_configs=1,
+        )
+        values = torch.ones(4, device="cuda", dtype=dtype)
+        totals = torch.zeros(2, device="cuda", dtype=dtype)
+        atomic(values, totals)
+        torch.testing.assert_close(
+            totals, torch.tensor([0, 4], device="cuda", dtype=dtype)
+        )
+
+        selected_sum = nt.make(
+            _row_arrangement,
+            _positive_sum,
+            (nt.Tensor(2, dtype=str(dtype)), nt.Tensor(1, dtype=str(dtype))),
+            backend="cuda",
+            max_num_configs=1,
+        )
+        x = ((torch.arange(7 * 127, device="cuda") % 13 - 6) / 4).to(dtype)
+        x = x.reshape(7, 127)
+        out = torch.empty(7, device="cuda", dtype=dtype)
+        selected_sum(x, out)
+        torch.testing.assert_close(
+            out, torch.where(x > 0, x + x, 0.0).sum(1), rtol=0, atol=0
+        )
 
     reduction = nt.make(
         _row_arrangement,
@@ -203,3 +241,46 @@ def test_cuda_native_launch_revalidates_storage_and_current_stream():
         scalar.fill_(value)
         scaled(scalar, out, scale=2.0)
         torch.testing.assert_close(out, torch.full_like(out, value * 2))
+
+
+def _divide_arrangement(x, out, scale):
+    return x.tile((128,)), out.tile((128,)), scale
+
+
+def _divide_by_scalar(x, out, scale):
+    out = x / scale  # noqa: F841
+
+
+def test_cuda_native_cached_scalar_preserves_representation():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+
+    kernel = nt.make(
+        _divide_arrangement,
+        _divide_by_scalar,
+        (
+            nt.Tensor(1, dtype=nt.float32),
+            nt.Tensor(1, dtype=nt.float32),
+            nt.Tensor(0, dtype=nt.float32),
+        ),
+        backend="cuda",
+        max_num_configs=1,
+    )
+    x = torch.ones(257, device="cuda")
+    out = torch.empty_like(x)
+    scalar = torch.tensor(0.0, device="cuda")
+
+    for as_tensor in (False, True):
+        for keyword in (False, True):
+            for value in (0.0, -0.0, 0.0, 7.0, -2.0):
+                scalar.fill_(value)
+                argument = scalar if as_tensor else value
+
+                if keyword:
+                    kernel(x, out, scale=argument)
+                else:
+                    kernel(x, out, argument)
+
+                expected = x / scalar
+                torch.testing.assert_close(out, expected)
+                assert torch.equal(torch.signbit(out), torch.signbit(expected))

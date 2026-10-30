@@ -4,6 +4,7 @@ import ctypes
 import importlib.util
 import os
 import shutil
+import struct
 import sys
 import tempfile
 import weakref
@@ -341,6 +342,19 @@ def _is_cacheable_runtime_literal(value) -> bool:
     )
 
 
+def _runtime_literal_key(value):
+    """Compare floating values by representation, including signed zero."""
+    if type(value) is float:
+        return struct.pack("!d", value)
+
+    if type(value) is complex:
+        return struct.pack("!dd", value.real, value.imag)
+
+    if isinstance(value, tuple):
+        return tuple((type(item), _runtime_literal_key(item)) for item in value)
+    return value
+
+
 @dataclass(frozen=True, kw_only=True)
 class _RuntimeValueContract:
     is_tensor: bool
@@ -418,7 +432,9 @@ class _RuntimeValueContract:
 
     def matches(self, value, *, identity_verified=False) -> bool:
         if not self.is_tensor:
-            return type(value) is self.value_type and value == self.value
+            return type(value) is self.value_type and _runtime_literal_key(
+                value
+            ) == _runtime_literal_key(self.value)
 
         if not identity_verified and (
             id(value) != self.identity or type(value) is not self.value_type
@@ -442,7 +458,9 @@ class _RuntimeValueContract:
 
         item = value.item()
 
-        return type(item) is self.scalar_value[0] and item == self.scalar_value[1]
+        return type(item) is self.scalar_value[0] and _runtime_literal_key(
+            item
+        ) == _runtime_literal_key(self.scalar_value[1])
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -507,7 +525,7 @@ class _VerifiedRuntimeCall:
                 two_tensor_state = (
                     keywords[0][0],
                     scalar.value_type,
-                    scalar.value,
+                    _runtime_literal_key(scalar.value),
                     positional[0].identity,
                     positional[0].value_type,
                     *positional[0].tensor_state,
@@ -541,7 +559,7 @@ class _VerifiedRuntimeCall:
             return (
                 expected_name,
                 type(scalar),
-                scalar,
+                _runtime_literal_key(scalar),
                 id(first),
                 type(first),
                 first.shape,
