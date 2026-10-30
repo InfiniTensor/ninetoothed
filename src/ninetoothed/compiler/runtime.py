@@ -1285,6 +1285,11 @@ def _public_values(
         values,
         specs,
         device_types=device_types,
+        memory_sources={
+            binding.source
+            for binding in abi.kernel_args
+            if binding.kind in {"tensor", "jagged_values", "jagged_offsets"}
+        },
     )
 
     if abi.named_layout is not None:
@@ -1388,7 +1393,9 @@ def _filter_runtime_kwargs(abi: LaunchABI, kwargs) -> dict[str, Any]:
     return {name: value for name, value in kwargs.items() if name in accepted}
 
 
-def _validate_runtime_values(values, specs, *, device_types=("cuda",)) -> None:
+def _validate_runtime_values(
+    values, specs, *, device_types=("cuda",), memory_sources=()
+) -> None:
     expected_device = None
     device_types = tuple(
         dict.fromkeys(str(device_type).lower() for device_type in device_types)
@@ -1404,14 +1411,17 @@ def _validate_runtime_values(values, specs, *, device_types=("cuda",)) -> None:
             value,
             expected_device,
             device_types=device_types,
+            memory=spec.name in memory_sources,
         )
         _validate_dtype_contract(spec, value)
 
 
-def _validate_tensor_contract(spec, value, expected_device, *, device_types):
+def _validate_tensor_contract(
+    spec, value, expected_device, *, device_types, memory=False
+):
     source_ndim = int(spec.attrs.get("source_ndim", spec.ndim))
 
-    if source_ndim == 0:
+    if source_ndim == 0 and not memory:
         return expected_device
 
     shape = getattr(value, "shape", None)

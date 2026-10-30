@@ -1,9 +1,291 @@
 """SSA traversal and value-analysis helpers for backend emitters."""
 
+from collections import defaultdict, deque
 from collections.abc import Iterator, Mapping
 
 from ninetoothed.backends.emitters.context import CooperativeDotPlan
+from ninetoothed.compiler.effects import broadcast_view_parts, is_pointwise_expression
 from ninetoothed.ir import Kernel, ssa
+
+
+def operation_value_references(operation):
+    """Include SSA values used by indexed stores as well as ordinary operands."""
+    indices = (
+        operation.attrs.get("indices", ()) if operation.opcode == "mem.store" else ()
+    )
+
+    return operation.operands + (
+        (indices,) if isinstance(indices, str) else tuple(indices)
+    )
+
+
+class ScalarCarryProjectionAnalysis:
+    """Resolve scalarized carry uses by lexical SSA identity, once per domain."""
+
+    def __init__(self, program, is_effectful, *, live_operations=None):
+        self.is_effectful = is_effectful
+        self.uses = defaultdict(list)
+        self.results = {}
+        self.operands = {}
+        self.definitions = {}
+        self.arguments = {}
+        self.yield_owners = {}
+        self.types = {}
+        self.cache = {}
+        self.result_refs = {}
+        self.value_projections = {}
+
+        def visit(block, inherited, owner=None):
+            visible = dict(inherited)
+            arguments = tuple((id(block), value.name) for value in block.args)
+            self.arguments[id(block)] = arguments
+
+            for value, ref in zip(block.args, arguments):
+                visible[value.name] = ref
+                self.types[ref] = value.type
+
+            for operation in block.operations:
+                references = tuple(
+                    visible.get(name, (0, name))
+                    for name in operation_value_references(operation)
+                )
+                outputs = tuple((id(block), value.name) for value in operation.results)
+                self.results[id(operation)] = outputs
+                self.operands[id(operation)] = references[: len(operation.operands)]
+
+                for slot, ref in enumerate(outputs):
+                    self.definitions[ref] = (operation, slot)
+
+                if live_operations is None or id(operation) in live_operations:
+                    for index, ref in enumerate(references):
+                        self.uses[ref].append((operation, index))
+
+                if operation.opcode == "scf.yield":
+                    self.yield_owners[id(operation)] = (owner, block)
+
+                for region in operation.regions:
+                    visit(region, visible, operation)
+
+                for value, ref in zip(operation.results, outputs):
+                    visible[value.name] = ref
+                    self.types[ref] = value.type
+                    self.result_refs[value.name] = ref
+
+        visible = {}
+
+        for value in program.inputs:
+            ref = (id(program), value.name)
+            visible[value.name] = ref
+            self.types[ref] = value.type
+
+        for block in program.blocks:
+            visit(block, visible)
+
+    def for_loop(self, loop, output_axes):
+        key = (id(loop), output_axes)
+
+        if key in self.cache:
+            return self.cache[key]
+
+        result = {}
+
+        for slot, value in enumerate(loop.results):
+            axes = tuple(map(str, value.type.shape))
+
+            if not axes or len(axes) >= len(output_axes):
+                continue
+
+            seeds = (
+                self.results[id(loop)][slot],
+                self.arguments[id(loop.regions[0])][slot + 1],
+                *self._initial_effect_values(self.operands[id(loop)][slot + 3], axes),
+            )
+            pending = deque(seeds)
+            seen = set()
+            projections = set()
+
+            def forward(refs):
+                for ref in refs:
+                    if tuple(map(str, self.types[ref].shape)) != axes:
+                        raise ValueError(
+                            f"Scalarized carry {value.name} changes its logical domain."
+                        )
+
+                    pending.append(ref)
+
+            while pending:
+                ref = pending.popleft()
+
+                if ref in seen:
+                    continue
+
+                seen.add(ref)
+
+                for operation, operand_index in self.uses[ref]:
+                    code = operation.opcode
+                    outputs = self.results[id(operation)]
+
+                    if code in {"dtype.of", "shape.dim", "tensor.stride"}:
+                        continue
+
+                    if code == "scf.yield":
+                        owner, region = self.yield_owners[id(operation)]
+                        forward((self.results[id(owner)][operand_index],))
+
+                        if owner.opcode == "scf.for":
+                            forward((self.arguments[id(region)][operand_index + 1],))
+
+                        continue
+
+                    if code == "scf.for" and operand_index >= 3:
+                        index = operand_index - 3
+                        forward(
+                            (
+                                outputs[index],
+                                self.arguments[id(operation.regions[0])][index + 1],
+                            )
+                        )
+                        continue
+
+                    if code == "scf.if" and outputs:
+                        forward(outputs)
+                        continue
+
+                    if code == "mem.store" and operand_index == 0:
+                        projections.add(_logical_projection(axes, output_axes))
+                        continue
+
+                    if len(outputs) == 1:
+                        consumer_axes = tuple(map(str, self.types[outputs[0]].shape))
+
+                        if is_pointwise_expression(operation):
+                            if consumer_axes == axes:
+                                forward(outputs)
+                                continue
+
+                            projected = _logical_projection(consumer_axes, output_axes)
+                            offset = len(consumer_axes) - len(axes)
+                            projections.add(
+                                tuple(
+                                    None if axis == "1" else projected[index + offset]
+                                    for index, axis in enumerate(axes)
+                                )
+                            )
+                            continue
+
+                        if code == "tensor.view":
+                            parts = broadcast_view_parts(operation)
+
+                            if parts is not None:
+                                if consumer_axes == axes:
+                                    forward(outputs)
+                                else:
+                                    projected = _logical_projection(
+                                        consumer_axes, output_axes
+                                    )
+                                    projections.add(
+                                        tuple(
+                                            axis
+                                            for part, axis in zip(parts, projected)
+                                            if part != "None"
+                                        )
+                                    )
+
+                                continue
+
+                    raise ValueError(
+                        f"Scalarized carry {value.name} has an unproven coordinate consumer {code}."
+                    )
+
+            if len(projections) > 1:
+                raise ValueError(
+                    f"Scalarized carry {value.name} requires multiple coordinate projections."
+                )
+
+            projection = (
+                next(iter(projections))
+                if projections
+                else _logical_projection(axes, output_axes)
+            )
+            result[value.name] = projection
+            result[loop.regions[0].args[slot + 1].name] = projection
+
+            for ref in seen:
+                previous = self.value_projections.setdefault(
+                    (output_axes, ref), projection
+                )
+
+                if previous != projection:
+                    raise ValueError(
+                        "A materialized SSA value requires multiple coordinate projections."
+                    )
+
+        self.cache[key] = result
+
+        return result
+
+    def _initial_effect_values(self, initial, axes):
+        """Find effectful initializers through coordinate-preserving value edges."""
+        pending = [initial]
+        seen = set()
+        result = set()
+
+        while pending:
+            ref = pending.pop()
+
+            if ref in seen or ref not in self.definitions:
+                continue
+
+            seen.add(ref)
+
+            if tuple(map(str, self.types[ref].shape)) != axes:
+                continue
+
+            op, slot = self.definitions[ref]
+
+            if op.opcode in {"scf.if", "scf.for"}:
+                if self.is_effectful(op):
+                    result.add(ref)
+
+                pending.extend(
+                    self.operands[id(region.operations[-1])][slot]
+                    for region in op.regions
+                )
+
+                if op.opcode == "scf.for":
+                    pending.append(self.operands[id(op)][slot + 3])
+                else:
+                    pending.append(self.operands[id(op)][0])
+            elif is_pointwise_expression(op) or broadcast_view_parts(op) == (
+                ":",
+            ) * len(axes):
+                pending.extend(self.operands[id(op)])
+
+        return result
+
+    def for_value(self, name, output_axes):
+        return self.value_projections.get((output_axes, self.result_refs.get(name)))
+
+
+def _logical_projection(axes, output_axes):
+    """Project a broadcast domain onto logical output axes, before source emission."""
+    offsets = tuple(dict.fromkeys((len(output_axes) - len(axes), 0)))
+
+    for offset in offsets:
+        if (
+            offset >= 0
+            and len(axes) + offset <= len(output_axes)
+            and all(
+                axis == "1" or axis == output_axes[index + offset]
+                for index, axis in enumerate(axes)
+            )
+        ):
+            return tuple(
+                None if axis == "1" else index + offset
+                for index, axis in enumerate(axes)
+            )
+
+    raise ValueError(f"Cannot prove projection of {axes} onto {output_axes}.")
 
 
 def schedule_int(kernel: Kernel, name: str, default: int) -> int:

@@ -7,6 +7,7 @@ from typing import Any
 
 from ninetoothed.backends.core import Target
 from ninetoothed.backends.emitters import ssa as common
+from ninetoothed.backends.emitters.analysis import walk_ops
 from ninetoothed.backends.emitters.base import EmitterTarget, ModuleRenderContext
 from ninetoothed.backends.emitters.context import EmitContext as _EmitContext
 from ninetoothed.ir import Kernel, ssa
@@ -44,6 +45,35 @@ class CudaTarget(EmitterTarget):
     c_style_syntax: bool = True
     native_block_matmul: bool = True
 
+    def can_emit_native_matmul(self, kernel) -> bool:
+        operations = tuple(
+            operation
+            for block in kernel.ssa.blocks
+            for operation in walk_ops(block.operations)
+        )
+
+        return (
+            self.native_block_matmul
+            and kernel.ssa.metadata.get("schedule", {}).get("mma_shape")
+            == {"m": 16, "n": 16, "k": 16}
+            and sum(
+                operation.opcode in {"linalg.dot", "linalg.matmul"}
+                for operation in operations
+            )
+            == 1
+            and not any(
+                operation.opcode.startswith("reduce.") for operation in operations
+            )
+        )
+
+    def native_matmul_tile_shape(self, kernel, axes):
+        return 16, 16
+
+    def native_block_coords(self, axes):
+        if len(axes) != 2:
+            raise ValueError("CUDA WMMA blocks require a rank-two coordinate domain.")
+        return "nt_matrix_row", "nt_matrix_col"
+
     def index_cast(self, value: str) -> str:
         return f"static_cast<int64_t>({value})"
 
@@ -53,6 +83,9 @@ class CudaTarget(EmitterTarget):
         return f"{name} = {value};"
 
     def literal(self, value: Any) -> str:
+        if value == "nan" or (isinstance(value, float) and math.isnan(value)):
+            return "NAN"
+
         if (
             isinstance(value, int)
             and not isinstance(value, bool)
@@ -252,6 +285,9 @@ class CudaTarget(EmitterTarget):
         return _emit_cuda_wmma_dot(operation, context, coords=coords)
 
     def emit_reduction_loop(self, local, operation, context):
+        if not context.native_block_program:
+            return None
+
         return _emit_cuda_wmma_reduction_loop(local, operation, context)
 
     def render_module(self, context: ModuleRenderContext) -> str:
@@ -284,13 +320,13 @@ class CudaTarget(EmitterTarget):
             [
                 *(
                     _signature_param(
-                        name, context.tensors[name], readonly=True, restrict=False
+                        name, context.tensors[name], readonly=True, restrict=True
                     )
                     for name in context.variables
                 ),
                 *(
                     _signature_param(
-                        name, context.tensors[name], readonly=False, restrict=False
+                        name, context.tensors[name], readonly=False, restrict=True
                     )
                     for name in context.outputs
                 ),
@@ -449,7 +485,9 @@ def _emit_cuda_cooperative_reduction(
     term = _emit_element(operand, coordinates, body)
     term = ctx.target.cast(accumulator_dtype, term)
 
-    if ctx.program.metadata.get("schedule", {}).get("row_group", {}).get("enabled"):
+    if schedule.get("requires_reduction_domain_mask") or ctx.program.metadata.get(
+        "schedule", {}
+    ).get("row_group", {}).get("enabled"):
         mask = _reduction_input_mask(operand, coordinates, body)
 
         if mask is not None:
@@ -589,7 +627,7 @@ def _auxiliary_param(name, tensors) -> str:
     info = tensors.get(name)
 
     if info is not None and info.ndim == 0:
-        return _signature_param(name, info, readonly=True, restrict=False)
+        return _signature_param(name, info, readonly=True, restrict=True)
     return f"int64_t {name}"
 
 

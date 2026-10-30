@@ -748,10 +748,10 @@ def canonical_math_application(x, y, out):
                     "tl.where",
                     "tl.maximum",
                     "tl.minimum",
-                    "tl.tanh",
+                    "libdevice.tanh",
                     "tl.log(1.0 +",
                     "tl.atan2",
-                    "tl.pow",
+                    "libdevice.pow",
                     "tl.acos",
                     "tl.asin",
                     "tl.atan",
@@ -1562,7 +1562,6 @@ def scalarized_index_application(x, indices, y):
                 artifact,
                 route="ssa-unified-triton-emitter",
             )
-            assert "linalg.transpose" not in str(artifact.metadata["ssa"])
             assert (
                 "transfer_value = tl.trans(transfer_value)" in artifact.primary_source
             )

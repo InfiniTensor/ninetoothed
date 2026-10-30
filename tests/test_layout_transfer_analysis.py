@@ -220,7 +220,7 @@ def test_static_mismatch_is_rejected_from_layout_schedule(specs, source, reason)
     program = _program(source, specs)
 
     lowered = lower_for_target(program, backend=Target.TRITON, tensors=specs)
-    transfer = lowered.metadata["analysis"]["layout_transfer"]
+    transfer = analyze_layout_transfer(program, specs)
 
     assert not transfer.schedulable
     assert transfer.failure_reason == reason

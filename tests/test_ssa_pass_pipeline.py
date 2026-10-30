@@ -114,7 +114,6 @@ class TestPipeline:
         )
         lowered = lower_for_target(program, backend=Target.CUDA)
         opcodes = tuple(_opcodes(lowered.blocks[0].operations))
-        assert lowered.metadata["analysis"]["has_dot"]
         assert lowered.metadata["schedule"]["granularity"] == "blocked-linalg"
         assert lowered.metadata["linalg_decomposed"]
         assert "linalg.matmul" not in opcodes

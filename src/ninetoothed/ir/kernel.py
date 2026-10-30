@@ -285,6 +285,7 @@ def ir_to_dict(value: Any) -> Any:
         return {
             field.name: ir_to_dict(getattr(value, field.name))
             for field in fields(value)
+            if field.metadata.get("serialize", True)
         }
 
     if isinstance(value, tuple):

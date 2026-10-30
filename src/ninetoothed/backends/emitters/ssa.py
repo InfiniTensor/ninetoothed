@@ -12,8 +12,12 @@ from dataclasses import replace
 from typing import Any, Mapping
 
 from ninetoothed.backends.core import Artifact
+from ninetoothed.backends.emitters.analysis import ScalarCarryProjectionAnalysis
 from ninetoothed.backends.emitters.analysis import (
     atomic_output_tensors as _atomic_output_tensors,
+)
+from ninetoothed.backends.emitters.analysis import (
+    operation_value_references as _operation_value_references,
 )
 from ninetoothed.backends.emitters.analysis import (
     program_value_types as _program_value_types,
@@ -68,7 +72,13 @@ from ninetoothed.backends.emitters.expressions import (
 from ninetoothed.backends.emitters.expressions import (
     valid_symbol as _valid_symbol,
 )
+from ninetoothed.compiler.effects import is_pointwise_expression
+from ninetoothed.compiler.passes import (
+    Context,
+    refresh_program_facts,
+)
 from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict, ssa
+from ninetoothed.targets import _target_context_from_snapshot
 
 _BINARY = {
     "add": "+",
@@ -108,36 +118,24 @@ def emit(kernel: Kernel, target: EmitterTarget) -> Artifact:
     if kernel.ssa is None:
         raise ValueError("Backend emission requires ssa.Program.")
 
+    context = Context(
+        backend=target.backend,
+        target=_target_context_from_snapshot(kernel.ssa.facts.get("target")),
+        compiler_options=kernel.compiler_options,
+        kernel_metadata=kernel.metadata,
+        tensors=kernel.tensors,
+    )
+    kernel = replace(kernel, ssa=refresh_program_facts(kernel.ssa, context))
     backend = target.backend
     block = kernel.ssa.blocks[0] if kernel.ssa.blocks else ssa.Block()
-    walked_ops = tuple(_walk_ops(block.operations))
-    operations = {result.name: op for op in walked_ops for result in op.results}
-    stores = tuple(
-        op for op in walked_ops if op.opcode == "mem.store" and len(op.operands) == 2
-    )
-    outputs = tuple(
-        dict.fromkeys(
-            (
-                *[store.operands[1] for store in stores],
-                *_atomic_output_tensors(walked_ops, operations),
-            )
-        )
-    ) or tuple(value.name for value in kernel.ssa.outputs)
-    public_variables = tuple(
-        tensor.name
-        for tensor in kernel.tensors
-        if tensor.name not in outputs and not tensor.constexpr
-    )
     auxiliary_bindings = _auxiliary_pointer_bindings(kernel.tensors)
-    variables = public_variables + tuple(
-        binding["name"] for binding in auxiliary_bindings
-    )
     shape_params = _shape_params(kernel.tensors, block.operations)
     source, render_context = _render_source(
         kernel,
         target,
         shape_params=shape_params,
     )
+    variables, outputs = render_context.variables, render_context.outputs
     metadata = {
         "backend": backend.value,
         "target": dict(kernel.metadata.get("target", {})),
@@ -196,6 +194,12 @@ def _row_reduction_schedule(
     schedule = program.metadata.get("schedule", {})
 
     if not isinstance(schedule, Mapping):
+        return None
+
+    # A proved block plan owns its coordinates; row-vector lowering is an alternative.
+    if target.vector_value_semantics and schedule.get("block_reductions", {}).get(
+        "enabled"
+    ):
         return None
 
     reduction = schedule.get("reduction", {})
@@ -363,8 +367,15 @@ def _render_source(
     )
     parameter_names = frozenset((*variables, *outputs, *shape_params))
 
-    if "index" in {*variables, *outputs, *shape_params}:
-        target = replace(target, index_name="__nt_index")
+    if "index" in parameter_names:
+        index_name = "__nt_index"
+        suffix = 0
+
+        while index_name in parameter_names:
+            suffix += 1
+            index_name = f"__nt_index_{suffix}"
+
+        target = replace(target, index_name=index_name)
 
     output = (
         outputs[0]
@@ -452,7 +463,7 @@ def _render_source(
         and not cooperative_reduction_program
     )
     native_block_program = bool(
-        target.native_block_matmul
+        target.can_emit_native_matmul(kernel)
         and split_outer_inner
         and len(value_axes) == 2
         and has_dot
@@ -515,8 +526,9 @@ def _render_source(
     elif native_block_program:
         axes = value_axes
         total = _target_index_expr(target, _product(value_axes))
-        tile_rows = f"(({value_axes[0]}) + 15) / 16"
-        tile_cols = f"(({value_axes[1]}) + 15) / 16"
+        tile_m, tile_n = target.native_matmul_tile_shape(kernel, value_axes)
+        tile_rows = f"(({value_axes[0]}) + {tile_m - 1}) / {tile_m}"
+        tile_cols = f"(({value_axes[1]}) + {tile_n - 1}) / {tile_n}"
         grid_total = _target_index_expr(
             target, f"({_product(outer_axes)}) * ({tile_rows}) * ({tile_cols})"
         )
@@ -820,6 +832,17 @@ def _render_body(
             coordinate_exprs = tuple(coords)
 
         inner_index_expr = _linearized_index(coordinate_exprs, axes)
+    elif native_block_program:
+        # Inactive lanes still stage collective matrix operands. Decoding
+        # row*N+column would wrap column>=N into the next row on tail CTAs.
+        # Preserve the target's rectangular coordinates even outside bounds.
+        index_type = ssa.Type(kind="index", dtype="index")
+        native_coordinates = target.native_block_coords(axes)
+        coordinate_exprs = tuple(f"nt_i{dim}" for dim in range(len(axes)))
+        lines.extend(
+            target.local_decl(index_type, name, expression)
+            for name, expression in zip(coordinate_exprs, native_coordinates)
+        )
     elif enable_index_cse:
         index_type = ssa.Type(kind="index", dtype="index")
 
@@ -906,6 +929,8 @@ def _render_body(
         reduction_schedule=reduction_schedule,
     )
 
+    _prepare_scalar_carry_analysis(operations, ctx)
+
     if vector_program and reduction_schedule is not None:
         # A scheduled row reduction belongs to the outer vector program. Emit it
         # before entering an SCF loop so a lazy use inside the loop cannot
@@ -953,10 +978,15 @@ def _emit_cooperative_reduction_program(
                 "top-level effects are stores."
             )
 
-        value_axes = _value_axes(operation.operands[0], ctx)
+        value_axes = _store_value_axes(operation, ctx.value_types)
+
+        if value_axes is None:
+            value_axes = _value_axes(operation.operands[0], ctx)
 
         if value_axes == value_shape:
             _emit_cooperative_full_store(operation, value_shape, axis, ctx)
+        elif len(value_axes) == len(value_shape) and value_axes[axis] == "1":
+            _emit_cooperative_full_store(operation, value_axes, axis, ctx)
         elif value_axes == result_shape:
             _emit_cooperative_scalar_store(operation, result_shape, axis, ctx)
         else:
@@ -1267,6 +1297,7 @@ def _emit_value(name: str, ctx: _EmitContext) -> str:
             operand = _emit_element(
                 op.operands[0], _current_coords(operand_axes, ctx), ctx
             )
+
             result_type = ssa.Type(
                 kind="scalar",
                 dtype=op.results[0].type.dtype if op.results else "float32",
@@ -1705,6 +1736,11 @@ def _emit_dot_operand(
 
 
 def _dot_accumulator_dtype(op: ssa.Operation, ctx: _EmitContext) -> str:
+    result_dtype = _normalize_dtype(op.results[0].type.dtype)
+
+    if result_dtype == "float64":
+        return result_dtype
+
     operand_dtypes = {
         _normalize_dtype(type_.dtype)
         for operand in op.operands[:2]
@@ -1718,7 +1754,7 @@ def _dot_accumulator_dtype(op: ssa.Operation, ctx: _EmitContext) -> str:
         "bfloat16",
     }:
         return "float32"
-    return _normalize_dtype(op.results[0].type.dtype or "float32")
+    return result_dtype or "float32"
 
 
 def _cast_dot_operand(
@@ -1737,6 +1773,20 @@ def _cast_dot_operand(
 
 
 def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
+    if (
+        ctx.binding_coordinate_constraints
+        and name in ctx.binding_coordinate_constraints
+    ):
+        required = ctx.binding_coordinate_constraints[name]
+
+        if tuple(item.strip("() ") for item in coords) != tuple(
+            item.strip("() ") for item in required
+        ):
+            raise ValueError(
+                f"Scalar loop carry {name} cannot be read at multiple coordinates: "
+                f"{required} and {coords}."
+            )
+
     materialized = ctx.target.materialized_element(name, coords)
 
     if materialized is not None:
@@ -1757,14 +1807,23 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
         if not coords:
             return bound
 
-    if name in ctx.memo and coords == _current_coords(_value_axes(name, ctx), ctx):
-        return ctx.memo[name]
+    if name in ctx.memo:
+        materialized_coords = ctx.scalar_value_coordinates.get(name)
+
+        if coords == (
+            materialized_coords
+            if materialized_coords is not None
+            else _current_coords(_value_axes(name, ctx), ctx)
+        ):
+            return ctx.memo[name]
 
     if not name.startswith("%"):
         if name not in ctx.tensor_infos:
             return name
 
         if ctx.tensor_infos[name].ndim == 0:
+            if ctx.tensor_infos[name].shape:
+                return _load_tensor_at(name, coords, ctx)
             return _tensor_value(name, ctx)
         return _load_tensor_at(name, coords, ctx)
 
@@ -1772,6 +1831,15 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
 
     if op is None:
         return _emit_value(name, ctx)
+
+    if (
+        ctx.target.c_style_syntax
+        and not ctx.target.vector_value_semantics
+        and _is_top_level_effect(op)
+    ):
+        raise ValueError(
+            f"Cannot recompute effectful SSA value {name} at different coordinates."
+        )
 
     if op.opcode.startswith("dtype."):
         return _resolve_dtype(name, ctx).sample
@@ -1868,7 +1936,14 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
         return _emit_linalg_dot(op, ctx, coords=coords)
 
     if op.opcode == "scf.if":
-        return _scf_if_element(op, coords, ctx)
+        return _scf_if_element(
+            op,
+            next(
+                index for index, result in enumerate(op.results) if result.name == name
+            ),
+            coords,
+            ctx,
+        )
 
     if op.opcode == "scf.for":
         return _emit_value(name, ctx)
@@ -2012,6 +2087,7 @@ def _reduction_input_mask(
 ) -> str | None:
     if name in ctx.tensor_infos:
         info = ctx.tensor_infos[name]
+
         level = _dtype_level(name, ctx) if level is None else level
         axes = _access_axes(info, ctx, level, fallback=_value_axes(name, ctx))
 
@@ -2063,7 +2139,9 @@ def _reduction_input_mask(
             )
 
     if op is not None and (
-        op.opcode.startswith(("arith.", "math.", "cmp.")) or op.opcode == "select.where"
+        op.opcode.startswith(("arith.", "math.", "cmp."))
+        or op.opcode == "select.where"
+        or is_pointwise_expression(op)
     ):
         result_axes = _value_axes(name, ctx)
         masks = [
@@ -2127,7 +2205,6 @@ def _loop_bound_vector_element(
 def _render_scalar_expr(
     op: ssa.Operation, args: tuple[str, ...], ctx: _EmitContext
 ) -> str:
-    """Render pure operations once for both real values and type expressions."""
     opcode = op.opcode
     target = ctx.target
 
@@ -2318,7 +2395,7 @@ def _dtype_source(name: str, ctx: _EmitContext) -> _ValueType:
             sample=target.inline_constant(op.attrs["value"], declared),
         )
 
-    if opcode in {"linalg.dot", "linalg.matmul"} and not target.c_style_syntax:
+    if opcode in {"linalg.dot", "linalg.matmul"}:
         dtype = _dot_accumulator_dtype(op, ctx)
 
         return _ValueType(dtype=dtype, sample=target.dtype_sample(dtype))
@@ -2639,6 +2716,18 @@ def _load_tensor_at(
         ),
     )
     source_index = _materialize_index_expr(source_index, ctx)
+
+    if (
+        ctx.target.vector_value_semantics
+        and info is not None
+        and info.ndim > 0
+        and info.attrs is not None
+        and info.attrs.get("source_ndim") == 0
+        and _index_expr_is_vector(view_index, ctx)
+        and not _index_expr_is_vector(source_index, ctx)
+    ):
+        source_index = f"({source_index}) + 0 * ({view_index})"
+
     base_mask = _load_base_mask(source_index, ctx)
 
     if ctx.vector_program:
@@ -2674,7 +2763,12 @@ def _masked_load(
 ) -> str:
     other = _load_other(info)
 
-    load = ctx.target.load(name, source_index, mask=mask, other=other)
+    scalar_view = info is not None and info.ndim == 0
+    load = (
+        name
+        if scalar_view
+        else ctx.target.load(name, source_index, mask=mask, other=other)
+    )
 
     if ctx.target.c_style_syntax and mask is not None:
         predicate = _materialize_bool_expr(mask, ctx) or mask
@@ -2692,6 +2786,9 @@ def _masked_load(
         if info is not None:
             other_value = ctx.target.cast(info.dtype, other_value)
         return ctx.target.where(predicate, load, other_value)
+
+    if scalar_view and mask is not None:
+        return ctx.target.where(mask, load, ctx.target.literal(other))
     return load
 
 
@@ -2851,19 +2948,18 @@ def _current_coords(axes: tuple[str, ...], ctx: _EmitContext) -> tuple[str, ...]
                     for axis, parallel_dim in zip(axes, parallel_dims)
                 )
         elif len(axes) < len(output_axes):
-            if _axes_compatible_prefix(axes, output_axes):
+            offset = len(output_axes) - len(axes)
+
+            if _axes_compatible_suffix(axes, output_axes):
+                coords = tuple(
+                    "0" if axis == "1" else output_coords[index + offset]
+                    for index, axis in enumerate(axes)
+                )
+            elif _axes_compatible_prefix(axes, output_axes):
                 coords = tuple(
                     "0" if axis == "1" else output_coords[index]
                     for index, axis in enumerate(axes)
                 )
-            else:
-                offset = len(output_axes) - len(axes)
-
-                if _axes_compatible_suffix(axes, output_axes):
-                    coords = tuple(
-                        "0" if axis == "1" else output_coords[index + offset]
-                        for index, axis in enumerate(axes)
-                    )
 
         if coords is not None:
             if (
@@ -3085,6 +3181,133 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
     return acc_expr
 
 
+def _prepare_scalar_carry_analysis(operations, ctx):
+    """Plan live carry initializers before any producer effects are emitted."""
+    if not ctx.target.c_style_syntax or ctx.target.vector_value_semantics:
+        return
+
+    if not any(
+        op.opcode == "scf.for"
+        and any(
+            value.type.shape and len(value.type.shape) < len(ctx.output_axes)
+            for value in op.results
+        )
+        for op in ctx.operations.values()
+    ):
+        return
+
+    pending = [op for op in operations if _is_top_level_effect(op)]
+    seen = set()
+    loops = []
+
+    while pending:
+        op = pending.pop()
+
+        if id(op) in seen:
+            continue
+
+        seen.add(id(op))
+
+        if op.opcode in {"dtype.of", "shape.dim", "tensor.stride"}:
+            continue
+
+        if op.opcode == "scf.for":
+            loops.append(op)
+
+        pending.extend(
+            ctx.operations[name]
+            for name in _operation_value_references(op)
+            if name in ctx.operations
+        )
+        pending.extend(
+            inner
+            for region in op.regions
+            for inner in region.operations
+            if inner.opcode == "scf.yield" or _is_top_level_effect(inner)
+        )
+
+    if loops:
+        ctx.scalar_carry_analysis = ScalarCarryProjectionAnalysis(
+            ctx.program, _is_top_level_effect, live_operations=seen
+        )
+
+        for op in loops:
+            ctx.scalar_carry_analysis.for_loop(op, tuple(map(str, ctx.output_axes)))
+
+
+def _scalar_loop_carry_coordinates(op, ctx):
+    if not ctx.target.c_style_syntax or ctx.target.vector_value_semantics:
+        return {}
+
+    if not any(
+        value.type.shape and len(value.type.shape) < len(ctx.output_axes)
+        for value in op.results
+    ):
+        return {}
+
+    if ctx.scalar_carry_analysis is None:
+        ctx.scalar_carry_analysis = ScalarCarryProjectionAnalysis(
+            ctx.program, _is_top_level_effect
+        )
+
+    projections = ctx.scalar_carry_analysis.for_loop(
+        op, tuple(map(str, ctx.output_axes))
+    )
+    coordinates = ctx.coordinate_exprs or _current_coords(ctx.output_axes, ctx)
+
+    return {
+        name: tuple("0" if axis is None else coordinates[axis] for axis in projection)
+        for name, projection in projections.items()
+    }
+
+
+def _projected_value_coordinates(name, ctx):
+    if (
+        ctx.binding_coordinate_constraints
+        and name in ctx.binding_coordinate_constraints
+    ):
+        return ctx.binding_coordinate_constraints[name]
+
+    if ctx.scalar_carry_analysis is None:
+        return None
+
+    projection = ctx.scalar_carry_analysis.for_value(
+        name, tuple(map(str, ctx.output_axes))
+    )
+
+    if projection is None:
+        return None
+
+    coordinates = ctx.coordinate_exprs or _current_coords(ctx.output_axes, ctx)
+
+    return tuple("0" if axis is None else coordinates[axis] for axis in projection)
+
+
+def _scalar_carry_context(ctx, type_, coordinates, suffix):
+    axes = tuple(map(str, type_.shape))
+    linear = _linearized_index(coordinates, axes)
+
+    return ctx.child(
+        memo={
+            name: expression
+            for name, expression in ctx.memo.items()
+            if not _value_axes(name, ctx)
+            or (
+                _axes_compatible_suffix(_value_axes(name, ctx), axes)
+                and ctx.scalar_value_coordinates.get(name)
+                == _broadcast_coords(coordinates, axes, _value_axes(name, ctx))
+            )
+        },
+        output_axes=axes,
+        coordinate_exprs=coordinates,
+        index_expr=linear,
+        inner_index_expr=linear,
+        row_expr=coordinates[0] if len(coordinates) > 1 else None,
+        col_expr=coordinates[1] if len(coordinates) > 1 else None,
+        local_suffix=_nested_local_suffix(ctx, suffix),
+    )
+
+
 def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | None:
     if ctx.native_block_program:
         fused = ctx.target.emit_reduction_loop(local, op, ctx)
@@ -3096,13 +3319,28 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
     upper = _emit_loop_bound(op.operands[1], ctx)
     step = _emit_loop_bound(op.operands[2], ctx)
     iter_attrs = tuple(op.attrs.get("iter_args", ()))
+    carry_coordinates = _scalar_loop_carry_coordinates(op, ctx)
+    binding_coordinate_constraints = {
+        **(ctx.binding_coordinate_constraints or {}),
+        **carry_coordinates,
+    }
+    ctx.binding_coordinate_constraints = binding_coordinate_constraints
     result_names = tuple(result.name for result in op.results)
     loop_locals: dict[str, str] = {}
     result_locals: dict[str, str] = {}
 
     for result, attr, value in zip(result_names, iter_attrs, op.results):
         initial_name = str(attr["initial"])
-        init = _emit_value(initial_name, ctx)
+
+        if result in carry_coordinates:
+            coordinates = carry_coordinates[result]
+            init = _emit_element(
+                initial_name,
+                coordinates,
+                _scalar_carry_context(ctx, value.type, coordinates, result + "_init"),
+            )
+        else:
+            init = _emit_value(initial_name, ctx)
 
         if (
             ctx.target.vector_value_semantics
@@ -3133,6 +3371,12 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
             result_expr = result_local
 
         ctx.memo[result] = result_expr
+
+        if ctx.target.c_style_syntax and not ctx.target.vector_value_semantics:
+            ctx.scalar_value_coordinates[result] = carry_coordinates.get(
+                result, _current_coords(tuple(map(str, value.type.shape)), ctx)
+            )
+
         loop_locals[str(attr["block_arg"])] = result_expr
         loop_locals[result] = result_expr
 
@@ -3162,6 +3406,7 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
         lines=body_lines,
         memo=dict(ctx.memo),
         bindings=loop_bindings,
+        binding_coordinate_constraints=binding_coordinate_constraints,
         vector_bindings=frozenset(vector_bindings),
         local_suffix=_nested_local_suffix(ctx, local),
     )
@@ -3176,13 +3421,32 @@ def _emit_scf_for(local: str, op: ssa.Operation, ctx: _EmitContext) -> str | Non
         if _is_top_level_effect(inner_op):
             _emit_operation(inner_op, body)
 
+    # Materialize multi-result control flow once before projecting its yields.
+    for yielded in yields:
+        producer = ctx.operations.get(yielded)
+
+        if (
+            producer is not None
+            and producer.opcode == "scf.if"
+            and len(producer.results) > 1
+        ):
+            _emit_value(yielded, body)
+
     next_locals: list[tuple[str, str]] = []
 
     for result, yielded, value in zip(result_names, yields, op.results):
         next_local = _local_symbol(f"%next_{result[1:]}", body)
-        body_lines.append(
-            body.target.local_decl(value.type, next_local, _emit_value(yielded, body))
-        )
+
+        if result in carry_coordinates:
+            coordinates = carry_coordinates[result]
+            carry_body = _scalar_carry_context(
+                body, value.type, coordinates, result + "_yield"
+            )
+            next_value = _emit_element(yielded, coordinates, carry_body)
+        else:
+            next_value = _emit_value(yielded, body)
+
+        body_lines.append(body.target.local_decl(value.type, next_local, next_value))
         next_locals.append((result, next_local))
 
     for result, next_local in next_locals:
@@ -3215,39 +3479,38 @@ def _emit_loop_bound(name: str, ctx: _EmitContext) -> str:
 
 
 def _emit_scf_if_statement(op: ssa.Operation, ctx: _EmitContext) -> None:
-    condition = _emit_value(op.operands[0], ctx)
+    _emit_if_regions(op, _emit_value(op.operands[0], ctx), ctx)
+
+
+def _emit_if_regions(op, condition, ctx, emit_yields=None):
+    """Emit each selected region's effects once, then consume its yield slots."""
     ctx.lines.append(_if_header(condition, ctx.target))
-    then_lines: list[str] = []
-    then_ctx = ctx.child(
-        lines=then_lines,
-        memo=dict(ctx.memo),
-        local_suffix=_nested_local_suffix(ctx, "then"),
-    )
 
-    if op.regions:
-        for inner_op in op.regions[0].operations:
-            if _is_top_level_effect(inner_op):
-                _emit_operation(inner_op, then_ctx)
+    for region_index, region in enumerate(op.regions[:2]):
+        if region_index == 1:
+            ctx.lines.append("} else {" if ctx.target.c_style_syntax else "else:")
 
-    ctx.lines.extend(
-        _indent_lines(then_lines or _empty_block_lines(ctx.target), ctx.target)
-    )
-
-    if len(op.regions) > 1:
-        ctx.lines.append("} else {" if ctx.target.c_style_syntax else "else:")
-        else_lines: list[str] = []
-        else_ctx = ctx.child(
-            lines=else_lines,
+        lines: list[str] = []
+        child = ctx.child(
+            lines=lines,
             memo=dict(ctx.memo),
-            local_suffix=_nested_local_suffix(ctx, "else"),
+            local_suffix=_nested_local_suffix(ctx, f"if_{region.name}"),
         )
+        yields = ()
 
-        for inner_op in op.regions[1].operations:
+        for inner_op in region.operations:
+            if inner_op.opcode == "scf.yield":
+                yields = inner_op.operands
+                continue
+
             if _is_top_level_effect(inner_op):
-                _emit_operation(inner_op, else_ctx)
+                _emit_operation(inner_op, child)
+
+        if emit_yields is not None:
+            emit_yields(yields, child)
 
         ctx.lines.extend(
-            _indent_lines(else_lines or _empty_block_lines(ctx.target), ctx.target)
+            _indent_lines(lines or _empty_block_lines(ctx.target), ctx.target)
         )
 
     if ctx.target.c_style_syntax:
@@ -3255,6 +3518,38 @@ def _emit_scf_if_statement(op: ssa.Operation, ctx: _EmitContext) -> None:
 
 
 def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
+    projected = {
+        result.name: _projected_value_coordinates(result.name, ctx)
+        for result in op.results
+    }
+    condition_axes = _value_axes(op.operands[0], ctx)
+    coordinates = {
+        result.name: projected[result.name]
+        if projected[result.name] is not None
+        else _current_coords(tuple(map(str, result.type.shape)), ctx)
+        for result in op.results
+    }
+    has_projection = any(value is not None for value in projected.values())
+    condition_groups = {}
+
+    for index, result in enumerate(op.results):
+        condition_coords = (
+            _broadcast_coords(
+                coordinates[result.name],
+                tuple(map(str, result.type.shape)),
+                condition_axes,
+            )
+            if condition_axes and has_projection
+            else None
+        )
+        condition_groups.setdefault(condition_coords, []).append(index)
+
+    if condition_axes and has_projection and _is_top_level_effect(op):
+        if set(condition_groups) != {_current_coords(condition_axes, ctx)}:
+            raise ValueError(
+                "Effectful tensor conditions cannot change their execution coordinates."
+            )
+
     result_locals: dict[str, str] = {}
 
     for result in op.results:
@@ -3276,91 +3571,98 @@ def _emit_scf_if_results(op: ssa.Operation, ctx: _EmitContext) -> None:
 
             ctx.memo[result.name] = local
 
-    condition = _emit_value(op.operands[0], ctx)
-    ctx.lines.append(_if_header(condition, ctx.target))
+        if ctx.target.c_style_syntax and not ctx.target.vector_value_semantics:
+            ctx.scalar_value_coordinates[result.name] = coordinates[result.name]
 
-    for region_index, region in enumerate(op.regions[:2]):
-        if region_index == 1:
-            ctx.lines.append("} else {" if ctx.target.c_style_syntax else "else:")
-
-        lines: list[str] = []
-        child = ctx.child(
-            lines=lines,
-            memo=dict(ctx.memo),
-            local_suffix=_nested_local_suffix(ctx, f"if_{region.name}"),
-        )
-        yields: tuple[str, ...] = ()
-
-        for inner_op in region.operations:
-            if inner_op.opcode == "scf.yield":
-                yields = inner_op.operands
-                continue
-
-            if _is_top_level_effect(inner_op):
-                _emit_operation(inner_op, child)
-
-        for result, yielded in zip(op.results, yields):
-            lines.append(
-                _assign_scalar(
-                    ctx.target,
-                    result_locals.get(result.name, _local_symbol(result.name, ctx)),
-                    _emit_value(yielded, child),
-                    mutable=_uses_mutable_scalar_slots(ctx.target),
-                )
+    for condition_coords, indices in condition_groups.items():
+        if condition_coords is None:
+            condition = _emit_value(op.operands[0], ctx)
+        else:
+            condition_ctx = _scalar_carry_context(
+                ctx,
+                ctx.value_types[op.operands[0]],
+                condition_coords,
+                op.results[indices[0]].name + "_condition",
             )
+            condition = _emit_element(op.operands[0], condition_coords, condition_ctx)
 
-        ctx.lines.extend(
-            _indent_lines(lines or _empty_block_lines(ctx.target), ctx.target)
-        )
+        def emit_yields(yields, child):
+            for index in indices:
+                result = op.results[index]
+                coords = projected[result.name]
+                value = (
+                    _emit_value(yields[index], child)
+                    if coords is None
+                    else _emit_element(
+                        yields[index],
+                        coords,
+                        _scalar_carry_context(child, result.type, coords, result.name),
+                    )
+                )
+                child.lines.append(
+                    _assign_scalar(
+                        ctx.target,
+                        result_locals[result.name],
+                        value,
+                        mutable=_uses_mutable_scalar_slots(ctx.target),
+                    )
+                )
 
-    if ctx.target.c_style_syntax:
-        ctx.lines.append("}")
+        _emit_if_regions(op, condition, ctx, emit_yields)
 
 
 def _scf_if_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
     condition = _emit_value(op.operands[0], ctx)
 
     if len(op.regions) == 1:
-        then_value = _region_yield_expr(op.regions[0], ctx)
+        then_value = _region_yield(op.regions[0], ctx)
 
         return ctx.target.where(condition, then_value, "0.0")
 
     then_region, else_region = op.regions[:2]
-    then_value = _region_yield_expr(then_region, ctx)
-    else_value = _region_yield_expr(else_region, ctx)
+    then_value = _region_yield(then_region, ctx)
+    else_value = _region_yield(else_region, ctx)
 
     return ctx.target.where(condition, then_value, else_value)
 
 
+def _element_if_condition(op, result_index, coords, ctx):
+    axes = tuple(map(str, op.results[result_index].type.shape))
+    condition_coords = _broadcast_coords(coords, axes, _value_axes(op.operands[0], ctx))
+
+    return _emit_element(op.operands[0], condition_coords, ctx)
+
+
 def _scf_if_element(
-    op: ssa.Operation, coords: tuple[str, ...], ctx: _EmitContext
+    op: ssa.Operation, result_index: int, coords: tuple[str, ...], ctx: _EmitContext
 ) -> str:
     if not ctx.target.vector_value_semantics:
-        return _scf_if_element_control_flow(op, coords, ctx)
+        return _scf_if_element_control_flow(op, result_index, coords, ctx)
 
-    condition = _emit_value(op.operands[0], ctx)
+    condition = _element_if_condition(op, result_index, coords, ctx)
 
     if len(op.regions) == 1:
-        then_value = _region_yield_element(op.regions[0], coords, ctx)
+        then_value = _region_yield(
+            op.regions[0], ctx, result_index=result_index, coords=coords
+        )
 
         return ctx.target.where(condition, then_value, "0.0")
 
     then_region, else_region = op.regions[:2]
-    then_value = _region_yield_element(then_region, coords, ctx)
-    else_value = _region_yield_element(else_region, coords, ctx)
+    then_value = _region_yield(
+        then_region, ctx, result_index=result_index, coords=coords
+    )
+    else_value = _region_yield(
+        else_region, ctx, result_index=result_index, coords=coords
+    )
 
     return ctx.target.where(condition, then_value, else_value)
 
 
 def _scf_if_element_control_flow(
-    op: ssa.Operation, coords: tuple[str, ...], ctx: _EmitContext
+    op: ssa.Operation, result_index: int, coords: tuple[str, ...], ctx: _EmitContext
 ) -> str:
-    if not op.results:
-        _emit_scf_if_statement(op, ctx)
-
-        return "0.0"
-
-    result = op.results[0]
+    result = op.results[result_index]
     local = f"{_local_symbol(result.name, ctx)}_if_{len(ctx.lines)}"
     init = _zero_value(result.type, ctx.target)
 
@@ -3378,80 +3680,31 @@ def _scf_if_element_control_flow(
         ctx.lines.append(ctx.target.local_decl(result.type, local, init))
         result_expr = local
 
-    condition = _emit_value(op.operands[0], ctx)
-    ctx.lines.append(_if_header(condition, ctx.target))
+    condition = _element_if_condition(op, result_index, coords, ctx)
 
-    for region_index, region in enumerate(op.regions[:2]):
-        if region_index == 1:
-            ctx.lines.append("} else {" if ctx.target.c_style_syntax else "else:")
-
-        lines: list[str] = []
-        child = ctx.child(
-            lines=lines,
-            memo=dict(ctx.memo),
-            local_suffix=_nested_local_suffix(ctx, f"if_{region.name}"),
-        )
-        yielded = None
-
-        for inner_op in region.operations:
-            if inner_op.opcode == "scf.yield":
-                yielded = inner_op.operands[0] if inner_op.operands else None
-                continue
-
-            if _is_top_level_effect(inner_op):
-                _emit_operation(inner_op, child)
-
-        if yielded is not None:
+    def emit_yields(yields, child):
+        if yields:
+            yielded = yields[result_index]
             value = (
                 _emit_element(yielded, coords, child)
                 if yielded.startswith("%")
                 else _emit_value(yielded, child)
             )
-            lines.append(_assign_scalar(ctx.target, local, value, mutable=mutable))
+            child.lines.append(
+                _assign_scalar(ctx.target, local, value, mutable=mutable)
+            )
 
-        ctx.lines.extend(
-            _indent_lines(lines or _empty_block_lines(ctx.target), ctx.target)
-        )
+    _emit_if_regions(op, condition, ctx, emit_yields)
 
-    if len(op.regions) == 1:
-        ctx.lines.append("} else {" if ctx.target.c_style_syntax else "else:")
-        ctx.lines.extend(_indent_lines(_empty_block_lines(ctx.target), ctx.target))
-
-    if ctx.target.c_style_syntax:
-        ctx.lines.append("}")
     return result_expr
 
 
-def _region_yield_expr(region: ssa.Block, ctx: _EmitContext) -> str:
-    lines: list[str] = []
-    child = ctx.child(
-        lines=lines,
-        memo=dict(ctx.memo),
-        local_suffix=_nested_local_suffix(ctx, f"expr_{region.name}"),
-    )
-    yielded = None
-
-    for op in region.operations:
-        if op.opcode == "scf.yield":
-            yielded = op.operands[0] if op.operands else None
-            continue
-
-        if _is_top_level_effect(op):
-            _emit_operation(op, child)
-
-    if yielded is None:
-        ctx.lines.extend(lines)
-
-        return "0.0"
-
-    value = _emit_value(yielded, child)
-    ctx.lines.extend(lines)
-
-    return value
-
-
-def _region_yield_element(
-    region: ssa.Block, coords: tuple[str, ...], ctx: _EmitContext
+def _region_yield(
+    region: ssa.Block,
+    ctx: _EmitContext,
+    *,
+    result_index: int = 0,
+    coords: tuple[str, ...] | None = None,
 ) -> str:
     lines: list[str] = []
     child = ctx.child(
@@ -3463,7 +3716,7 @@ def _region_yield_element(
 
     for op in region.operations:
         if op.opcode == "scf.yield":
-            yielded = op.operands[0] if op.operands else None
+            yielded = op.operands[result_index] if op.operands else None
             continue
 
         if _is_top_level_effect(op):
@@ -3476,7 +3729,7 @@ def _region_yield_element(
 
     value = (
         _emit_element(yielded, coords, child)
-        if yielded.startswith("%")
+        if coords is not None and yielded.startswith("%")
         else _emit_value(yielded, child)
     )
     ctx.lines.extend(lines)
@@ -3486,6 +3739,9 @@ def _region_yield_element(
 
 def _tensor_value(name: str, ctx: _EmitContext) -> str:
     info = ctx.tensor_infos.get(name, _TensorInfo(name=name))
+
+    if info.attrs is not None and info.attrs.get("source_ndim") == 0 and info.shape:
+        return _load_tensor_at(name, _current_coords(_value_axes(name, ctx), ctx), ctx)
 
     if info.ndim == 0:
         if _is_bool_scalar_value(name, ctx) and ctx.target.tir_value_semantics:
@@ -4297,7 +4553,11 @@ def _tensor_info(tensor: TensorSpec) -> _TensorInfo:
     source_strides = tuple(str(dim) for dim in attrs.get("source_strides", ()))
 
     return _TensorInfo(
-        ndim=max(tensor.ndim, len(tensor.shape)),
+        ndim=(
+            0
+            if tensor.constexpr and attrs.get("source_ndim", tensor.ndim) == 0
+            else max(tensor.ndim, len(tensor.shape))
+        ),
         shape=tuple(str(dim) for dim in tensor.shape),
         dtype=_normalize_dtype(tensor.dtype or "float32"),
         name=tensor.name,
@@ -4378,9 +4638,17 @@ def _shape_params(
         for tensor in tensors
         if tensor.attrs.get("jagged_seq_len_param")
     }
+    referenced_values = {
+        operand for operation in _walk_ops(operations) for operand in operation.operands
+    }
 
     for tensor in tensors:
-        if tensor.constexpr and tensor.ndim == 0 and tensor.name not in params:
+        if (
+            tensor.constexpr
+            and tensor.attrs.get("source_ndim", tensor.ndim) == 0
+            and (tensor.ndim == 0 or tensor.name in referenced_values)
+            and tensor.name not in params
+        ):
             params.append(tensor.name)
 
         for attr_name in (

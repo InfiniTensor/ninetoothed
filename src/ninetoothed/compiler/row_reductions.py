@@ -1,9 +1,9 @@
 """Backend-neutral grouping of already arranged independent reduction rows."""
 
 from dataclasses import replace
-from functools import cache
 
 from ninetoothed.compiler.passes import HARDWARE_INDEPENDENT, Pass
+from ninetoothed.compiler.reduction_geometry import reduction_inputs_share_domain
 
 
 class GroupReductionRows(Pass):
@@ -95,20 +95,33 @@ class GroupReductionRows(Pass):
             for op in operations
         ):
             reason = "only broadcast-axis views are grouped"
-        elif stores[0] is not operations[-1] or set(stores[0].attrs) - {"target"}:
+        elif stores[0] is not operations[-1] or set(stores[0].attrs) - {
+            "target",
+            "target_shape",
+        }:
             reason = "requires one terminal whole-output store"
         else:
             values = {value.name: value for value in program.inputs}
             values.update((v.name, v) for op in operations for v in op.results)
             output = stores[0].operands[1]
 
-            if any(output in op.operands for op in operations[:-1]):
+            target_shape = stores[0].attrs.get("target_shape")
+
+            if target_shape is not None and tuple(map(str, target_shape)) != tuple(
+                map(str, values[output].type.shape)
+            ):
+                reason = "requires a whole-output store domain"
+            elif any(output in op.operands for op in operations[:-1]):
                 reason = "output is also read"
             elif tuple(map(str, values[output].type.shape)) != tuple(
                 reduction.get("value_shape", ())
             ):
                 reason = "requires output to match the reduction input domain"
-            elif not _matching_reduction_domains(operations, values, context.tensors):
+            elif not reduction_inputs_share_domain(
+                operations,
+                {name: value.type for name, value in values.items()},
+                context.tensors,
+            ):
                 reason = (
                     "requires matching reduction input domains without broadcasting"
                 )
@@ -137,59 +150,3 @@ class GroupReductionRows(Pass):
         return replace(
             program, metadata=dict(program.metadata) | {"schedule": schedule}
         )
-
-
-def _matching_reduction_domains(operations, values, tensors):
-    """Prove mask agreement without introducing broadcast-domain analysis."""
-    inputs = {tensor.name: tensor for tensor in tensors}
-    producers = {value.name: op for op in operations for value in op.results}
-
-    @cache
-    def domains(name):
-        if name in inputs:
-            tensor = inputs[name]
-
-            if tensor.attrs.get("source_ndim", tensor.ndim) == 0:
-                return frozenset()
-
-            layout = tensor.layout
-
-            if layout is None or len(layout.value_accesses) != 1:
-                return None
-
-            return frozenset(
-                {
-                    (
-                        tuple(dim.render() for dim in layout.application_shape),
-                        layout.value_accesses[0].predicate.render(),
-                    )
-                }
-            )
-
-        op = producers.get(name)
-
-        if op is None:
-            return None if name.startswith("%") else frozenset()
-
-        if op.opcode.startswith(("dtype.", "shape.", "reduce.")):
-            return frozenset()
-
-        result = frozenset()
-
-        for operand in op.operands:
-            dependency = domains(operand)
-
-            if dependency is None or (
-                dependency and values[operand].type.shape != values[name].type.shape
-            ):
-                return None
-
-            result |= dependency
-
-        return result if len(result) <= 1 else None
-
-    return all(
-        domains(op.operands[0]) is not None
-        for op in operations
-        if op.opcode.startswith("reduce.")
-    )

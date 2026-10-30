@@ -11,7 +11,7 @@ from dataclasses import replace
 
 from ninetoothed.backends.core import Target
 from ninetoothed.backends.triton_reductions import analyze_block_reductions
-from ninetoothed.compiler.passes import LANGUAGE_SPECIFIC, Pass
+from ninetoothed.compiler.passes import LANGUAGE_SPECIFIC, Pass, refresh_program_facts
 from ninetoothed.dtype import normalize_dtype
 from ninetoothed.ir import ssa
 
@@ -32,14 +32,14 @@ class TritonSingletonDot(Pass):
         block = program.blocks[0]
 
         def finish(candidate, analysis):
-            schedule = dict(program.metadata.get("schedule", {}))
+            schedule = dict(candidate.metadata.get("schedule", {}))
             schedule["singleton_dot"] = analysis
 
             if analysis["enabled"]:
                 schedule["block_reductions"] = analysis
 
             return replace(
-                candidate, metadata=dict(program.metadata) | {"schedule": schedule}
+                candidate, metadata=dict(candidate.metadata) | {"schedule": schedule}
             )
 
         if any(op.regions for op in block.operations):
@@ -109,10 +109,11 @@ class TritonSingletonDot(Pass):
                 program, {"enabled": False, "reason": "no supported singleton dot"}
             )
 
-        candidate = replace(
-            program, blocks=(replace(block, operations=tuple(operations)),)
+        candidate = refresh_program_facts(
+            replace(program, blocks=(replace(block, operations=tuple(operations)),)),
+            context,
         )
-        analysis = analyze_block_reductions(candidate, context)
+        analysis = analyze_block_reductions(candidate, context, allow_row_vector=True)
 
         return finish(candidate if analysis["enabled"] else program, analysis)
 

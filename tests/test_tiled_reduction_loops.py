@@ -62,3 +62,83 @@ def test_tiled_reduction_loop_runtime(device, dtype, width):
         x.float().square().mean(dim=1, keepdim=True) + 1e-5
     )
     torch.testing.assert_close(out, expected.to(dtype))
+
+
+def _stateful_arrangement(x, side, flag, out):
+    return x.tile((4,)), side.tile((4, 4)), flag, out.tile((4, 4))
+
+
+def _stateful_application(x, side, flag, out):
+    a = x
+    b = x * 2
+
+    if (x > 2) == flag:
+        side = side + 1
+        a = x + 1
+        b = x * 2 + 10
+    else:
+        side = side + 2
+        a = x + 2
+        b = x * 2 + 20
+
+    for i in range(2):
+        a = a + 3
+        b = b + 4
+
+    out = a + b  # noqa: F841
+
+
+def _pure_initial_application(x, side, flag, out):
+    initial = x
+
+    if flag:
+        initial = x + 1
+    else:
+        initial = x + 2
+
+    acc = initial
+
+    for i in range(2):
+        acc = acc + 3
+
+    out = initial[:, None] + acc  # noqa: F841
+
+
+@pytest.mark.parametrize(
+    "application", (_stateful_application, _pure_initial_application)
+)
+@pytest.mark.parametrize("device", get_available_devices())
+def test_native_carry_runtime(device, application):
+    kernel = make(
+        _stateful_arrangement,
+        application,
+        (
+            Tensor(shape=(4,), dtype="float32"),
+            Tensor(shape=(4, 4), dtype="float32"),
+            Tensor(0, dtype="bool"),
+            Tensor(shape=(4, 4), dtype="float32"),
+        ),
+        backend="cuda",
+        max_num_configs=1,
+    )
+    x = torch.arange(4, device=device, dtype=torch.float32)
+
+    for flag in (True, False):
+        side = torch.zeros((4, 4), device=device)
+        out = torch.empty_like(side)
+        kernel(x, side, flag, out)
+
+        if application is _pure_initial_application:
+            torch.testing.assert_close(side, torch.zeros_like(side))
+            torch.testing.assert_close(
+                out, x[:, None] + x[None, :] + 6 + 2 * (1 if flag else 2)
+            )
+            continue
+
+        condition = (x > 2) == flag
+        torch.testing.assert_close(
+            side, torch.where(condition, 1.0, 2.0).expand_as(side)
+        )
+        torch.testing.assert_close(
+            out, (3 * x + torch.where(condition, 25.0, 36.0)).expand_as(out)
+        )
