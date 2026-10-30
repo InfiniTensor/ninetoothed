@@ -1,7 +1,6 @@
 """CUDA syntax hooks for the common SSA emitter."""
 
 import math
-import re
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -11,6 +10,7 @@ from ninetoothed.backends.emitters.analysis import walk_ops
 from ninetoothed.backends.emitters.base import EmitterTarget, ModuleRenderContext
 from ninetoothed.backends.emitters.c_types import CComputedTypesMixin
 from ninetoothed.backends.emitters.context import EmitContext as _EmitContext
+from ninetoothed.backends.emitters.expressions import c_integer_expr
 from ninetoothed.ir import Kernel, ssa
 
 _access_axes = common.access_axes
@@ -645,17 +645,7 @@ def _cuda_type(dtype: str | None, kind: str | None = None) -> str:
     return types[dtype]
 
 
-def _cuda_integer_expr(expr: str) -> str:
-    previous = None
-    current = common.rewrite_index_math(expr, c_style=True).replace("//", "/")
-    current = re.sub(r"\bTrue\b", "true", current)
-    current = re.sub(r"\bFalse\b", "false", current)
-    pattern = re.compile(r"floor\(\(([^()]+)\)/([A-Za-z_][A-Za-z0-9_]*)\)")
-
-    while current != previous:
-        previous = current
-        current = pattern.sub(r"((\1)/(\2))", current)
-    return current
+_cuda_integer_expr = c_integer_expr
 
 
 def _cuda_arithmetic_result_type(op: ssa.Operation, ctx: _EmitContext) -> ssa.Type:
