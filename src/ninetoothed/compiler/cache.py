@@ -34,7 +34,7 @@ def stable_digest(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def compilation_cache_key(compilation) -> str:
+def compilation_cache_key(compilation, *, toolchain=None) -> str:
     """Return a key covering source, IR, ABI, target, options, and toolchain."""
     request = compilation.request
     artifact = compilation.artifact
@@ -61,7 +61,9 @@ def compilation_cache_key(compilation) -> str:
             "pipeline": request.pipeline,
             "pass_options": request.pass_options,
             "architecture": _architecture(compilation),
-            "toolchain": compilation_toolchain_identity(compilation),
+            "toolchain": compilation_toolchain_identity(compilation)
+            if toolchain is None
+            else toolchain,
             "versions": _compiler_versions(),
         }
     )

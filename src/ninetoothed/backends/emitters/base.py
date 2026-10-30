@@ -109,6 +109,11 @@ class EmitterTarget(ABC):
 
         return args
 
+    def check_numeric_result(self, operation, value, context):
+        del operation, context
+
+        return value
+
     def coerce_dot_args(self, operation, args, context):
         del operation, context
 

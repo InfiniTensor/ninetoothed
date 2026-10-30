@@ -4,6 +4,7 @@ import ctypes
 import importlib.util
 import os
 import shutil
+import struct
 import sys
 import tempfile
 import weakref
@@ -53,7 +54,17 @@ def overflow_terms(argument_names, tensor_ndims):
 
 
 class Handle:
-    def __init__(self, compilation, kernel, launch, source, library=None):
+    def __init__(
+        self,
+        compilation,
+        kernel,
+        launch,
+        source,
+        library=None,
+        *,
+        cache_key=None,
+        toolchain=None,
+    ):
         self._compilation = compilation
         self._artifact = compilation.artifact
         self._backend = compilation.artifact.backend.value
@@ -66,7 +77,7 @@ class Handle:
         self._ssa = compilation.kernel.ssa
         self._pass_trace = compilation.pass_trace
         self._launch_plan = compilation.launch_plan
-        cache_key = compilation_cache_key(compilation)
+        cache_key = cache_key or compilation_cache_key(compilation, toolchain=toolchain)
         manifest = (
             Path(self._library).with_suffix(".manifest.json")
             if self._library is not None
@@ -79,6 +90,7 @@ class Handle:
                 cache_key,
                 Path(self._source),
                 None if self._library is None else Path(self._library),
+                toolchain=toolchain,
             ),
         )
         self._built_artifact = BuiltArtifact(
@@ -330,6 +342,19 @@ def _is_cacheable_runtime_literal(value) -> bool:
     )
 
 
+def _runtime_literal_key(value):
+    """Compare floating values by representation, including signed zero."""
+    if type(value) is float:
+        return struct.pack("!d", value)
+
+    if type(value) is complex:
+        return struct.pack("!dd", value.real, value.imag)
+
+    if isinstance(value, tuple):
+        return tuple((type(item), _runtime_literal_key(item)) for item in value)
+    return value
+
+
 @dataclass(frozen=True, kw_only=True)
 class _RuntimeValueContract:
     is_tensor: bool
@@ -407,7 +432,9 @@ class _RuntimeValueContract:
 
     def matches(self, value, *, identity_verified=False) -> bool:
         if not self.is_tensor:
-            return type(value) is self.value_type and value == self.value
+            return type(value) is self.value_type and _runtime_literal_key(
+                value
+            ) == _runtime_literal_key(self.value)
 
         if not identity_verified and (
             id(value) != self.identity or type(value) is not self.value_type
@@ -431,7 +458,9 @@ class _RuntimeValueContract:
 
         item = value.item()
 
-        return type(item) is self.scalar_value[0] and item == self.scalar_value[1]
+        return type(item) is self.scalar_value[0] and _runtime_literal_key(
+            item
+        ) == _runtime_literal_key(self.scalar_value[1])
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -480,6 +509,7 @@ class _VerifiedRuntimeCall:
                 and contract.stride_callable
                 and contract.data_ptr_callable
                 and contract.storage_offset_callable
+                and contract.scalar_value is None
                 for contract in positional
             )
             and len(keywords) == 1
@@ -495,7 +525,7 @@ class _VerifiedRuntimeCall:
                 two_tensor_state = (
                     keywords[0][0],
                     scalar.value_type,
-                    scalar.value,
+                    _runtime_literal_key(scalar.value),
                     positional[0].identity,
                     positional[0].value_type,
                     *positional[0].tensor_state,
@@ -529,7 +559,7 @@ class _VerifiedRuntimeCall:
             return (
                 expected_name,
                 type(scalar),
-                scalar,
+                _runtime_literal_key(scalar),
                 id(first),
                 type(first),
                 first.shape,
@@ -1699,7 +1729,7 @@ def _publish_library(cache_library: Path, output_dir, filename: str) -> Path:
     return destination
 
 
-def _built_manifest(compilation, cache_key, source, library):
+def _built_manifest(compilation, cache_key, source, library, *, toolchain=None):
     from ninetoothed.compiler.cache import compilation_toolchain_identity
 
     assert compilation.target is not None
@@ -1716,7 +1746,9 @@ def _built_manifest(compilation, cache_key, source, library):
         "launch_abi": compilation.artifact.metadata.get("launch_abi", {}),
         "launch_plan": ir_to_dict(compilation.launch_plan),
         "pass_trace": compilation.pass_trace,
-        "toolchain": compilation_toolchain_identity(compilation),
+        "toolchain": compilation_toolchain_identity(compilation)
+        if toolchain is None
+        else toolchain,
     }
 
 
