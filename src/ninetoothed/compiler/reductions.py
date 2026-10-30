@@ -88,6 +88,9 @@ def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
     uniform_domain = reduction_inputs_share_domain(
         tuple(op for op, _scope in scoped_operations), value_types, tensors
     )
+    independent_stores = single_store or _independent_full_stores(
+        operations, value_types, definitions, tensor_specs
+    )
     domains = []
     rejections = []
 
@@ -115,7 +118,7 @@ def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
             forwarded_values,
             tensor_specs,
             allow_single_row_broadcast=uniform_domain
-            and single_store
+            and independent_stores
             and operand_type is not None
             and len(operand_type.shape) == 2
             and (
@@ -139,6 +142,55 @@ def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
         "reduction_rejections": tuple(rejections),
         "reduction_schedule": schedule,
     }
+
+
+def _independent_full_stores(operations, value_types, definitions, tensor_specs):
+    """Prove independent full-output writes in one common program domain."""
+    stores = tuple(op for op in operations if op.opcode == "mem.store")
+
+    if len(stores) < 2 or any(
+        op.opcode != "mem.store" and not pure_expression(op) for op in operations
+    ):
+        return False
+
+    if any(
+        len(op.operands) != 2 or set(op.attrs) - {"target", "target_shape"}
+        for op in stores
+    ):
+        return False
+
+    targets = {op.operands[1] for op in stores}
+
+    if len(targets) != len(stores) or any(
+        operand in targets
+        for op in operations
+        for operand in (op.operands[:1] if op.opcode == "mem.store" else op.operands)
+    ):
+        return False
+
+    shapes, program_shapes = set(), set()
+
+    for store in stores:
+        value, target = store.operands
+        shape = tuple(map(str, value_types[target].shape))
+
+        if (
+            tuple(map(str, value_types[value].shape)) != shape
+            or tuple(map(str, store.attrs.get("target_shape", shape))) != shape
+        ):
+            return False
+
+        domains, constraints, compatible, reason = _program_contract(
+            value, definitions, ((target, shape),), tensor_specs
+        )
+
+        if reason is not None or not compatible or any(a != b for a, b in constraints):
+            return False
+
+        shapes.add(shape)
+        program_shapes.update(domains)
+
+    return len(shapes) == len(program_shapes) == 1
 
 
 def _validate_scalar_fallback(operation):

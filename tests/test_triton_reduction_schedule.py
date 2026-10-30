@@ -71,6 +71,15 @@ def _row_normalize(x, out):
     out = numerator / ntl.sum(numerator, axis=1)[:, None]  # noqa: F841
 
 
+def _multi_row_arrangement(x, y, out1, out2):
+    return tuple(tensor.tile((1, 8)) for tensor in (x, y, out1, out2))
+
+
+def _independent_reductions(x, y, out1, out2):
+    out1 = x + ntl.sum(x, axis=1)  # noqa: F841
+    out2 = y + ntl.max(y, axis=1)  # noqa: F841
+
+
 def _row_layernorm(x, out):
     width = x.shape[1]
     mean = ntl.sum(x, axis=1) / width
@@ -270,6 +279,29 @@ def test_reduction_domain_selects_triton_row_vector_schedule():
 
     with pytest.raises(ValueError, match="Unsupported SSA reduction `reduce.product`"):
         analyze_reductions(unsupported)
+
+
+@pytest.mark.parametrize("backend", ("cuda", "triton", "tilelang"))
+@pytest.mark.parametrize("device", get_available_devices())
+def test_native_multi_output_row_reductions(device, backend):
+    compilation = DEFAULT_COMPILER.compile(
+        CompileRequest(
+            arrangement=_multi_row_arrangement,
+            application=_independent_reductions,
+            tensors=tuple(Tensor(shape=(3, 8), dtype="float32") for _ in range(4)),
+            backend=backend,
+            max_num_configs=1,
+        )
+    )
+    assert (
+        compilation.artifact.metadata["ssa_schedule"]["reduction"]["mode"]
+        == "row-vector"
+    )
+    x, y = (torch.randn((3, 8), device=device) for _ in range(2))
+    out1, out2 = torch.empty_like(x), torch.empty_like(y)
+    DEFAULT_COMPILER.materialize(compilation)(x, y, out1, out2)
+    torch.testing.assert_close(out1, x + x.sum(1, keepdim=True))
+    torch.testing.assert_close(out2, y + y.max(1, keepdim=True).values)
 
 
 @pytest.mark.parametrize("device", get_available_devices())

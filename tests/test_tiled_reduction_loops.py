@@ -88,11 +88,30 @@ def _stateful_application(x, side, flag, out):
     out = a + b  # noqa: F841
 
 
+def _pure_initial_application(x, side, flag, out):
+    initial = x
+
+    if flag:
+        initial = x + 1
+    else:
+        initial = x + 2
+
+    acc = initial
+
+    for i in range(2):
+        acc = acc + 3
+
+    out = initial[:, None] + acc  # noqa: F841
+
+
+@pytest.mark.parametrize(
+    "application", (_stateful_application, _pure_initial_application)
+)
 @pytest.mark.parametrize("device", get_available_devices())
-def test_native_carry_runtime(device):
+def test_native_carry_runtime(device, application):
     kernel = make(
         _stateful_arrangement,
-        _stateful_application,
+        application,
         (
             Tensor(shape=(4,), dtype="float32"),
             Tensor(shape=(4, 4), dtype="float32"),
@@ -108,6 +127,14 @@ def test_native_carry_runtime(device):
         side = torch.zeros((4, 4), device=device)
         out = torch.empty_like(side)
         kernel(x, side, flag, out)
+
+        if application is _pure_initial_application:
+            torch.testing.assert_close(side, torch.zeros_like(side))
+            torch.testing.assert_close(
+                out, x[:, None] + x[None, :] + 6 + 2 * (1 if flag else 2)
+            )
+            continue
+
         condition = (x > 2) == flag
         torch.testing.assert_close(
             side, torch.where(condition, 1.0, 2.0).expand_as(side)
