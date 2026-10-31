@@ -99,35 +99,7 @@ def cuda_compiler_identity(*, required: bool = False) -> dict[str, Any]:
 
 @lru_cache(maxsize=32)
 def _cuda_compiler_identity(path: str, size: int, mtime_ns: int) -> dict[str, Any]:
-    try:
-        result = subprocess.run(
-            (path, "--version"),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError(
-            f"Failed to query CUDA compiler identity from `{path}`."
-        ) from exc
-
-    version_text = "\n".join(
-        value.strip() for value in (result.stdout, result.stderr) if value.strip()
-    )
-
-    if result.returncode != 0 or not version_text:
-        raise RuntimeError(
-            f"CUDA compiler `{path}` did not provide a usable --version result."
-        )
-
-    return {
-        "available": True,
-        "path": path,
-        "size": size,
-        "mtime_ns": mtime_ns,
-        "version": version_text,
-    }
+    return _local_compiler_identity(path, size, mtime_ns, label="CUDA")
 
 
 def _validated_compiler(value: str, *, explicit: bool) -> str:
@@ -176,3 +148,171 @@ __all__ = [
     "find_nvcc",
     "normalize_cuda_arch",
 ]
+
+
+_BANGC_ARCH_ALIASES = {
+    "compute_30": "compute_30",
+    "compute_50": "compute_50",
+    "mlu370": "compute_30",
+    "mtp_372": "compute_30",
+    "mlu590": "compute_50",
+    "mtp_592": "compute_50",
+}
+
+
+def normalize_bangc_arch(value: Any) -> str:
+    """Return a validated cncc ``--bang-arch`` value."""
+    if not isinstance(value, str):
+        raise TypeError("The BangC `arch` backend option must be a string.")
+
+    arch = value.strip().lower()
+
+    if arch == "native":
+        return arch
+
+    resolved = _BANGC_ARCH_ALIASES.get(arch)
+
+    if resolved is None:
+        raise ValueError(
+            "The BangC `arch` backend option must be `native`, `compute_50` "
+            "(MLU590/mtp_592), or `compute_30` (MLU370/mtp_372)."
+        )
+
+    return resolved
+
+
+def _local_compiler_identity(
+    path: str, size: int, mtime_ns: int, *, label: str
+) -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            (path, "--version"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            f"Failed to query {label} compiler identity from `{path}`."
+        ) from exc
+
+    version_text = "\n".join(
+        value.strip() for value in (result.stdout, result.stderr) if value.strip()
+    )
+
+    if result.returncode != 0 or not version_text:
+        raise RuntimeError(
+            f"The {label} compiler `{path}` did not provide a usable --version result."
+        )
+
+    return {
+        "available": True,
+        "path": path,
+        "size": size,
+        "mtime_ns": mtime_ns,
+        "version": version_text,
+    }
+
+
+def resolve_bangc_arch(arch: str) -> str:
+    """Resolve `native` to a concrete cncc architecture value."""
+    arch = normalize_bangc_arch(arch)
+
+    if arch != "native":
+        return arch
+
+    explicit = os.environ.get("NINETOOTHED_BANGC_ARCH")
+
+    if explicit and normalize_bangc_arch(explicit) != "native":
+        return normalize_bangc_arch(explicit)
+
+    try:
+        import torch
+
+        if hasattr(torch, "mlu") and torch.mlu.is_available():
+            capability = getattr(torch.mlu, "get_device_capability", None)
+
+            if callable(capability):
+                major = int(capability(torch.mlu.current_device())[0])
+
+                return "compute_30" if major < 5 else "compute_50"
+    except (ImportError, RuntimeError, ValueError, IndexError, AttributeError):
+        pass
+
+    return "compute_50"
+
+
+def bangc_compile_command(
+    source: str | Path,
+    output: str | Path,
+    *,
+    arch: str,
+    cncc: str | None = None,
+) -> tuple[str, ...]:
+    """Construct the shared-library command used by the BangC materializer."""
+    return (
+        cncc or find_cncc(),
+        "--shared",
+        "-fPIC",
+        "-O3",
+        "-std=c++14",
+        f"--bang-arch={normalize_bangc_arch(arch)}",
+        str(source),
+        "-o",
+        str(output),
+    )
+
+
+def find_cncc() -> str:
+    """Locate the Cambricon BangC compiler (cncc)."""
+    explicit = os.environ.get("NINETOOTHED_BANGC_COMPILER")
+
+    if explicit is not None:
+        return _validated_compiler(explicit, explicit=True)
+
+    neuware_roots = tuple(
+        Path(value)
+        for value in (
+            os.environ.get("NEUWARE_HOME"),
+            os.environ.get("NEUWARE_ROOT"),
+        )
+        if value
+    )
+    candidates = (
+        shutil.which("cncc"),
+        *(str(root / "bin" / "cncc") for root in neuware_roots),
+        "/usr/local/neuware/bin/cncc",
+    )
+
+    for candidate in candidates:
+        if candidate:
+            try:
+                return _validated_compiler(candidate, explicit=False)
+            except RuntimeError:
+                continue
+
+    raise RuntimeError(
+        "BangC backend requires the Cambricon cncc compiler; set "
+        "NINETOOTHED_BANGC_COMPILER or NEUWARE_HOME on the device host."
+    )
+
+
+def bangc_compiler_identity(*, required: bool = False) -> dict[str, Any]:
+    """Return the resolved BangC compiler identity used in cache keys."""
+    try:
+        compiler = find_cncc()
+    except RuntimeError:
+        if required or os.environ.get("NINETOOTHED_BANGC_COMPILER") is not None:
+            raise
+        return {"available": False}
+
+    path = Path(compiler).resolve(strict=True)
+    stat = path.stat()
+
+    return _cncc_identity(str(path), stat.st_size, stat.st_mtime_ns)
+
+
+@lru_cache(maxsize=32)
+def _cncc_identity(path: str, size: int, mtime_ns: int) -> dict[str, Any]:
+    return _local_compiler_identity(path, size, mtime_ns, label="BangC")

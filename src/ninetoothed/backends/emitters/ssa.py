@@ -1236,6 +1236,9 @@ def _emit_operation(op: ssa.Operation, ctx: _EmitContext) -> None:
 
 
 def _emit_value(name: str, ctx: _EmitContext) -> str:
+    if name in ctx.tensor_buffers:
+        return _emit_element(name, _current_coords(_value_axes(name, ctx), ctx), ctx)
+
     if ctx.bindings and name in ctx.bindings:
         bound = ctx.bindings[name]
 
@@ -1773,6 +1776,11 @@ def _cast_dot_operand(
 
 
 def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
+    if name in ctx.tensor_buffers:
+        buffer, axes = ctx.tensor_buffers[name]
+
+        return f"{buffer}[{_linearized_index(coords, axes) if axes else '0'}]"
+
     if (
         ctx.binding_coordinate_constraints
         and name in ctx.binding_coordinate_constraints
@@ -2569,7 +2577,7 @@ def _emit_reduce_element(
         )
 
     if local is None:
-        local = f"{_local_symbol(op.results[0].name, ctx)}_elem"
+        local = _fresh_temp(ctx, f"{_local_symbol(op.results[0].name, ctx)}_elem")
 
     result_type = ssa.Type(
         kind="scalar", dtype=op.results[0].type.dtype if op.results else "float32"
@@ -4920,6 +4928,8 @@ emit_element = _emit_element
 emit_loop_bound = _emit_loop_bound
 emit_operation = _emit_operation
 emit_value = _emit_value
+coords_from_linear = _coords_from_linear
+resolve_value_dtype = _resolve_dtype
 fresh_temp = _fresh_temp
 indent_block = _indent_block
 indent_lines = _indent_lines
@@ -4950,6 +4960,7 @@ __all__ = [
     "buffer_storage_extent",
     "combined_mask",
     "current_coords",
+    "coords_from_linear",
     "default_strides",
     "dot_accumulator_dtype",
     "dtype_level",
@@ -4971,6 +4982,7 @@ __all__ = [
     "normalize_dtype",
     "product",
     "reduction_identity",
+    "resolve_value_dtype",
     "reduction_input_mask",
     "resolved_dot_operand_dtype",
     "rewrite_index_math",

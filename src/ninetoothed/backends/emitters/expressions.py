@@ -234,3 +234,16 @@ __all__ = [
     "symbols_in_text",
     "valid_symbol",
 ]
+
+
+def c_integer_expr(expr: str) -> str:
+    previous = None
+    current = rewrite_index_math(expr, c_style=True).replace("//", "/")
+    current = re.sub(r"\bTrue\b", "true", current)
+    current = re.sub(r"\bFalse\b", "false", current)
+    pattern = re.compile(r"floor\(\(([^()]+)\)/([A-Za-z_][A-Za-z0-9_]*)\)")
+
+    while current != previous:
+        previous = current
+        current = pattern.sub(r"((\1)/(\2))", current)
+    return current

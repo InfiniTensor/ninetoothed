@@ -31,6 +31,7 @@ class ModuleRenderContext:
     cooperative_reduction_program: bool = False
     private_meta_parameters: tuple[tuple[str, int], ...] = ()
     scheduled_metadata: Mapping[str, Any] = field(default_factory=dict)
+    lowering_plans: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, kw_only=True)
