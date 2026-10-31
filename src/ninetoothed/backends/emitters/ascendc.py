@@ -8,15 +8,14 @@ from typing import Any
 from ninetoothed.backends.core import Target
 from ninetoothed.backends.emitters import ssa as common
 from ninetoothed.backends.emitters.analysis import walk_ops as _walk_ops
+from ninetoothed.backends.emitters.ascendc_math import render_math_support
 from ninetoothed.backends.emitters.base import EmitterTarget, ModuleRenderContext
 from ninetoothed.backends.emitters.c_types import (
     CScalarArithmeticMixin,
     render_c_type_support,
     render_int32_cast_support,
 )
-from ninetoothed.backends.emitters.context import EmitContext as _EmitContext
 from ninetoothed.backends.emitters.expressions import c_integer_expr
-from ninetoothed.backends.emitters.math_helpers import render_float32_trig_support
 from ninetoothed.backends.emitters.task_launch import allocate_private_symbol
 from ninetoothed.ir import Kernel, ssa
 
@@ -98,14 +97,14 @@ class AscendCTarget(CScalarArithmeticMixin, EmitterTarget):
     def where(self, cond, yes, no):
         no = _ascendc_float_suffix(no)
 
-        return f"(({cond}) ? ({yes}) : ({no}))"
+        return f"nt_scalar_where({cond}, {yes}, {no})"
 
     def call(self, name, args):
         if name == "where":
             return self.where(args[0], args[1], args[2])
 
         if name == "load" and args:
-            return f"*({args[0]})"
+            return f"nt_scalar_load({args[0]}, 0)"
 
         if name in {"block_dot", "dot"} and len(args) == 2:
             return f"(({args[0]}) * ({args[1]}))"
@@ -149,7 +148,6 @@ class AscendCTarget(CScalarArithmeticMixin, EmitterTarget):
             operator,
             acc,
             term,
-            _ascendc_reduction_accumulator_dtype(dtype, dtype),
             target=self,
         )
 
@@ -166,7 +164,12 @@ class AscendCTarget(CScalarArithmeticMixin, EmitterTarget):
     def arithmetic_result_type(self, operation, context) -> ssa.Type:
         if operation.opcode in {"call.isnan", "call.isfinite"}:
             return replace(operation.results[0].type, dtype="bool")
-        return _ascendc_arithmetic_result_type(operation, context)
+        return operation.results[0].type
+
+    def check_numeric_result(self, operation, value, context):
+        if operation.opcode == "select.where" and operation.results[0].type.dtype:
+            return self.cast(operation.results[0].type.dtype, value)
+        return super().check_numeric_result(operation, value, context)
 
     def store(self, tensor, index, value, *, mask=None):
         statement = f"nt_scalar_store({self.tensor_ref(tensor)}, {index}, {value});"
@@ -175,9 +178,6 @@ class AscendCTarget(CScalarArithmeticMixin, EmitterTarget):
 
     def load(self, tensor, index, *, mask=None, other=0.0):
         return f"nt_scalar_load({self.tensor_ref(tensor)}, {index})"
-
-    def coerce_binary_args(self, operation, args, context):
-        return _coerce_ascendc_binary_args(operation, args, context)
 
     def schedule_context(self, context):
         from ninetoothed.backends.emitters.memory_guard import (
@@ -269,7 +269,7 @@ class AscendCTarget(CScalarArithmeticMixin, EmitterTarget):
             for name in names
         ]
         host_parameters = [
-            _host_auxiliary_param(name, context.tensors, half_storage) for name in names
+            _auxiliary_param(name, context.tensors, half_storage) for name in names
         ]
         stream = allocate_private_symbol(
             "nt_stream", body, *parameters, *host_parameters
@@ -310,7 +310,7 @@ class AscendCTarget(CScalarArithmeticMixin, EmitterTarget):
 
         support = "\n\n".join(
             (
-                _ascendc_support(context),
+                _ascendc_support(context, task_body),
                 render_int32_cast_support("__aicore__ inline"),
                 render_c_type_support(task_body, "__aicore__ inline"),
             )
@@ -363,20 +363,7 @@ def _ascendc_float_suffix(value: str) -> str:
     return value
 
 
-def _ascendc_reduction_accumulator_dtype(operand_dtype: str, result_dtype: str) -> str:
-    if operand_dtype in {"float16"}:
-        return "float32"
-
-    if operand_dtype == "bool":
-        return "int32"
-    return result_dtype
-
-
-def _ascendc_reduction_update(
-    operator: str, lhs: str, rhs: str, dtype: str, *, target=None
-) -> str:
-    del dtype
-
+def _ascendc_reduction_update(operator: str, lhs: str, rhs: str, *, target) -> str:
     if operator == "sum":
         return f"({lhs}) + ({rhs})"
 
@@ -387,8 +374,8 @@ def _ascendc_reduction_update(
 
     function = f"_nt_reduce_{operator}"
 
-    if target is not None:
-        function = target.global_helper(function)
+    function = target.global_helper(function)
+
     return f"{function}<{value_dtype}>({lhs}, {rhs})"
 
 
@@ -417,309 +404,6 @@ def _ascendc_scalar_tile_storage(slots):
         ),
     ], size
 
-
-_ASCENDC_MATH_SUPPORT = (
-    """// Scalar transcendental functions are not hardware built-ins on AscendC,
-// so the generated kernels carry compact software implementations.  Device
-// functions cannot recurse, so every routine is range-reduced inline.
-union NtFloatBits {
-    float f;
-    int32_t i;
-};
-
-__aicore__ inline float nt_inf() {
-    NtFloatBits v;
-    v.i = 0x7f800000;
-    return v.f;
-}
-
-__aicore__ inline float nt_nan() {
-    NtFloatBits v;
-    v.i = 0x7fc00000;
-    return v.f;
-}
-
-__aicore__ inline float nt_exp(float x) {
-    if (x != x) { return x; }
-    if (x > 88.72f) { return nt_inf(); }
-    if (x < -103.97f) { return 0.0f; }
-    float t = x * 1.442695041f;
-    int k = (int)(t + (t > 0.0f ? 0.5f : -0.5f));
-    float r = (float)k;
-    x = x - r * 0.693147181f;
-    // 10th-order minimax polynomial for exp on [-ln2/2, ln2/2]
-    float p = 1.0f + x * (1.0f + x * (0.5000000000f + x * (0.1666666667f
-        + x * (0.04166666667f + x * (0.008333333333f + x * (0.001388888889f
-        + x * (0.0001984126984f + x * (0.00002480158730f
-        + x * (0.000002755731922f + x * 0.0000002755731922f)))))))));
-    // Scale in two steps: a single 2^k exponent field overflows into the
-    // sign bit for subnormal results (k + 127 <= 0) and produces a huge
-    // negative value instead.  Halving the exponent keeps both scale
-    // factors in range, and IEEE multiplication rounds gradually.
-    int k1 = k / 2;
-    int k2 = k - k1;
-    NtFloatBits s1;
-    NtFloatBits s2;
-    s1.i = (k1 + 127) << 23;
-    s2.i = (k2 + 127) << 23;
-    return (p * s1.f) * s2.f;
-}
-
-__aicore__ inline float nt_log(float x) {
-    if (x != x || x < 0.0f) { return nt_nan(); }
-    if (x == 0.0f) { return -nt_inf(); }
-    if (x == nt_inf()) { return x; }
-    NtFloatBits v;
-    v.f = x;
-    int biased = (v.i >> 23) & 0xff;
-    float m;
-    int e;
-    if (biased == 0) {
-        // Subnormal inputs carry no implicit bit: x = M * 2^-149.
-        e = -126;
-        m = (float)(v.i & 0x007fffff) * (1.0f / 8388608.0f);
-    }
-    else {
-        e = biased - 127;
-        v.i = (v.i & 0x007fffff) | 0x3f800000;
-        m = v.f;
-    }
-    // Normalize m into [0.75, 1.5] so |u| <= 0.2 below.
-    while (m > 1.5f) { m = m * 0.5f; e = e + 1; }
-    while (m < 0.75f) { m = m * 2.0f; e = e - 1; }
-    // log(m) = 2*artanh(u) with u = (m-1)/(m+1): truncation ~ u^11/11.
-    float u = (m - 1.0f) / (m + 1.0f);
-    float u2 = u * u;
-    float p = u * (1.0f + u2 * (0.33333334f + u2 * (0.2f + u2 * (0.14285715f
-        + u2 * 0.11111111f))));
-    return e * 0.69314718f + 2.0f * p;
-}
-
-__aicore__ inline float nt_tanh(float x) {
-    if (x == 0.0f) { return x; }
-    // exp(2x) saturates around x ~ 44; (inf - 1) / (inf + 1) would be NaN.
-    if (x > 22.0f) { return 1.0f; }
-    if (x < -22.0f) { return -1.0f; }
-    float e2 = nt_exp(2.0f * x);
-    return (e2 - 1.0f) / (e2 + 1.0f);
-}
-
-__aicore__ inline float nt_sigmoid(float x) {
-    return 1.0f / (1.0f + nt_exp(-x));
-}
-
-"""
-    + render_float32_trig_support("__aicore__")
-    + """
-
-__aicore__ inline float nt_tan(float x) {
-    return nt_sin(x) / nt_cos(x);
-}
-
-__aicore__ inline float nt_sinh(float x) {
-    if (x == 0.0f) { return x; }
-    float e = nt_exp(x);
-    return 0.5f * (e - 1.0f / e);
-}
-
-__aicore__ inline float nt_cosh(float x) {
-    float e = nt_exp(x);
-    return 0.5f * (e + 1.0f / e);
-}
-
-// atanh-free, recursion-free atan: fold x > 1 through the reciprocal
-// identity atan(x) = pi/2 - atan(1/x), then arguments above 0.35 through
-// the additive sqrt(3) identity, so the odd Taylor polynomial only sees
-// |v| <= 2 - sqrt(3) ~ 0.268.
-__aicore__ inline float nt_atan_poly(float x) {
-    float v2 = x * x;
-    return x * (1.0f - v2 * (0.33333334f - v2 * (0.2f - v2 * (0.14285715f
-        - v2 * (0.11111111f - v2 * 0.09090909f)))));
-}
-
-__aicore__ inline float nt_atan_pos(float x) {
-    const float NT_HALF_PI = 1.5707964f;
-    const float NT_PI_6 = 0.5235988f;
-    const float NT_SQRT3 = 1.7320508f;
-
-    if (x > 1.0f) {
-        float v = 1.0f / x;
-        float inner = nt_atan_poly(v);
-
-        if (v > 0.35f) {
-            inner = nt_atan_poly((NT_SQRT3 * v - 1.0f) / (NT_SQRT3 + v))
-                + NT_PI_6;
-        }
-        return NT_HALF_PI - inner;
-    }
-
-    if (x > 0.35f) {
-        return nt_atan_poly((NT_SQRT3 * x - 1.0f) / (NT_SQRT3 + x)) + NT_PI_6;
-    }
-
-    return nt_atan_poly(x);
-}
-
-__aicore__ inline float nt_atan(float x) {
-    if (x < 0.0f) { return -nt_atan_pos(-x); }
-    return nt_atan_pos(x);
-}
-
-__aicore__ inline float nt_asin(float x) {
-    if (x != x || x > 1.0f || x < -1.0f) { return nt_nan(); }
-    if (x == 0.0f) { return x; }
-    float r = 1.0f - x * x;
-    float root = r >= 0.0f ? sqrt(r) : 0.0f;
-    float v = x >= 0.0f ? (root > 0.0f ? x / root : nt_inf()) : -1.0f;
-    if (x < 0.0f) {
-        v = root > 0.0f ? x / root : -nt_inf();
-    }
-    return nt_atan(v);
-}
-
-__aicore__ inline float nt_acos(float x) {
-    return 1.5707964f - nt_asin(x);
-}
-
-__aicore__ inline float nt_atan2(float y, float x) {
-    const float NT_PI_F = 3.14159265f;
-    const float NT_HALF_PI = 1.5707964f;
-    if (x != x || y != y) { return nt_nan(); }
-    NtFloatBits bx;
-    NtFloatBits by;
-    bx.f = x;
-    by.f = y;
-    bool negative_x = bx.i < 0;
-    bool negative_y = by.i < 0;
-    if (y == 0.0f) {
-        return negative_x ? (negative_y ? -NT_PI_F : NT_PI_F) : y;
-    }
-    if (x == 0.0f) { return negative_y ? -NT_HALF_PI : NT_HALF_PI; }
-    bx.i &= 0x7fffffff;
-    by.i &= 0x7fffffff;
-    float angle;
-    if (by.f == nt_inf()) {
-        angle = bx.f == nt_inf()
-            ? (negative_x ? 2.35619449f : 0.785398163f) : NT_HALF_PI;
-    }
-    else if (bx.f == nt_inf()) {
-        angle = negative_x ? NT_PI_F : 0.0f;
-    }
-    else {
-        angle = nt_atan_pos(by.f / bx.f);
-        if (negative_x) { angle = NT_PI_F - angle; }
-    }
-    return negative_y ? -angle : angle;
-}
-
-__aicore__ inline float nt_floor(float x) {
-    NtFloatBits v;
-    v.f = x;
-    int exponent = ((v.i >> 23) & 0xff) - 127;
-    // Large finite float32 values already have no fractional bits.
-    if (exponent >= 23 || (v.i & 0x7fffffff) == 0) { return x; }
-    if (exponent < 0) { return x < 0.0f ? -1.0f : 0.0f; }
-    int32_t fraction = (1 << (23 - exponent)) - 1;
-    if ((v.i & fraction) == 0) { return x; }
-    v.i &= ~fraction;
-    return x < 0.0f ? v.f - 1.0f : v.f;
-}
-
-__aicore__ inline float nt_ceil(float x) {
-    return -nt_floor(-x);
-}
-
-__aicore__ inline float nt_pow(float x, float y) {
-    if (y == 0.0f) { return 1.0f; }
-    if (x == 1.0f) { return 1.0f; }
-    if (x != x || y != y) { return nt_nan(); }
-    NtFloatBits base_bits;
-    NtFloatBits exponent_bits;
-    base_bits.f = x;
-    exponent_bits.f = y;
-    int exponent = ((exponent_bits.i >> 23) & 0xff) - 127;
-    // Above 2^24 float32 exponents are all even; inspect the significand
-    // without a large float-to-int conversion.
-    bool odd = exponent >= 0 && exponent <= 23 && y == nt_floor(y)
-        && ((((exponent_bits.i & 0x007fffff) | 0x00800000)
-            >> (23 - exponent)) & 1);
-    float ax = x < 0.0f ? -x : x;
-    if (y == nt_inf() || y == -nt_inf()) {
-        if (ax == 1.0f) { return 1.0f; }
-        return ((ax > 1.0f) == (y > 0.0f)) ? nt_inf() : 0.0f;
-    }
-    if (ax == 0.0f || ax == nt_inf()) {
-        float special = ((ax == 0.0f) == (y > 0.0f)) ? 0.0f : nt_inf();
-        return base_bits.i < 0 && odd ? -special : special;
-    }
-    if (x < 0.0f && y != nt_floor(y)) {
-        // Negative base with a non-integer exponent is undefined.
-        return nt_nan();
-    }
-    NtFloatBits v;
-    v.f = (x < 0.0f) ? -x : x;
-    int biased = (v.i >> 23) & 0xff;
-    float m;
-    int e;
-    if (biased == 0) {
-        // Subnormal bases carry no implicit bit: x = M * 2^-149.
-        e = -126;
-        m = (float)(v.i & 0x007fffff) * (1.0f / 8388608.0f);
-    }
-    else {
-        e = biased - 127;
-        v.i = (v.i & 0x007fffff) | 0x3f800000;
-        m = v.f;
-    }
-    float lg = e * 0.69314718f + nt_log(m);
-    float r = nt_exp(((x < 0.0f) ? nt_floor(y) : y) * lg);
-    if (x < 0.0f) {
-        return odd ? -r : r;
-    }
-    return r;
-}
-
-__aicore__ inline float nt_fabs(float x) {
-    NtFloatBits v;
-    v.f = x;
-    v.i &= 0x7fffffff;
-    return v.f;
-}
-
-__aicore__ inline float nt_rsqrt(float x) {
-    return 1.0f / sqrt(x);
-}
-
-__aicore__ inline float nt_exp2(float x) {
-    return nt_exp(x * 0.69314718f);
-}
-
-__aicore__ inline float nt_log2(float x) {
-    return nt_log(x) * 1.44269504f;
-}
-
-__aicore__ inline float nt_log10(float x) {
-    return nt_log(x) * 0.43429448f;
-}
-
-__aicore__ inline float nt_log1p(float x) {
-    return nt_log(1.0f + x);
-}
-
-__aicore__ inline float nt_expm1(float x) {
-    return nt_exp(x) - 1.0f;
-}
-
-__aicore__ inline float nt_erf(float x) {
-    if (x == 0.0f) { return x; }
-    float s = x < 0.0f ? -1.0f : 1.0f;
-    x = x * s;
-    float t = 1.0f / (1.0f + 0.3275911f * x);
-    float y = 1.0f - (((((1.061405429f * t - 1.453152027f) * t) + 1.421413741f)
-        * t - 0.284496736f) * t + 0.254829592f) * t * nt_exp(-x * x);
-    return s * y;
-}"""
-)
 
 _ASCENDC_CALL_FUNCS = {
     "abs": "nt_fabs",
@@ -782,7 +466,7 @@ def _ascendc_validate_atomics(kernel: Kernel) -> None:
         )
 
 
-def _ascendc_support(context: ModuleRenderContext) -> str:
+def _ascendc_support(context: ModuleRenderContext, body: str) -> str:
     """Emit helper functions required by the kernel body."""
     operations = {id(operation): operation for operation in context.operations.values()}
     lines: list[str] = [
@@ -801,19 +485,53 @@ def _ascendc_support(context: ModuleRenderContext) -> str:
         return word.f;
     }
 };
+// Reserve the last 128 bytes of UB for scalar DMA scratch. The tile arena
+// is separately bounded at UB - 256 bytes; all GM accesses use DMA, not DCache.
+
+template<class T> __aicore__ inline T nt_dma_load(const __gm__ T* base, int64_t index) {
+ LocalTensor<uint8_t> scratch(TPosition::VECCALC, 192*1024-128, 32);
+ GlobalTensor<uint8_t> gm; gm.SetGlobalBuffer((__gm__ uint8_t *)(base+index));
+ DataCopyExtParams copy{1,(uint32_t)sizeof(T),0,0,0};
+ DataCopyPadExtParams<uint8_t> pad{false,0,0,0};
+ SetFlag<HardEvent::S_MTE2>(0); WaitFlag<HardEvent::S_MTE2>(0);
+ DataCopyPad(scratch,gm,copy,pad);
+ SetFlag<HardEvent::MTE2_S>(0); WaitFlag<HardEvent::MTE2_S>(0);
+ return *((__ubuf__ T *)scratch.GetPhyAddr());
+}
+template<class T> __aicore__ inline void nt_dma_store(__gm__ T* base, int64_t index,T value) {
+ LocalTensor<uint8_t> scratch(TPosition::VECCALC, 192*1024-128, 32);
+ *((__ubuf__ T *)scratch.GetPhyAddr())=value;
+ SetFlag<HardEvent::S_MTE3>(0); WaitFlag<HardEvent::S_MTE3>(0);
+ GlobalTensor<uint8_t> gm; gm.SetGlobalBuffer((__gm__ uint8_t *)(base+index));
+ DataCopyExtParams copy{1,(uint32_t)sizeof(T),0,0,0};
+ DataCopyPad(gm,scratch,copy);
+ SetFlag<HardEvent::MTE3_S>(0); WaitFlag<HardEvent::MTE3_S>(0);
+}
+
 template <class T> struct _nt_value_cast;
 template <class T> __aicore__ inline T nt_scalar_load(const __gm__ T *base, int64_t index) {
-    return base[index];
+    return nt_dma_load(base, index);
 }
 __aicore__ inline NtBFloat16 nt_scalar_load(const __gm__ NtBFloat16 *base, int64_t index) {
-    NtBFloat16 result; result.bits = ((const __gm__ uint16_t *)base)[index]; return result;
+    NtBFloat16 result; result.bits = nt_dma_load((const __gm__ uint16_t *)base, index); return result;
 }
 template <class T, class V> __aicore__ inline void nt_scalar_store(__gm__ T *base, int64_t index, V value) {
-    base[index] = _nt_value_cast<T>::apply(value);
+    nt_dma_store(base, index, _nt_value_cast<T>::apply(value));
 }
 template <class V> __aicore__ inline void nt_scalar_store(__gm__ NtBFloat16 *base, int64_t index, V value) {
-    NtBFloat16 result((float)value); ((__gm__ uint16_t *)base)[index] = result.bits;
+    NtBFloat16 result((float)value); nt_dma_store((__gm__ uint16_t *)base, index, result.bits);
 }
+template <class T> struct NtWhereValue {
+    using type = typename std::conditional<std::is_same<T, NtBFloat16>::value
+        || std::is_same<T, half>::value, float, T>::type;
+};
+template <class A, class B>
+__aicore__ inline auto nt_scalar_where(bool condition, A yes, B no)
+    -> typename std::common_type<typename NtWhereValue<A>::type, typename NtWhereValue<B>::type>::type {
+    using R = typename std::common_type<typename NtWhereValue<A>::type, typename NtWhereValue<B>::type>::type;
+    return condition ? static_cast<R>(yes) : static_cast<R>(no);
+}
+
 template <class T> __aicore__ inline float nt_to_float(T value) {
     return static_cast<float>(value);
 }
@@ -827,7 +545,7 @@ __aicore__ inline float nt_to_float(uint64_t value) {
 }"""
     ]
 
-    lines.append(_ASCENDC_MATH_SUPPORT)
+    lines.append(render_math_support(body))
 
     if any(operation.opcode == "math.rand" for operation in operations.values()):
         lines.append(
@@ -855,38 +573,13 @@ def _render_signature_params(params: list[str]) -> str:
     return ",\n".join(f"    {param}" for param in params)
 
 
-def _signature_param(name, info) -> str:
-    dtype = _ascendc_type(info.dtype)
+def _auxiliary_param(name, tensors, half_storage=None) -> str:
+    info = tensors.get(name)
 
-    if info.ndim == 0:
-        return f"{dtype} {name}"
-
-    return f"GM_ADDR {name}_gm"
-
-
-def _launch_param(name, info, *, half_storage=None) -> str:
-    if info.ndim == 0:
+    if info is not None and info.ndim == 0:
         if half_storage is not None and name in half_storage:
             return f"uint16_t {half_storage[name]}"
-
         return f"{_ascendc_type(info.dtype)} {name}"
-
-    return f"void* {name}"
-
-
-def _host_auxiliary_param(name, tensors, half_storage) -> str:
-    info = tensors.get(name)
-
-    if info is not None and info.ndim == 0:
-        return _launch_param(name, info, half_storage=half_storage)
-    return f"int64_t {name}"
-
-
-def _auxiliary_param(name, tensors) -> str:
-    info = tensors.get(name)
-
-    if info is not None and info.ndim == 0:
-        return _signature_param(name, info)
     return f"int64_t {name}"
 
 
@@ -928,75 +621,6 @@ def _ascendc_type(dtype: str | None, kind: str | None = None) -> str:
     if dtype not in types:
         raise ValueError(f"Unsupported AscendC SSA dtype: {dtype!r}.")
     return types[dtype]
-
-
-def _ascendc_arithmetic_result_type(op: ssa.Operation, ctx: _EmitContext) -> ssa.Type:
-    return op.results[0].type
-
-
-def _coerce_ascendc_binary_args(
-    op: ssa.Operation, args: tuple[str, ...], ctx: _EmitContext
-) -> tuple[str, ...]:
-    if len(args) != len(op.operands):
-        return args
-
-    result_type = op.results[0].type if op.results else None
-
-    if result_type is not None and result_type.dtype is None:
-        return args
-
-    if result_type is not None and result_type.kind == "pointer":
-        return args
-
-    if any(
-        (type_ := ctx.value_types.get(operand)) is not None and type_.kind == "pointer"
-        for operand in op.operands
-    ):
-        return args
-
-    dtype = (
-        _normalize_dtype(result_type.dtype)
-        if result_type is not None and _normalize_dtype(result_type.dtype) != "bool"
-        else _ascendc_common_operand_dtype(op.operands, ctx)
-    )
-
-    if dtype is None:
-        return args
-
-    if dtype == "float16":
-        dtype = "float32"
-
-    coerced = []
-
-    for operand, value in zip(op.operands, args):
-        operand_type = ctx.value_types.get(operand)
-        operand_dtype = _normalize_dtype(
-            operand_type.dtype if operand_type is not None else None
-        )
-        coerced.append(
-            ctx.target.cast(dtype, value) if operand_dtype != dtype else value
-        )
-    return tuple(coerced)
-
-
-def _ascendc_common_operand_dtype(
-    operands: tuple[str, ...], ctx: _EmitContext
-) -> str | None:
-    ranks = {
-        "bool": 0,
-        "int32": 1,
-        "int64": 2,
-        "float16": 3,
-        "float32": 4,
-        "float64": 5,
-    }
-    dtypes = [
-        _normalize_dtype(type_.dtype)
-        for operand in operands
-        if (type_ := ctx.value_types.get(operand)) is not None
-    ]
-
-    return max(dtypes, key=lambda dtype: ranks.get(dtype, -1)) if dtypes else None
 
 
 TARGET = AscendCTarget()

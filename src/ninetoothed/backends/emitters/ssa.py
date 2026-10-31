@@ -1552,7 +1552,7 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
         args = tuple(_emit_value(operand, ctx) for operand in op.operands)
         args = (_materialize_bool_expr(args[0], ctx) or args[0], args[1], args[2])
 
-        return target.where(args[0], args[1], args[2])
+        return target.check_numeric_result(op, target.where(*args), ctx)
 
     if opcode.startswith(("arith.", "cmp.", "math.", "call.")):
         if opcode.split(".", 1)[1] in _BINARY:
@@ -1926,7 +1926,7 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
 
         args[0] = _materialize_bool_expr(args[0], ctx) or args[0]
 
-        return ctx.target.where(args[0], args[1], args[2])
+        return ctx.target.check_numeric_result(op, ctx.target.where(*args), ctx)
 
     if op.opcode.startswith(("arith.", "cmp.", "math.", "call.")):
         name = op.opcode.split(".", 1)[1]

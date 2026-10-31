@@ -48,6 +48,31 @@ def _matmul(x, y, out):
     out = ntl.dot(x, y)  # noqa: F841
 
 
+def _compare(x, out):
+    out = ntl.where(x > 0, x, ntl.where(x < 0, -x, ntl.where(x == 0, 1, 100)))  # noqa: F841
+
+
+def _absolute(x, out):
+    out = ntl.abs(x)  # noqa: F841
+
+
+def _where_boundary(x, out):
+    out = ntl.where(x > 0, x, 257) - 256  # noqa: F841
+
+
+def _math(x, logarithm, exponential, tangent, exp, sinh, cosh):
+    logarithm = ntl.log1p(x)  # noqa: F841
+    exponential = ntl.expm1(x)  # noqa: F841
+    tangent = ntl.tanh(x)  # noqa: F841
+    exp = ntl.exp(x)  # noqa: F841
+    sinh = ntl.sinh(x)  # noqa: F841
+    cosh = ntl.cosh(x)  # noqa: F841
+
+
+def _math_arrangement(x, *outputs):
+    return tuple(tensor.tile((32,)) for tensor in (x, *outputs))
+
+
 def test_ascendc_source_and_launch_contract():
     artifact = lower(
         _arrangement,
@@ -64,6 +89,7 @@ def test_ascendc_source_and_launch_contract():
     assert "GetSubBlockIdx()!=0" in source
     assert "launch_ascendc_baseline" in source
     assert "<<<1, nullptr," in source
+    assert "DataCopyPad" in source
 
     with pytest.raises(ValueError, match="atomic updates"):
         lower(_arrangement, _atomic, (nt.Tensor(1), nt.Tensor(1)), backend="ascendc")
@@ -80,6 +106,7 @@ def test_ascendc_source_and_launch_contract():
     )
     assert artifact.metadata["ascendc_host_scalar_abi"]["version"] == "uint16-half-v1"
     assert "::memcpy" in artifact.primary_source
+    assert "nt_trig_remainder" not in source
 
 
 def test_ascendc_jit_aot_reload_and_numerics(tmp_path):
@@ -134,6 +161,24 @@ def test_ascendc_jit_aot_reload_and_numerics(tmp_path):
 
     torch.npu.synchronize()
     torch.testing.assert_close(x.cpu(), torch.full((257,), 8.0), rtol=0, atol=0)
+
+    streams = (torch.npu.Stream(), torch.npu.Stream())
+    inputs = tuple(torch.full((8,), float(i)).to("npu") for i in range(4))
+
+    for iteration in range(50):
+        storage = torch.full((18,), -123.0).to("npu")
+        torch.npu.synchronize()
+
+        for i, stream in enumerate(streams):
+            with torch.npu.stream(stream):
+                kernel(inputs[2 * i + iteration % 2], storage[1 + 8 * i : 9 + 8 * i])
+
+        torch.npu.synchronize()
+        expected = torch.cat(
+            tuple(torch.full((8,), float(2 * i + iteration % 2 + 1)) for i in range(2))
+        )
+        torch.testing.assert_close(storage[1:-1].cpu(), expected, rtol=0, atol=0)
+        assert storage[0].item() == storage[-1].item() == -123
 
     for dtype in (torch.float16, torch.bfloat16):
         tensors = (
@@ -190,3 +235,84 @@ def test_ascendc_jit_aot_reload_and_numerics(tmp_path):
     kernel(left.to("npu"), right.to("npu"), output)
     torch.npu.synchronize()
     torch.testing.assert_close(output.cpu(), left @ right)
+
+    host = torch.tensor([-0.75, -0.5, -0.0, 0.25, 0.5, 0.75, 1.0], dtype=torch.bfloat16)
+    out = torch.empty_like(host).to("npu")
+    nt.make(
+        _arrangement,
+        _compare,
+        (nt.Tensor(1, dtype=nt.bfloat16),) * 2,
+        backend="ascendc",
+        max_num_configs=1,
+    )(host.to("npu"), out)
+    torch.npu.synchronize()
+    torch.testing.assert_close(
+        out.cpu(), torch.where(host == 0, 1, host.abs()), rtol=0, atol=0
+    )
+    nt.make(
+        _arrangement,
+        _where_boundary,
+        (nt.Tensor(1, dtype=nt.bfloat16),) * 2,
+        backend="ascendc",
+        max_num_configs=1,
+    )(host.to("npu"), out)
+    torch.npu.synchronize()
+    torch.testing.assert_close(
+        out.cpu(), torch.where(host > 0, host, 257) - 256, rtol=0, atol=0
+    )
+
+    for dtype, large in ((torch.int32, 2**24 + 1), (torch.int64, 2**55 + 1)):
+        host = torch.tensor([large, -large, torch.iinfo(dtype).min], dtype=dtype)
+        out = torch.empty_like(host).to("npu")
+        nt.make(
+            _arrangement,
+            _absolute,
+            (nt.Tensor(1, dtype=str(dtype)),) * 2,
+            backend="ascendc",
+            max_num_configs=1,
+        )(host.to("npu"), out)
+        torch.npu.synchronize()
+        torch.testing.assert_close(out.cpu(), host.abs(), rtol=0, atol=0)
+
+    host = torch.tensor(
+        [
+            -float("inf"),
+            -89,
+            -1,
+            -0.5,
+            -1e-7,
+            -1e-8,
+            -0.0,
+            0.0,
+            1e-8,
+            1e-7,
+            0.5,
+            1,
+            88.721,
+            89,
+            float("inf"),
+            float("nan"),
+        ]
+    )
+    outputs = tuple(torch.empty_like(host).to("npu") for _ in range(6))
+    nt.make(
+        _math_arrangement,
+        _math,
+        (nt.Tensor(1, dtype=nt.float32),) * 7,
+        backend="ascendc",
+        max_num_configs=1,
+    )(host.to("npu"), *outputs)
+    torch.npu.synchronize()
+
+    for actual, function in zip(
+        outputs,
+        (torch.log1p, torch.expm1, torch.tanh, torch.exp, torch.sinh, torch.cosh),
+    ):
+        expected = function(host.double()).float()
+        torch.testing.assert_close(
+            actual.cpu(), expected, rtol=2e-6, atol=0, equal_nan=True
+        )
+        zeros = expected == 0
+        assert torch.equal(
+            torch.signbit(actual.cpu()[zeros]), torch.signbit(expected[zeros])
+        )

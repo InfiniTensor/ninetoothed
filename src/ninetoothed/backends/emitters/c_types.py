@@ -1,7 +1,9 @@
 """Computed C++ scalar types shared by native emitter strategies."""
 
 from collections.abc import Mapping
+from typing import Any
 
+from ninetoothed.dtype import normalize_dtype
 from ninetoothed.ir import ssa
 
 
@@ -63,6 +65,55 @@ class CComputedTypesMixin:
 
 class CScalarArithmeticMixin(CComputedTypesMixin):
     """C++ scalar values, conversions and reduction identities for native targets."""
+
+    def coerce_binary_args(
+        self, op: ssa.Operation, args: tuple[str, ...], ctx: Any
+    ) -> tuple[str, ...]:
+        if len(args) != len(op.operands):
+            return args
+
+        result_type = op.results[0].type if op.results else None
+
+        if result_type is not None and result_type.dtype is None:
+            # Let C++ infer the actual promotion. Choosing a known integer
+            # constant's dtype while another operand is unknown narrows even a
+            # floating input to integer. check_numeric_result validates the
+            # resulting computed type, including inline tensor expressions.
+            return args
+
+        if result_type is not None and result_type.kind == "pointer":
+            return args
+
+        if any(
+            (type_ := ctx.value_types.get(operand)) is not None
+            and type_.kind == "pointer"
+            for operand in op.operands
+        ):
+            return args
+
+        dtype = (
+            normalize_dtype(result_type.dtype)
+            if result_type is not None and normalize_dtype(result_type.dtype) != "bool"
+            else _common_operand_dtype(op.operands, ctx)
+        )
+
+        if dtype is None:
+            return args
+
+        if dtype in {"float16", "bfloat16"}:
+            dtype = "float32"
+
+        coerced = []
+
+        for operand, value in zip(op.operands, args):
+            operand_type = ctx.value_types.get(operand)
+            operand_dtype = normalize_dtype(
+                operand_type.dtype if operand_type is not None else None
+            )
+            coerced.append(
+                ctx.target.cast(dtype, value) if operand_dtype != dtype else value
+            )
+        return tuple(coerced)
 
     def cast_like(self, value, reference):
         return f"{self.global_helper('_nt_cast_like')}<{self.value_dtype(reference)}>({value})"
@@ -236,3 +287,22 @@ NT_DEVICE auto _nt_true_divide(A lhs, B rhs)
     return static_cast<R>(_nt_arithmetic(lhs)) / static_cast<R>(_nt_arithmetic(rhs));
 }
 """
+
+
+def _common_operand_dtype(operands: tuple[str, ...], ctx: Any) -> str | None:
+    ranks = {
+        "bool": 0,
+        "int32": 1,
+        "int64": 2,
+        "float16": 3,
+        "bfloat16": 3,
+        "float32": 4,
+        "float64": 5,
+    }
+    dtypes = [
+        normalize_dtype(type_.dtype)
+        for operand in operands
+        if (type_ := ctx.value_types.get(operand)) is not None
+    ]
+
+    return max(dtypes, key=lambda dtype: ranks.get(dtype, -1)) if dtypes else None

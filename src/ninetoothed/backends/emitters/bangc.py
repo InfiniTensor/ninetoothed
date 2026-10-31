@@ -209,9 +209,6 @@ class BangCTarget(CScalarArithmeticMixin, EmitterTarget):
     def arithmetic_result_type(self, operation, context) -> ssa.Type:
         return _bangc_arithmetic_result_type(operation, context)
 
-    def coerce_binary_args(self, operation, args, context):
-        return _coerce_bangc_binary_args(operation, args, context)
-
     def cast_like(self, value: str, reference: str) -> str:
         # Cncc miscompiles casts of integral-valued double literals to integer
         # types. An integer spelling is exact for every destination type and
@@ -623,76 +620,6 @@ def _bangc_type(dtype: str | None, kind: str | None = None) -> str:
 
 def _bangc_arithmetic_result_type(op: ssa.Operation, ctx: _EmitContext) -> ssa.Type:
     return op.results[0].type
-
-
-def _coerce_bangc_binary_args(
-    op: ssa.Operation, args: tuple[str, ...], ctx: _EmitContext
-) -> tuple[str, ...]:
-    if len(args) != len(op.operands):
-        return args
-
-    result_type = op.results[0].type if op.results else None
-
-    if result_type is not None and result_type.dtype is None:
-        # Let C++ infer the actual promotion. Choosing a known integer
-        # constant's dtype while another operand is unknown narrows even a
-        # floating input to integer. check_numeric_result validates the
-        # resulting computed type, including inline tensor expressions.
-        return args
-
-    if result_type is not None and result_type.kind == "pointer":
-        return args
-
-    if any(
-        (type_ := ctx.value_types.get(operand)) is not None and type_.kind == "pointer"
-        for operand in op.operands
-    ):
-        return args
-
-    dtype = (
-        _normalize_dtype(result_type.dtype)
-        if result_type is not None and _normalize_dtype(result_type.dtype) != "bool"
-        else _bangc_common_operand_dtype(op.operands, ctx)
-    )
-
-    if dtype is None:
-        return args
-
-    if dtype in {"float16", "bfloat16"}:
-        dtype = "float32"
-
-    coerced = []
-
-    for operand, value in zip(op.operands, args):
-        operand_type = ctx.value_types.get(operand)
-        operand_dtype = _normalize_dtype(
-            operand_type.dtype if operand_type is not None else None
-        )
-        coerced.append(
-            ctx.target.cast(dtype, value) if operand_dtype != dtype else value
-        )
-    return tuple(coerced)
-
-
-def _bangc_common_operand_dtype(
-    operands: tuple[str, ...], ctx: _EmitContext
-) -> str | None:
-    ranks = {
-        "bool": 0,
-        "int32": 1,
-        "int64": 2,
-        "float16": 3,
-        "bfloat16": 3,
-        "float32": 4,
-        "float64": 5,
-    }
-    dtypes = [
-        _normalize_dtype(type_.dtype)
-        for operand in operands
-        if (type_ := ctx.value_types.get(operand)) is not None
-    ]
-
-    return max(dtypes, key=lambda dtype: ranks.get(dtype, -1)) if dtypes else None
 
 
 TARGET = BangCTarget()

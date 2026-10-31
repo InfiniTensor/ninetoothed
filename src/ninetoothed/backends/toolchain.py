@@ -429,28 +429,49 @@ def _ccec_include_dirs(home: Path) -> tuple[str, ...]:
 
 
 def _cxx_system_include_dirs() -> tuple[str, ...]:
-    include_root = Path("/usr/include/c++")
-
-    if not include_root.is_dir():
-        return ()
-
-    version_dirs = sorted(
-        (entry for entry in include_root.iterdir() if entry.is_dir()),
-        key=lambda entry: entry.name,
-        reverse=True,
+    """Ask the host compiler for its C++ library paths, including multiarch."""
+    compiler = (
+        shutil.which(os.environ["CXX"])
+        if os.environ.get("CXX")
+        else shutil.which("c++") or shutil.which("g++")
     )
 
-    if not version_dirs:
+    if compiler is None:
         return ()
 
-    cxx = version_dirs[0]
-    triplet = Path("/usr/include/x86_64-linux-gnu/c++") / cxx.name
+    try:
+        result = subprocess.run(
+            [compiler, "-E", "-x", "c++", "-", "-v"],
+            input="",
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ()
 
-    dirs = [str(cxx)]
+    if result.returncode:
+        return ()
 
-    if triplet.is_dir():
-        dirs.append(str(triplet))
-    return tuple(dirs)
+    dirs = []
+    searching = False
+
+    for line in result.stderr.splitlines():
+        if line.strip() == "#include <...> search starts here:":
+            searching = True
+        elif line.strip() == "End of search list.":
+            break
+        elif searching:
+            directory = Path(line.strip())
+
+            # Keep CCEC's own C/intrinsic headers; only supply the host C++
+            # library and its target-specific configuration directory.
+            if (directory / "type_traits").is_file() or (
+                directory / "bits" / "c++config.h"
+            ).is_file():
+                dirs.append(str(directory.resolve()))
+    return tuple(dict.fromkeys(dirs))
 
 
 def find_ccec() -> str:
@@ -557,7 +578,10 @@ def ascendc_compiler_identity(*, required: bool = False) -> dict[str, Any]:
     path = Path(compiler).resolve(strict=True)
     stat = path.stat()
 
-    return _ccec_identity(str(path), stat.st_size, stat.st_mtime_ns)
+    return {
+        **_ccec_identity(str(path), stat.st_size, stat.st_mtime_ns),
+        "cxx_include_dirs": _cxx_system_include_dirs(),
+    }
 
 
 @lru_cache(maxsize=32)

@@ -18,6 +18,10 @@ local compiler identity participate in the compilation cache key.
 The baseline uses the shared SSA walker for indexed and masked memory access,
 broadcasting, loops, reductions and decomposed linear algebra. A single scalar
 executor visits the logical task domain, including tails and in-place writes.
+GM access uses byte-counted DMA through a reserved UB scratch slot, avoiding
+scalar DCache writeback conflicts between disjoint views on different streams.
+Transfers complete before the slot is reused; eligible tile arenas cannot
+overlap this scratch region.
 Eligible loop and reduction programs reuse the shared bounded tile planner.
 Its local storage is allocated from one UB arena, with typed lifetimes and
 simultaneous region yields. Pure elementwise values may be recomputed at their
@@ -33,7 +37,7 @@ reload, including validation of this scalar ABI.
 
 Atomic updates are rejected: serial execution within a kernel does not provide
 atomicity with other streams. Float64 and float8 device arithmetic are also
-unsupported. This baseline has no vector instruction selection, asynchronous
+unsupported. This baseline has no vector instruction selection, overlapped
 DMA schedule, Cube matrix primitives or autotuning. Large fused kernels can
 therefore be slow; target performance optimizations belong to subsequent
 changes.

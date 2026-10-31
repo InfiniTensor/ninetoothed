@@ -85,30 +85,49 @@ def plan_scalar_tiles(context, target, *, storage, budget, inline_elementwise=Fa
         "tensor.zeros",
         "tensor.empty",
     }
-    inline = {
-        op.results[0].name: op
-        for op in all_ops
-        if inline_elementwise
-        and op.opcode in pure
-        and not op.regions
-        and len(op.results) == 1
-        and op.results[0].type.kind == "tensor"
-        and op.results[0].type.shape
-        and op.results[0].name not in yielded
-    }
+    references = Counter(name for op in all_ops for name in op.operands)
+    inline = {}
+    costs = {}
+
+    for op in all_ops:
+        if (
+            inline_elementwise
+            and op.opcode in pure
+            and not op.regions
+            and len(op.results) == 1
+            and op.results[0].type.kind == "tensor"
+            and op.results[0].type.shape
+            and op.results[0].name not in yielded
+        ):
+            name = op.results[0].name
+            cost = 1 + sum(costs.get(operand, 0) for operand in op.operands)
+
+            # Count duplicated subexpressions, not just distinct DAG nodes.
+            # Cheap sharing can save a large tile, but repeated expansion of a
+            # larger expression must stop at an explicit storage boundary.
+            if cost * max(1, references[name]) <= 16:
+                inline[name] = op
+                costs[name] = cost
 
     @cache
     def dependencies(name):
         op = inline.get(name)
 
-        return (
-            tuple(leaf for operand in op.operands for leaf in dependencies(operand))
-            if op is not None
-            else (name,)
-        )
+        counts = Counter()
+
+        if op is None:
+            counts[name] = 1
+        else:
+            for operand in op.operands:
+                counts.update(dict(dependencies(operand)))
+        return tuple(counts.items())
 
     def operands(op):
-        return tuple(leaf for name in op.operands for leaf in dependencies(name))
+        counts = Counter()
+
+        for name in op.operands:
+            counts.update(dict(dependencies(name)))
+        return counts
 
     initial = {}
 
@@ -227,12 +246,11 @@ def plan_scalar_tiles(context, target, *, storage, budget, inline_elementwise=Fa
             fill(buffer, value, axes, local)
 
     def render(ops, local, protected=frozenset()):
-        uses = Counter(
-            operand
-            for op in walk_ops(ops)
-            if not (op.results and op.results[0].name in inline)
-            for operand in operands(op)
-        )
+        uses = Counter()
+
+        for op in walk_ops(ops):
+            if not (op.results and op.results[0].name in inline):
+                uses.update(operands(op))
 
         for op in ops:
             if op.results and op.results[0].name in inline:
@@ -337,8 +355,8 @@ def plan_scalar_tiles(context, target, *, storage, budget, inline_elementwise=Fa
                 else:
                     common.emit_value(name, local)
 
-            for operand in operands(op):
-                uses[operand] -= 1
+            for operand, count in operands(op).items():
+                uses[operand] -= count
 
                 if uses[operand] == 0 and operand not in protected:
                     active.pop(operand, None)
