@@ -31,7 +31,10 @@ operator{operator}(T lhs, NtWide<S> rhs) {{ return NtWide<S>((int64_t)lhs) {oper
     return _SUPPORT + "\n" + "\n".join(mixed)
 
 
-_SUPPORT = r"""template <bool Signed> struct NtWide {
+_SUPPORT = r"""template <bool Signed> struct NtWide;
+template <class F, bool S> static __mlu_func__ F nt_wide_float(NtWide<S> value);
+
+template <bool Signed> struct NtWide {
     uint32_t lo, hi;
     NtWide() = default;
     template <bool Other> __mlu_func__ NtWide(NtWide<Other> x) : lo(x.lo), hi(x.hi) {}
@@ -41,14 +44,20 @@ _SUPPORT = r"""template <bool Signed> struct NtWide {
     __mlu_func__ NtWide(int64_t x) : lo((uint32_t)x), hi((uint32_t)(x >> 32)) {
         if (x < 0) { hi |= 0xffff0000u; }
     }
-    __mlu_func__ NtWide(float x) {
-        bool negative = x < 0.0f;
+    __mlu_func__ NtWide(float x) { assign_float(x); }
+    __mlu_func__ NtWide(double x) { assign_float(x); }
+    template <class F> __mlu_func__ void assign_float(F x) {
+        bool negative = x < F(0);
         if (negative) { x = -x; }
-        hi = (uint32_t)(x * (1.0f / 4294967296.0f));
-        lo = (uint32_t)(x - (float)hi * 4294967296.0f);
+        hi = (uint32_t)(x / F(4294967296.0));
+        lo = (uint32_t)(x - F(hi) * F(4294967296.0));
         if (negative) { lo = ~lo + 1u; hi = ~hi + (lo == 0); }
     }
     explicit __mlu_func__ operator bool() const { return (lo | hi) != 0; }
+    explicit __mlu_func__ operator int8_t() const { return (int8_t)lo; }
+    explicit __mlu_func__ operator uint8_t() const { return (uint8_t)lo; }
+    explicit __mlu_func__ operator int16_t() const { return (int16_t)lo; }
+    explicit __mlu_func__ operator uint16_t() const { return (uint16_t)lo; }
     explicit __mlu_func__ operator int32_t() const { return (int32_t)lo; }
     explicit __mlu_func__ operator uint32_t() const { return lo; }
     explicit __mlu_func__ operator int64_t() const {
@@ -58,11 +67,10 @@ _SUPPORT = r"""template <bool Signed> struct NtWide {
         return ((uint64_t)hi << 32) | lo;
     }
     explicit __mlu_func__ operator float() const {
-        bool negative = Signed && (int32_t)hi < 0;
-        uint32_t low = negative ? ~lo + 1u : lo;
-        uint32_t high = negative ? ~hi + (low == 0) : hi;
-        float value = (float)high * 4294967296.0f + (float)low;
-        return negative ? -value : value;
+        return nt_wide_float<float>(*this);
+    }
+    explicit __mlu_func__ operator double() const {
+        return nt_wide_float<double>(*this);
     }
     __mlu_func__ NtWide operator~() const { return NtWide(~lo, ~hi); }
     __mlu_func__ NtWide operator-() const { return NtWide(~lo + 1u, ~hi + (lo == 0)); }
@@ -131,6 +139,45 @@ _SUPPORT = r"""template <bool Signed> struct NtWide {
 };
 using NtInt64 = NtWide<true>;
 using NtUInt64 = NtWide<false>;
+
+template <class F, bool S> static __mlu_func__ F nt_wide_float(NtWide<S> value) {
+    bool negative = S && (int32_t)value.hi < 0;
+    NtUInt64 magnitude(negative ? -value : value);
+    uint32_t word = magnitude.hi ? magnitude.hi : magnitude.lo;
+    int bits = magnitude.hi ? 32 : 0;
+    for (; word; word >>= 1) { ++bits; }
+    int shift = bits - std::numeric_limits<F>::digits;
+    if (shift < 0) { shift = 0; }
+    NtUInt64 kept = magnitude >> NtUInt64((uint32_t)shift);
+    if (shift) {
+        // Round once using the complete discarded suffix, ties to even.
+        NtUInt64 rest = magnitude - (kept << NtUInt64((uint32_t)shift));
+        NtUInt64 half = NtUInt64(1u) << NtUInt64((uint32_t)(shift - 1));
+        if (rest > half || (rest == half && (kept.lo & 1u))) {
+            kept = kept + NtUInt64(1u);
+        }
+    }
+    // After rounding, both words and their sum are exact in F. Scaling by
+    // an exact power of two cannot introduce another rounding step.
+    union { uint32_t bits; float value; } scale;
+    scale.bits = (uint32_t)(shift + 127) << 23;
+    F result = (F(kept.hi) * F(4294967296.0) + F(kept.lo)) * F(scale.value);
+    return negative ? -result : result;
+}
+
+template <bool S> static __mlu_func__ NtWide<S> nt_abs(NtWide<S> value) {
+    return S && (int32_t)value.hi < 0 ? -value : value;
+}
+template <class T> static __mlu_func__
+typename std::enable_if<std::is_integral<T>::value, T>::type nt_abs(T value) {
+    using U = typename std::make_unsigned<T>::type;
+    return value < T(0) ? T(U(0) - U(value)) : value;
+}
+template <class T> static __mlu_func__
+typename std::enable_if<!std::is_integral<T>::value, T>::type nt_abs(T value) {
+    return T(fabsf((float)value));
+}
+static __mlu_func__ double nt_abs(double value) { return fabs(value); }
 template <bool S> static __mlu_func__ int32_t nt_cast_int32(NtWide<S> value) {
     return (int32_t)value.lo;
 }

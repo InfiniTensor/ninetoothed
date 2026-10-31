@@ -44,7 +44,7 @@ class TaskLaunchSymbols:
 {body}"""
 
 
-def allocate_task_launch_symbols(*source_fragments, symbol_type=TaskLaunchSymbols):
+def allocate_task_launch_symbols(*source_fragments):
     """Keep internal launch arguments distinct from all emitted identifiers."""
     identifiers = set(re.findall(r"\b[A-Za-z_]\w*\b", "\n".join(source_fragments)))
     names = []
@@ -70,4 +70,4 @@ def allocate_task_launch_symbols(*source_fragments, symbol_type=TaskLaunchSymbol
         identifiers.add(name)
         names.append(name)
 
-    return symbol_type(*names)
+    return TaskLaunchSymbols(*names)

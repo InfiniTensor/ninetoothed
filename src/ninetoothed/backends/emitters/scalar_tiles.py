@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from math import prod
 
 from ninetoothed.backends.emitters import ssa as common
-from ninetoothed.backends.emitters.analysis import walk_ops
+from ninetoothed.backends.emitters.analysis import operation_value_references, walk_ops
 from ninetoothed.backends.emitters.context import EmitContext
 from ninetoothed.backends.emitters.expressions import c_integer_expr
 from ninetoothed.ir import ssa
@@ -57,6 +57,14 @@ def plan_scalar_tiles(context, target, *, storage, budget):
     if any(op.opcode == "mem.store" for op in all_ops if op not in operations):
         return None
 
+    # This route executes whole tiles per region; elementwise conditions need
+    # the original coordinate-aware scalar emitter instead.
+    if any(
+        op.opcode == "scf.if" and context.value_types[op.operands[0]].shape
+        for op in all_ops
+    ):
+        return None
+
     initial = {}
 
     for op in all_ops:
@@ -94,7 +102,12 @@ def plan_scalar_tiles(context, target, *, storage, budget):
         type_ = context.value_types[name]
         axes = tuple(map(str, type_.shape))
 
-        if type_.kind != "tensor" or not axes:
+        if type_.kind != "tensor":
+            if axes:
+                raise ValueError("Shaped pointers require coordinate-aware emission.")
+            return ()
+
+        if not axes:
             return ()
 
         if len(axes) > 2 or any(not x.isdecimal() or int(x) <= 0 for x in axes):
@@ -112,11 +125,7 @@ def plan_scalar_tiles(context, target, *, storage, budget):
         if witness.dtype is None:
             raise ValueError("Unresolved scalar tile storage element type.")
 
-        dtype = (
-            target.type_name(witness.dtype)
-            if witness.dtype
-            else target.value_dtype(witness.sample)
-        )
+        dtype = target.type_name(witness.dtype)
         width = (
             2
             if witness.dtype in ("float16", "bfloat16")
@@ -135,8 +144,7 @@ def plan_scalar_tiles(context, target, *, storage, budget):
         active[name] = len(slots)
         slots.append((dtype, count, buffer, width))
 
-        if not callable(storage):
-            declarations.append(f"{storage} {dtype} {buffer}[{count}];")
+        declarations.append(f"{storage} {dtype} {buffer}[{count}];")
 
         if sum(n * w for _, n, _, w in slots) > budget:
             raise ValueError("Scalar tile scratch budget exceeded.")
@@ -174,7 +182,9 @@ def plan_scalar_tiles(context, target, *, storage, budget):
             fill(buffer, value, axes, local)
 
     def render(ops, local, protected=frozenset()):
-        uses = Counter(operand for op in walk_ops(ops) for operand in op.operands)
+        uses = Counter(
+            name for op in walk_ops(ops) for name in operation_value_references(op)
+        )
 
         for op in ops:
             if op.opcode == "scf.yield":
@@ -276,7 +286,7 @@ def plan_scalar_tiles(context, target, *, storage, budget):
                 else:
                     common.emit_value(name, local)
 
-            for operand in op.operands:
+            for operand in operation_value_references(op):
                 uses[operand] -= 1
 
                 if uses[operand] == 0 and operand not in protected:
@@ -288,9 +298,6 @@ def plan_scalar_tiles(context, target, *, storage, budget):
         context.lowering_plans["scalar_tile_rejection"] = str(error)
 
         return None
-
-    if callable(storage):
-        declarations = storage(slots)
 
     prefix = [
         "const int64_t nt_outer_index = (int64_t)(" + target.program_id(0) + ");",

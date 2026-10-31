@@ -92,10 +92,13 @@ class BangCTarget(CComputedTypesMixin, EmitterTarget):
     def type_name(self, dtype, kind=None):
         return _bangc_type(dtype, kind)
 
+    def load(self, tensor, index, *, mask=None, other=0.0):
+        return super().load(tensor, self.index_cast(index), mask=mask, other=other)
+
     def store(self, tensor, index, value, *, mask=None):
         value = self.cast_like(value, f"{self.tensor_ref(tensor)}[0]")
 
-        return super().store(tensor, index, value, mask=mask)
+        return super().store(tensor, self.index_cast(index), value, mask=mask)
 
     def local_decl(self, type_, name, expr):
         if type_.kind == "index" or _normalize_dtype(type_.dtype) == "index":
@@ -136,7 +139,7 @@ class BangCTarget(CComputedTypesMixin, EmitterTarget):
             return f"{self.global_helper('nt_' + name)}({args[0]})"
 
         functions = {
-            "abs": "fabsf",
+            "abs": self.global_helper("nt_abs"),
             "acos": "acosf",
             "asin": "asinf",
             "atan": "atanf",
@@ -439,18 +442,6 @@ def _bangc_support(context: ModuleRenderContext, rendered_body: str = "") -> str
     if "nt_cast_int32(" in context.body:
         lines.append(render_int32_cast_support("__mlu_func__"))
 
-    if any(operation.opcode == "arith.div" for operation in operations.values()):
-        # MLU590's public header has vector division but no div_scalar.
-        # Keep true division in NRAM rather than rounding a reciprocal
-        # constant or emitting a nonexistent intrinsic.
-        lines.append(
-            """static __mlu_func__ void nt_bang_div_scalar(
-    float *dst, const float *src, float scalar, uint32_t count
-) {
-    for (uint32_t i = 0; i < count; ++i) { dst[i] = src[i] / scalar; }
-}"""
-        )
-
     if any(
         operation.opcode in {"math.sin", "math.cos", "call.sin", "call.cos"}
         for operation in operations.values()
@@ -668,6 +659,18 @@ def _coerce_bangc_binary_args(
 
     result_type = op.results[0].type if op.results else None
 
+    if any(
+        (type_ := ctx.value_types.get(operand)) is not None and type_.kind == "pointer"
+        for operand in op.operands
+    ):
+        # Integer data uses NtWide, while pointer offsets use native addresses.
+        return tuple(
+            value
+            if ctx.value_types[operand].kind == "pointer"
+            else ctx.target.index_cast(value)
+            for operand, value in zip(op.operands, args)
+        )
+
     if result_type is not None and result_type.dtype is None:
         # Let C++ infer the actual promotion. Choosing a known integer
         # constant's dtype while another operand is unknown narrows even a
@@ -676,12 +679,6 @@ def _coerce_bangc_binary_args(
         return args
 
     if result_type is not None and result_type.kind == "pointer":
-        return args
-
-    if any(
-        (type_ := ctx.value_types.get(operand)) is not None and type_.kind == "pointer"
-        for operand in op.operands
-    ):
         return args
 
     dtype = (
