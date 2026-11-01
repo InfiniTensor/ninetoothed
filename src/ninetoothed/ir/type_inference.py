@@ -92,14 +92,20 @@ def _normalize_subscript(type_, node, *, source=False):
             dim += len(shape) - consumed
         else:
             if isinstance(item, ast.Slice):
+                # A dimension symbol and a local name can have the same spelling.
+                # Only literal extents prove equality without resolving bindings.
                 full = (
                     (item.lower is None or ast.unparse(item.lower) == "0")
                     and (item.step is None or ast.unparse(item.step) == "1")
                     and (
                         item.upper is None
-                        or dim < len(shape)
-                        and ast.dump(item.upper)
-                        == ast.dump(ast.parse(str(shape[dim]), mode="eval").body)
+                        or (
+                            dim < len(shape)
+                            and str(shape[dim]).isdecimal()
+                            and isinstance(item.upper, ast.Constant)
+                            and type(item.upper.value) is int
+                            and item.upper.value == int(str(shape[dim]))
+                        )
                     )
                 )
 
