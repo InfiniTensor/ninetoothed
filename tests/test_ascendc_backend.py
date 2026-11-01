@@ -97,6 +97,10 @@ def _power(x, y, out):
     out = ntl.pow(x, y)  # noqa: F841
 
 
+def _mixed_compare(x, y, out):
+    out = ntl.where(x > y, 1, 0)  # noqa: F841
+
+
 def _power_arrangement(x, y, out):
     return tuple(tensor.tile((32,)) for tensor in (x, y, out))
 
@@ -388,9 +392,16 @@ def test_ascendc_jit_aot_reload_and_numerics(tmp_path):
     )
 
     left = torch.tensor(
-        [torch.finfo(torch.float32).max, 1.8446742974197924e19, 4294967040.0, -3.0]
+        [
+            torch.finfo(torch.float32).max,
+            1.8446742974197924e19,
+            4294967040.0,
+            -3.0,
+            1625.4986572265625,
+            5.232202238403261e-05,
+        ]
     )
-    right = torch.tensor([1.0, 2.0, 4.0, 3.0])
+    right = torch.tensor([1.0, 2.0, 4.0, 3.0, 12.0, -9.0])
     output = torch.empty_like(left).to("npu")
     nt.make(
         _power_arrangement,
@@ -403,3 +414,38 @@ def test_ascendc_jit_aot_reload_and_numerics(tmp_path):
     torch.testing.assert_close(
         output.cpu(), left.double().pow(right.double()).float(), rtol=2e-6, atol=0
     )
+
+    pairs = (
+        (
+            torch.tensor([127, -128, 0], dtype=torch.int8),
+            torch.tensor([128, -129, 0], dtype=torch.int16),
+        ),
+        (
+            torch.tensor([255, 0, 1], dtype=torch.uint8),
+            torch.tensor([256, 0, 2], dtype=torch.uint16),
+        ),
+        (
+            torch.tensor([255, 0, 1], dtype=torch.uint8),
+            torch.tensor([-1, -1, 1], dtype=torch.int8),
+        ),
+    )
+
+    for x, y in pairs:
+        for left, right in ((x, y), (y, x)):
+            out = torch.empty(3).to("npu")
+            nt.make(
+                _power_arrangement,
+                _mixed_compare,
+                (
+                    nt.Tensor(1, dtype=str(left.dtype)),
+                    nt.Tensor(1, dtype=str(right.dtype)),
+                    nt.Tensor(1),
+                ),
+                backend="ascendc",
+                max_num_configs=1,
+            )(left.to("npu"), right.to("npu"), out)
+            torch.npu.synchronize()
+            expected = torch.tensor(
+                [float(int(a) > int(b)) for a, b in zip(left.tolist(), right.tolist())]
+            )
+            torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0)

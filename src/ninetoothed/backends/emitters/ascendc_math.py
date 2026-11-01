@@ -299,42 +299,9 @@ __aicore__ inline float nt_exp_pair(NtMathPair x) {
     return (p * s1.f) * s2.f;
 }
 
-__aicore__ inline float nt_powi(float x, int n) {
-    // Keep exponentiation normalized, so negative powers never first overflow
-    // or underflow in the positive power. Scaling happens only once at exit.
-    NtFloatBits bits;
-    bits.f = x;
-    int e = ((bits.i >> 23) & 255) - 127;
-    if (e == -127) {
-        bits.f = x * 8388608.0f;
-        e = ((bits.i >> 23) & 255) - 127 - 23;
-    }
-    bits.i = (bits.i & 0x007fffff) | 0x3f800000;
-    float base = bits.f, value = 1.0f;
-    int power = n < 0 ? -n : n, scale = 0;
-    while (power) {
-        if (power & 1) {
-            value *= base; scale += e;
-            if (value >= 2.0f) { value *= 0.5f; ++scale; }
-        }
-        power >>= 1;
-        if (power) {
-            base *= base; e *= 2;
-            if (base >= 2.0f) { base *= 0.5f; ++e; }
-        }
-    }
-    if (n < 0) { value = 1.0f / value; scale = -scale; }
-    if (value < 1.0f) { value *= 2.0f; --scale; }
-    if (scale > 127) { return nt_inf(); }
-    if (scale < -150) { return 0.0f; }
-    int s1 = scale / 2, s2 = scale - s1;
-    NtFloatBits first, second;
-    first.i = (s1 + 127) << 23; second.i = (s2 + 127) << 23;
-    return (value * first.f) * second.f;
-}
-
 __aicore__ inline float nt_pow(float x, float y) {
     if (y == 0.0f) { return 1.0f; }
+    if (y == 1.0f) { return x; }
     if (x == 1.0f) { return 1.0f; }
     if (x != x || y != y) { return nt_nan(); }
     NtFloatBits base_bits;
@@ -360,18 +327,15 @@ __aicore__ inline float nt_pow(float x, float y) {
         // Negative base with a non-integer exponent is undefined.
         return nt_nan();
     }
+    // Use one compensated route for integer and fractional exponents alike.
+    // Repeatedly rounded integer powers can cross the overflow boundary in
+    // either direction even when every intermediate is normalized.
+    NtMathPair logarithm = nt_log_pair(ax);
+    float estimate = y * logarithm.hi;
     float r;
-    if (y == nt_floor(y) && y >= -32.0f && y <= 32.0f) {
-        r = nt_powi(ax, (int)y);
-    } else {
-        NtMathPair logarithm = nt_log_pair(ax);
-        // Classify extreme magnitudes before forming a potentially overflowing
-        // product; every finite FP32 exponential is inside (-105, 89).
-        float estimate = y * logarithm.hi;
-        if (estimate > 90.0f) { r = nt_inf(); }
-        else if (estimate < -106.0f) { r = 0.0f; }
-        else { r = nt_exp_pair(nt_pair_mul({y, 0.0f}, logarithm)); }
-    }
+    if (estimate > 90.0f) { r = nt_inf(); }
+    else if (estimate < -106.0f) { r = 0.0f; }
+    else { r = nt_exp_pair(nt_pair_mul({y, 0.0f}, logarithm)); }
     return x < 0.0f && odd ? -r : r;
 }
 

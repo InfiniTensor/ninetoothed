@@ -5,6 +5,7 @@ from typing import Any
 
 from ninetoothed.backends.emitters.expressions import normalize_dtype
 from ninetoothed.ir import ssa
+from ninetoothed.ir.type_inference import _promote_dtype
 
 
 class CComputedTypesMixin:
@@ -295,19 +296,14 @@ NT_DEVICE auto _nt_true_divide(A lhs, B rhs)
 
 
 def _common_operand_dtype(operands: tuple[str, ...], ctx: Any) -> str | None:
-    ranks = {
-        "bool": 0,
-        "int32": 1,
-        "int64": 2,
-        "float16": 3,
-        "bfloat16": 3,
-        "float32": 4,
-        "float64": 5,
-    }
-    dtypes = [
-        normalize_dtype(type_.dtype)
-        for operand in operands
-        if (type_ := ctx.value_types.get(operand)) is not None
-    ]
+    dtype = None
 
-    return max(dtypes, key=lambda dtype: ranks.get(dtype, -1)) if dtypes else None
+    for index, operand in enumerate(operands):
+        type_ = ctx.value_types.get(operand)
+        current = normalize_dtype(type_.dtype if type_ is not None else None)
+        dtype = (
+            current
+            if index == 0
+            else _promote_dtype(dtype, current, lossless_integers=True)
+        )
+    return dtype

@@ -25,7 +25,6 @@ from ninetoothed.backends.emitters.task_launch import (
     allocate_task_launch_symbols,
 )
 from ninetoothed.ir import Kernel, ssa
-from ninetoothed.ir.type_inference import _promote_dtype
 
 _normalize_dtype = common.normalize_dtype
 
