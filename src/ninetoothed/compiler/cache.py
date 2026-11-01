@@ -58,6 +58,8 @@ def compilation_cache_key(compilation, *, toolchain=None) -> str:
             "specialization_values": getattr(request, "specialization_values", None),
             "tensor_dtypes": getattr(request, "tensor_dtypes", None),
             "source": artifact.sources,
+            "execution_route": artifact.metadata.get("execution_route"),
+            "materialized_stages": artifact.metadata.get("materialized_stages", ()),
             "ssa": ir_to_dict(compilation.kernel.ssa),
             "launch_plan": ir_to_dict(compilation.launch_plan),
             "backend": artifact.backend.value,

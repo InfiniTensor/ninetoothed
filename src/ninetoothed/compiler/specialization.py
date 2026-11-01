@@ -108,7 +108,10 @@ def _specialize_contract_attrs(attributes, values, parameter):
 
 
 def specialize_program(program: ssa.Program, values: Mapping[str, Any]) -> ssa.Program:
-    return replace(
+    from ninetoothed.compiler.materialization import retain_bound_plan
+
+    program = retain_bound_plan(program)
+    result = replace(
         program,
         inputs=tuple(_specialize_ssa_value(value, values) for value in program.inputs),
         outputs=tuple(
@@ -117,6 +120,21 @@ def specialize_program(program: ssa.Program, values: Mapping[str, Any]) -> ssa.P
         blocks=tuple(_specialize_block(block, values) for block in program.blocks),
         metadata=program.metadata,
     )
+
+    plan = program.plans.get("materialization")
+
+    if plan is not None:
+        plan = replace(
+            plan,
+            stages=tuple(
+                replace(stage, program=specialize_program(stage.program, values))
+                for stage in plan.stages
+            ),
+        )
+        result = replace(
+            result, plans={**result.plans, "materialization": plan.bind(result)}
+        )
+    return result
 
 
 def specialize_module(module, *, values=None, dtypes=None):

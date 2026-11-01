@@ -75,6 +75,7 @@ from ninetoothed.backends.emitters.expressions import (
 from ninetoothed.compiler.effects import is_pointwise_expression
 from ninetoothed.compiler.passes import (
     Context,
+    program_facts,
     refresh_program_facts,
 )
 from ninetoothed.ir import Kernel, TensorSpec, ir_to_dict, ssa
@@ -118,6 +119,8 @@ def emit(kernel: Kernel, target: EmitterTarget) -> Artifact:
     if kernel.ssa is None:
         raise ValueError("Backend emission requires ssa.Program.")
 
+    from ninetoothed.compiler.materialization import retain_bound_plan
+
     context = Context(
         backend=target.backend,
         target=_target_context_from_snapshot(kernel.ssa.facts.get("target")),
@@ -125,7 +128,9 @@ def emit(kernel: Kernel, target: EmitterTarget) -> Artifact:
         kernel_metadata=kernel.metadata,
         tensors=kernel.tensors,
     )
-    kernel = replace(kernel, ssa=refresh_program_facts(kernel.ssa, context))
+    kernel = replace(
+        kernel, ssa=refresh_program_facts(retain_bound_plan(kernel.ssa), context)
+    )
     backend = target.backend
     block = kernel.ssa.blocks[0] if kernel.ssa.blocks else ssa.Block()
     auxiliary_bindings = _auxiliary_pointer_bindings(kernel.tensors)
@@ -184,6 +189,7 @@ def emit(kernel: Kernel, target: EmitterTarget) -> Artifact:
         },
         entrypoint=target.entrypoint(kernel.kernel_name),
         metadata=metadata,
+        execution_plans=kernel.ssa.plans,
     )
 
 
@@ -945,6 +951,12 @@ def _render_body(
             ctx.lines.append("/* no-op */")
         return "\n".join(ctx.lines)
 
+    reuse = program_facts(ctx.program, "reduction_reuse")
+
+    if reuse.get("enabled") and (reduction_schedule or {}).get("mode") == "row-vector":
+        for result in reuse.get("results", ()):
+            _emit_value(result, ctx)
+
     for op in operations:
         if _is_top_level_effect(op):
             _emit_operation(op, ctx)
@@ -1519,6 +1531,9 @@ def _operation_expr(op: ssa.Operation, ctx: _EmitContext) -> str:
         tensor = op.operands[0]
         indices = tuple(_emit_index_value(operand, ctx) for operand in op.operands[1:])
 
+        if tensor not in ctx.tensor_infos:
+            return _emit_element(tensor, indices, ctx)
+
         if op.attrs.get("source"):
             return _load_source_tensor(tensor, indices, ctx)
 
@@ -1669,7 +1684,15 @@ def _emit_linalg_dot(
             "dot", tuple(_emit_value(operand, ctx) for operand in op.operands)
         )
 
-    local = f"{_local_symbol(op.results[0].name, ctx)}_dot"
+    result_coords = (
+        tuple(coords) if coords is not None else _current_coords(result_axes, ctx)
+    )
+    cache_key = ("dot", repr((op.results[0].name, result_coords, ctx.local_suffix)))
+
+    if ctx.materialized is not None and cache_key in ctx.materialized:
+        return ctx.materialized[cache_key]
+
+    local = _fresh_temp(ctx, f"{_local_symbol(op.results[0].name, ctx)}_dot")
     accumulator_dtype = _dot_accumulator_dtype(op, ctx)
     acc_type = ssa.Type(kind="scalar", dtype=accumulator_dtype)
     init = ctx.target.literal(0.0)
@@ -1695,9 +1718,6 @@ def _emit_linalg_dot(
         lines=body_lines,
         memo=dict(ctx.memo),
         local_suffix=_nested_local_suffix(ctx, local),
-    )
-    result_coords = (
-        tuple(coords) if coords is not None else _current_coords(result_axes, ctx)
     )
     lhs_coords, rhs_coords = _dot_operand_coords(
         lhs_axes, rhs_axes, result_coords, loop_var
@@ -1725,6 +1745,9 @@ def _emit_linalg_dot(
 
     if ctx.target.c_style_syntax:
         ctx.lines.append("}")
+
+    if ctx.materialized is not None:
+        ctx.materialized[cache_key] = acc_expr
     return acc_expr
 
 
@@ -2499,6 +2522,18 @@ def _dtype_source(name: str, ctx: _EmitContext) -> _ValueType:
     return _ValueType(dtype=None, sample=witness)
 
 
+def _masked_reduction_term(term, mask, init, result_type, ctx):
+    if mask is None:
+        return term
+
+    # Vendor BF16 wrappers have ambiguous implicit conversions with FP32 zeros.
+    if ctx.target.c_style_syntax and result_type.dtype is not None:
+        term = ctx.target.cast(result_type.dtype, term)
+        init = ctx.target.cast(result_type.dtype, init)
+
+    return ctx.target.where(mask, term, init)
+
+
 def _serial_reduction_init(
     op: ssa.Operation, result_type: ssa.Type, ctx: _EmitContext, shape: str
 ) -> tuple[ssa.Type, str]:
@@ -2515,6 +2550,9 @@ def _serial_reduction_init(
         )
 
     init = _reduction_identity(operator, result_type, ctx.target)
+
+    if ctx.target.c_style_syntax:
+        init = ctx.target.cast(result_type.dtype, init)
 
     return result_type, init
 
@@ -2622,8 +2660,7 @@ def _emit_reduce_element(
     term = _emit_element(operand, operand_coords, body)
     mask = _reduction_input_mask(operand, operand_coords, body)
 
-    if mask is not None:
-        term = ctx.target.where(mask, term, init)
+    term = _masked_reduction_term(term, mask, init, result_type, ctx)
 
     body_lines.append(
         _assign_scalar(
@@ -3185,8 +3222,7 @@ def _emit_reduce(local: str, op: ssa.Operation, ctx: _EmitContext) -> str:
         op.operands[0], _reduction_value_coords(op.operands[0], inner), inner
     )
 
-    if mask is not None:
-        term = ctx.target.where(mask, term, init)
+    term = _masked_reduction_term(term, mask, init, result_type, ctx)
 
     update = ctx.target.reduce_update_typed(operator, acc_expr, term, result_type.dtype)
     inner_lines.append(

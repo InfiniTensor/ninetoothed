@@ -151,16 +151,6 @@ class AscendCTarget(CScalarArithmeticMixin, EmitterTarget):
             target=self,
         )
 
-    def reduction_compute_type(self, result_type):
-        if result_type.dtype in {"float16", "bfloat16"}:
-            return replace(result_type, dtype="float32")
-        return result_type
-
-    def reduction_result(self, value, result_type):
-        if result_type.dtype in {"float16", "bfloat16"}:
-            return self.cast(result_type.dtype, value)
-        return value
-
     def arithmetic_result_type(self, operation, context) -> ssa.Type:
         if operation.opcode in {"call.isnan", "call.isfinite"}:
             return replace(operation.results[0].type, dtype="bool")
@@ -384,6 +374,9 @@ def _ascendc_reduction_update(operator: str, lhs: str, rhs: str, *, target) -> s
 
 
 def _ascendc_scalar_tile_storage(slots):
+    if any(dtype == "NtBFloat16" for dtype, _count, _name, _width in slots):
+        raise ValueError("BF16 wrapper values require scalar storage, not UB structs.")
+
     offsets = []
     size = 0
 

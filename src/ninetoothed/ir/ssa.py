@@ -75,6 +75,10 @@ class Program:
     blocks: tuple[Block, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
+    plans: Mapping[str, Any] = field(
+        default_factory=dict, compare=False, repr=False, metadata={"serialize": False}
+    )
+
     facts: Mapping[str, Any] = field(
         default_factory=dict, compare=False, repr=False, metadata={"serialize": False}
     )
@@ -85,6 +89,7 @@ class Program:
         object.__setattr__(self, "blocks", tuple(self.blocks))
         object.__setattr__(self, "metadata", freeze(self.metadata))
         object.__setattr__(self, "facts", freeze(self.facts))
+        object.__setattr__(self, "plans", freeze(self.plans))
 
 
 def verify_program(

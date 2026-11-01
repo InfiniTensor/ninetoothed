@@ -22,8 +22,11 @@ from typing import Any, Mapping
 
 from ninetoothed.backends.core import Target, normalize_target
 from ninetoothed.compiler.canonicalize import canonicalize_dtype_expressions
+from ninetoothed.compiler.cse import eliminate_common_subexpressions
 from ninetoothed.compiler.layout import LayoutTransfer, analyze_layout_transfer
+from ninetoothed.compiler.reduction_geometry import prove_unit_parallel_reductions
 from ninetoothed.compiler.reductions import analyze_reductions
+from ninetoothed.compiler.ssa_values import program_structure
 from ninetoothed.dtype import normalize_dtype
 from ninetoothed.errors import LoweringError
 from ninetoothed.ir import ssa
@@ -90,6 +93,11 @@ class ScheduleCandidate:
 class Pass:
     """Base class for semantics-preserving SSA transforms."""
 
+    changes_ssa = False
+    preserves_stage_plan = False
+    reads = ()
+    provides = ()
+
     name = "ssa.pass"
     category = HARDWARE_INDEPENDENT
     phase = "generic"
@@ -111,6 +119,10 @@ class Descriptor:
     default_enabled: bool = True
     description: str = ""
     tags: tuple[str, ...] = ()
+
+    reads: tuple[str, ...] = ()
+    provides: tuple[str, ...] = ()
+    changes_ssa: bool = False
 
     def create(self) -> Pass:
         return self.factory()
@@ -176,6 +188,9 @@ class Registry:
             else bool(True if default_enabled is None else default_enabled),
             description=doc,
             tags=tuple(tags),
+            reads=probe.reads,
+            provides=probe.provides,
+            changes_ssa=probe.changes_ssa,
         )
 
     def get(self, name: str) -> Descriptor:
@@ -238,12 +253,42 @@ class Pipeline:
         self.registry = registry
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
-        current = ssa.verify_program(program)
+        from ninetoothed.compiler.materialization import retain_bound_plan
+
+        selected = {pass_.name for pass_ in self.passes}
+
+        for name in (
+            "ssa.cse",
+            "ssa.unroll_static_elementwise",
+            "ssa.plan_materialization",
+        ):
+            if name not in context.pass_options:
+                continue
+
+            enabled = _reuse_pass_enabled(context, name)
+
+            if enabled and name not in selected:
+                raise ValueError(
+                    f"Explicitly enabled SSA pass `{name}` is missing from the pipeline."
+                )
+
+        current = ssa.verify_program(retain_bound_plan(program))
         current = _with_metadata(current, pipeline_selection=self._pipeline_metadata())
 
         for pass_ in self.passes:
             current = refresh_program_facts(current, context)
             current = pass_.run(current, context)
+
+            if pass_.preserves_stage_plan:
+                plan = current.plans.get("materialization")
+
+                if plan is not None:
+                    current = replace(
+                        current,
+                        plans={**current.plans, "materialization": plan.bind(current)},
+                    )
+
+            current = retain_bound_plan(current)
             ssa.verify_program(current)
             current = _with_metadata(
                 current,
@@ -289,6 +334,8 @@ class Pipeline:
 class Canonicalize(Pass):
     """Normalize generic SSA into the canonical dialect used by all backends."""
 
+    changes_ssa = True
+
     name = "ssa.canonicalize"
     category = HARDWARE_INDEPENDENT
     phase = "canonicalization"
@@ -302,19 +349,120 @@ class Canonicalize(Pass):
         )
 
 
+class UnrollStaticElementwiseLoops(Pass):
+    """Expand small typed pure loops in their original arithmetic order."""
+
+    name = "ssa.unroll_static_elementwise"
+    category = HARDWARE_INDEPENDENT
+    phase = "canonicalization"
+
+    changes_ssa = True
+
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
+        enabled = _reuse_pass_enabled(context, self.name)
+        expanded = ()
+
+        if enabled:
+            from ninetoothed.compiler.unroll import unroll_static_elementwise_loops
+
+            program, expanded = unroll_static_elementwise_loops(program)
+        return _with_metadata(
+            program, static_unroll={"enabled": enabled, "expanded": expanded}
+        )
+
+
+class CommonSubexpressionElimination(Pass):
+    """Reuse identical expressions within one effect-free block segment."""
+
+    name = "ssa.cse"
+    category = HARDWARE_INDEPENDENT
+    phase = "canonicalization"
+
+    changes_ssa = True
+
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
+        enabled = _reuse_pass_enabled(context, self.name)
+        eliminated = ()
+
+        if enabled:
+            program, eliminated = eliminate_common_subexpressions(program)
+
+        return _with_metadata(
+            program,
+            cse={"enabled": enabled, "eliminated": eliminated},
+        )
+
+
+class PlanMaterialization(Pass):
+    """Plan storage boundaries for reused expensive tensor producer graphs."""
+
+    provides = ("materialization_plan",)
+
+    name = "ssa.plan_materialization"
+    category = HARDWARE_INDEPENDENT
+    phase = "canonicalization"
+    supported_backends = (Target.CUDA,)
+
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
+        options = _pass_options(context, self.name)
+        default = context.backend == Target.CUDA
+
+        if set(options) - {"enabled"} or not isinstance(
+            options.get("enabled", default), bool
+        ):
+            raise ValueError(
+                f"SSA pass `{self.name}` only accepts a boolean `enabled` option."
+            )
+
+        enabled = options.get("enabled", default)
+
+        if enabled and context.backend != Target.CUDA:
+            raise ValueError(
+                "SSA materialization currently requires the CUDA stage consumer."
+            )
+
+        from ninetoothed.compiler.materialization import plan_materialization
+
+        minimum = 0 if options.get("enabled") is True else 1 << 19
+        plan = (
+            plan_materialization(program, min_saved_work=minimum) if enabled else None
+        )
+        program = replace(program, plans={**program.plans, "materialization": plan})
+
+        return _with_metadata(
+            program,
+            materialization={
+                "enabled": enabled,
+                "explicitly_enabled": enabled and options.get("enabled") is True,
+                "selected": plan is not None,
+                "minimum_saved_work": minimum,
+                **(plan.metadata() if plan else {}),
+            },
+        )
+
+
+def _reuse_pass_enabled(context, name):
+    options = _pass_options(context, name)
+
+    if set(options) - {"enabled"} or not isinstance(options.get("enabled", True), bool):
+        raise ValueError(f"SSA pass `{name}` only accepts a boolean `enabled` option.")
+    return options.get("enabled", True)
+
+
 def program_facts(program, name):
     """Read a fact only from the SSA snapshot that established it."""
     facts = program.facts
 
-    if facts.get("structure") != (program.inputs, program.outputs, program.blocks):
+    if facts.get("structure") != program_structure(program):
         return {}
     return facts.get(name, {})
 
 
 def _facts_are_current(program, context):
     return (
-        program.facts.get("structure")
-        == (program.inputs, program.outputs, program.blocks)
+        program.facts.get("structure") == program_structure(program)
+        and program.facts.get("reuse_enabled", False)
+        == bool(program.metadata.get("cse", {}).get("enabled", False))
         and program.facts.get("tensors") == context.tensors
         and program.facts.get("target") == context.resolved_target.as_metadata()
     )
@@ -451,6 +599,8 @@ def _refresh_schedule_contract(previous, current, context):
 class AnalyzeEffects(Pass):
     """Collect dataflow facts needed by schedule selection."""
 
+    provides = ("analysis", "reduction_reuse")
+
     name = "ssa.analyze_effects"
     category = HARDWARE_INDEPENDENT
     phase = "analysis"
@@ -459,6 +609,12 @@ class AnalyzeEffects(Pass):
         if _facts_are_current(program, context):
             return program
 
+        reuse_enabled = bool(program.metadata.get("cse", {}).get("enabled", False))
+        reuse = {
+            "enabled": reuse_enabled,
+            "results": prove_unit_parallel_reductions(program) if reuse_enabled else (),
+        }
+        program = _with_metadata(program, reduction_reuse=reuse)
         opcodes = tuple(_iter_opcodes(program))
         stores = sum(1 for opcode in opcodes if opcode == "mem.store")
         reductions = sum(1 for opcode in opcodes if opcode.startswith("reduce."))
@@ -494,16 +650,21 @@ class AnalyzeEffects(Pass):
         return replace(
             program,
             facts={
-                "structure": (program.inputs, program.outputs, program.blocks),
+                "structure": program_structure(program),
                 "tensors": context.tensors,
                 "target": context.resolved_target.as_metadata(),
                 "analysis": program.metadata["analysis"],
+                "reduction_reuse": reuse,
+                "reuse_enabled": reuse_enabled,
             },
         )
 
 
 class DecomposeLinalg(Pass):
     """Lower high-level linalg ops into index/extract/store SSA operations."""
+
+    changes_ssa = True
+    preserves_stage_plan = True
 
     name = "ssa.decompose_linalg"
     category = HARDWARE_INDEPENDENT
@@ -546,6 +707,8 @@ class DecomposeLinalg(Pass):
 class SelectSchedule(Pass):
     """Attach backend-neutral schedule intent."""
 
+    reads = ("analysis",)
+
     name = "ssa.select_schedule"
     category = HARDWARE_INDEPENDENT
     phase = "schedule_intent"
@@ -584,6 +747,8 @@ class SelectSchedule(Pass):
 
 class OptimizeSchedule(Pass):
     """Contract for language-specific schedule optimization passes."""
+
+    reads = ("analysis",)
 
     name = "ssa.optimize_schedule"
     category = LANGUAGE_SPECIFIC
@@ -778,7 +943,10 @@ def create_default_registry() -> Registry:
 
     registry = Registry()
     registry.register(Canonicalize, tags=("generic", "required"))
+    registry.register(UnrollStaticElementwiseLoops, tags=("generic", "unroll"))
+    registry.register(CommonSubexpressionElimination, tags=("generic", "reuse"))
     registry.register(AnalyzeEffects, tags=("generic", "analysis", "required"))
+    registry.register(PlanMaterialization, tags=("generic", "materialization"))
     registry.register(SelectSchedule, tags=("schedule",))
     registry.register(GroupReductionRows, tags=("schedule", "reduction"))
     _register_backend_passes(registry)

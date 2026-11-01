@@ -4,19 +4,12 @@ from collections import defaultdict, deque
 from collections.abc import Iterator, Mapping
 
 from ninetoothed.backends.emitters.context import CooperativeDotPlan
-from ninetoothed.compiler.effects import broadcast_view_parts, is_pointwise_expression
+from ninetoothed.compiler.effects import (
+    broadcast_view_parts,
+    is_pointwise_expression,
+    operation_value_references,
+)
 from ninetoothed.ir import Kernel, ssa
-
-
-def operation_value_references(operation):
-    """Include SSA values used by indexed stores as well as ordinary operands."""
-    indices = (
-        operation.attrs.get("indices", ()) if operation.opcode == "mem.store" else ()
-    )
-
-    return operation.operands + (
-        (indices,) if isinstance(indices, str) else tuple(indices)
-    )
 
 
 class ScalarCarryProjectionAnalysis:

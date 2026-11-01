@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping, MutableMapping
 
 from ninetoothed.ir import Kernel
+from ninetoothed.ir.frozen import freeze
 
 
 class Target(str, Enum):
@@ -47,6 +48,13 @@ class Artifact:
     sources: Mapping[str, str]
     entrypoint: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    execution_plans: Mapping[str, Any] = field(
+        default_factory=dict, compare=False, repr=False, metadata={"serialize": False}
+    )
+
+    def __post_init__(self):
+        object.__setattr__(self, "execution_plans", freeze(self.execution_plans))
 
     @property
     def primary_source_name(self) -> str:
