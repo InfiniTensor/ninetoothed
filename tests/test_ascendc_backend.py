@@ -60,13 +60,45 @@ def _where_boundary(x, out):
     out = ntl.where(x > 0, x, 257) - 256  # noqa: F841
 
 
-def _math(x, logarithm, exponential, tangent, exp, sinh, cosh):
+def _math(x, logarithm, exponential, tangent, exp, sinh, cosh, error):
     logarithm = ntl.log1p(x)  # noqa: F841
     exponential = ntl.expm1(x)  # noqa: F841
     tangent = ntl.tanh(x)  # noqa: F841
     exp = ntl.exp(x)  # noqa: F841
     sinh = ntl.sinh(x)  # noqa: F841
     cosh = ntl.cosh(x)  # noqa: F841
+    error = ntl.erf(x)  # noqa: F841
+
+
+def _live_tiles(x, out):
+    y = ntl.abs(x)
+    z = ntl.abs(x + 1)
+    out = ntl.sum(y) + ntl.max(z)  # noqa: F841
+
+
+def _tile_arrangement(x, out):
+    return x.tile((8,)), out.tile((1,))
+
+
+def _tensor_if(x, out):
+    total = ntl.sum(x)
+    maximum = ntl.max(x)
+    value = x
+
+    if x > 0:
+        value = x + total
+    else:
+        value = x + maximum
+
+    out = value  # noqa: F841
+
+
+def _power(x, y, out):
+    out = ntl.pow(x, y)  # noqa: F841
+
+
+def _power_arrangement(x, y, out):
+    return tuple(tensor.tile((32,)) for tensor in (x, y, out))
 
 
 def _math_arrangement(x, *outputs):
@@ -294,11 +326,11 @@ def test_ascendc_jit_aot_reload_and_numerics(tmp_path):
             float("nan"),
         ]
     )
-    outputs = tuple(torch.empty_like(host).to("npu") for _ in range(6))
+    outputs = tuple(torch.empty_like(host).to("npu") for _ in range(7))
     nt.make(
         _math_arrangement,
         _math,
-        (nt.Tensor(1, dtype=nt.float32),) * 7,
+        (nt.Tensor(1, dtype=nt.float32),) * 8,
         backend="ascendc",
         max_num_configs=1,
     )(host.to("npu"), *outputs)
@@ -306,7 +338,15 @@ def test_ascendc_jit_aot_reload_and_numerics(tmp_path):
 
     for actual, function in zip(
         outputs,
-        (torch.log1p, torch.expm1, torch.tanh, torch.exp, torch.sinh, torch.cosh),
+        (
+            torch.log1p,
+            torch.expm1,
+            torch.tanh,
+            torch.exp,
+            torch.sinh,
+            torch.cosh,
+            torch.erf,
+        ),
     ):
         expected = function(host.double()).float()
         torch.testing.assert_close(
@@ -316,3 +356,50 @@ def test_ascendc_jit_aot_reload_and_numerics(tmp_path):
         assert torch.equal(
             torch.signbit(actual.cpu()[zeros]), torch.signbit(expected[zeros])
         )
+
+    for dtype, declaration in ((torch.int64, nt.int64), (torch.uint64, nt.uint64)):
+        host = torch.arange(1, 9).to(dtype)
+        output = torch.empty(1, dtype=dtype).to("npu")
+        nt.make(
+            _tile_arrangement,
+            _live_tiles,
+            (
+                nt.Tensor(shape=(8,), dtype=declaration),
+                nt.Tensor(shape=(1,), dtype=declaration),
+            ),
+            backend="ascendc",
+            max_num_configs=1,
+        )(host.to("npu"), output)
+        torch.npu.synchronize()
+        assert output.cpu().item() == 45
+
+    host = torch.arange(-4, 4, dtype=torch.float32)
+    output = torch.empty_like(host).to("npu")
+    nt.make(
+        _arrangement,
+        _tensor_if,
+        (nt.Tensor(1),) * 2,
+        backend="ascendc",
+        max_num_configs=1,
+    )(host.to("npu"), output)
+    torch.npu.synchronize()
+    torch.testing.assert_close(
+        output.cpu(), torch.where(host > 0, host + host.sum(), host + host.max())
+    )
+
+    left = torch.tensor(
+        [torch.finfo(torch.float32).max, 1.8446742974197924e19, 4294967040.0, -3.0]
+    )
+    right = torch.tensor([1.0, 2.0, 4.0, 3.0])
+    output = torch.empty_like(left).to("npu")
+    nt.make(
+        _power_arrangement,
+        _power,
+        (nt.Tensor(1),) * 3,
+        backend="ascendc",
+        max_num_configs=1,
+    )(left.to("npu"), right.to("npu"), output)
+    torch.npu.synchronize()
+    torch.testing.assert_close(
+        output.cpu(), left.double().pow(right.double()).float(), rtol=2e-6, atol=0
+    )

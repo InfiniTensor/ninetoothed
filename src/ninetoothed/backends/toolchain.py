@@ -99,35 +99,7 @@ def cuda_compiler_identity(*, required: bool = False) -> dict[str, Any]:
 
 @lru_cache(maxsize=32)
 def _cuda_compiler_identity(path: str, size: int, mtime_ns: int) -> dict[str, Any]:
-    try:
-        result = subprocess.run(
-            (path, "--version"),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError(
-            f"Failed to query CUDA compiler identity from `{path}`."
-        ) from exc
-
-    version_text = "\n".join(
-        value.strip() for value in (result.stdout, result.stderr) if value.strip()
-    )
-
-    if result.returncode != 0 or not version_text:
-        raise RuntimeError(
-            f"CUDA compiler `{path}` did not provide a usable --version result."
-        )
-
-    return {
-        "available": True,
-        "path": path,
-        "size": size,
-        "mtime_ns": mtime_ns,
-        "version": version_text,
-    }
+    return _local_compiler_identity(path, size, mtime_ns, label="CUDA")
 
 
 def _validated_compiler(value: str, *, explicit: bool) -> str:
@@ -262,7 +234,7 @@ def resolve_bangc_arch(arch: str) -> str:
             capability = getattr(torch.mlu, "get_device_capability", None)
 
             if callable(capability):
-                major = int(capability(0)[0])
+                major = int(capability(torch.mlu.current_device())[0])
 
                 return "compute_30" if major < 5 else "compute_50"
     except (ImportError, RuntimeError, ValueError, IndexError, AttributeError):

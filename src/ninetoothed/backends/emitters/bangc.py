@@ -25,6 +25,7 @@ from ninetoothed.backends.emitters.task_launch import (
     allocate_task_launch_symbols,
 )
 from ninetoothed.ir import Kernel, ssa
+from ninetoothed.ir.type_inference import _promote_dtype
 
 _normalize_dtype = common.normalize_dtype
 
@@ -92,10 +93,42 @@ class BangCTarget(CScalarArithmeticMixin, EmitterTarget):
     def type_name(self, dtype, kind=None):
         return _bangc_type(dtype, kind)
 
+    def check_numeric_result(self, operation, value, context):
+        name = operation.opcode.split(".", 1)[-1]
+
+        if (
+            operation.opcode.startswith(("math.", "call."))
+            or operation.opcode == "arith.pow"
+        ) and name not in {
+            "abs",
+            "maximum",
+            "minimum",
+            "max",
+            "min",
+            "reciprocal",
+            "dot",
+            "block_dot",
+            "load",
+            "where",
+        }:
+            types = [result.type for result in operation.results]
+            types.extend(context.value_types[operand] for operand in operation.operands)
+
+            if any(_normalize_dtype(type_.dtype) == "float64" for type_ in types):
+                raise ValueError(
+                    f"BangC does not support FP64 `{name}` math; "
+                    "explicitly cast to a supported compute dtype."
+                )
+
+        return super().check_numeric_result(operation, value, context)
+
+    def load(self, tensor, index, *, mask=None, other=0.0):
+        return super().load(tensor, self.index_cast(index), mask=mask, other=other)
+
     def store(self, tensor, index, value, *, mask=None):
         value = self.cast_like(value, f"{self.tensor_ref(tensor)}[0]")
 
-        return super().store(tensor, index, value, mask=mask)
+        return super().store(tensor, self.index_cast(index), value, mask=mask)
 
     def local_decl(self, type_, name, expr):
         if type_.kind == "index" or _normalize_dtype(type_.dtype) == "index":
@@ -136,7 +169,7 @@ class BangCTarget(CScalarArithmeticMixin, EmitterTarget):
             return f"{self.global_helper('nt_' + name)}({args[0]})"
 
         functions = {
-            "abs": "fabsf",
+            "abs": self.global_helper("nt_abs"),
             "acos": "acosf",
             "asin": "asinf",
             "atan": "atanf",
@@ -400,18 +433,6 @@ def _bangc_support(context: ModuleRenderContext, rendered_body: str = "") -> str
 
     if "nt_cast_int32(" in context.body:
         lines.append(render_int32_cast_support("__mlu_func__"))
-
-    if any(operation.opcode == "arith.div" for operation in operations.values()):
-        # MLU590's public header has vector division but no div_scalar.
-        # Keep true division in NRAM rather than rounding a reciprocal
-        # constant or emitting a nonexistent intrinsic.
-        lines.append(
-            """static __mlu_func__ void nt_bang_div_scalar(
-    float *dst, const float *src, float scalar, uint32_t count
-) {
-    for (uint32_t i = 0; i < count; ++i) { dst[i] = src[i] / scalar; }
-}"""
-        )
 
     if any(
         operation.opcode in {"math.sin", "math.cos", "call.sin", "call.cos"}

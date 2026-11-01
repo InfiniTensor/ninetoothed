@@ -4,11 +4,9 @@ MAX_BLOCK_TASKS = 65535
 MAX_LOGICAL_TASKS = (1 << 32) - 1
 
 
-def render_segmented_launch(
-    kernel_name, arguments, tasks, symbols, *, extra_private_args=(), queue="queue"
-):
+def render_segmented_launch(kernel_name, arguments, tasks, symbols, *, queue="queue"):
     """Keep the public queue and stop at the first CNRT launch error."""
-    args = ", ".join((*arguments, symbols.offset, symbols.total, *extra_private_args))
+    args = ", ".join((*arguments, symbols.offset, symbols.total))
 
     return f"""    const int64_t {symbols.total} = {tasks};
     if ({symbols.total} <= 0) {{ return 0; }}

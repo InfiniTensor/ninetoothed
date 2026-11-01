@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from typing import Any
 
-from ninetoothed.dtype import normalize_dtype
+from ninetoothed.backends.emitters.expressions import normalize_dtype
 from ninetoothed.ir import ssa
 
 
@@ -74,6 +74,18 @@ class CScalarArithmeticMixin(CComputedTypesMixin):
 
         result_type = op.results[0].type if op.results else None
 
+        if any(
+            (type_ := ctx.value_types.get(operand)) is not None
+            and type_.kind == "pointer"
+            for operand in op.operands
+        ):
+            return tuple(
+                value
+                if ctx.value_types[operand].kind == "pointer"
+                else ctx.target.index_cast(value)
+                for operand, value in zip(op.operands, args)
+            )
+
         if result_type is not None and result_type.dtype is None:
             # Let C++ infer the actual promotion. Choosing a known integer
             # constant's dtype while another operand is unknown narrows even a
@@ -82,13 +94,6 @@ class CScalarArithmeticMixin(CComputedTypesMixin):
             return args
 
         if result_type is not None and result_type.kind == "pointer":
-            return args
-
-        if any(
-            (type_ := ctx.value_types.get(operand)) is not None
-            and type_.kind == "pointer"
-            for operand in op.operands
-        ):
             return args
 
         dtype = (

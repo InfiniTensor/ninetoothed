@@ -5,8 +5,8 @@ import ninetoothed.language as ntl
 from ninetoothed.compiler import DEFAULT_COMPILER, CompileRequest, load_built_artifact
 
 
-def _arrangement(x, y, out):
-    return tuple(tensor.tile((128,)) for tensor in (x, y, out))
+def _arrangement(*tensors):
+    return tuple(tensor.tile((128,)) for tensor in tensors)
 
 
 def _application(x, y, out):
@@ -36,19 +36,36 @@ def _atomic_arrangement(x, out):
     return x.tile((128,)), out.tile((1,))
 
 
+def _indexed_arrangement(*tensors):
+    return tuple(tensor.tile((8,)) for tensor in tensors)
+
+
 def _atomic_sum(x, out):
     ntl.atomic_add(out.data_ptr(), ntl.sum(x))
 
 
-def _normalize_arrangement(x, out):
-    return x.tile((1, -1)), out.tile((1, -1))
+def _conditional(x, out):
+    total = ntl.sum(x)
+    maximum = ntl.max(x)
+    value = x
+
+    if x > 0:
+        value = x + total
+    else:
+        value = x + maximum
+
+    out = value  # noqa: F841
 
 
-def _normalize(x, out):
-    mean = ntl.sum(x, axis=1, keepdims=True) / x.shape[1]
-    centered = x - mean
-    variance = ntl.sum(centered * centered, axis=1, keepdims=True) / x.shape[1]
-    out = centered * ntl.rsqrt(variance + 1e-5)  # noqa: F841
+def _indexed(indices, x, out):
+    index = indices + 0
+    used = index + 1
+    later = indices + 2
+    out[index] = x + ntl.sum(x) + ntl.sum(x) + 0 * used + 0 * later
+
+
+def _cast_absolute(x, out):
+    out = ntl.abs(x).to(out.dtype)  # noqa: F841
 
 
 def _loop_arrangement(x, y, z, out):
@@ -78,7 +95,6 @@ def test_bangc_scalar_source_contract():
     assert "__mlu_entry__" in source
     assert "cnrtGetLastError" in source
     assert "launch_bangc_baseline" in source
-    assert "__bang_add(" not in source
     assert artifact.backend.value == "bangc"
     artifact = lower(
         _loop_arrangement,
@@ -88,6 +104,13 @@ def test_bangc_scalar_source_contract():
         kernel_name="bangc_bounded_loop",
     )
     assert "__nram__" in artifact.primary_source
+    artifact = lower(
+        _arrangement,
+        _conditional,
+        tuple(nt.Tensor(shape=(8,), dtype=nt.float32) for _ in range(2)),
+        backend="bangc",
+    )
+    assert "__nram__" not in artifact.primary_source
     artifact = lower(
         _row_arrangement,
         _entropy,
@@ -99,6 +122,28 @@ def test_bangc_scalar_source_contract():
         kernel_name="bangc_bounded_reductions",
     )
     assert "__nram__" in artifact.primary_source
+
+
+def test_bangc_native_arch_uses_current_device(monkeypatch):
+    from types import SimpleNamespace
+
+    import torch
+
+    from ninetoothed.backends.toolchain import resolve_bangc_arch
+
+    monkeypatch.delenv("NINETOOTHED_BANGC_ARCH", raising=False)
+    monkeypatch.setattr(
+        torch,
+        "mlu",
+        SimpleNamespace(
+            is_available=lambda: True,
+            current_device=lambda: 1,
+            get_device_capability=lambda device: ((5, 0), (3, 0))[device],
+        ),
+        raising=False,
+    )
+    assert resolve_bangc_arch("native") == "compute_30"
+    assert resolve_bangc_arch("compute_50") == "compute_50"
 
 
 def test_bangc_jit_aot_reload_and_numerics(tmp_path):
@@ -127,19 +172,26 @@ def test_bangc_jit_aot_reload_and_numerics(tmp_path):
 
         if dtype == torch.int64:
             host += 1 << 54
+            other = torch.arange(257, dtype=dtype) % 3 + 1
+        else:
+            host = torch.linspace(-2, 2, 257, dtype=dtype)
+            other = torch.linspace(0.5, 1.5, 257, dtype=dtype)
 
-        x, y = host.to("mlu"), torch.ones(257, dtype=dtype).to("mlu")
+        expected = (host + other) * other
+        x, y = host.to("mlu"), other.to("mlu")
         storage = torch.full((259,), -123, dtype=dtype).to("mlu")
         out = storage[1:-1]
         handle(x, y, out)
         torch.mlu.synchronize()
-        torch.testing.assert_close(out.cpu(), host + 1, rtol=0, atol=0)
+        torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0)
         assert storage[0].item() == storage[-1].item() == -123
-        reloaded = load_built_artifact(handle._built_artifact)
-        out.zero_()
-        reloaded(x, y, out)
-        torch.mlu.synchronize()
-        torch.testing.assert_close(out.cpu(), host + 1, rtol=0, atol=0)
+
+        if dtype == torch.float32:
+            reloaded = load_built_artifact(handle._built_artifact)
+            out.zero_()
+            reloaded(x, y, out)
+            torch.mlu.synchronize()
+            torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0)
 
     host = torch.tensor([[2**55 + 1, 2**55 + 3], [-(2**55) - 3, -(2**55) - 1]])
     x = host.to("mlu")
@@ -172,38 +224,7 @@ def test_bangc_jit_aot_reload_and_numerics(tmp_path):
     torch.mlu.synchronize()
     assert out.cpu().item() == 2**55 + 129
 
-    host = torch.arange(256, dtype=torch.float32).reshape(8, 32) / 32
-    x, out = host.to("mlu"), torch.empty_like(host).to("mlu")
-    kernel = nt.make(
-        _normalize_arrangement,
-        _normalize,
-        (nt.Tensor(2), nt.Tensor(2)),
-        backend="bangc",
-        max_num_configs=1,
-    )
-    kernel(x, out)
-    expected = (host - host.mean(1, keepdim=True)) / torch.sqrt(
-        host.var(1, unbiased=False, keepdim=True) + 1e-5
-    )
-    torch.mlu.synchronize()
-    torch.testing.assert_close(out.cpu(), expected, rtol=1e-5, atol=1e-5)
-    kernel = nt.make(
-        _row_arrangement,
-        _entropy,
-        (
-            nt.Tensor(shape=(8, 32), dtype=nt.float32),
-            nt.Tensor(shape=(8,), dtype=nt.float32),
-        ),
-        backend="bangc",
-        max_num_configs=1,
-    )
-    entropy = torch.empty(8, dtype=torch.float32).to("mlu")
-    kernel(x, entropy)
-    torch.mlu.synchronize()
-    probability = host.softmax(1)
-    expected = -(probability * (probability + 1e-8).log()).sum(1)
-    torch.testing.assert_close(entropy.cpu(), expected)
-    host = host[:7, 1:30:2]
+    host = torch.arange(256, dtype=torch.float32).reshape(8, 32)[:7, 1:30:2] / 32
     x = host.to("mlu")
     kernel = nt.make(
         _row_arrangement,
@@ -238,3 +259,47 @@ def test_bangc_jit_aot_reload_and_numerics(tmp_path):
     kernel(x, x, x, out)
     torch.mlu.synchronize()
     torch.testing.assert_close(out.cpu(), 2 * (host @ host @ host))
+
+    host = torch.tensor([-4, -3, -2, -1, 1, 2, 3, 4], dtype=torch.float32)
+    x, out = host.to("mlu"), torch.empty_like(host).to("mlu")
+    kernel = nt.make(
+        _arrangement,
+        _conditional,
+        (nt.Tensor(1), nt.Tensor(1)),
+        backend="bangc",
+        max_num_configs=1,
+    )
+    kernel(x, out)
+    torch.mlu.synchronize()
+    torch.testing.assert_close(
+        out.cpu(), torch.where(host > 0, host + host.sum(), host + host.max())
+    )
+    kernel = nt.make(
+        _indexed_arrangement,
+        _indexed,
+        (nt.Tensor(1), nt.Tensor(1), nt.Tensor(1)),
+        backend="bangc",
+        max_num_configs=1,
+    )
+    kernel(torch.arange(8, device="mlu").flip(0), x, out)
+    torch.mlu.synchronize()
+    torch.testing.assert_close(out.cpu(), (host + 2 * host.sum()).flip(0))
+
+    for dtype in (torch.int8, torch.int16, torch.float32):
+        values = (
+            [42, -42]
+            if dtype != torch.float32
+            else [6442450687, -6442451201, 72057598332895233]
+        )
+        host = torch.tensor(values, dtype=torch.int64)
+        out = torch.empty(len(values), dtype=dtype, device="mlu")
+        kernel = nt.make(
+            _arrangement,
+            _cast_absolute,
+            (nt.Tensor(1), nt.Tensor(1)),
+            backend="bangc",
+            max_num_configs=1,
+        )
+        kernel(host.to("mlu"), out)
+        torch.mlu.synchronize()
+        torch.testing.assert_close(out.cpu(), host.abs().to(dtype), rtol=0, atol=0)

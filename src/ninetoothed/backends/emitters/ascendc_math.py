@@ -13,6 +13,37 @@ union NtFloatBits {
     int32_t i;
 };
 
+struct NtMathPair { float hi, lo; };
+
+__aicore__ inline NtMathPair nt_pair_add(NtMathPair a, NtMathPair b) {
+    float s = a.hi + b.hi;
+    float v = s - a.hi;
+    float e = ((a.hi - (s - v)) + (b.hi - v)) + a.lo + b.lo;
+    float h = s + e;
+    return {h, e - (h - s)};
+}
+
+__aicore__ inline NtMathPair nt_pair_mul(NtMathPair a, NtMathPair b) {
+    // The compensation requires a separately rounded product, even when
+    // the target compiler contracts surrounding multiply-add expressions.
+    volatile float p = a.hi * b.hi;
+    NtFloatBits ah, bh;
+    ah.f = a.hi; bh.f = b.hi;
+    ah.i &= -4096; bh.i &= -4096;
+    float al = a.hi - ah.f, bl = b.hi - bh.f;
+    float e = ((ah.f * bh.f - p) + ah.f * bl + al * bh.f) + al * bl;
+    e += a.hi * b.lo + a.lo * b.hi;
+    float h = p + e;
+    return {h, e - (h - p)};
+}
+
+__aicore__ inline NtMathPair nt_pair_div(NtMathPair a, NtMathPair b) {
+    float q = a.hi / b.hi;
+    NtMathPair product = nt_pair_mul({q, 0.0f}, b);
+    NtMathPair residual = nt_pair_add(a, {-product.hi, -product.lo});
+    return nt_pair_add({q, 0.0f}, {(residual.hi + residual.lo) / b.hi, 0.0f});
+}
+
 __aicore__ inline float nt_inf() {
     NtFloatBits v;
     v.i = 0x7f800000;
@@ -224,6 +255,84 @@ __aicore__ inline float nt_ceil(float x) {
     return -nt_floor(-x);
 }
 
+__aicore__ inline NtMathPair nt_log_pair(float x) {
+    NtFloatBits bits;
+    bits.f = x;
+    int e = ((bits.i >> 23) & 255) - 127;
+    if (e == -127) {
+        bits.f = x * 8388608.0f;
+        e = ((bits.i >> 23) & 255) - 127 - 23;
+    }
+    bits.i = (bits.i & 0x007fffff) | 0x3f800000;
+    float m = bits.f;
+    if (m > 1.5f) { m *= 0.5f; e += 1; }
+    // Subtraction is exact here (Sterbenz). Preserve the rounding of m+1
+    // and of the division before summing the convergent atanh series.
+    NtMathPair u = nt_pair_div({m - 1.0f, 0.0f}, nt_pair_add({m, 0.0f}, {1.0f, 0.0f}));
+    NtMathPair square = nt_pair_mul(u, u), term = u, sum = u;
+    for (int j = 1; j <= 12; ++j) {
+        term = nt_pair_mul(term, square);
+        sum = nt_pair_add(sum, nt_pair_div(term, {(float)(2*j+1), 0.0f}));
+    }
+    NtMathPair exponent = nt_pair_mul({(float)e, 0.0f}, {0.693147182464599609375f, -1.904654323148236e-9f});
+    return nt_pair_add(exponent, nt_pair_mul({2.0f, 0.0f}, sum));
+}
+
+__aicore__ inline float nt_exp_pair(NtMathPair x) {
+    if (x.hi > 89.0f) { return nt_inf(); }
+    if (x.hi < -105.0f) { return 0.0f; }
+    float t = x.hi * 1.442695041f;
+    int k = (int)(t + (t > 0.0f ? 0.5f : -0.5f));
+    NtMathPair shift = nt_pair_mul({(float)k, 0.0f}, {0.693147182464599609375f, -1.904654323148236e-9f});
+    NtMathPair remainder = nt_pair_add(x, {-shift.hi, -shift.lo});
+    // Preserve the polynomial's low component too: rounding 1+r upward
+    // before the final scale would still turn a finite boundary into Inf.
+    NtMathPair term{1.0f, 0.0f}, sum = term;
+    for (int j = 1; j <= 12; ++j) {
+        term = nt_pair_div(nt_pair_mul(term, remainder), {(float)j, 0.0f});
+        sum = nt_pair_add(sum, term);
+    }
+    float p = sum.hi + sum.lo;
+    int k1 = k / 2, k2 = k - k1;
+    NtFloatBits s1, s2;
+    s1.i = (k1 + 127) << 23; s2.i = (k2 + 127) << 23;
+    return (p * s1.f) * s2.f;
+}
+
+__aicore__ inline float nt_powi(float x, int n) {
+    // Keep exponentiation normalized, so negative powers never first overflow
+    // or underflow in the positive power. Scaling happens only once at exit.
+    NtFloatBits bits;
+    bits.f = x;
+    int e = ((bits.i >> 23) & 255) - 127;
+    if (e == -127) {
+        bits.f = x * 8388608.0f;
+        e = ((bits.i >> 23) & 255) - 127 - 23;
+    }
+    bits.i = (bits.i & 0x007fffff) | 0x3f800000;
+    float base = bits.f, value = 1.0f;
+    int power = n < 0 ? -n : n, scale = 0;
+    while (power) {
+        if (power & 1) {
+            value *= base; scale += e;
+            if (value >= 2.0f) { value *= 0.5f; ++scale; }
+        }
+        power >>= 1;
+        if (power) {
+            base *= base; e *= 2;
+            if (base >= 2.0f) { base *= 0.5f; ++e; }
+        }
+    }
+    if (n < 0) { value = 1.0f / value; scale = -scale; }
+    if (value < 1.0f) { value *= 2.0f; --scale; }
+    if (scale > 127) { return nt_inf(); }
+    if (scale < -150) { return 0.0f; }
+    int s1 = scale / 2, s2 = scale - s1;
+    NtFloatBits first, second;
+    first.i = (s1 + 127) << 23; second.i = (s2 + 127) << 23;
+    return (value * first.f) * second.f;
+}
+
 __aicore__ inline float nt_pow(float x, float y) {
     if (y == 0.0f) { return 1.0f; }
     if (x == 1.0f) { return 1.0f; }
@@ -251,27 +360,19 @@ __aicore__ inline float nt_pow(float x, float y) {
         // Negative base with a non-integer exponent is undefined.
         return nt_nan();
     }
-    NtFloatBits v;
-    v.f = (x < 0.0f) ? -x : x;
-    int biased = (v.i >> 23) & 0xff;
-    float m;
-    int e;
-    if (biased == 0) {
-        // Subnormal bases carry no implicit bit: x = M * 2^-149.
-        e = -126;
-        m = (float)(v.i & 0x007fffff) * (1.0f / 8388608.0f);
+    float r;
+    if (y == nt_floor(y) && y >= -32.0f && y <= 32.0f) {
+        r = nt_powi(ax, (int)y);
+    } else {
+        NtMathPair logarithm = nt_log_pair(ax);
+        // Classify extreme magnitudes before forming a potentially overflowing
+        // product; every finite FP32 exponential is inside (-105, 89).
+        float estimate = y * logarithm.hi;
+        if (estimate > 90.0f) { r = nt_inf(); }
+        else if (estimate < -106.0f) { r = 0.0f; }
+        else { r = nt_exp_pair(nt_pair_mul({y, 0.0f}, logarithm)); }
     }
-    else {
-        e = biased - 127;
-        v.i = (v.i & 0x007fffff) | 0x3f800000;
-        m = v.f;
-    }
-    float lg = e * 0.69314718f + nt_log(m);
-    float r = nt_exp(((x < 0.0f) ? nt_floor(y) : y) * lg);
-    if (x < 0.0f) {
-        return odd ? -r : r;
-    }
-    return r;
+    return x < 0.0f && odd ? -r : r;
 }
 
 __aicore__ inline float nt_fabs(float x) {
@@ -331,6 +432,15 @@ __aicore__ inline float nt_expm1(float x) {
 
 __aicore__ inline float nt_erf(float x) {
     if (x == 0.0f) { return x; }
+    float ax = x < 0.0f ? -x : x;
+    if (ax <= 0.5f) {
+        // Odd Taylor series: the first omitted term is at most
+        // (2/sqrt(pi))*|x|^17/(8!*17), with no 1-nearly-one cancellation.
+        float z = x * x;
+        return x * 1.1283791670955126f * (1.0f + z * (-1.0f/3.0f
+            + z * (1.0f/10.0f + z * (-1.0f/42.0f + z * (1.0f/216.0f
+            + z * (-1.0f/1320.0f + z * (1.0f/9360.0f + z * (-1.0f/75600.0f))))))));
+    }
     float s = x < 0.0f ? -1.0f : 1.0f;
     x = x * s;
     float t = 1.0f / (1.0f + 0.3275911f * x);

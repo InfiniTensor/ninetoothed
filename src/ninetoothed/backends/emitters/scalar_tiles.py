@@ -11,7 +11,7 @@ from functools import cache
 from math import prod
 
 from ninetoothed.backends.emitters import ssa as common
-from ninetoothed.backends.emitters.analysis import walk_ops
+from ninetoothed.backends.emitters.analysis import operation_value_references, walk_ops
 from ninetoothed.backends.emitters.context import EmitContext
 from ninetoothed.backends.emitters.expressions import c_integer_expr
 from ninetoothed.ir import ssa
@@ -58,6 +58,14 @@ def plan_scalar_tiles(context, target, *, storage, budget, inline_elementwise=Fa
     if any(op.opcode == "mem.store" for op in all_ops if op not in operations):
         return None
 
+    # This route executes whole tiles per region; elementwise conditions need
+    # the original coordinate-aware scalar emitter instead.
+    if any(
+        op.opcode == "scf.if" and context.value_types[op.operands[0]].shape
+        for op in all_ops
+    ):
+        return None
+
     yielded = {
         name for op in all_ops if op.opcode == "scf.yield" for name in op.operands
     }
@@ -85,7 +93,9 @@ def plan_scalar_tiles(context, target, *, storage, budget, inline_elementwise=Fa
         "tensor.zeros",
         "tensor.empty",
     }
-    references = Counter(name for op in all_ops for name in op.operands)
+    references = Counter(
+        name for op in all_ops for name in operation_value_references(op)
+    )
     inline = {}
     costs = {}
 
@@ -125,7 +135,7 @@ def plan_scalar_tiles(context, target, *, storage, budget, inline_elementwise=Fa
     def operands(op):
         counts = Counter()
 
-        for name in op.operands:
+        for name in operation_value_references(op):
             counts.update(dict(dependencies(name)))
         return counts
 
@@ -166,7 +176,12 @@ def plan_scalar_tiles(context, target, *, storage, budget, inline_elementwise=Fa
         type_ = context.value_types[name]
         axes = tuple(map(str, type_.shape))
 
-        if type_.kind != "tensor" or not axes:
+        if type_.kind != "tensor":
+            if axes:
+                raise ValueError("Shaped pointers require coordinate-aware emission.")
+            return ()
+
+        if not axes:
             return ()
 
         if len(axes) > 2 or any(not x.isdecimal() or int(x) <= 0 for x in axes):
@@ -184,18 +199,29 @@ def plan_scalar_tiles(context, target, *, storage, budget, inline_elementwise=Fa
         if witness.dtype is None:
             raise ValueError("Unresolved scalar tile storage element type.")
 
-        dtype = (
-            target.type_name(witness.dtype)
-            if witness.dtype
-            else target.value_dtype(witness.sample)
-        )
-        width = (
-            2
-            if witness.dtype in ("float16", "bfloat16")
-            else 8
-            if witness.dtype in ("index", "int64", "uint64", "float64")
-            else 4
-        )
+        element_dtype = common.normalize_dtype(witness.dtype)
+        dtype = target.type_name(element_dtype)
+        width = {
+            "bool": 1,
+            "int8": 1,
+            "uint8": 1,
+            "int16": 2,
+            "uint16": 2,
+            "float16": 2,
+            "bfloat16": 2,
+            "int32": 4,
+            "uint32": 4,
+            "float32": 4,
+            "index": 8,
+            "int64": 8,
+            "uint64": 8,
+            "float64": 8,
+        }.get(element_dtype)
+
+        if width is None:
+            raise ValueError(
+                f"Unsupported scalar tile storage dtype: {element_dtype!r}."
+            )
 
         for index, slot in enumerate(slots):
             if index not in active.values() and slot[:2] == (dtype, count):
