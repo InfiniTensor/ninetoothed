@@ -13,5 +13,6 @@ NineToothed Documentation
    installation
    basics
    named_layout
+   bangc
    build
    python_api
