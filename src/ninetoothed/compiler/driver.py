@@ -470,6 +470,7 @@ def _launch_abi(
 
     for name in shape_params:
         binding = _derived_binding(name, specs, constexpr_values)
+
         bindings.append(
             binding
             or LaunchBinding(

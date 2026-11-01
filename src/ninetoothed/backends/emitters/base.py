@@ -31,6 +31,7 @@ class ModuleRenderContext:
     cooperative_reduction_program: bool = False
     private_meta_parameters: tuple[tuple[str, int], ...] = ()
     scheduled_metadata: Mapping[str, Any] = field(default_factory=dict)
+    lowering_plans: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -50,6 +51,9 @@ class EmitterTarget(ABC):
     native_block_matmul: bool = False
     max_vector_numel: int | None = None
 
+    def can_emit_native_matmul(self, kernel) -> bool:
+        return self.native_block_matmul
+
     def symbol(self, name: str) -> str:
         return f"v{name[1:]}" if name.startswith("%") else name
 
@@ -67,6 +71,18 @@ class EmitterTarget(ABC):
     def block_coords(self, axes: tuple[str, ...]) -> tuple[str, ...]:
         raise NotImplementedError(
             f"Emitter {type(self).__name__} has no block value domain."
+        )
+
+    def native_block_coords(self, axes: tuple[str, ...]) -> tuple[str, ...]:
+        raise NotImplementedError(
+            f"Emitter {type(self).__name__} has no native block coordinate domain."
+        )
+
+    def native_matmul_tile_shape(
+        self, kernel, axes: tuple[str, ...]
+    ) -> tuple[int, int]:
+        raise NotImplementedError(
+            f"Emitter {type(self).__name__} has no native matmul tile."
         )
 
     def block_shape(self, axes: tuple[str, ...]) -> str:
@@ -93,6 +109,11 @@ class EmitterTarget(ABC):
         del operation, context
 
         return args
+
+    def check_numeric_result(self, operation, value, context):
+        del operation, context
+
+        return value
 
     def coerce_dot_args(self, operation, args, context):
         del operation, context

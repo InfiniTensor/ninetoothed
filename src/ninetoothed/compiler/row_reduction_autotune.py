@@ -51,6 +51,8 @@ def autotune_row_reductions(request, example_args, *, max_candidates=4):
         op for op in base.kernel.ssa.blocks[0].operations if op.opcode == "mem.store"
     ]
 
+    shapes = {value.name: value.type.shape for value in base.kernel.ssa.inputs}
+
     if (
         any(
             binding.access != ("write" if binding.source == abi.outputs[0] else "read")
@@ -59,7 +61,12 @@ def autotune_row_reductions(request, example_args, *, max_candidates=4):
             or binding.access is not None
         )
         or len(stores) != 1
-        or set(stores[0].attrs) - {"target"}
+        or set(stores[0].attrs) - {"target", "target_shape"}
+        or (
+            stores[0].attrs.get("target_shape") is not None
+            and tuple(map(str, stores[0].attrs["target_shape"]))
+            != tuple(map(str, shapes.get(stores[0].operands[1], ())))
+        )
     ):
         raise ValueError("Row tuning requires one whole, write-only output store.")
 

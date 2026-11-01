@@ -21,6 +21,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from ninetoothed.backends.core import Target, normalize_target
+from ninetoothed.compiler.canonicalize import canonicalize_dtype_expressions
 from ninetoothed.compiler.layout import LayoutTransfer, analyze_layout_transfer
 from ninetoothed.compiler.reductions import analyze_reductions
 from ninetoothed.dtype import normalize_dtype
@@ -229,16 +230,19 @@ class Pipeline:
         *,
         descriptors: tuple[Descriptor, ...] = (),
         spec: PipelineSpec | None = None,
+        registry: Registry | None = None,
     ):
         self.passes = passes
         self.descriptors = descriptors
         self.spec = spec
+        self.registry = registry
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         current = ssa.verify_program(program)
         current = _with_metadata(current, pipeline_selection=self._pipeline_metadata())
 
         for pass_ in self.passes:
+            current = refresh_program_facts(current, context)
             current = pass_.run(current, context)
             ssa.verify_program(current)
             current = _with_metadata(
@@ -246,7 +250,7 @@ class Pipeline:
                 pass_trace=tuple(current.metadata.get("pass_trace", ()))
                 + (pass_.name,),
             )
-        return current
+        return refresh_program_facts(current, context)
 
     def _pipeline_metadata(self) -> Mapping[str, Any]:
         if self.spec is None:
@@ -291,11 +295,157 @@ class Canonicalize(Pass):
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         return _with_metadata(
-            program,
+            canonicalize_dtype_expressions(program),
             dialect="generic-ssa",
             canonical=True,
             coarse_operator_nodes=False,
         )
+
+
+def program_facts(program, name):
+    """Read a fact only from the SSA snapshot that established it."""
+    facts = program.facts
+
+    if facts.get("structure") != (program.inputs, program.outputs, program.blocks):
+        return {}
+    return facts.get(name, {})
+
+
+def _facts_are_current(program, context):
+    return (
+        program.facts.get("structure")
+        == (program.inputs, program.outputs, program.blocks)
+        and program.facts.get("tensors") == context.tensors
+        and program.facts.get("target") == context.resolved_target.as_metadata()
+    )
+
+
+def refresh_program_facts(program, context):
+    """Rebuild existing analysis before consumption after SSA or context changes."""
+    if "structure" in program.facts and not _facts_are_current(program, context):
+        return _refresh_schedule_contract(
+            program, AnalyzeEffects().run(program, context), context
+        )
+    return program
+
+
+def _refresh_schedule_contract(previous, current, context):
+    if "schedule" not in current.metadata:
+        return current
+
+    analysis = program_facts(current, "analysis")
+    old_analysis = previous.facts.get("analysis", {})
+    schedule = dict(current.metadata["schedule"])
+    old_reduction = dict(schedule.get("reduction", {}))
+    reduction = dict(analysis["reduction_schedule"])
+    schedule["reduction"] = reduction
+
+    def geometry(value):
+        return {
+            key: item
+            for key, item in value.items()
+            if key not in {"reductions", "requires_reduction_domain_mask", "reason"}
+        }
+
+    def dtypes(facts):
+        return tuple(
+            domain["result_dtype"]
+            for domain in facts.get("reduction_domains", ())
+            if domain["store_shapes"]
+        )
+
+    invalid = (
+        previous.facts.get("target") != current.facts.get("target")
+        or geometry(old_reduction) != geometry(reduction)
+        or dtypes(old_analysis) != dtypes(analysis)
+        or (
+            analysis.get("has_dot")
+            and old_analysis.get("dot_input_dtypes") != analysis.get("dot_input_dtypes")
+        )
+        or old_analysis.get("non_store_memory_ops", ())
+        != analysis.get("non_store_memory_ops", ())
+        or old_analysis.get("store_count") != analysis.get("store_count")
+    )
+    group = schedule.get("row_group", {})
+
+    if group.get("enabled") and not invalid:
+        from ninetoothed.compiler.row_reductions import GroupReductionRows
+
+        grouped = (
+            GroupReductionRows()
+            .run(
+                _with_metadata(current, schedule=schedule),
+                replace(
+                    context,
+                    pass_options={
+                        **context.pass_options,
+                        GroupReductionRows.name: {"rows": group["rows"]},
+                    },
+                ),
+            )
+            .metadata["schedule"]["row_group"]
+        )
+        schedule["row_group"] = {**group, **grouped}
+        invalid = not grouped["enabled"]
+
+    transfer = analysis.get("layout_transfer")
+
+    block = schedule.get("block_reductions", {})
+
+    if block.get("enabled") and not invalid:
+        from ninetoothed.backends.triton_reductions import (
+            TritonBlockReductions,
+            analyze_block_reductions,
+        )
+
+        schedule["block_reductions"] = analyze_block_reductions(
+            _with_metadata(current, schedule=schedule),
+            replace(
+                context,
+                pass_options={
+                    **context.pass_options,
+                    TritonBlockReductions.name: {
+                        key: block[key]
+                        for key in ("max_block_elements", "max_total_elements")
+                        if key in block
+                    },
+                },
+            ),
+            allow_row_vector=True,
+        )
+        invalid = not schedule["block_reductions"]["enabled"]
+
+    if "layout_transfer" in schedule:
+        if isinstance(transfer, LayoutTransfer) and transfer.schedulable:
+            schedule["layout_transfer"] = transfer
+        else:
+            schedule.pop("layout_transfer")
+            invalid = True
+
+    if not invalid:
+        return _with_metadata(current, schedule=schedule)
+
+    reason = "schedule invalidated by updated SSA or layout analysis"
+    candidates = tuple(current.metadata.get("schedule_candidates", ()))
+    neutral = SelectSchedule().run(current, context)
+    schedule = dict(neutral.metadata["schedule"])
+    schedule.update(
+        (name, {"enabled": False, "reason": reason})
+        for name in ("row_group", "block_reductions", "singleton_dot")
+        if current.metadata["schedule"].get(name, {}).get("enabled")
+    )
+
+    return _with_metadata(
+        neutral,
+        schedule=schedule,
+        optimization={},
+        schedule_candidates=(),
+        selected_schedule_candidate=None,
+        rejected_schedule_candidates=tuple(
+            current.metadata.get("rejected_schedule_candidates", ())
+        )
+        + tuple({**candidate, "reason": reason} for candidate in candidates),
+    )
 
 
 class AnalyzeEffects(Pass):
@@ -306,6 +456,9 @@ class AnalyzeEffects(Pass):
     phase = "analysis"
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
+        if _facts_are_current(program, context):
+            return program
+
         opcodes = tuple(_iter_opcodes(program))
         stores = sum(1 for opcode in opcodes if opcode == "mem.store")
         reductions = sum(1 for opcode in opcodes if opcode.startswith("reduce."))
@@ -314,13 +467,18 @@ class AnalyzeEffects(Pass):
         reduction_analysis = analyze_reductions(program, context.tensors)
         layout_transfer = analyze_layout_transfer(program, context.tensors)
 
-        return _with_metadata(
+        program = _with_metadata(
             program,
             analysis={
                 "operation_count": len(opcodes),
                 "store_count": stores,
                 "reduction_count": reductions,
                 "loop_count": loops,
+                "non_store_memory_ops": tuple(
+                    code
+                    for code in opcodes
+                    if code.startswith("mem.") and code != "mem.store"
+                ),
                 "has_dot": "linalg.dot" in opcodes or "linalg.matmul" in opcodes,
                 "dot_input_dtypes": dot_input_dtypes,
                 "dot_supports_low_precision_intrinsic": bool(dot_input_dtypes)
@@ -330,6 +488,16 @@ class AnalyzeEffects(Pass):
                 ),
                 "layout_transfer": layout_transfer,
                 **reduction_analysis,
+            },
+        )
+
+        return replace(
+            program,
+            facts={
+                "structure": (program.inputs, program.outputs, program.blocks),
+                "tensors": context.tensors,
+                "target": context.resolved_target.as_metadata(),
+                "analysis": program.metadata["analysis"],
             },
         )
 
@@ -343,6 +511,13 @@ class DecomposeLinalg(Pass):
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         optimization = dict(program.metadata.get("optimization", {}))
+
+        # Accumulator precision is part of dot semantics, independent of tensorization.
+        dot_dtypes = _linalg_input_dtypes(program)
+
+        if dot_dtypes and all(dtype in {"float16", "bfloat16"} for dtype in dot_dtypes):
+            optimization["preserve_linalg"] = True
+            program = _with_metadata(program, optimization=optimization)
 
         if optimization.get("preserve_linalg"):
             return _with_metadata(
@@ -376,7 +551,7 @@ class SelectSchedule(Pass):
     phase = "schedule_intent"
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
-        analysis = dict(program.metadata.get("analysis", {}))
+        analysis = dict(program_facts(program, "analysis"))
         options = _pass_options(context, self.name)
         schedule = {
             "granularity": _schedule_granularity(analysis),
@@ -415,7 +590,7 @@ class OptimizeSchedule(Pass):
     phase = "optimization"
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
-        analysis = dict(program.metadata.get("analysis", {}))
+        analysis = dict(program_facts(program, "analysis"))
         schedule = dict(program.metadata.get("schedule", {}))
         layout_tile = _layout_tile_expressions(program, context)
         values = dict(context.kernel_metadata.get("meta_defaults", {})) | dict(
@@ -543,11 +718,17 @@ class OptimizeSchedule(Pass):
         context: Context,
     ) -> ScheduleCandidate | None:
         """Select one legal candidate using explicit or default policy."""
-        if not candidates:
-            return None
-
         options = _pass_options(context, self.name, "ssa.optimize_schedule")
         requested = options.get("candidate")
+
+        if not candidates:
+            if requested is not None:
+                raise ValueError(
+                    f"Unknown schedule candidate `{requested}` for `{self.name}`. "
+                    "No proved schedule candidates are available."
+                )
+
+            return None
 
         if requested is None:
             return candidates[0]
@@ -588,9 +769,7 @@ class ValidateTargetCapabilities(Pass):
         report = context.resolved_target.validate_capabilities(required)
 
         return _with_metadata(
-            program,
-            required_capabilities=required,
-            target_capabilities=report,
+            program, required_capabilities=required, target_capabilities=report
         )
 
 
@@ -599,11 +778,11 @@ def create_default_registry() -> Registry:
 
     registry = Registry()
     registry.register(Canonicalize, tags=("generic", "required"))
-    registry.register(DecomposeLinalg, tags=("generic", "linalg", "decomposition"))
     registry.register(AnalyzeEffects, tags=("generic", "analysis", "required"))
     registry.register(SelectSchedule, tags=("schedule",))
     registry.register(GroupReductionRows, tags=("schedule", "reduction"))
     _register_backend_passes(registry)
+    registry.register(DecomposeLinalg, tags=("generic", "linalg", "decomposition"))
     registry.register(
         ValidateTargetCapabilities,
         tags=("target", "capability", "legality", "required"),
@@ -635,8 +814,9 @@ def default_spec(
 ) -> PipelineSpec:
     """Return the default declarative pipeline for a backend."""
     backend_name = normalize_target(backend)
-    pass_names = _default_pass_names(backend_name)
-    _validate_passes(pass_names, backend_name, _default_registry(registry))
+    registry = _default_registry(registry)
+    pass_names = _default_pass_names(backend_name, registry)
+    _validate_passes(pass_names, backend_name, registry)
 
     return PipelineSpec(
         passes=pass_names,
@@ -673,7 +853,7 @@ def build(
     descriptors = tuple(registry.get(name) for name in normalized.passes)
     passes = tuple(descriptor.create() for descriptor in descriptors)
 
-    return Pipeline(passes, descriptors=descriptors, spec=normalized)
+    return Pipeline(passes, descriptors=descriptors, spec=normalized, registry=registry)
 
 
 def lower_for_target(
@@ -708,7 +888,10 @@ def lower_for_target(
             f"pass backend `{backend_name.value}`."
         )
 
-    registry = _default_registry(pass_registry)
+    registry = _default_registry(
+        pass_registry
+        or (pass_pipeline.registry if isinstance(pass_pipeline, Pipeline) else None)
+    )
     compiler_options = dict(compiler_options or {})
     kernel_metadata = dict(kernel_metadata or {})
     explicit_pass_options = _merge_pass_options(
@@ -724,7 +907,11 @@ def lower_for_target(
             compiler_options=compiler_options,
             kernel_metadata=kernel_metadata,
             tensors=tensors,
-            pass_options=explicit_pass_options,
+            pass_options=_merge_pass_options(
+                pass_pipeline.spec.pass_options if pass_pipeline.spec else {},
+                explicit_pass_options,
+            ),
+            pipeline_spec=pass_pipeline.spec,
         )
 
         lowered = _ensure_target_capabilities(
@@ -846,7 +1033,7 @@ def _normalize_pipeline_spec(
         passes = spec.get("passes")
 
         if passes is None:
-            passes = _default_pass_names(backend)
+            passes = _default_pass_names(backend, registry)
 
         normalized = PipelineSpec(
             passes=_ensure_target_capability_pass(tuple(str(name) for name in passes)),
@@ -882,19 +1069,12 @@ def _validate_passes(
             )
 
 
-def _default_pass_names(backend: Target) -> tuple[str, ...]:
-    return (
-        "ssa.canonicalize",
-        "ssa.analyze_effects",
-        "ssa.select_schedule",
-        _backend_optimize_pass_name(backend),
-        "ssa.decompose_linalg",
-        "ssa.validate_target_capabilities",
+def _default_pass_names(backend: Target, registry: Registry) -> tuple[str, ...]:
+    return tuple(
+        descriptor.name
+        for descriptor in registry.descriptors(backend=backend)
+        if descriptor.default_enabled
     )
-
-
-def _backend_optimize_pass_name(backend: Target) -> str:
-    return f"ssa.{backend.value}.optimize_schedule"
 
 
 def _ensure_target_capability_pass(passes: tuple[str, ...]) -> tuple[str, ...]:
@@ -1089,6 +1269,11 @@ def _merge_pass_options(
 
     for option_map in options:
         for pass_name, pass_option in dict(option_map or {}).items():
+            if not isinstance(pass_option, Mapping):
+                raise ValueError(
+                    f"Options for SSA pass `{pass_name}` must be a mapping."
+                )
+
             merged[str(pass_name)] = _merge_nested(
                 merged.get(str(pass_name), {}), dict(pass_option)
             )
@@ -1600,10 +1785,8 @@ def _replace_program(
     blocks: tuple[ssa.Block, ...] | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> ssa.Program:
-    return ssa.Program(
-        kind=program.kind,
-        inputs=program.inputs,
-        outputs=program.outputs,
+    return replace(
+        program,
         blocks=program.blocks if blocks is None else blocks,
         metadata=program.metadata if metadata is None else dict(metadata),
     )

@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ninetoothed.compiler.effects import pure_expression
+from ninetoothed.compiler.reduction_geometry import reduction_inputs_share_domain
 from ninetoothed.ir import ssa
 
 _ELEMENTWISE_USERS = frozenset(
@@ -74,6 +76,21 @@ def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
     definitions = _definitions(scoped_operations)
     forwarded_values = _forwarded_values(program)
     tensor_specs = {tensor.name: tensor for tensor in tensors}
+
+    operations = program.blocks[0].operations if len(program.blocks) == 1 else ()
+    single_store = bool(
+        operations
+        and operations[-1].opcode == "mem.store"
+        and len(operations[-1].operands) == 2
+        and not set(operations[-1].attrs) - {"target", "target_shape"}
+        and all(pure_expression(op) for op in operations[:-1])
+    )
+    uniform_domain = reduction_inputs_share_domain(
+        tuple(op for op, _scope in scoped_operations), value_types, tensors
+    )
+    independent_stores = single_store or _independent_full_stores(
+        operations, value_types, definitions, tensor_specs
+    )
     domains = []
     rejections = []
 
@@ -84,12 +101,13 @@ def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
         if operation.opcode not in _SUPPORTED_REDUCTIONS:
             raise ValueError(f"Unsupported SSA reduction `{operation.opcode}`.")
 
-        if operation.operands:
-            operand_type = value_types.get(operation.operands[0])
+        operand_type = (
+            value_types.get(operation.operands[0]) if operation.operands else None
+        )
 
-            if operand_type is not None and operand_type.kind == "scalar":
-                _validate_scalar_fallback(operation)
-                continue
+        if operand_type is not None and operand_type.kind == "scalar":
+            _validate_scalar_fallback(operation)
+            continue
 
         domain, rejection = _domain(
             operation,
@@ -99,6 +117,15 @@ def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
             definitions,
             forwarded_values,
             tensor_specs,
+            allow_single_row_broadcast=uniform_domain
+            and independent_stores
+            and operand_type is not None
+            and len(operand_type.shape) == 2
+            and (
+                operation.attrs.get("axis") in {-1, 1}
+                or operation.attrs.get("axis") is None
+                and str(operand_type.shape[0]) == "1"
+            ),
         )
         domains.append(domain)
 
@@ -107,11 +134,63 @@ def analyze_reductions(program: ssa.Program, tensors=()) -> Mapping[str, Any]:
 
     schedule = _schedule_contract(tuple(domains), tuple(rejections))
 
+    if schedule["mode"] == "row-vector":
+        schedule["requires_reduction_domain_mask"] = uniform_domain
+
     return {
         "reduction_domains": tuple(domain.as_metadata() for domain in domains),
         "reduction_rejections": tuple(rejections),
         "reduction_schedule": schedule,
     }
+
+
+def _independent_full_stores(operations, value_types, definitions, tensor_specs):
+    """Prove independent full-output writes in one common program domain."""
+    stores = tuple(op for op in operations if op.opcode == "mem.store")
+
+    if len(stores) < 2 or any(
+        op.opcode != "mem.store" and not pure_expression(op) for op in operations
+    ):
+        return False
+
+    if any(
+        len(op.operands) != 2 or set(op.attrs) - {"target", "target_shape"}
+        for op in stores
+    ):
+        return False
+
+    targets = {op.operands[1] for op in stores}
+
+    if len(targets) != len(stores) or any(
+        operand in targets
+        for op in operations
+        for operand in (op.operands[:1] if op.opcode == "mem.store" else op.operands)
+    ):
+        return False
+
+    shapes, program_shapes = set(), set()
+
+    for store in stores:
+        value, target = store.operands
+        shape = tuple(map(str, value_types[target].shape))
+
+        if (
+            tuple(map(str, value_types[value].shape)) != shape
+            or tuple(map(str, store.attrs.get("target_shape", shape))) != shape
+        ):
+            return False
+
+        domains, constraints, compatible, reason = _program_contract(
+            value, definitions, ((target, shape),), tensor_specs
+        )
+
+        if reason is not None or not compatible or any(a != b for a, b in constraints):
+            return False
+
+        shapes.add(shape)
+        program_shapes.update(domains)
+
+    return len(shapes) == len(program_shapes) == 1
 
 
 def _validate_scalar_fallback(operation):
@@ -141,6 +220,8 @@ def _domain(
     definitions,
     forwarded_values,
     tensor_specs,
+    *,
+    allow_single_row_broadcast=False,
 ):
     if len(operation.operands) != 1 or len(operation.results) != 1:
         raise ValueError(
@@ -201,6 +282,7 @@ def _domain(
         input_shape=input_shape,
         result_shape=result_shape,
         value_types=value_types,
+        allow_single_row_broadcast=allow_single_row_broadcast,
     )
     stores = _reachable_stores(
         result.name,
@@ -261,10 +343,21 @@ def _consumer_contract(
     input_shape,
     result_shape,
     value_types,
+    allow_single_row_broadcast=False,
 ):
     broadcast_shape = input_shape[:axis] + ("1",) + input_shape[axis + 1 :]
     allowed_shapes = {(), result_shape, broadcast_shape, input_shape}
-    pending = [(result, _is_right_aligned(axis, input_shape, result_shape))]
+    pending = [
+        (
+            result,
+            _is_right_aligned(
+                axis,
+                input_shape,
+                result_shape,
+                allow_single_row_broadcast=allow_single_row_broadcast,
+            ),
+        )
+    ]
     seen = set()
 
     while pending:
@@ -296,6 +389,13 @@ def _consumer_contract(
                     and target_shape is not None
                     and tuple(str(dim) for dim in stored_type.shape)
                     != tuple(str(dim) for dim in target_shape)
+                    and not (
+                        allow_single_row_broadcast
+                        and all(
+                            str(size) == "1"
+                            for size in (*stored_type.shape, *target_shape)
+                        )
+                    )
                 ):
                     return False, (
                         "store target does not match the reduction value domain"
@@ -549,12 +649,21 @@ def _static_integer_expression(expression):
         return None
 
 
-def _is_right_aligned(axis, input_shape, result_shape):
+def _is_right_aligned(
+    axis, input_shape, result_shape, *, allow_single_row_broadcast=False
+):
     if not result_shape:
         return True
 
     mapped_axes = tuple(range(len(input_shape) - len(result_shape), len(input_shape)))
     parallel_axes = tuple(index for index in range(len(input_shape)) if index != axis)
+
+    if allow_single_row_broadcast and all(
+        input_shape[index] == "1" for index in parallel_axes
+    ):
+        # One logical point on every parallel axis makes the result a scalar
+        # within this application tile, even after right-aligned broadcasting.
+        return True
 
     return mapped_axes == parallel_axes
 

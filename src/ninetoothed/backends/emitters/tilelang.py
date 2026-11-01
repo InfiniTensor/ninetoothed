@@ -112,6 +112,9 @@ class TileLangTarget(EmitterTarget):
         return f"{destination} = {value}"
 
     def literal(self, value: Any) -> str:
+        if value == "nan" or (isinstance(value, float) and math.isnan(value)):
+            return "float('nan')"
+
         if isinstance(value, float) and math.isinf(value):
             return "float('inf')" if value > 0 else "-float('inf')"
 
@@ -744,7 +747,7 @@ def _render_tilelang_module(
     if cooperative_reduction_program:
         launch = f"""        with T.Kernel({grid_total}, threads={threads}) as nt_block_id:
             nt_thread_id = T.get_thread_binding(0)
-            nt_num_threads = T.get_thread_extent(0)
+            nt_num_threads = {threads}
 {_indent_block(body, "            ")}"""
     elif grid_total is not None:
         launch = f"""        for {target.program_id(0)} in T.thread_binding({grid_total}, thread="blockIdx.x"):

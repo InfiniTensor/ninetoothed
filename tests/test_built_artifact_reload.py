@@ -84,6 +84,10 @@ def _application(input, other, output):
     output = input + other  # noqa: F841
 
 
+def _subtract_application(input, other, output):
+    output = input - other  # noqa: F841
+
+
 @pytest.mark.parametrize("device", get_available_devices())
 @pytest.mark.parametrize("backend", ("triton", "cuda", "tilelang"))
 def test_aot_built_artifact_can_be_reloaded(backend, device, tmp_path):
@@ -132,6 +136,30 @@ def test_aot_built_artifact_can_be_reloaded(backend, device, tmp_path):
         ],
         check=True,
     )
+
+    if backend == "cuda":
+        replacement = DEFAULT_COMPILER.compile(
+            CompileRequest(
+                arrangement=_arrangement,
+                application=_subtract_application,
+                tensors=tensors,
+                backend=backend,
+                kernel_name=compilation.artifact.kernel_name,
+                max_num_configs=1,
+            )
+        )
+        replaced_handle = DEFAULT_COMPILER.materialize(
+            replacement, output_dir=tmp_path, mode="aot"
+        )
+        replaced_reload = load_built_artifact(replaced_handle._built_artifact)
+
+        for launch in (handle, reloaded):
+            launch(input, other, output)
+            torch.testing.assert_close(output, input + other)
+
+        for launch in (replaced_handle, replaced_reload):
+            launch(input, other, output)
+            torch.testing.assert_close(output, input - other)
 
 
 def test_triton_aot_handle_is_reusable_across_cuda_contexts(tmp_path):

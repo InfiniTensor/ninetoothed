@@ -19,6 +19,7 @@ from ninetoothed.compiler.passes import (
     Context,
     OptimizeSchedule,
     ScheduleCandidate,
+    program_facts,
 )
 from ninetoothed.ir import Kernel
 
@@ -55,12 +56,14 @@ class TileLangOptimizeSchedule(OptimizeSchedule):
 
     def run(self, program, context):
         # Classify dataflow before tile specialization; symbolic sizes are valid.
-        analysis = dict(program.metadata.get("analysis", {}))
+        analysis = dict(program_facts(program, "analysis"))
         analysis["tilelang_dot_accumulation"] = (
             dot_accumulation_plan(program) is not None
         )
         program = replace(
-            program, metadata=dict(program.metadata) | {"analysis": analysis}
+            program,
+            metadata=dict(program.metadata) | {"analysis": analysis},
+            facts={**program.facts, "analysis": analysis},
         )
 
         return super().run(program, context)

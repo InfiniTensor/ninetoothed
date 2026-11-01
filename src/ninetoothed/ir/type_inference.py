@@ -627,7 +627,10 @@ def _math_result_type(name: str, operands: tuple[ssa.Value, ...]) -> ssa.Type:
     return result
 
 
-def _promote_dtype(lhs: str | None, rhs: str | None) -> str | None:
+def _promote_dtype(
+    lhs: str | None, rhs: str | None, *, lossless_integers: bool = False
+) -> str | None:
+    """Optionally require an exact integer domain for scalar comparisons."""
     lhs = normalize_dtype(lhs)
     rhs = normalize_dtype(rhs)
 
@@ -639,6 +642,30 @@ def _promote_dtype(lhs: str | None, rhs: str | None) -> str | None:
 
     if {lhs, rhs} == {"float16", "bfloat16"}:
         return "float32"
+
+    integers = {"index": (64, True), "bool": (0, False)}
+    integers.update(
+        (f"{prefix}int{bits}", (bits, not prefix))
+        for prefix in ("", "u")
+        for bits in (8, 16, 32, 64)
+    )
+
+    if lossless_integers and lhs in integers and rhs in integers:
+        width = max(integers[lhs][0], integers[rhs][0])
+        signed = integers[lhs][1] or integers[rhs][1]
+        unsigned_width = max(
+            (bits for bits, sign in (integers[lhs], integers[rhs]) if not sign),
+            default=0,
+        )
+
+        if signed and unsigned_width >= width:
+            width *= 2
+
+        if width > 64:
+            raise LoweringError(
+                f"No lossless integer promotion for `{lhs}` and `{rhs}`."
+            )
+        return f"{'' if signed else 'u'}int{width}"
 
     ranks = {
         "bool": 0,
