@@ -1570,9 +1570,25 @@ def _decompose_matmul_store(
     product, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
     acc_next, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
     acc_result, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
+    upper = k
+    bounds = ()
+
+    if k.isascii() and k.isdecimal():
+        bound, temp_index = _fresh_value(
+            existing_names, temp_index, ssa.Type(kind="index", dtype="int64")
+        )
+        upper = bound.name
+        bounds = (
+            ssa.Operation(
+                opcode="arith.constant",
+                results=(bound,),
+                attrs={"value": int(k), "decomposition": "matmul"},
+            ),
+        )
+
     loop = ssa.Operation(
         opcode="scf.for",
-        operands=(zero.name, k, one.name, acc_init.name),
+        operands=(zero.name, upper, one.name, acc_init.name),
         results=(acc_result,),
         attrs={
             "induction": kk.name,
@@ -1652,6 +1668,7 @@ def _decompose_matmul_store(
                 results=(acc_init,),
                 attrs={"value": 0.0, "decomposition": "matmul"},
             ),
+            *bounds,
             loop,
             ssa.Operation(
                 opcode="mem.store",
@@ -1744,7 +1761,7 @@ def _first_symbol(*candidates: object) -> str:
 
         text = str(candidate)
 
-        if text.isidentifier():
+        if text.isidentifier() or (text.isascii() and text.isdecimal()):
             return text
     return str(candidates[-1])
 

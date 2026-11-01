@@ -7,6 +7,7 @@ simultaneous region yields, and reuses scratch slots by SSA last use.
 
 from collections import Counter
 from dataclasses import dataclass
+from functools import cache
 from math import prod
 
 from ninetoothed.backends.emitters import ssa as common
@@ -23,7 +24,7 @@ class ScalarTilePlan:
     scratch_bytes: int
 
 
-def plan_scalar_tiles(context, target, *, storage, budget):
+def plan_scalar_tiles(context, target, *, storage, budget, inline_elementwise=False):
     if any(
         name.startswith("nt_")
         for name in (*context.variables, *context.outputs, *context.shape_params)
@@ -64,6 +65,79 @@ def plan_scalar_tiles(context, target, *, storage, budget):
         for op in all_ops
     ):
         return None
+
+    yielded = {
+        name for op in all_ops if op.opcode == "scf.yield" for name in op.operands
+    }
+    pure = {
+        "arith.add",
+        "arith.sub",
+        "arith.mul",
+        "arith.div",
+        "arith.truediv",
+        "arith.floordiv",
+        "arith.mod",
+        "arith.neg",
+        "arith.cast",
+        "arith.bitand",
+        "arith.bitor",
+        "arith.bitxor",
+        "arith.lshift",
+        "arith.rshift",
+        "cmp.eq",
+        "cmp.ne",
+        "cmp.lt",
+        "cmp.le",
+        "cmp.gt",
+        "cmp.ge",
+        "tensor.zeros",
+        "tensor.empty",
+    }
+    references = Counter(
+        name for op in all_ops for name in operation_value_references(op)
+    )
+    inline = {}
+    costs = {}
+
+    for op in all_ops:
+        if (
+            inline_elementwise
+            and op.opcode in pure
+            and not op.regions
+            and len(op.results) == 1
+            and op.results[0].type.kind == "tensor"
+            and op.results[0].type.shape
+            and op.results[0].name not in yielded
+        ):
+            name = op.results[0].name
+            cost = 1 + sum(costs.get(operand, 0) for operand in op.operands)
+
+            # Count duplicated subexpressions, not just distinct DAG nodes.
+            # Cheap sharing can save a large tile, but repeated expansion of a
+            # larger expression must stop at an explicit storage boundary.
+            if cost * max(1, references[name]) <= 16:
+                inline[name] = op
+                costs[name] = cost
+
+    @cache
+    def dependencies(name):
+        op = inline.get(name)
+
+        counts = Counter()
+
+        if op is None:
+            counts[name] = 1
+        else:
+            for operand in op.operands:
+                counts.update(dict(dependencies(operand)))
+        return tuple(counts.items())
+
+    def operands(op):
+        counts = Counter()
+
+        for name in operation_value_references(op):
+            counts.update(dict(dependencies(name)))
+        return counts
 
     initial = {}
 
@@ -125,14 +199,29 @@ def plan_scalar_tiles(context, target, *, storage, budget):
         if witness.dtype is None:
             raise ValueError("Unresolved scalar tile storage element type.")
 
-        dtype = target.type_name(witness.dtype)
-        width = (
-            2
-            if witness.dtype in ("float16", "bfloat16")
-            else 8
-            if witness.dtype in ("index", "int64", "uint64", "float64")
-            else 4
-        )
+        element_dtype = common.normalize_dtype(witness.dtype)
+        dtype = target.type_name(element_dtype)
+        width = {
+            "bool": 1,
+            "int8": 1,
+            "uint8": 1,
+            "int16": 2,
+            "uint16": 2,
+            "float16": 2,
+            "bfloat16": 2,
+            "int32": 4,
+            "uint32": 4,
+            "float32": 4,
+            "index": 8,
+            "int64": 8,
+            "uint64": 8,
+            "float64": 8,
+        }.get(element_dtype)
+
+        if width is None:
+            raise ValueError(
+                f"Unsupported scalar tile storage dtype: {element_dtype!r}."
+            )
 
         for index, slot in enumerate(slots):
             if index not in active.values() and slot[:2] == (dtype, count):
@@ -144,7 +233,8 @@ def plan_scalar_tiles(context, target, *, storage, budget):
         active[name] = len(slots)
         slots.append((dtype, count, buffer, width))
 
-        declarations.append(f"{storage} {dtype} {buffer}[{count}];")
+        if not callable(storage):
+            declarations.append(f"{storage} {dtype} {buffer}[{count}];")
 
         if sum(n * w for _, n, _, w in slots) > budget:
             raise ValueError("Scalar tile scratch budget exceeded.")
@@ -182,11 +272,16 @@ def plan_scalar_tiles(context, target, *, storage, budget):
             fill(buffer, value, axes, local)
 
     def render(ops, local, protected=frozenset()):
-        uses = Counter(
-            name for op in walk_ops(ops) for name in operation_value_references(op)
-        )
+        uses = Counter()
+
+        for op in walk_ops(ops):
+            if not (op.results and op.results[0].name in inline):
+                uses.update(operands(op))
 
         for op in ops:
+            if op.results and op.results[0].name in inline:
+                continue
+
             if op.opcode == "scf.yield":
                 continue
 
@@ -286,8 +381,8 @@ def plan_scalar_tiles(context, target, *, storage, budget):
                 else:
                     common.emit_value(name, local)
 
-            for operand in operation_value_references(op):
-                uses[operand] -= 1
+            for operand, count in operands(op).items():
+                uses[operand] -= count
 
                 if uses[operand] == 0 and operand not in protected:
                     active.pop(operand, None)
@@ -298,6 +393,9 @@ def plan_scalar_tiles(context, target, *, storage, budget):
         context.lowering_plans["scalar_tile_rejection"] = str(error)
 
         return None
+
+    if callable(storage):
+        declarations = storage(slots)
 
     prefix = [
         "const int64_t nt_outer_index = (int64_t)(" + target.program_id(0) + ");",

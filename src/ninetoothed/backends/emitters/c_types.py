@@ -1,8 +1,11 @@
 """Computed C++ scalar types shared by native emitter strategies."""
 
 from collections.abc import Mapping
+from typing import Any
 
+from ninetoothed.backends.emitters.expressions import normalize_dtype
 from ninetoothed.ir import ssa
+from ninetoothed.ir.type_inference import _promote_dtype
 
 
 class CComputedTypesMixin:
@@ -59,6 +62,102 @@ class CComputedTypesMixin:
     def global_helper(self, name: str) -> str:
         """Resolve generated helpers in the global C++ namespace."""
         return f"::{name}"
+
+
+class CScalarArithmeticMixin(CComputedTypesMixin):
+    """C++ scalar values, conversions and reduction identities for native targets."""
+
+    def coerce_binary_args(
+        self, op: ssa.Operation, args: tuple[str, ...], ctx: Any
+    ) -> tuple[str, ...]:
+        if len(args) != len(op.operands):
+            return args
+
+        result_type = op.results[0].type if op.results else None
+
+        if any(
+            (type_ := ctx.value_types.get(operand)) is not None
+            and type_.kind == "pointer"
+            for operand in op.operands
+        ):
+            return tuple(
+                value
+                if ctx.value_types[operand].kind == "pointer"
+                else ctx.target.index_cast(value)
+                for operand, value in zip(op.operands, args)
+            )
+
+        if result_type is not None and result_type.dtype is None:
+            # Let C++ infer the actual promotion. Choosing a known integer
+            # constant's dtype while another operand is unknown narrows even a
+            # floating input to integer. check_numeric_result validates the
+            # resulting computed type, including inline tensor expressions.
+            return args
+
+        if result_type is not None and result_type.kind == "pointer":
+            return args
+
+        dtype = (
+            normalize_dtype(result_type.dtype)
+            if result_type is not None and normalize_dtype(result_type.dtype) != "bool"
+            else _common_operand_dtype(op.operands, ctx)
+        )
+
+        if dtype is None:
+            return args
+
+        if dtype in {"float16", "bfloat16"}:
+            dtype = "float32"
+
+        coerced = []
+
+        for operand, value in zip(op.operands, args):
+            operand_type = ctx.value_types.get(operand)
+            operand_dtype = normalize_dtype(
+                operand_type.dtype if operand_type is not None else None
+            )
+            coerced.append(
+                ctx.target.cast(dtype, value) if operand_dtype != dtype else value
+            )
+        return tuple(coerced)
+
+    def cast_like(self, value, reference):
+        return f"{self.global_helper('_nt_cast_like')}<{self.value_dtype(reference)}>({value})"
+
+    def inline_constant(self, value, type_: ssa.Type) -> str:
+        dtype = "int64" if type_.kind == "index" else type_.dtype
+
+        return self.cast(dtype, self.literal(value))
+
+    def reduction_identity(self, dtype: str, operator: str, shape: str) -> str:
+        del shape
+
+        if operator == "sum":
+            accumulator = (
+                f"std::conditional<std::is_integral<{dtype}>::value && "
+                f"(sizeof({dtype}) < 4), int32_t, {dtype}>::type"
+            )
+
+            return f"static_cast<{accumulator}>(0)"
+
+        if operator not in {"max", "min"}:
+            raise ValueError(f"Unsupported C++ reduction operator: {operator!r}.")
+
+        bound = "low" if operator == "max" else "high"
+
+        return f"{self.global_helper('_nt_reduction_bounds')}<{dtype}>::{bound}()"
+
+    def true_divide(self, lhs: str, rhs: str) -> str:
+        return f"{self.global_helper('_nt_true_divide')}({lhs}, {rhs})"
+
+    def reduce_update_typed(self, operator, acc, term, dtype):
+        if dtype is None:
+            term = self.cast_like(term, acc)
+
+            if operator == "sum":
+                return f"({acc} + {term})"
+            return f"{self.global_helper('_nt_reduce_' + operator)}({acc}, {term})"
+        return self.reduce_update(operator, acc, term)
 
 
 def render_c_type_support(
@@ -194,3 +293,17 @@ NT_DEVICE auto _nt_true_divide(A lhs, B rhs)
     return static_cast<R>(_nt_arithmetic(lhs)) / static_cast<R>(_nt_arithmetic(rhs));
 }
 """
+
+
+def _common_operand_dtype(operands: tuple[str, ...], ctx: Any) -> str | None:
+    dtype = None
+
+    for index, operand in enumerate(operands):
+        type_ = ctx.value_types.get(operand)
+        current = normalize_dtype(type_.dtype if type_ is not None else None)
+        dtype = (
+            current
+            if index == 0
+            else _promote_dtype(dtype, current, lossless_integers=True)
+        )
+    return dtype

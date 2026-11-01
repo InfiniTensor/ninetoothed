@@ -190,6 +190,7 @@ class TestRegistry:
             Target.TILELANG,
             Target.CUDA,
             Target.BANGC,
+            Target.ASCENDC,
         }
 
     def test_backends_reject_source_only_kernel_without_ssa(self):

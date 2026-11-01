@@ -13,7 +13,7 @@ from ninetoothed.backends.emitters.bangc_launch import (
 )
 from ninetoothed.backends.emitters.base import EmitterTarget, ModuleRenderContext
 from ninetoothed.backends.emitters.c_types import (
-    CComputedTypesMixin,
+    CScalarArithmeticMixin,
     render_c_type_support,
     render_int32_cast_support,
 )
@@ -25,13 +25,12 @@ from ninetoothed.backends.emitters.task_launch import (
     allocate_task_launch_symbols,
 )
 from ninetoothed.ir import Kernel, ssa
-from ninetoothed.ir.type_inference import _promote_dtype
 
 _normalize_dtype = common.normalize_dtype
 
 
 @dataclass(frozen=True, kw_only=True)
-class BangCTarget(CComputedTypesMixin, EmitterTarget):
+class BangCTarget(CScalarArithmeticMixin, EmitterTarget):
     backend: Target = Target.BANGC
     language: str = "bangc/c++"
     suffix: str = "mlu"
@@ -242,14 +241,6 @@ class BangCTarget(CComputedTypesMixin, EmitterTarget):
     def arithmetic_result_type(self, operation, context) -> ssa.Type:
         return _bangc_arithmetic_result_type(operation, context)
 
-    def coerce_binary_args(self, operation, args, context):
-        return _coerce_bangc_binary_args(operation, args, context)
-
-    def inline_constant(self, value, type_: ssa.Type) -> str:
-        dtype = "int64" if type_.kind == "index" else type_.dtype
-
-        return self.cast(dtype, self.literal(value))
-
     def cast_like(self, value: str, reference: str) -> str:
         # Cncc miscompiles casts of integral-valued double literals to integer
         # types. An integer spelling is exact for every destination type and
@@ -258,38 +249,8 @@ class BangCTarget(CComputedTypesMixin, EmitterTarget):
             value = value.strip().rstrip("fF").split(".", 1)[0]
         return f"{self.global_helper('_nt_cast_like')}<{self.value_dtype(reference)}>({value})"
 
-    def reduction_identity(self, dtype: str, operator: str, shape: str) -> str:
-        del shape
-
-        if operator == "sum":
-            accumulator = (
-                f"std::conditional<std::is_integral<{dtype}>::value && "
-                f"(sizeof({dtype}) < 4), int32_t, {dtype}>::type"
-            )
-
-            return f"static_cast<{accumulator}>(0)"
-
-        if operator not in {"max", "min"}:
-            raise ValueError(f"Unsupported C++ reduction operator: {operator!r}.")
-
-        bound = "low" if operator == "max" else "high"
-
-        return f"{self.global_helper('_nt_reduction_bounds')}<{dtype}>::{bound}()"
-
-    def true_divide(self, lhs: str, rhs: str) -> str:
-        return f"{self.global_helper('_nt_true_divide')}({lhs}, {rhs})"
-
     def modulo(self, lhs, rhs):
         return f"{self.global_helper('_nt_modulo')}({lhs}, {rhs})"
-
-    def reduce_update_typed(self, operator, acc, term, dtype):
-        if dtype is None:
-            term = self.cast_like(term, acc)
-
-            if operator == "sum":
-                return f"({acc} + {term})"
-            return f"{self.global_helper('_nt_reduce_' + operator)}({acc}, {term})"
-        return self.reduce_update(operator, acc, term)
 
     def schedule_context(self, context: ModuleRenderContext) -> ModuleRenderContext:
         from ninetoothed.backends.emitters.memory_guard import (
@@ -679,78 +640,6 @@ def _bangc_type(dtype: str | None, kind: str | None = None) -> str:
 
 def _bangc_arithmetic_result_type(op: ssa.Operation, ctx: _EmitContext) -> ssa.Type:
     return op.results[0].type
-
-
-def _coerce_bangc_binary_args(
-    op: ssa.Operation, args: tuple[str, ...], ctx: _EmitContext
-) -> tuple[str, ...]:
-    if len(args) != len(op.operands):
-        return args
-
-    result_type = op.results[0].type if op.results else None
-
-    if any(
-        (type_ := ctx.value_types.get(operand)) is not None and type_.kind == "pointer"
-        for operand in op.operands
-    ):
-        # Integer data uses NtWide, while pointer offsets use native addresses.
-        return tuple(
-            value
-            if ctx.value_types[operand].kind == "pointer"
-            else ctx.target.index_cast(value)
-            for operand, value in zip(op.operands, args)
-        )
-
-    if result_type is not None and result_type.dtype is None:
-        # Let C++ infer the actual promotion. Choosing a known integer
-        # constant's dtype while another operand is unknown narrows even a
-        # floating input to integer. check_numeric_result validates the
-        # resulting computed type, including inline tensor expressions.
-        return args
-
-    if result_type is not None and result_type.kind == "pointer":
-        return args
-
-    dtype = (
-        _normalize_dtype(result_type.dtype)
-        if result_type is not None and _normalize_dtype(result_type.dtype) != "bool"
-        else _bangc_common_operand_dtype(op.operands, ctx)
-    )
-
-    if dtype is None:
-        return args
-
-    if dtype in {"float16", "bfloat16"}:
-        dtype = "float32"
-
-    coerced = []
-
-    for operand, value in zip(op.operands, args):
-        operand_type = ctx.value_types.get(operand)
-        operand_dtype = _normalize_dtype(
-            operand_type.dtype if operand_type is not None else None
-        )
-        coerced.append(
-            ctx.target.cast(dtype, value) if operand_dtype != dtype else value
-        )
-    return tuple(coerced)
-
-
-def _bangc_common_operand_dtype(
-    operands: tuple[str, ...], ctx: _EmitContext
-) -> str | None:
-    dtype = None
-
-    for index, operand in enumerate(operands):
-        type_ = ctx.value_types.get(operand)
-        current = _normalize_dtype(type_.dtype if type_ is not None else None)
-        dtype = (
-            current
-            if index == 0
-            else _promote_dtype(dtype, current, lossless_integers=True)
-        )
-
-    return dtype
 
 
 TARGET = BangCTarget()

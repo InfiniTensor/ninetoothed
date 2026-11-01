@@ -259,6 +259,12 @@ class EmitterTarget(ABC):
     def reduction_identity(self, dtype: str, operator: str, shape: str) -> str:
         raise NotImplementedError("Runtime reduction dtype is not supported.")
 
+    def reduction_compute_type(self, result_type: ssa.Type) -> ssa.Type:
+        return result_type
+
+    def reduction_result(self, value: str, result_type: ssa.Type) -> str:
+        return value
+
     def cast_like(self, value: str, reference: str) -> str:
         raise NotImplementedError("Casting to a computed dtype is not supported.")
 

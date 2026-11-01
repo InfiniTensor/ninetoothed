@@ -152,8 +152,8 @@ template <class F, bool S> static __mlu_func__ F nt_wide_float(NtWide<S> value) 
     if (shift) {
         // Round once using the complete discarded suffix, ties to even.
         NtUInt64 rest = magnitude - (kept << NtUInt64((uint32_t)shift));
-        NtUInt64 half = NtUInt64(1u) << NtUInt64((uint32_t)(shift - 1));
-        if (rest > half || (rest == half && (kept.lo & 1u))) {
+        NtUInt64 halfway = NtUInt64(1u) << NtUInt64((uint32_t)(shift - 1));
+        if (rest > halfway || (rest == halfway && (kept.lo & 1u))) {
             kept = kept + NtUInt64(1u);
         }
     }
