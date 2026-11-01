@@ -8,10 +8,15 @@ from ninetoothed.compiler import (
     load_built_artifact,
     lower,
 )
-
-
-def _arrangement(x, out):
-    return x.tile((128,)), out.tile((128,))
+from tests._native_backend_cases import (
+    _arrangement,
+    _conditional,
+    _entropy,
+    _loop_arrangement,
+    _loop_matmul,
+    _row_arrangement,
+    check_native_baseline,
+)
 
 
 def _increment(x, out):
@@ -24,16 +29,6 @@ def _scalar_arrangement(x, out, scale):
 
 def _scale(x, out, scale):
     out = x * scale  # noqa: F841
-
-
-def _row_arrangement(x, out):
-    return x.tile((1, -1)), out.tile((1,))
-
-
-def _entropy(x, out):
-    numerator = ntl.exp(x - ntl.max(x, axis=1)[:, None])
-    probability = numerator / ntl.sum(numerator, axis=1)[:, None]
-    out = -ntl.sum(probability * ntl.log(probability + 1e-8), axis=1)  # noqa: F841
 
 
 def _atomic(x, out):
@@ -80,29 +75,8 @@ def _tile_arrangement(x, out):
     return x.tile((8,)), out.tile((1,))
 
 
-def _tensor_if(x, out):
-    total = ntl.sum(x)
-    maximum = ntl.max(x)
-    value = x
-
-    if x > 0:
-        value = x + total
-    else:
-        value = x + maximum
-
-    out = value  # noqa: F841
-
-
 def _power(x, y, out):
     out = ntl.pow(x, y)  # noqa: F841
-
-
-def _mixed_compare(x, y, out):
-    out = ntl.where(x > y, 1, 0)  # noqa: F841
-
-
-def _power_arrangement(x, y, out):
-    return tuple(tensor.tile((32,)) for tensor in (x, y, out))
 
 
 def _math_arrangement(x, *outputs):
@@ -126,6 +100,31 @@ def test_ascendc_source_and_launch_contract():
     assert "launch_ascendc_baseline" in source
     assert "<<<1, nullptr," in source
     assert "DataCopyPad" in source
+
+    artifact = lower(
+        _loop_arrangement,
+        _loop_matmul,
+        tuple(nt.Tensor(shape=(8, 8), dtype=nt.float32) for _ in range(4)),
+        backend="ascendc",
+    )
+    assert "nt_tile_arena" in artifact.primary_source
+    artifact = lower(
+        _arrangement,
+        _conditional,
+        tuple(nt.Tensor(shape=(8,), dtype=nt.float32) for _ in range(2)),
+        backend="ascendc",
+    )
+    assert "nt_tile_index" not in artifact.primary_source
+    artifact = lower(
+        _row_arrangement,
+        _entropy,
+        (
+            nt.Tensor(shape=(8, 32), dtype=nt.float32),
+            nt.Tensor(shape=(8,), dtype=nt.float32),
+        ),
+        backend="ascendc",
+    )
+    assert "nt_tile_arena" in artifact.primary_source
 
     with pytest.raises(ValueError, match="atomic updates"):
         lower(_arrangement, _atomic, (nt.Tensor(1), nt.Tensor(1)), backend="ascendc")
@@ -153,35 +152,18 @@ def test_ascendc_jit_aot_reload_and_numerics(tmp_path):
     if not torch.npu.is_available():
         pytest.skip("NPU device required")
 
-    for dtype in (torch.float32, torch.float16, torch.bfloat16, torch.int64):
-        compilation = DEFAULT_COMPILER.compile(
-            CompileRequest(
-                arrangement=_arrangement,
-                application=_increment,
-                tensors=tuple(
-                    nt.Tensor(shape=(257,), dtype=str(dtype)) for _ in range(2)
-                ),
-                backend="ascendc",
-                max_num_configs=1,
-            )
-        )
-        handle = DEFAULT_COMPILER.materialize(
-            compilation, output_dir=tmp_path / str(dtype), mode="aot"
-        )
-        host = torch.arange(257, dtype=dtype)
-
-        if dtype == torch.int64:
-            host += 1 << 55
-
-        x = host.to("npu")
-        storage = torch.full((259,), -123, dtype=dtype).to("npu")
-        out = storage[1:-1]
-
-        for executable in (handle, load_built_artifact(handle._built_artifact)):
-            executable(x, out)
-            torch.npu.synchronize()
-            torch.testing.assert_close(out.cpu(), host + 1, rtol=0, atol=0)
-            assert storage[0].item() == storage[-1].item() == -123
+    check_native_baseline(
+        tmp_path,
+        backend="ascendc",
+        device="npu",
+        # PyTorch MLU cannot transfer uint16 tensors; retain this NPU regression.
+        extra_integer_pairs=(
+            (
+                torch.tensor([255, 0, 1], dtype=torch.uint8),
+                torch.tensor([256, 0, 2], dtype=torch.uint16),
+            ),
+        ),
+    )
 
     kernel = nt.make(
         _arrangement,
@@ -243,21 +225,6 @@ def test_ascendc_jit_aot_reload_and_numerics(tmp_path):
             out.cpu(), torch.full((257,), 1.5, dtype=dtype), rtol=0, atol=0
         )
 
-    host = torch.arange(7 * 30, dtype=torch.float32).reshape(7, 30) / 30
-    x = host.to("npu")[:, 1:30:2]
-    expected = host[:, 1:30:2].softmax(1)
-    expected = -(expected * (expected + 1e-8).log()).sum(1)
-    out = torch.empty(7, device="npu")
-    kernel = nt.make(
-        _row_arrangement,
-        _entropy,
-        (nt.Tensor(2), nt.Tensor(1)),
-        backend="ascendc",
-        max_num_configs=1,
-    )
-    kernel(x, out)
-    torch.npu.synchronize()
-    torch.testing.assert_close(out.cpu(), expected)
     left = torch.arange(35, dtype=torch.float32).reshape(5, 7) / 16
     right = torch.arange(21, dtype=torch.float32).reshape(7, 3) / 32
     output = torch.empty((5, 3), device="npu")
@@ -377,20 +344,6 @@ def test_ascendc_jit_aot_reload_and_numerics(tmp_path):
         torch.npu.synchronize()
         assert output.cpu().item() == 45
 
-    host = torch.arange(-4, 4, dtype=torch.float32)
-    output = torch.empty_like(host).to("npu")
-    nt.make(
-        _arrangement,
-        _tensor_if,
-        (nt.Tensor(1),) * 2,
-        backend="ascendc",
-        max_num_configs=1,
-    )(host.to("npu"), output)
-    torch.npu.synchronize()
-    torch.testing.assert_close(
-        output.cpu(), torch.where(host > 0, host + host.sum(), host + host.max())
-    )
-
     left = torch.tensor(
         [
             torch.finfo(torch.float32).max,
@@ -404,7 +357,7 @@ def test_ascendc_jit_aot_reload_and_numerics(tmp_path):
     right = torch.tensor([1.0, 2.0, 4.0, 3.0, 12.0, -9.0])
     output = torch.empty_like(left).to("npu")
     nt.make(
-        _power_arrangement,
+        _math_arrangement,
         _power,
         (nt.Tensor(1),) * 3,
         backend="ascendc",
@@ -414,38 +367,3 @@ def test_ascendc_jit_aot_reload_and_numerics(tmp_path):
     torch.testing.assert_close(
         output.cpu(), left.double().pow(right.double()).float(), rtol=2e-6, atol=0
     )
-
-    pairs = (
-        (
-            torch.tensor([127, -128, 0], dtype=torch.int8),
-            torch.tensor([128, -129, 0], dtype=torch.int16),
-        ),
-        (
-            torch.tensor([255, 0, 1], dtype=torch.uint8),
-            torch.tensor([256, 0, 2], dtype=torch.uint16),
-        ),
-        (
-            torch.tensor([255, 0, 1], dtype=torch.uint8),
-            torch.tensor([-1, -1, 1], dtype=torch.int8),
-        ),
-    )
-
-    for x, y in pairs:
-        for left, right in ((x, y), (y, x)):
-            out = torch.empty(3).to("npu")
-            nt.make(
-                _power_arrangement,
-                _mixed_compare,
-                (
-                    nt.Tensor(1, dtype=str(left.dtype)),
-                    nt.Tensor(1, dtype=str(right.dtype)),
-                    nt.Tensor(1),
-                ),
-                backend="ascendc",
-                max_num_configs=1,
-            )(left.to("npu"), right.to("npu"), out)
-            torch.npu.synchronize()
-            expected = torch.tensor(
-                [float(int(a) > int(b)) for a, b in zip(left.tolist(), right.tolist())]
-            )
-            torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0)

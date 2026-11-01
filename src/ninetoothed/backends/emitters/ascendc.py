@@ -312,7 +312,11 @@ class AscendCTarget(CScalarArithmeticMixin, EmitterTarget):
             (
                 _ascendc_support(context, task_body),
                 render_int32_cast_support("__aicore__ inline"),
-                render_c_type_support(task_body, "__aicore__ inline"),
+                render_c_type_support(
+                    task_body,
+                    "__aicore__ inline",
+                    cast_conversions={"float": "nt_to_float(value)"},
+                ),
             )
         )
         arguments = [
@@ -536,12 +540,40 @@ template <class T> __aicore__ inline float nt_to_float(T value) {
     return static_cast<float>(value);
 }
 __aicore__ inline float nt_to_float(bool value) { return value ? 1.0f : 0.0f; }
-__aicore__ inline float nt_to_float(uint32_t value) {
-    return (float)(int64_t)value;
-}
 __aicore__ inline float nt_to_float(uint64_t value) {
-    return (float)(int64_t)(value >> 32) * 4294967296.0f
-         + (float)(int64_t)(uint32_t)value;
+    if (!value) { return 0.0f; }
+    uint64_t leading = value;
+    int exponent = 0;
+    for (; leading > 1; leading >>= 1) { ++exponent; }
+    uint64_t significand;
+    if (exponent <= 23) { significand = value << (23 - exponent); }
+    else {
+        int shift = exponent - 23;
+        significand = value >> shift;
+        uint64_t rest = value - (significand << shift);
+        uint64_t halfway = uint64_t(1) << (shift - 1);
+        if (rest > halfway || (rest == halfway && (significand & 1))) {
+            ++significand;
+        }
+        if (significand == (uint64_t(1) << 24)) {
+            significand >>= 1;
+            ++exponent;
+        }
+    }
+    // CCEC scalar wide-integer casts may narrow through int32. Construct
+    // FP32 bits after one ties-to-even rounding, including carry to 2^64.
+    union { uint32_t bits; float value; } result;
+    result.bits = ((uint32_t)(exponent + 127) << 23)
+        | ((uint32_t)significand & 0x007fffffu);
+    return result.value;
+}
+__aicore__ inline float nt_to_float(int64_t value) {
+    uint64_t bits = (uint64_t)value;
+    float magnitude = nt_to_float(value < 0 ? uint64_t(0) - bits : bits);
+    return value < 0 ? -magnitude : magnitude;
+}
+__aicore__ inline float nt_to_float(uint32_t value) {
+    return nt_to_float((uint64_t)value);
 }"""
     ]
 
