@@ -25,6 +25,7 @@ from ninetoothed.backends.emitters.task_launch import (
     allocate_task_launch_symbols,
 )
 from ninetoothed.ir import Kernel, ssa
+from ninetoothed.ir.type_inference import _promote_dtype
 
 _normalize_dtype = common.normalize_dtype
 
@@ -91,6 +92,35 @@ class BangCTarget(CComputedTypesMixin, EmitterTarget):
 
     def type_name(self, dtype, kind=None):
         return _bangc_type(dtype, kind)
+
+    def check_numeric_result(self, operation, value, context):
+        name = operation.opcode.split(".", 1)[-1]
+
+        if (
+            operation.opcode.startswith(("math.", "call."))
+            or operation.opcode == "arith.pow"
+        ) and name not in {
+            "abs",
+            "maximum",
+            "minimum",
+            "max",
+            "min",
+            "reciprocal",
+            "dot",
+            "block_dot",
+            "load",
+            "where",
+        }:
+            types = [result.type for result in operation.results]
+            types.extend(context.value_types[operand] for operand in operation.operands)
+
+            if any(_normalize_dtype(type_.dtype) == "float64" for type_ in types):
+                raise ValueError(
+                    f"BangC does not support FP64 `{name}` math; "
+                    "explicitly cast to a supported compute dtype."
+                )
+
+        return super().check_numeric_result(operation, value, context)
 
     def load(self, tensor, index, *, mask=None, other=0.0):
         return super().load(tensor, self.index_cast(index), mask=mask, other=other)
@@ -709,22 +739,18 @@ def _coerce_bangc_binary_args(
 def _bangc_common_operand_dtype(
     operands: tuple[str, ...], ctx: _EmitContext
 ) -> str | None:
-    ranks = {
-        "bool": 0,
-        "int32": 1,
-        "int64": 2,
-        "float16": 3,
-        "bfloat16": 3,
-        "float32": 4,
-        "float64": 5,
-    }
-    dtypes = [
-        _normalize_dtype(type_.dtype)
-        for operand in operands
-        if (type_ := ctx.value_types.get(operand)) is not None
-    ]
+    dtype = None
 
-    return max(dtypes, key=lambda dtype: ranks.get(dtype, -1)) if dtypes else None
+    for index, operand in enumerate(operands):
+        type_ = ctx.value_types.get(operand)
+        current = _normalize_dtype(type_.dtype if type_ is not None else None)
+        dtype = (
+            current
+            if index == 0
+            else _promote_dtype(dtype, current, lossless_integers=True)
+        )
+
+    return dtype
 
 
 TARGET = BangCTarget()
