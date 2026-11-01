@@ -134,3 +134,7 @@ This project is distributed under the Apache-2.0 license. See the included [LICE
 ## 2026-10-03 上游兼容性维护
 
 [维护说明](docs/upstream_sync_20261003.md)：合入官方最新 SSA 修复，解决合并冲突并兼容严格访存契约和动态 dtype 来源。932 项 NumPy-only 回归、隔离 Torch CPU 检查、安装包与独立回放通过；历史截止前快照和 A100 结果保留原版本范围。
+
+## 2026-11-01 上游兼容性修复
+
+[本轮说明](docs/upstream_sync_20261101.md)：合入上游 f64a6de，解决五处冲突，并适配冻结前端、dtype SSA 和来源追踪。970 项 NumPy-only、46 项上游边界及 9 项 Torch CPU 选择通过（范围有重叠）；普通 wheel 与独立回放、严格文档构建通过。本轮没有新增 GPU 实测。

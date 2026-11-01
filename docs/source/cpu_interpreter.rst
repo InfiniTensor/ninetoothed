@@ -671,6 +671,16 @@ for complete sources, limitations, initial failures and reproducible records.
 This establishes correctness for the listed cases, not a full repository GPU
 suite or GPU performance. The earlier 0706213 GPU evidence retains its own scope.
 
+The November 1 maintenance source ``5d7acc`` includes upstream ``f64a6de``.
+The NumPy-only selection passes 970 tests, with 17 actual GPU cases deselected.
+The separate upstream-boundary selection passes 46 tests with 17 GPU cases
+deselected; Torch CPU adaptation passes 9 tests with one actual CUDA check
+deselected. These scopes overlap. All 92 wheel Python source files match the
+tested source, and isolated installation, debug and replay checks pass.
+This update shares the verified frozen frontend, supports dtype SSA values,
+and preserves provenance through type canonicalization. It does not add a
+new GPU or performance result. See ``docs/upstream_sync_20261101.md``.
+
 The 2026-10-03 compatibility maintenance source
 ``960645200f8647dc2f62e992a41e65841642526e`` includes upstream  ``1f9f476``
 and preserves the September 20 submission snapshot. The NumPy-only selection
