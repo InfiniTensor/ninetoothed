@@ -486,7 +486,7 @@ def create_default_platform_registry() -> PlatformRegistry:
             accelerator_name="a100",
             compute_arch="sm_80",
             device_types=("cuda",),
-            backend_modes=_backend_modes(tuple(Target)),
+            backend_modes=_backend_modes((Target.TRITON, Target.TILELANG, Target.CUDA)),
             unsupported_capabilities=frozenset({"dtype.fp8"}),
         ),
         PlatformProfile(
@@ -495,7 +495,7 @@ def create_default_platform_registry() -> PlatformRegistry:
             accelerator_name="h100",
             compute_arch="sm_90",
             device_types=("cuda",),
-            backend_modes=_backend_modes(tuple(Target)),
+            backend_modes=_backend_modes((Target.TRITON, Target.TILELANG, Target.CUDA)),
             supported_capabilities=frozenset({"dtype.fp8"}),
         ),
         PlatformProfile(
@@ -504,7 +504,10 @@ def create_default_platform_registry() -> PlatformRegistry:
             accelerator_name="mlu590",
             compute_arch="mlu590",
             device_types=("mlu",),
-            backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
+            backend_modes={
+                **_backend_modes((Target.TRITON,), modes=("jit",)),
+                **_backend_modes((Target.BANGC,)),
+            },
             constraints={"compiler_options": {"triton": {"max_num_configs": 1}}},
             metadata={"triton_grid_limit": 65535},
         ),
@@ -770,11 +773,15 @@ def runtime_device_types(value: Any) -> tuple[str, ...]:
     context = getattr(value, "target", None)
 
     if isinstance(context, TargetContext):
+        if context.backend == Target.BANGC:
+            return ("mlu",)
         return context.device_types if context.backend == Target.TRITON else ("cuda",)
 
     artifact = getattr(value, "artifact", value)
     backend = getattr(getattr(artifact, "backend", None), "value", None)
 
+    if backend == Target.BANGC.value:
+        return ("mlu",)
     return target_device_types(value) if backend == Target.TRITON.value else ("cuda",)
 
 
