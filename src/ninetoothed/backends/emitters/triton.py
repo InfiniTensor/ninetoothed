@@ -110,6 +110,9 @@ class TritonTarget(EmitterTarget):
         return f"tl.broadcast_to(tl.cast({value}, {dtype_expr}), {shape})"
 
     def literal(self, value: Any) -> str:
+        if value == "nan" or (isinstance(value, float) and math.isnan(value)):
+            return "float('nan')"
+
         if isinstance(value, float) and math.isinf(value):
             return "float('inf')" if value > 0 else "-float('inf')"
 
@@ -242,7 +245,11 @@ class TritonTarget(EmitterTarget):
         if name == "expm1":
             return f"({self.call('exp', args)} - 1.0)"
 
+        if name in {"exp", "exp2"}:
+            return f"tl.{name}(_nt_exp_input({args[0]}))"
+
         functions = {
+            "transpose": "tl.trans",
             "abs": "tl.abs",
             "acos": "tl.acos",
             "asin": "tl.asin",
@@ -264,14 +271,14 @@ class TritonTarget(EmitterTarget):
             "max": "tl.maximum",
             "minimum": "tl.minimum",
             "min": "tl.minimum",
-            "pow": "tl.pow",
+            "pow": "libdevice.pow",
             "rand": "tl.rand",
             "rsqrt": "tl.rsqrt",
             "sin": "tl.sin",
             "sinh": "tl.sinh",
             "sqrt": "tl.sqrt",
             "tan": "tl.tan",
-            "tanh": "tl.tanh",
+            "tanh": "libdevice.tanh",
         }
 
         if name == "log1p":
@@ -301,7 +308,7 @@ class TritonTarget(EmitterTarget):
 
         function = "tl.maximum" if operator == "max" else "tl.minimum"
 
-        return f"{function}({acc}, {term})"
+        return self.cast_like(f"{function}({acc}, {term})", acc)
 
     def block_coords(self, axes: tuple[str, ...]) -> tuple[str, ...]:
         if not axes:
@@ -326,9 +333,51 @@ class TritonTarget(EmitterTarget):
             values += ","
         return f"({values})"
 
-    def render_view(self, operation, context) -> str:
-        value = common.emit_value(operation.operands[0], context)
+    def render_view(self, operation, context, *, coords=None) -> str:
         subscript = str(operation.attrs.get("subscript", "")).strip()
+        group = context.program.metadata.get("schedule", {}).get("row_group", {})
+
+        if group.get("enabled") and "None" not in subscript and coords is not None:
+            return common.emit_element(operation.operands[0], coords, context)
+
+        if (
+            group.get("enabled")
+            and group.get("groups_per_tile", 1) > 1
+            and "None" in subscript
+        ):
+            axes = common.value_axes(operation.results[0].name, context)
+            coords = common.view_base_coords(
+                operation,
+                common.current_coords(axes, context) if coords is None else coords,
+                context,
+            )
+            physical_axes = list(axes)
+            parallel_axis = context.program.metadata["schedule"]["reduction"][
+                "parallel_axes"
+            ][0]
+
+            if (
+                len(axes) == len(context.output_axes)
+                and axes[parallel_axis] == context.output_axes[parallel_axis]
+            ):
+                physical_axes[parallel_axis] = str(group["rows"])
+
+            shape = self.block_shape(
+                tuple(
+                    axis
+                    for axis, part in zip(
+                        physical_axes, subscript.strip("()").split(",")
+                    )
+                    if part.strip() != "None"
+                )
+            )
+            value = common.emit_element(
+                operation.operands[0],
+                tuple(f"({coord}).reshape({shape})" for coord in coords),
+                context,
+            )
+        else:
+            value = common.emit_value(operation.operands[0], context)
 
         if "None" not in subscript:
             return value
@@ -672,7 +721,8 @@ import triton.language as tl
 from math import floor
 from triton.language.extra import libdevice
 {_RUNTIME_REDUCTION_IDENTITY if "_nt_reduction_identity(" in body else ""}
-{_CAST_LIKE if "_nt_cast_like(" in body else ""}
+{_CAST_LIKE if "_nt_cast_like(" in body or "_nt_exp_input(" in body else ""}
+{_EXP_INPUT if "_nt_exp_input(" in body else ""}
 {_VECTOR_ELEMENT if "_nt_vector_element(" in body else ""}
 
 @triton.jit
@@ -722,6 +772,18 @@ _CAST_LIKE = """
 def _nt_cast_like(value, reference):
     tensor_reference = reference
     return value.to(tensor_reference.dtype)
+"""
+
+
+_EXP_INPUT = """
+
+@triton.jit
+def _nt_exp_input(value):
+    tensor_value = _nt_cast_like(value, value)
+    if tensor_value.dtype == tl.float16 or tensor_value.dtype == tl.bfloat16:
+        return tensor_value.to(tl.float32)
+    else:
+        return tensor_value
 """
 
 

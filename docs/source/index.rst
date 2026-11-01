@@ -12,6 +12,7 @@ NineToothed Documentation
 
    installation
    basics
+   named_layout
    build
    cpu_interpreter
    python_api

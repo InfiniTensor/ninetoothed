@@ -1,13 +1,16 @@
 """Execute frontend dtype references using the actual referenced CPU value."""
 
-from dataclasses import replace
+import json
+from dataclasses import asdict, replace
 
 import numpy as np
 import pytest
 
 from ninetoothed.frontend.python import from_source
 from ninetoothed.interpreter import interpret_program
-from ninetoothed.interpreter.memory import TensorRef
+from ninetoothed.interpreter.debugger import compare_programs
+from ninetoothed.interpreter.failure import replay_failure
+from ninetoothed.interpreter.memory import Pointer, TensorRef
 from ninetoothed.ir import TensorSpec, ssa
 
 _SOURCES = (
@@ -126,9 +129,15 @@ def test_dtype_query_does_not_read_its_tensor_source(form, monkeypatch):
     )
     program, tensors = _program(body)
 
-    if form == "cast_operand":
+    if form in {"cast_attribute", "cast_operand"}:
         operations = tuple(
-            replace(op, operands=(op.operands[0], "y"), attrs={"dtype": None})
+            replace(
+                op,
+                operands=(op.operands[0], "y")
+                if form == "cast_operand"
+                else (op.operands[0],),
+                attrs={"dtype": None, "dtype_ref": "y"},
+            )
             if op.opcode == "tensor.cast"
             else op
             for op in program.blocks[0].operations
@@ -166,7 +175,8 @@ def test_dtype_query_does_not_read_its_tensor_source(form, monkeypatch):
     np.testing.assert_array_equal(result.outputs["out"], expected)
 
 
-def test_pointer_dtype_reference_uses_storage_dtype_without_a_load():
+@pytest.mark.parametrize("form", ("cast_operand", "dtype_of"))
+def test_pointer_dtype_reference_uses_storage_dtype_without_a_load(form, monkeypatch):
     program, tensors = _program("out = x.to(y.dtype)")
     pointer = ssa.Value(
         name="%dtype_pointer", type=ssa.Type(kind="pointer", dtype=None)
@@ -175,7 +185,9 @@ def test_pointer_dtype_reference_uses_storage_dtype_without_a_load():
         ssa.Operation(opcode="mem.data_ptr", operands=("y",), results=(pointer,)),
         *(
             replace(op, operands=(op.operands[0], pointer.name), attrs={"dtype": None})
-            if op.opcode == "tensor.cast"
+            if form == "cast_operand" and op.opcode == "tensor.cast"
+            else replace(op, operands=(pointer.name,))
+            if form == "dtype_of" and op.opcode == "dtype.of"
             else op
             for op in program.blocks[0].operations
         ),
@@ -183,6 +195,11 @@ def test_pointer_dtype_reference_uses_storage_dtype_without_a_load():
     program = replace(
         program, blocks=(replace(program.blocks[0], operations=operations),)
     )
+
+    def forbidden_read(self, *args, **kwargs):
+        raise AssertionError("A dtype query must not load a pointer.")
+
+    monkeypatch.setattr(Pointer, "read", forbidden_read)
     result = _execute(program, tensors)
     assert _last_snapshot(result, "tensor.cast")["dtype"] == "int16"
     np.testing.assert_array_equal(result.outputs["out"], [0, 1, 3])
@@ -191,3 +208,75 @@ def test_pointer_dtype_reference_uses_storage_dtype_without_a_load():
         for event in result.trace
         for access in event.memory or ()
     )
+
+
+@pytest.mark.parametrize(
+    "source_dtype,expected_dtype", (("int16", "float32"), ("float64", "float64"))
+)
+@pytest.mark.parametrize(
+    "selection",
+    (
+        "chosen = y.dtype if y.dtype != int16 else float32",
+        "chosen = y.dtype\nif chosen == int16 and not chosen == float64:\n    chosen = float32",
+    ),
+)
+@pytest.mark.parametrize(
+    "consumer",
+    (
+        "x.to(chosen)",
+        "zeros((3,), dtype=chosen)",
+        "empty((3,), dtype=chosen)",
+        "full((3,), 1.75, dtype=chosen)",
+    ),
+)
+def test_dynamic_dtype_selection_drives_casts_and_constructors(
+    source_dtype, expected_dtype, selection, consumer
+):
+    program, tensors = _program(f"{selection}\nout = {consumer}")
+    result = _execute(program, tensors, y=np.full(3, 2, dtype=source_dtype))
+    opcode = (
+        "tensor.cast"
+        if consumer.startswith("x.")
+        else "tensor.full"
+        if consumer.startswith("full")
+        else "tensor.zeros"
+    )
+    snapshot = _last_snapshot(result, opcode)
+    values = (
+        [0.25, 1.75, 3.5]
+        if consumer.startswith("x.")
+        else [1.75 if consumer.startswith("full") else 0] * 3
+    )
+    expected = np.asarray(values, dtype=expected_dtype)
+    assert snapshot["dtype"] == expected_dtype
+    np.testing.assert_array_equal(snapshot["value"], expected)
+    np.testing.assert_array_equal(result.outputs["out"], expected.astype(np.float64))
+    assert any(event.opcode == "dtype.select" for event in result.trace)
+
+
+def test_dtype_value_snapshots_survive_failure_export_and_replay(tmp_path):
+    reference, tensors = _program(
+        "chosen = float32 if y.dtype == int16 else int16\nout = x.to(chosen)"
+    )
+    candidate, _ = _program(
+        "chosen = int32 if y.dtype == int16 else int16\nout = x.to(chosen)"
+    )
+    result = _execute(reference, tensors)
+    json.dumps([asdict(event) for event in result.trace])
+    dtype_event = next(event for event in result.trace if event.opcode == "dtype.of")
+    assert next(iter(dtype_event.results.values()))["value"] == "int16"
+    inputs = {
+        "x": np.array([0.25, 1.75, 3.5], dtype=np.float64),
+        "y": np.full(3, 2, dtype=np.int16),
+        "f": np.full(3, 0.5, dtype=np.float32),
+        "out": np.zeros(3, dtype=np.float64),
+    }
+    report = compare_programs(
+        reference, candidate, inputs, tensors=tensors, failure_dir=tmp_path / "failure"
+    )
+    assert not report.equal
+    assert report.first_operation.opcode == "dtype.constant"
+    assert report.export_error is None
+    replayed = replay_failure(report.reproducer)
+    assert not replayed.equal
+    assert replayed.first_operation == report.first_operation

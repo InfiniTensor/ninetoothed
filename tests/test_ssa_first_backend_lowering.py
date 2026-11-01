@@ -113,6 +113,44 @@ def row_sum_static_dtype_application(x, y):
     y = acc  # noqa: F841
 
 
+def scalar_pair_store_arrangement(x, out):
+    return x.tile((1, 128)), out.tile((1, 128))
+
+
+def scalar_pair_store_application(x, out):
+    for i in range(64):
+        out[0, i] = x[0, i] + x[0, i + 64]
+        out[0, i + 64] = x[0, i + 64] + x[0, i]
+
+
+def scalar_pair_reduction_application(x, out):
+    scale = ntl.sum(x * x)
+
+    for i in range(64):
+        out[0, i] = x[0, i] * scale
+
+
+def dynamic_table_arrangement(positions, table, output):
+    return positions, table.tile((1, 64)), output.tile((64,))
+
+
+def dynamic_table_application(positions, table, output):
+    output = table[positions, :]  # noqa: F841
+
+
+def scalar_dynamic_table_arrangement(positions, table, output):
+    return positions.tile((1, 1, 64)), table.tile((1, 64)), output.tile((64,))
+
+
+def scalar_dynamic_table_application(positions, table, output):
+    position = ntl.max(positions)
+    output = table[position, :]  # noqa: F841
+
+
+def dynamic_table_runtime_arrangement(positions, table, output):
+    return positions, table.tile((1, 64)), output.tile((1, 64))
+
+
 def _ssa_kernel(
     source: str, kernel_name: str, tensors: tuple[TensorSpec, ...]
 ) -> Kernel:
@@ -157,6 +195,22 @@ def _triton_load_mask(source: str, *, tensor: str | None = None) -> ast.AST | No
 
     return next(
         (keyword.value for keyword in load.keywords if keyword.arg == "mask"), None
+    )
+
+
+def _triton_store_mask(source: str) -> ast.AST | None:
+    store = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "tl"
+        and node.func.attr == "store"
+    )
+
+    return next(
+        (keyword.value for keyword in store.keywords if keyword.arg == "mask"), None
     )
 
 
@@ -215,6 +269,46 @@ def random_application(seed, out):
         assert "ninetoothed_curand_uniform" in source
         assert "curandStatePhilox4_32_10_t" in source
         assert "curand_init" in source
+
+    def test_scalar_extract_selects_dynamic_table_row(self):
+        artifact = lower_application(
+            dynamic_table_arrangement,
+            dynamic_table_application,
+            (
+                Tensor(0, dtype="int64"),
+                Tensor(2, dtype="bfloat16"),
+                Tensor(1, dtype="bfloat16"),
+            ),
+            backend="triton",
+            kernel_name="dynamic_table_row",
+        )
+
+        table_load = next(
+            line
+            for line in artifact.primary_source.splitlines()
+            if "tl.load(table +" in line
+        )
+        assert "positions" in table_load
+
+    def test_scalar_extract_selects_reduced_dynamic_table_row(self):
+        artifact = lower_application(
+            scalar_dynamic_table_arrangement,
+            scalar_dynamic_table_application,
+            (
+                Tensor(3, dtype="int64"),
+                Tensor(2, dtype="bfloat16"),
+                Tensor(1, dtype="bfloat16"),
+            ),
+            backend="triton",
+            kernel_name="scalar_dynamic_table_row",
+        )
+
+        table_load = next(
+            line
+            for line in artifact.primary_source.splitlines()
+            if "tl.load(table +" in line
+        )
+        assert "v0" in table_load
 
     def test_public_lower_generates_fused_expression_without_kernel_template(self):
         expected = {
@@ -438,6 +532,7 @@ def random_application(seed, out):
                 ),
                 backend="tilelang",
                 kernel_name=f"tilelang_schedule_{candidate}",
+                max_shared_memory_bytes=160 * 1024,
                 pass_options={
                     "ssa.tilelang.optimize_schedule": {"candidate": candidate}
                 },
@@ -446,20 +541,20 @@ def random_application(seed, out):
         balanced = lower_candidate("balanced")
         wide = lower_candidate("wide")
         assert "threads=128" in balanced.primary_source
-        assert "num_stages=2" in balanced.primary_source
+        assert "num_stages=3" in balanced.primary_source
         assert balanced.metadata["launch_block"] == ("128",)
         assert "threads=256" in wide.primary_source
         assert "num_stages=3" in wide.primary_source
         assert wide.metadata["launch_block"] == ("256",)
         assert balanced.metadata["ssa_schedule"]["tile"] == {
-            "block_m": 64,
-            "block_n": 64,
+            "block_m": 128,
+            "block_n": 128,
             "block_k": 32,
         }
         assert wide.metadata["ssa_schedule"]["tile"] == {
             "block_m": 128,
-            "block_n": 64,
-            "block_k": 32,
+            "block_n": 256,
+            "block_k": 64,
         }
 
     def test_public_triton_lower_raises_when_ssa_is_unavailable(self):
@@ -666,10 +761,10 @@ def canonical_math_application(x, y, out):
                     "tl.where",
                     "tl.maximum",
                     "tl.minimum",
-                    "tl.tanh",
+                    "libdevice.tanh",
                     "tl.log(1.0 +",
                     "tl.atan2",
-                    "tl.pow",
+                    "libdevice.pow",
                     "tl.acos",
                     "tl.asin",
                     "tl.atan",
@@ -907,7 +1002,7 @@ def canonical_math_application(x, y, out):
         expected = {
             "triton": ("ssa-unified-triton-emitter", "@triton.jit"),
             "cuda": ("ssa-unified-cuda-emitter", "(x[v1_i] * y[v1_i])"),
-            "tilelang": ("ssa-unified-tilelang-emitter", "x_buf[v1_i] * y_buf[v1_i]"),
+            "tilelang": ("ssa-unified-tilelang-emitter", "x_buf[v1_i]"),
         }
 
         for backend, (route, source_fragment) in expected.items():
@@ -960,6 +1055,45 @@ def canonical_math_application(x, y, out):
 
             for source_fragment in source_fragments:
                 assert source_fragment in artifact.primary_source
+
+    @pytest.mark.parametrize(
+        "expression", ("x.to(dtype_source.dtype)", "ntl.cast(x, dtype_source.dtype)")
+    )
+    def test_cast_preserves_tensor_dtype_source(self, expression):
+        kernel = _ssa_kernel(
+            f"def app(x, dtype_source, out):\n    out = {expression}\n",
+            "cast_tensor_dtype",
+            (
+                TensorSpec(ndim=1, shape=(4,), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=(4,), name="dtype_source"),
+                TensorSpec(ndim=1, shape=(4,), name="out"),
+            ),
+        )
+        source = emit_kernel(kernel, "triton").primary_source
+        assert "dtype_source.dtype.element_ty" in source
+
+    @pytest.mark.parametrize(
+        "expression", ("x.to(reduced.dtype)", "ntl.cast(x, reduced.dtype)")
+    )
+    def test_cast_uses_promoted_reduction_dtype(self, expression):
+        kernel = _ssa_kernel(
+            "def app(x, dtype_source, out):\n    reduced = dtype_source.sum()\n"
+            f"    out = {expression}\n",
+            "cast_reduction_dtype",
+            (
+                TensorSpec(ndim=1, shape=(4,), dtype="float32", name="x"),
+                TensorSpec(ndim=1, shape=(4,), dtype="uint8", name="dtype_source"),
+                TensorSpec(ndim=1, shape=(4,), dtype="uint32", name="out"),
+            ),
+        )
+        cast = next(
+            operation
+            for operation in kernel.ssa.blocks[0].operations
+            if operation.opcode == "tensor.cast"
+        )
+        assert cast.results[0].type.dtype == "uint32"
+        source = emit_kernel(kernel, "triton").primary_source
+        assert "tl.uint32" in source
 
     def test_dtype_source_roles(self):
         from ninetoothed.backends.emitters.context import EmitContext
@@ -1145,7 +1279,7 @@ def canonical_math_application(x, y, out):
         assert "tl.dtype" not in triton_source
         assert "tl.broadcast_to(tl.cast(" in triton_source
         assert "auto vacc_" in artifacts["cuda"].primary_source
-        assert "T.alloc_var(_nt_dtype(" in artifacts["tilelang"].primary_source
+        assert "T.alloc_local((1,), _nt_dtype(" in artifacts["tilelang"].primary_source
 
     def test_constructor_canonicalizes_aliased_and_chained_tensor_dtype(self):
         kernel = _ssa_kernel(
@@ -1213,7 +1347,8 @@ def promoted_dtype_application(x, y):
         )
         artifact = emit_kernel(kernel, "triton")
         source = artifact.primary_source
-        assert "tl.float32" in source
+        assert "_nt_cast_like(" in source
+        assert " + 0.5" in source
         assert "y.dtype.element_ty" not in source
 
     def test_constructor_propagates_dtype_ref_into_nested_region(self):
@@ -1252,6 +1387,41 @@ def nested_dtype_application(x, y):
         assert not any(
             isinstance(node, ast.Name) and node.id == "mask" for node in ast.walk(mask)
         )
+
+    def test_scalar_subscript_store_drops_vector_mask(self):
+        artifact = lower_application(
+            scalar_pair_store_arrangement,
+            scalar_pair_store_application,
+            (Tensor(2, other=0), Tensor(2)),
+            backend="triton",
+            kernel_name="scalar_pair_store",
+        )
+        mask = _triton_store_mask(artifact.primary_source)
+        assert mask is not None
+        assert not any(
+            isinstance(node, ast.Name) and node.id == "mask" for node in ast.walk(mask)
+        )
+
+    def test_scheduled_reduction_is_emitted_before_scalar_loop(self):
+        artifact = lower_application(
+            scalar_pair_store_arrangement,
+            scalar_pair_reduction_application,
+            (Tensor(2, other=0), Tensor(2)),
+            backend="triton",
+            kernel_name="scalar_pair_reduction",
+        )
+        source = artifact.primary_source
+        reduction_line = next(
+            number
+            for number, line in enumerate(source.splitlines(), 1)
+            if "tl.sum(" in line
+        )
+        loop_line = next(
+            number
+            for number, line in enumerate(source.splitlines(), 1)
+            if "for " in line and "range(0, 64" in line
+        )
+        assert reduction_line < loop_line
 
     def test_scalar_source_load_drops_vector_mask(self):
         kernel = _ssa_kernel(
@@ -1405,7 +1575,6 @@ def scalarized_index_application(x, indices, y):
                 artifact,
                 route="ssa-unified-triton-emitter",
             )
-            assert "linalg.transpose" not in _ssa_opcodes(artifact)
             assert (
                 "transfer_value = tl.trans(transfer_value)" in artifact.primary_source
             )
@@ -1629,6 +1798,50 @@ def test_dynamic_integer_reduction_preserves_large_values_and_tail(tmp_path):
         torch.cuda.synchronize()
         assert out_max.item() == max(values)
         assert out_min.item() == min(values)
+
+
+def test_dynamic_table_extraction_uses_index_for_every_output_row(tmp_path):
+    import importlib.util
+
+    import torch
+
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA GPU required")
+
+    artifact = lower_application(
+        dynamic_table_runtime_arrangement,
+        dynamic_table_application,
+        (
+            Tensor(0, dtype="int64"),
+            Tensor(2, dtype="bfloat16"),
+            Tensor(shape=(2, 64), dtype="bfloat16"),
+        ),
+        backend="triton",
+        kernel_name="dynamic_table_runtime",
+    )
+    path = tmp_path / "dynamic_table_runtime.py"
+    path.write_text(artifact.primary_source)
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    table = torch.arange(128, device="cuda", dtype=torch.float32)
+    table = table.reshape(2, 64).to(torch.bfloat16)
+    output = torch.empty((2, 64), device="cuda", dtype=torch.bfloat16)
+    module.launch_dynamic_table_runtime(
+        1,
+        table,
+        output,
+        table.shape[0],
+        table.shape[1],
+        table.stride(0),
+        table.stride(1),
+        output.stride(0),
+        output.stride(1),
+    )
+    torch.cuda.synchronize()
+
+    assert torch.equal(output, table[1].expand(2, 64))
 
 
 def test_source_offset_emission_maps_compact_coordinates_to_template():

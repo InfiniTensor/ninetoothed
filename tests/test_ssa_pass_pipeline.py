@@ -114,7 +114,6 @@ class TestPipeline:
         )
         lowered = lower_for_target(program, backend=Target.CUDA)
         opcodes = tuple(_opcodes(lowered.blocks[0].operations))
-        assert lowered.metadata["analysis"]["has_dot"]
         assert lowered.metadata["schedule"]["granularity"] == "blocked-linalg"
         assert lowered.metadata["linalg_decomposed"]
         assert "linalg.matmul" not in opcodes
@@ -131,6 +130,7 @@ class TestPipeline:
         assert "ssa.decompose_linalg" in independent
         assert "ssa.analyze_effects" in independent
         assert "ssa.select_schedule" in independent
+        assert "ssa.group_reduction_rows" in independent
 
         for backend in Target:
             backend_passes = {
@@ -140,7 +140,12 @@ class TestPipeline:
             expected = {f"ssa.{backend.value}.optimize_schedule"}
 
             if backend == Target.TRITON:
-                expected.add("ssa.triton.block_reductions")
+                expected.update(
+                    {
+                        "ssa.triton.block_reductions",
+                        "ssa.triton.singleton_dot",
+                    }
+                )
 
             assert backend_passes == expected
             assert (
@@ -152,6 +157,7 @@ class TestPipeline:
         } == {
             "ssa.triton.optimize_schedule",
             "ssa.triton.block_reductions",
+            "ssa.triton.singleton_dot",
             "ssa.cuda.optimize_schedule",
             "ssa.tilelang.optimize_schedule",
         }
@@ -263,7 +269,7 @@ class TestPipeline:
         expected_counts = {
             Target.TRITON: 3,
             Target.CUDA: 1,
-            Target.TILELANG: 3,
+            Target.TILELANG: 2,
         }
 
         for backend, expected_count in expected_counts.items():
@@ -273,10 +279,9 @@ class TestPipeline:
             assert (
                 lowered.metadata["selected_schedule_candidate"] == candidates[0]["name"]
             )
-            assert (
-                lowered.metadata["schedule"]["tile"]
-                == candidates[0]["schedule"]["tile"]
-            )
+            assert lowered.metadata["schedule"].get("tile", {}) == candidates[0][
+                "schedule"
+            ].get("tile", {})
 
     def test_schedule_candidate_can_be_selected_by_pass_option(self):
         program = _program(

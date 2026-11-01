@@ -151,7 +151,20 @@ def test_fresh_aot_materialization_enters_launches_and_leaves(monkeypatch, tmp_p
     cache_library = cache_directory / "fresh_guarded.triton.so"
     cache_library.write_bytes(b"library")
     cache_library.with_suffix(".manifest.json").write_text(
-        json.dumps({"triton_aot_launcher_schema": 1}),
+        json.dumps(
+            {
+                "triton_aot_launcher_schema": triton_materializer._TRITON_AOT_LAUNCHER_SCHEMA
+            }
+        ),
+        encoding="utf-8",
+    )
+    cache_library.with_suffix(".sources.json").write_text(
+        json.dumps(
+            {
+                "fresh_guarded.triton.launch.cpp": "// Cached launcher.\n",
+                "fresh_guarded.triton.linked.cpp": "// Cached linker.\n",
+            }
+        ),
         encoding="utf-8",
     )
     source = tmp_path / "fresh_guarded.py"
@@ -284,7 +297,9 @@ def test_reloaded_unguarded_artifact_requires_rebuild(monkeypatch, tmp_path):
         )
 
 
-@pytest.mark.parametrize("manifest_state", ("missing", "stale", "current"))
+@pytest.mark.parametrize(
+    "manifest_state", ("missing", "stale", "missing-sources", "current")
+)
 def test_stale_triton_launcher_schema_triggers_rebuild(
     monkeypatch,
     tmp_path,
@@ -297,11 +312,22 @@ def test_stale_triton_launcher_schema_triggers_rebuild(
     if manifest_state != "missing":
         schema = (
             triton_materializer._TRITON_AOT_LAUNCHER_SCHEMA
-            if manifest_state == "current"
+            if manifest_state in {"current", "missing-sources"}
             else triton_materializer._TRITON_AOT_LAUNCHER_SCHEMA - 1
         )
         manifest.write_text(
             json.dumps({"triton_aot_launcher_schema": schema}),
+            encoding="utf-8",
+        )
+
+    if manifest_state in {"stale", "current"}:
+        library.with_suffix(".sources.json").write_text(
+            json.dumps(
+                {
+                    "guarded.triton.launch.cpp": "// Cached launcher.\n",
+                    "guarded.triton.linked.cpp": "// Cached linker.\n",
+                }
+            ),
             encoding="utf-8",
         )
 

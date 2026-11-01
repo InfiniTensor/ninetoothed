@@ -15,7 +15,7 @@ from ninetoothed.interpreter.debugger import (
     compare_programs,
     load_reproducer,
 )
-from ninetoothed.ir import ssa
+from ninetoothed.ir import ir_to_dict, ssa
 
 from .test_interpreter_debugger import (
     _affine_restructured,
@@ -280,16 +280,18 @@ def test_existing_directory_preserves_failure_and_never_overwrites(tmp_path):
     assert tuple(tmp_path.iterdir()) == (marker,)
 
 
-def _unsupported(program):
+def _unsupported(program, opcode="math.log10"):
     block = program.blocks[0]
+    source = program.inputs[0]
+    operation = ssa.Operation(
+        opcode=opcode,
+        operands=(source.name,),
+        results=(replace(source, name="%unsupported"),),
+    )
 
     return replace(
         program,
-        blocks=(
-            replace(
-                block, operations=(ssa.Operation(opcode="broken.op"), *block.operations)
-            ),
-        ),
+        blocks=(replace(block, operations=(operation, *block.operations)),),
     )
 
 
@@ -301,7 +303,7 @@ def test_runtime_failure_is_automatically_saved_without_masking_exception(
     directory = tmp_path / workflow
 
     if workflow == "comparison":
-        with pytest.raises(InterpretationError, match="broken.op") as caught:
+        with pytest.raises(InterpretationError, match=r"math\.log10") as caught:
             compare_programs(
                 kernel.program,
                 _unsupported(kernel.program),
@@ -323,12 +325,12 @@ def test_runtime_failure_is_automatically_saved_without_masking_exception(
             seed=19,
         )
         assert report.first_bad_pass == "unsupported"
-        assert "broken.op" in report.error
+        assert "math.log10" in report.error
         assert report.reproducer == directory
 
     replay = _replay(directory)
     assert replay.returncode == 0, replay.stdout + replay.stderr
-    assert "broken.op" in replay.stdout
+    assert "math.log10" in replay.stdout
 
 
 def test_reference_failure_is_not_blame_assigned_to_the_first_pass():
@@ -340,7 +342,7 @@ def test_reference_failure_is_not_blame_assigned_to_the_first_pass():
 
         return program
 
-    with pytest.raises(InterpretationError, match="broken.op"):
+    with pytest.raises(InterpretationError, match=r"math\.log10"):
         check_passes(
             _unsupported(kernel.program),
             (("identity", identity),),
@@ -384,7 +386,7 @@ def test_export_io_error_does_not_replace_the_execution_error(tmp_path, monkeypa
     monkeypatch.setattr(failure, "export_reproducer", disk_full)
     kernel = _kernel()
 
-    with pytest.raises(InterpretationError, match="broken.op") as caught:
+    with pytest.raises(InterpretationError, match=r"math\.log10") as caught:
         compare_programs(
             kernel.program,
             _unsupported(kernel.program),
@@ -442,6 +444,10 @@ def test_replay_rejects_a_different_kind_of_failure(tmp_path, original_failure):
     kernel = _kernel()
     directory = tmp_path / original_failure
 
+    different_operation = ir_to_dict(
+        _unsupported(kernel.program, "math.log1p").blocks[0].operations[0]
+    )
+
     if original_failure == "exception":
         with pytest.raises(InterpretationError):
             compare_programs(
@@ -453,7 +459,7 @@ def test_replay_rejects_a_different_kind_of_failure(tmp_path, original_failure):
             )
 
         candidate = json.loads((directory / "candidate/program.json").read_text())
-        candidate["blocks"][0]["operations"][0]["opcode"] = "another.unsupported"
+        candidate["blocks"][0]["operations"][0] = different_operation
     else:
         compare_programs(
             kernel.program,
@@ -463,7 +469,7 @@ def test_replay_rejects_a_different_kind_of_failure(tmp_path, original_failure):
             failure_dir=directory,
         )
         candidate = json.loads((directory / "candidate/program.json").read_text())
-        candidate["blocks"][0]["operations"][0]["opcode"] = "another.unsupported"
+        candidate["blocks"][0]["operations"].insert(0, different_operation)
 
     (directory / "candidate/program.json").write_text(json.dumps(candidate))
     replay = _replay(directory)

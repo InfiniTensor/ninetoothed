@@ -64,6 +64,10 @@ explains the explicit CPU override and its ``pip check`` limitation.
 Frontend versus backend SSA
 ---------------------------
 
+Preparation uses the compiler's verified frozen frontend, including named-layout
+normalization, strict shape checks and legal meta defaults. Explicit full-name
+meta bindings take precedence over short aliases, then frontend defaults.
+
 By default, ``kernel.program`` is the original frontend SSA. To execute the SSA
 pass pipeline used by a backend, select it explicitly:
 

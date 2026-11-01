@@ -305,6 +305,18 @@ class TargetContext:
         }
 
 
+def _target_context_from_snapshot(snapshot):
+    """Restore the target from its pickle-safe fact snapshot, without discovery."""
+    if snapshot is None:
+        return None
+
+    return TargetContext(
+        backend=snapshot["backend"],
+        platform=PlatformProfile(**snapshot["profile"]),
+        compute_arch=snapshot["compute_arch"],
+    )
+
+
 class PlatformRegistry:
     """Explicit platform registry with replaceable aliases and profiles."""
 

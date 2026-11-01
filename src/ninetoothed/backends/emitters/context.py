@@ -1,10 +1,13 @@
 """Backend-neutral state shared while traversing SSA regions."""
 
-from dataclasses import dataclass
-from typing import Any, Mapping
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Mapping
 
 from ninetoothed.backends.emitters.base import EmitterTarget
 from ninetoothed.ir import Kernel, ssa
+
+if TYPE_CHECKING:
+    from ninetoothed.backends.emitters.analysis import ScalarCarryProjectionAnalysis
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -51,6 +54,7 @@ class EmitContext:
     value_types: Mapping[str, ssa.Type]
     lines: list[str]
     memo: dict[str, str]
+    scalar_value_coordinates: dict[str, tuple[str, ...]] = field(default_factory=dict)
     tensor_infos: Mapping[str, TensorInfo]
     output: str
     output_axes: tuple[str, ...]
@@ -65,6 +69,8 @@ class EmitContext:
     reduce_index: str | None = None
     reduce_flattened: bool = False
     bindings: Mapping[str, str] | None = None
+    scalar_carry_analysis: "ScalarCarryProjectionAnalysis | None" = None
+    binding_coordinate_constraints: Mapping[str, tuple[str, ...]] | None = None
     type_values: dict[str, ValueType | None] | None = None
     type_initials: Mapping[str, str] | None = None
     vector_bindings: frozenset[str] = frozenset()
@@ -98,6 +104,13 @@ class EmitContext:
             "value_types": self.value_types,
             "lines": self.lines if lines is None else lines,
             "memo": self.memo if memo is None else memo,
+            "scalar_value_coordinates": self.scalar_value_coordinates
+            if memo is None
+            else {
+                name: coords
+                for name, coords in self.scalar_value_coordinates.items()
+                if name in memo
+            },
             "tensor_infos": self.tensor_infos,
             "output": self.output,
             "output_axes": self.output_axes,
@@ -112,6 +125,8 @@ class EmitContext:
             "reduce_index": self.reduce_index,
             "reduce_flattened": self.reduce_flattened,
             "bindings": self.bindings,
+            "scalar_carry_analysis": self.scalar_carry_analysis,
+            "binding_coordinate_constraints": self.binding_coordinate_constraints,
             "type_values": self.type_values if lines is None else {},
             "type_initials": self.type_initials,
             "vector_bindings": self.vector_bindings,

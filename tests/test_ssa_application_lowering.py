@@ -30,12 +30,30 @@ def reference_attention(q, k, v, is_causal, o):
 
 
 def _attention_tensors():
+    # The application receives tiles and block sequences, not source tensors.
+    # Keep physical dimensions available for source.shape and offsets queries.
+    q_attrs = {
+        "source_shape": ("B", "H", "M", "D"),
+        "source_ndim": 4,
+        "dtype_target_dims": ((2, 3),),
+    }
+    kv_attrs = {
+        "source_shape": ("B", "H", "N", "D"),
+        "source_ndim": 4,
+        "dtype_shapes": (("blocks",), ("BN", "D")),
+        "dtype_target_dims": ((2,), (2, 3)),
+    }
+
     return (
-        TensorSpec(ndim=4, shape=("B", "H", "M", "D"), dtype="float16", name="q"),
-        TensorSpec(ndim=4, shape=("B", "H", "N", "D"), dtype="float16", name="k"),
-        TensorSpec(ndim=4, shape=("B", "H", "N", "D"), dtype="float16", name="v"),
+        TensorSpec(ndim=2, shape=("BM", "D"), dtype="float16", name="q", attrs=q_attrs),
+        TensorSpec(
+            ndim=1, shape=("blocks",), dtype="float16", name="k", attrs=kv_attrs
+        ),
+        TensorSpec(
+            ndim=1, shape=("blocks",), dtype="float16", name="v", attrs=kv_attrs
+        ),
         TensorSpec(ndim=0, dtype="bool", constexpr=True, name="is_causal"),
-        TensorSpec(ndim=4, shape=("B", "H", "M", "D"), dtype="float16", name="o"),
+        TensorSpec(ndim=2, shape=("BM", "D"), dtype="float16", name="o", attrs=q_attrs),
     )
 
 

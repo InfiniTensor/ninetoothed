@@ -45,18 +45,8 @@ class InterpretedKernel:
         self.watch = tuple(watch)
         # Match the compiler's schedule-parameter defaults. Explicit meta wins.
 
-        for tensor in prepared.arranged:
-            for symbol in tensor.names():
-                if not hasattr(symbol, "lower_bound"):
-                    continue
-
-                value = min(max(256, int(symbol.lower_bound)), int(symbol.upper_bound))
-
-                if getattr(symbol, "power_of_two", False):
-                    value = 1 << max(0, value.bit_length() - 1)
-
-                value = self.meta.get(remove_prefixes(str(symbol)), value)
-                self.meta.setdefault(str(symbol), value)
+        for name, value in prepared.meta_defaults.items():
+            self.meta.setdefault(name, self.meta.get(remove_prefixes(name), value))
 
     def __call__(self, *args, **kwargs):
         if len(args) > len(self._prepared.parameters):

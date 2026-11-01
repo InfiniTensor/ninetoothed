@@ -1,10 +1,10 @@
 """Materialize backend artifacts into callable runtime handles."""
 
-import copy
 import ctypes
 import importlib.util
 import os
 import shutil
+import struct
 import sys
 import tempfile
 import weakref
@@ -22,6 +22,7 @@ from ninetoothed.compiler.cache import (
 )
 from ninetoothed.dtype import normalize_dtype
 from ninetoothed.ir import LaunchABI, LaunchBinding, ir_to_dict
+from ninetoothed.ir.frozen import freeze
 from ninetoothed.targets import (
     runtime_device_types,
     validate_artifact_materialization,
@@ -53,7 +54,17 @@ def overflow_terms(argument_names, tensor_ndims):
 
 
 class Handle:
-    def __init__(self, compilation, kernel, launch, source, library=None):
+    def __init__(
+        self,
+        compilation,
+        kernel,
+        launch,
+        source,
+        library=None,
+        *,
+        cache_key=None,
+        toolchain=None,
+    ):
         self._compilation = compilation
         self._artifact = compilation.artifact
         self._backend = compilation.artifact.backend.value
@@ -66,7 +77,7 @@ class Handle:
         self._ssa = compilation.kernel.ssa
         self._pass_trace = compilation.pass_trace
         self._launch_plan = compilation.launch_plan
-        cache_key = compilation_cache_key(compilation)
+        cache_key = cache_key or compilation_cache_key(compilation, toolchain=toolchain)
         manifest = (
             Path(self._library).with_suffix(".manifest.json")
             if self._library is not None
@@ -79,6 +90,7 @@ class Handle:
                 cache_key,
                 Path(self._source),
                 None if self._library is None else Path(self._library),
+                toolchain=toolchain,
             ),
         )
         self._built_artifact = BuiltArtifact(
@@ -101,6 +113,16 @@ def materialize(
     mode: str = "jit",
 ) -> Handle:
     target = compilation.artifact.backend
+
+    if compilation.launch_abi.named_layout is not None and (
+        mode != "jit"
+        or compilation.request.caller != "torch"
+        or target != Target.TRITON
+    ):
+        raise ValueError(
+            "Named S1 execution requires the checked Triton Torch JIT caller."
+        )
+
     assert compilation.target is not None
     validate_artifact_materialization(compilation.artifact, mode=mode)
     compilation.target.validate_materialization(mode)
@@ -127,7 +149,18 @@ def load_built_artifact(built: BuiltArtifact):
     """Load a materialized binary and restore its public Launch ABI callable."""
     from ninetoothed.backends.materializers import materializer_for
 
-    validate_artifact_materialization(built.source, mode="aot")
+    named = built.abi.get("named_layout")
+
+    if named is not None:
+        if built.binary_path is not None or built.source.backend != Target.TRITON:
+            raise ValueError("Named S1 reload requires a checked Triton JIT artifact.")
+
+        if named != built.source.metadata.get("launch_abi", {}).get("named_layout"):
+            raise ValueError("Named artifact ABI and source contracts differ.")
+
+    validate_artifact_materialization(
+        built.source, mode="jit" if named is not None else "aot"
+    )
 
     return materializer_for(built.source.backend).load_built_artifact(built)
 
@@ -140,6 +173,8 @@ def _launch_abi_from_dict(value) -> LaunchABI:
         ),
         outputs=tuple(value.get("outputs", ())),
         shape_params=tuple(value.get("shape_params", ())),
+        symbol_constraints=tuple(value.get("symbol_constraints", ())),
+        named_layout=value.get("named_layout"),
     )
 
 
@@ -159,10 +194,11 @@ def _requires_runtime_specialization(compilation) -> bool:
     if any(tensor.dtype is None for tensor in compilation.kernel.tensors):
         return True
 
-    if compilation.request.specialization_values:
-        return False
+    bound = dict(compilation.kernel.metadata.get("specialization_values", {}))
+
     return compilation.artifact.backend == Target.TILELANG and any(
-        binding.kind
+        binding.name not in bound
+        and binding.kind
         in {
             "shape",
             "stride",
@@ -190,8 +226,20 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
     specializations: dict[tuple[tuple[str, str], ...], Handle] = {}
     handle = None
 
+    def update_handle(source_handle) -> None:
+        if handle is not None:
+            handle._artifact = source_handle._artifact
+            handle._kernel = source_handle._kernel
+            handle._source = source_handle._source
+            handle._library = source_handle._library
+            handle._ssa = source_handle._ssa
+            handle._pass_trace = source_handle._pass_trace
+            handle._launch_plan = source_handle._launch_plan
+            handle._built_artifact = source_handle._built_artifact
+
     def launch(*args, **kwargs):
         nonlocal handle
+
         public = _public_values(
             compilation.launch_abi,
             args,
@@ -214,25 +262,27 @@ def _materialize_lazy(compilation, *, output_dir=None, mode="jit") -> Handle:
 
             request = replace(
                 compilation.request,
-                tensors=copy.deepcopy(compilation.request.tensors),
-                tensor_dtypes=dtypes,
-                specialization_values=specialization_values,
+                tensor_dtypes=dict(compilation.request.tensor_dtypes or {}) | dtypes,
+                specialization_values=dict(
+                    compilation.request.specialization_values or {}
+                )
+                | specialization_values,
             )
+            specialized = compile_kernel(request)
+
+            if _requires_runtime_specialization(specialized):
+                raise TypeError(
+                    "Runtime specialization left unresolved types or layout parameters."
+                )
+
             specializations[key] = materialize(
-                compile_kernel(request), output_dir=output_dir, mode=mode
+                specialized, output_dir=output_dir, mode=mode
             )
 
         specialized = specializations[key]
 
-        if handle is not None:
-            handle._artifact = specialized._artifact
-            handle._kernel = specialized._kernel
-            handle._source = specialized._source
-            handle._library = specialized._library
-            handle._ssa = specialized._ssa
-            handle._pass_trace = specialized._pass_trace
-            handle._launch_plan = specialized._launch_plan
-            handle._built_artifact = specialized._built_artifact
+        update_handle(specialized)
+
         return specialized(
             *args,
             **_filter_runtime_kwargs(specialized._compilation.launch_abi, kwargs),
@@ -290,6 +340,19 @@ def _is_cacheable_runtime_literal(value) -> bool:
             and all(_is_cacheable_runtime_literal(item) for item in value)
         )
     )
+
+
+def _runtime_literal_key(value):
+    """Compare floating values by representation, including signed zero."""
+    if type(value) is float:
+        return struct.pack("!d", value)
+
+    if type(value) is complex:
+        return struct.pack("!dd", value.real, value.imag)
+
+    if isinstance(value, tuple):
+        return tuple((type(item), _runtime_literal_key(item)) for item in value)
+    return value
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -369,7 +432,9 @@ class _RuntimeValueContract:
 
     def matches(self, value, *, identity_verified=False) -> bool:
         if not self.is_tensor:
-            return type(value) is self.value_type and value == self.value
+            return type(value) is self.value_type and _runtime_literal_key(
+                value
+            ) == _runtime_literal_key(self.value)
 
         if not identity_verified and (
             id(value) != self.identity or type(value) is not self.value_type
@@ -393,7 +458,9 @@ class _RuntimeValueContract:
 
         item = value.item()
 
-        return type(item) is self.scalar_value[0] and item == self.scalar_value[1]
+        return type(item) is self.scalar_value[0] and _runtime_literal_key(
+            item
+        ) == _runtime_literal_key(self.scalar_value[1])
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -442,6 +509,7 @@ class _VerifiedRuntimeCall:
                 and contract.stride_callable
                 and contract.data_ptr_callable
                 and contract.storage_offset_callable
+                and contract.scalar_value is None
                 for contract in positional
             )
             and len(keywords) == 1
@@ -457,7 +525,7 @@ class _VerifiedRuntimeCall:
                 two_tensor_state = (
                     keywords[0][0],
                     scalar.value_type,
-                    scalar.value,
+                    _runtime_literal_key(scalar.value),
                     positional[0].identity,
                     positional[0].value_type,
                     *positional[0].tensor_state,
@@ -491,7 +559,7 @@ class _VerifiedRuntimeCall:
             return (
                 expected_name,
                 type(scalar),
-                scalar,
+                _runtime_literal_key(scalar),
                 id(first),
                 type(first),
                 first.shape,
@@ -661,12 +729,24 @@ class _PreparedBoundValue:
         ):
             return value, None
 
-        storage_numel = value.untyped_storage().nbytes() // value.element_size()
-        storage_offset = value.storage_offset()
+        is_contiguous = value.is_contiguous()
+
+        # A contiguous buffer's extent is just its element count; a strided
+        # view's extent is its elements' storage span, matching the access
+        # template's strided indexing.
+        if is_contiguous:
+            extent = value.numel()
+        elif value.numel() > 0:
+            extent = 1 + sum(
+                (dim - 1) * stride for dim, stride in zip(value.shape, value.stride())
+            )
+        else:
+            extent = 0
+
         flattened = value.as_strided(
-            (storage_numel - storage_offset,),
+            (extent,),
             (1,),
-            storage_offset=storage_offset,
+            storage_offset=value.storage_offset(),
         )
 
         return flattened, flattened
@@ -790,6 +870,7 @@ class _PreparedRuntimeLaunch:
     binding_plan: _RuntimeBindingPlan | None
     owner_refs: tuple[weakref.ReferenceType, ...] | None
     empty: bool
+    invoker: Callable[[Any, tuple, dict], Any]
     invocation_plan: Callable[[tuple, tuple, dict], Any] | None = None
     cache_token: object | None = None
 
@@ -950,7 +1031,7 @@ def _verified_runtime_launch(launch):
                 call_key=call_key,
             )
         ):
-            return launch._ninetoothed_invoke_prepared(
+            return active_snapshot.invoker(
                 active_snapshot,
                 args,
                 kwargs,
@@ -967,7 +1048,7 @@ def _verified_runtime_launch(launch):
             prepared_calls[identity] = cached
             activate(identity, cached)
 
-            return launch._ninetoothed_invoke_prepared(cached, args, kwargs)
+            return cached.invoker(cached, args, kwargs)
 
         prepared = launch._ninetoothed_prepare(args, kwargs)
         cached_prepared = remember(
@@ -977,13 +1058,49 @@ def _verified_runtime_launch(launch):
             prepared,
         )
 
-        return launch._ninetoothed_invoke_prepared(
+        return prepared.invoker(
             cached_prepared or prepared,
             args,
             kwargs,
         )
 
+    verified._ninetoothed_prepare = launch._ninetoothed_prepare
+    verified._ninetoothed_invoke_prepared = launch._ninetoothed_invoke_prepared
+
     return verified
+
+
+def dispatch_handles(resolve):
+    """Select a Handle when its call contract changes, sharing runtime guards.
+
+    ``resolve(args, kwargs)`` returns a Handle without invoking it. Tensor
+    shape, stride, dtype, device, pointer and storage offset remain checked
+    on every call by the same bounded, weak-reference cache as ordinary Handles.
+    """
+
+    def prepare(args, kwargs):
+        handle = resolve(args, kwargs)
+        launch = handle._launch
+
+        if not hasattr(launch, "_ninetoothed_prepare"):
+            launch = _runtime_wrapper(
+                handle,
+                handle._compilation.launch_abi,
+                low_level=False,
+                specs=handle._compilation.kernel.tensors,
+                device_types=runtime_device_types(handle._compilation),
+            )
+
+        return launch._ninetoothed_prepare(args, kwargs)
+
+    return _verified_runtime_launch(
+        SimpleNamespace(
+            _ninetoothed_prepare=prepare,
+            _ninetoothed_invoke_prepared=lambda prepared, args, kwargs: (
+                prepared.invoker(prepared, args, kwargs)
+            ),
+        )
+    )
 
 
 def _runtime_wrapper(
@@ -1020,6 +1137,7 @@ def _runtime_wrapper(
                 binding_plan=None,
                 owner_refs=_runtime_owner_refs(args, kwargs),
                 empty=True,
+                invoker=invoke,
             )
 
         values, _keepalive = _bound_values(abi, bound_public, scalar_mode="value")
@@ -1067,6 +1185,7 @@ def _runtime_wrapper(
             owner_refs=owner_refs,
             empty=False,
             invocation_plan=invocation_plan,
+            invoker=invoke,
         )
 
     def invoke(prepared, args, kwargs):
@@ -1132,6 +1251,7 @@ def _runtime_wrapper(
             keepalive.extend(flattened)
 
         result = function(*values) if low_level else function(*args, **kwargs)
+
         del keepalive
 
         if result is not None and not abi.outputs:
@@ -1180,9 +1300,117 @@ def _public_values(
     if missing:
         raise TypeError(f"Missing kernel arguments: {', '.join(missing)}.")
 
-    _validate_runtime_values(values, specs, device_types=device_types)
+    marked = {
+        spec.name: spec.attrs["named_layout"]
+        for spec in specs or ()
+        if "named_layout" in spec.attrs
+    }
+
+    if marked and (
+        abi.named_layout is None or freeze(marked) != abi.named_layout["parameters"]
+    ):
+        raise ValueError("Named runtime ABI cannot discard or change layout contracts.")
+
+    _validate_runtime_values(
+        values,
+        specs,
+        device_types=device_types,
+        memory_sources={
+            binding.source
+            for binding in abi.kernel_args
+            if binding.kind in {"tensor", "jagged_values", "jagged_offsets"}
+        },
+    )
+
+    if abi.named_layout is not None:
+        from ninetoothed.compiler.named_runtime import validate_named_call
+
+        validate_named_call(values, abi)
+
+    if abi.symbol_constraints:
+        symbols = {
+            binding.name: _binding_value(binding, values)
+            for binding in abi.kernel_args
+            if binding.kind == "meta"
+            and (binding.source in values or binding.value is not None)
+        }
+        _validate_symbol_constraints(values, abi.symbol_constraints, symbols=symbols)
 
     return values
+
+
+def _validate_symbol_constraints(values, constraints, *, symbols=None):
+    import operator
+
+    from ninetoothed.ir import IndexExpr
+    from ninetoothed.ir.module import evaluate_index_expression
+
+    try:
+        symbols = {
+            name: operator.index(value) for name, value in (symbols or {}).items()
+        }
+    except TypeError as exc:
+        raise TypeError("Physical layout meta-parameters must be integers.") from exc
+
+    for constraint in constraints:
+        if "expression" in constraint:
+            continue
+
+        observations = []
+
+        for binding in constraint["bindings"]:
+            value = values[binding["tensor"]]
+            dim = binding["dim"]
+            actual = int(
+                value.shape[dim] if binding["kind"] == "shape" else value.stride(dim)
+            )
+            observations.append((binding, actual))
+
+        expected = (
+            constraint["value"]
+            if constraint["value"] is not None
+            else observations[0][1]
+        )
+
+        if (
+            constraint["symbol"] in symbols
+            and symbols[constraint["symbol"]] != expected
+        ) or any(actual != expected for _binding, actual in observations):
+            rendered = ", ".join(
+                f"{item['tensor']}.{item['kind']}[{item['dim']}]={actual}"
+                for item, actual in observations
+            )
+            raise TypeError(
+                f"Symbol {constraint['symbol']!r} requires {expected}; {rendered}."
+            )
+
+        symbols[constraint["symbol"]] = expected
+
+    for constraint in constraints:
+        if "expression" not in constraint:
+            continue
+
+        try:
+            expected = evaluate_index_expression(
+                IndexExpr.parse(constraint["expression"]),
+                symbols | dict(constraint["values"]),
+            )
+        except (KeyError, ValueError, ZeroDivisionError) as exc:
+            raise TypeError(
+                f"Cannot bind physical layout expression {constraint['expression']!r}."
+            ) from exc
+
+        for binding in constraint["bindings"]:
+            value = values[binding["tensor"]]
+            dim = binding["dim"]
+            actual = int(
+                value.shape[dim] if binding["kind"] == "shape" else value.stride(dim)
+            )
+
+            if actual != expected:
+                raise TypeError(
+                    f"Physical layout {binding['tensor']}.{binding['kind']}[{dim}]={actual} differs from {constraint['expression']!r}={expected}."
+                )
 
 
 def _filter_runtime_kwargs(abi: LaunchABI, kwargs) -> dict[str, Any]:
@@ -1195,7 +1423,9 @@ def _filter_runtime_kwargs(abi: LaunchABI, kwargs) -> dict[str, Any]:
     return {name: value for name, value in kwargs.items() if name in accepted}
 
 
-def _validate_runtime_values(values, specs, *, device_types=("cuda",)) -> None:
+def _validate_runtime_values(
+    values, specs, *, device_types=("cuda",), memory_sources=()
+) -> None:
     expected_device = None
     device_types = tuple(
         dict.fromkeys(str(device_type).lower() for device_type in device_types)
@@ -1211,14 +1441,17 @@ def _validate_runtime_values(values, specs, *, device_types=("cuda",)) -> None:
             value,
             expected_device,
             device_types=device_types,
+            memory=spec.name in memory_sources,
         )
         _validate_dtype_contract(spec, value)
 
 
-def _validate_tensor_contract(spec, value, expected_device, *, device_types):
+def _validate_tensor_contract(
+    spec, value, expected_device, *, device_types, memory=False
+):
     source_ndim = int(spec.attrs.get("source_ndim", spec.ndim))
 
-    if source_ndim == 0:
+    if source_ndim == 0 and not memory:
         return expected_device
 
     shape = getattr(value, "shape", None)
@@ -1342,13 +1575,27 @@ def _flatten_ffi_tensor_args(bindings, values):
             "jagged_values",
             "jagged_offsets",
         } and hasattr(value, "as_strided"):
-            storage_numel = value.untyped_storage().nbytes() // value.element_size()
-            storage_offset = value.storage_offset()
+            is_contiguous = value.is_contiguous()
+
+            # A contiguous buffer's extent is just its element count; a strided
+            # view's extent is its elements' storage span, matching the access
+            # template's strided indexing.
+            if is_contiguous:
+                extent = value.numel()
+            elif value.numel() > 0:
+                extent = 1 + sum(
+                    (dim - 1) * stride
+                    for dim, stride in zip(value.shape, value.stride())
+                )
+            else:
+                extent = 0
+
             value = value.as_strided(
-                (storage_numel - storage_offset,),
+                (extent,),
                 (1,),
-                storage_offset=storage_offset,
+                storage_offset=value.storage_offset(),
             )
+
             flattened.append(value)
 
         result.append(value)
@@ -1482,7 +1729,7 @@ def _publish_library(cache_library: Path, output_dir, filename: str) -> Path:
     return destination
 
 
-def _built_manifest(compilation, cache_key, source, library):
+def _built_manifest(compilation, cache_key, source, library, *, toolchain=None):
     from ninetoothed.compiler.cache import compilation_toolchain_identity
 
     assert compilation.target is not None
@@ -1499,7 +1746,9 @@ def _built_manifest(compilation, cache_key, source, library):
         "launch_abi": compilation.artifact.metadata.get("launch_abi", {}),
         "launch_plan": ir_to_dict(compilation.launch_plan),
         "pass_trace": compilation.pass_trace,
-        "toolchain": compilation_toolchain_identity(compilation),
+        "toolchain": compilation_toolchain_identity(compilation)
+        if toolchain is None
+        else toolchain,
     }
 
 
@@ -1507,6 +1756,7 @@ __all__ = [
     "Handle",
     "KernelLaunchError",
     "import_python_module",
+    "dispatch_handles",
     "load_built_artifact",
     "materialize",
     "overflow_terms",

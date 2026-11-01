@@ -7,7 +7,9 @@ from typing import Any
 
 from ninetoothed.backends.core import Target
 from ninetoothed.backends.emitters import ssa as common
+from ninetoothed.backends.emitters.analysis import walk_ops
 from ninetoothed.backends.emitters.base import EmitterTarget, ModuleRenderContext
+from ninetoothed.backends.emitters.c_types import CComputedTypesMixin
 from ninetoothed.backends.emitters.context import EmitContext as _EmitContext
 from ninetoothed.ir import Kernel, ssa
 
@@ -28,6 +30,7 @@ _materialize_index_expr = common.materialize_index_expr
 _nested_local_suffix = common.nested_local_suffix
 _normalize_dtype = common.normalize_dtype
 _reduction_identity = common.reduction_identity
+_reduction_input_mask = common.reduction_input_mask
 _source_index_for_value = common.source_index_for_value
 _target_index_expr = common.target_index_expr
 _value_axes = common.value_axes
@@ -35,7 +38,7 @@ _view_base_coords = common.view_base_coords
 
 
 @dataclass(frozen=True, kw_only=True)
-class CudaTarget(EmitterTarget):
+class CudaTarget(CComputedTypesMixin, EmitterTarget):
     backend: Target = Target.CUDA
     language: str = "cuda/c++"
     suffix: str = "cu"
@@ -43,6 +46,35 @@ class CudaTarget(EmitterTarget):
     c_style_syntax: bool = True
     signed_division_rounds_to_zero: bool = True
     native_block_matmul: bool = True
+
+    def can_emit_native_matmul(self, kernel) -> bool:
+        operations = tuple(
+            operation
+            for block in kernel.ssa.blocks
+            for operation in walk_ops(block.operations)
+        )
+
+        return (
+            self.native_block_matmul
+            and kernel.ssa.metadata.get("schedule", {}).get("mma_shape")
+            == {"m": 16, "n": 16, "k": 16}
+            and sum(
+                operation.opcode in {"linalg.dot", "linalg.matmul"}
+                for operation in operations
+            )
+            == 1
+            and not any(
+                operation.opcode.startswith("reduce.") for operation in operations
+            )
+        )
+
+    def native_matmul_tile_shape(self, kernel, axes):
+        return 16, 16
+
+    def native_block_coords(self, axes):
+        if len(axes) != 2:
+            raise ValueError("CUDA WMMA blocks require a rank-two coordinate domain.")
+        return "nt_matrix_row", "nt_matrix_col"
 
     def index_cast(self, value: str) -> str:
         return f"static_cast<int64_t>({value})"
@@ -53,6 +85,9 @@ class CudaTarget(EmitterTarget):
         return f"{name} = {value};"
 
     def literal(self, value: Any) -> str:
+        if value == "nan" or (isinstance(value, float) and math.isnan(value)):
+            return "NAN"
+
         if (
             isinstance(value, int)
             and not isinstance(value, bool)
@@ -73,18 +108,6 @@ class CudaTarget(EmitterTarget):
             return "-INFINITY"
         return repr(value)
 
-    def load(self, tensor, index, *, mask=None, other=0.0):
-        del mask, other
-        rendered = f"({index})" if index.startswith("nt_idx_") else index
-
-        return f"{self.tensor_ref(tensor)}[{rendered}]"
-
-    def store(self, tensor, index, value, *, mask=None):
-        rendered = f"({index})" if index.startswith("nt_idx_") else index
-        assignment = f"{self.tensor_ref(tensor)}[{rendered}] = {value};"
-
-        return assignment if mask is None else f"if ({mask}) {{\n    {assignment}\n}}"
-
     def cast(self, dtype, value):
         return f"static_cast<{self.type_name(dtype)}>({value})"
 
@@ -94,11 +117,8 @@ class CudaTarget(EmitterTarget):
     def cast_like(self, value, reference):
         return f"static_cast<{self.value_dtype(reference)}>({value})"
 
-    def value_dtype(self, value):
-        return f"std::remove_cv<std::remove_reference<decltype({value})>::type>::type"
-
     def true_divide(self, lhs, rhs):
-        return f"_nt_true_divide({lhs}, {rhs})"
+        return f"{self.global_helper('_nt_true_divide')}({lhs}, {rhs})"
 
     def reduction_identity(self, dtype, operator, shape):
         del shape
@@ -113,7 +133,7 @@ class CudaTarget(EmitterTarget):
 
         bound = "low" if operator == "max" else "high"
 
-        return f"_nt_limits<{dtype}>::{bound}"
+        return f"{self.global_helper('_nt_limits')}<{dtype}>::{bound}"
 
     def type_name(self, dtype, kind=None):
         return _cuda_type(dtype, kind)
@@ -135,7 +155,7 @@ class CudaTarget(EmitterTarget):
             return f"(({args[0]}) * ({args[1]}))"
 
         if name == "rand" and len(args) >= 2:
-            return f"ninetoothed_curand_uniform(({args[0]}), ({args[1]}))"
+            return f"{self.global_helper('ninetoothed_curand_uniform')}(({args[0]}), ({args[1]}))"
 
         functions = {
             "abs": "fabsf",
@@ -157,10 +177,10 @@ class CudaTarget(EmitterTarget):
             "log1p": "log1pf",
             "log2": "log2f",
             "log10": "log10f",
-            "maximum": "fmaxf",
-            "max": "fmaxf",
-            "minimum": "fminf",
-            "min": "fminf",
+            "maximum": "nt_max",
+            "max": "nt_max",
+            "minimum": "nt_min",
+            "min": "nt_min",
             "pow": "powf",
             "rsqrt": "rsqrtf",
             "sin": "sinf",
@@ -170,6 +190,9 @@ class CudaTarget(EmitterTarget):
             "tanh": "tanhf",
         }
         function = functions.get(name, name)
+
+        if function in {"nt_max", "nt_min"}:
+            function = self.global_helper(function)
 
         return f"{function}({', '.join(args)})"
 
@@ -199,13 +222,6 @@ class CudaTarget(EmitterTarget):
     def emit_cooperative_reduction(self, local, operation, context):
         return _emit_cuda_cooperative_reduction(local, operation, context)
 
-    def local_decl(self, type_: ssa.Type, name: str, expr: str) -> str:
-        if type_.kind == "pointer" or (
-            type_.dtype is None and type_.kind in {"scalar", "tensor"}
-        ):
-            return f"auto {name} = {expr};"
-        return f"{self.type_name(type_.dtype, type_.kind)} {name} = {expr};"
-
     def loop_header(self, var, lower, upper, step):
         return f"for (int64_t {var} = {lower}; {var} < {upper}; {var} += {step}) {{"
 
@@ -213,9 +229,9 @@ class CudaTarget(EmitterTarget):
         if operator == "sum":
             return f"{acc} + {term}"
 
-        function = "fmaxf" if operator == "max" else "fminf"
+        function = "nt_max" if operator == "max" else "nt_min"
 
-        return f"{function}({acc}, {term})"
+        return f"{self.global_helper(function)}({acc}, {term})"
 
     def reduce_update_typed(self, operator, acc, term, dtype):
         if dtype is None:
@@ -223,9 +239,13 @@ class CudaTarget(EmitterTarget):
 
             if operator == "sum":
                 return f"({acc} + {term})"
-            return f"_nt_reduce_{operator}({acc}, {term})"
+            return f"{self.global_helper('_nt_reduce_' + operator)}({acc}, {term})"
         return _cuda_reduction_update(
-            operator, acc, term, _cuda_reduction_accumulator_dtype(dtype, dtype)
+            operator,
+            acc,
+            term,
+            _cuda_reduction_accumulator_dtype(dtype, dtype),
+            target=self,
         )
 
     def arithmetic_result_type(self, operation, context) -> ssa.Type:
@@ -241,9 +261,21 @@ class CudaTarget(EmitterTarget):
         return _emit_cuda_wmma_dot(operation, context, coords=coords)
 
     def emit_reduction_loop(self, local, operation, context):
+        if not context.native_block_program:
+            return None
+
         return _emit_cuda_wmma_reduction_loop(local, operation, context)
 
     def render_module(self, context: ModuleRenderContext) -> str:
+        stream_name = "stream"
+
+        while stream_name in (
+            *context.variables,
+            *context.outputs,
+            *context.shape_params,
+        ):
+            stream_name = "_" + stream_name
+
         kernel = context.kernel
         threads = common.schedule_int(kernel, "threads", 256)
         total = _cuda_integer_expr(context.total)
@@ -273,13 +305,13 @@ class CudaTarget(EmitterTarget):
             [
                 *(
                     _signature_param(
-                        name, context.tensors[name], readonly=True, restrict=False
+                        name, context.tensors[name], readonly=True, restrict=True
                     )
                     for name in context.variables
                 ),
                 *(
                     _signature_param(
-                        name, context.tensors[name], readonly=False, restrict=False
+                        name, context.tensors[name], readonly=False, restrict=True
                     )
                     for name in context.outputs
                 ),
@@ -287,7 +319,7 @@ class CudaTarget(EmitterTarget):
                     _auxiliary_param(axis, context.tensors)
                     for axis in context.shape_params
                 ),
-                "cudaStream_t stream",
+                f"cudaStream_t {stream_name}",
             ]
         )
         args = ", ".join((*context.variables, *context.outputs, *context.shape_params))
@@ -330,6 +362,16 @@ class CudaTarget(EmitterTarget):
 {common.indent_block(body, "    ")}"""
             blocks_expr = grid_total
         elif context.cooperative_reduction_program:
+            group = kernel.ssa.metadata.get("schedule", {}).get("row_group", {})
+
+            if group.get("enabled") and group.get("mapping") == "cooperative-loop":
+                body = (
+                    f"for (int64_t nt_group_row = 0; nt_group_row < {group['rows']}; "
+                    f"++nt_group_row) {{\n"
+                    + common.indent_block(body, "    ")
+                    + "\n    __syncthreads();\n}"
+                )
+
             kernel_prelude = body
             blocks_expr = grid_total
         else:
@@ -357,6 +399,8 @@ class CudaTarget(EmitterTarget):
 
 using namespace nvcuda;
 
+{_cuda_extremum_support(context)}
+
 {curand_support}
 {_ARITHMETIC_SUPPORT if "_nt_" in body else ""}
 
@@ -374,7 +418,7 @@ extern "C" int launch_{kernel.kernel_name}(
     if (blocks <= 0) {{
         return static_cast<int>(cudaSuccess);
     }}
-    {kernel.kernel_name}_kernel<<<static_cast<unsigned int>(blocks), threads, 0, stream>>>(
+    {kernel.kernel_name}_kernel<<<static_cast<unsigned int>(blocks), threads, 0, {stream_name}>>>(
         {args}
     );
     return static_cast<int>(cudaGetLastError());
@@ -427,9 +471,18 @@ def _emit_cuda_cooperative_reduction(
     )
     term = _emit_element(operand, coordinates, body)
     term = ctx.target.cast(accumulator_dtype, term)
+
+    if schedule.get("requires_reduction_domain_mask") or ctx.program.metadata.get(
+        "schedule", {}
+    ).get("row_group", {}).get("enabled"):
+        mask = _reduction_input_mask(operand, coordinates, body)
+
+        if mask is not None:
+            term = ctx.target.where(mask, term, identity)
+
     body_lines.append(
         f"{accumulator} = "
-        f"{_cuda_reduction_update(operator, accumulator, term, accumulator_dtype)};"
+        f"{_cuda_reduction_update(operator, accumulator, term, accumulator_dtype, target=ctx.target)};"
     )
 
     ctx.lines.append(ctx.target.local_decl(accumulator_type, accumulator, identity))
@@ -450,7 +503,7 @@ def _emit_cuda_cooperative_reduction(
     shuffle = f"__shfl_down_sync(0xffffffffu, {accumulator}, {shuffle_offset})"
     ctx.lines.append(
         f"    {accumulator} = "
-        f"{_cuda_reduction_update(operator, accumulator, shuffle, accumulator_dtype)};"
+        f"{_cuda_reduction_update(operator, accumulator, shuffle, accumulator_dtype, target=ctx.target)};"
     )
     ctx.lines.append("}")
     ctx.lines.append(
@@ -473,7 +526,7 @@ def _emit_cuda_cooperative_reduction(
     shuffle = f"__shfl_down_sync(0xffffffffu, {accumulator}, {shuffle_offset})"
     ctx.lines.append(
         f"        {accumulator} = "
-        f"{_cuda_reduction_update(operator, accumulator, shuffle, accumulator_dtype)};"
+        f"{_cuda_reduction_update(operator, accumulator, shuffle, accumulator_dtype, target=ctx.target)};"
     )
     ctx.lines.append("    }")
     ctx.lines.append(f"    if (threadIdx.x == 0) {{ {shared}[0] = {accumulator}; }}")
@@ -505,23 +558,20 @@ def _cuda_reduction_accumulator_dtype(operand_dtype: str, result_dtype: str) -> 
     return result_dtype
 
 
-def _cuda_reduction_update(operator: str, lhs: str, rhs: str, dtype: str) -> str:
+def _cuda_reduction_update(
+    operator: str, lhs: str, rhs: str, dtype: str, *, target=None
+) -> str:
+    del dtype
+
     if operator == "sum":
         return f"({lhs}) + ({rhs})"
 
-    if dtype == "float32":
-        function = "fmaxf" if operator == "max" else "fminf"
+    function = "nt_max" if operator == "max" else "nt_min"
 
-        return f"{function}({lhs}, {rhs})"
+    if target is not None:
+        function = target.global_helper(function)
 
-    if dtype == "float64":
-        function = "fmax" if operator == "max" else "fmin"
-
-        return f"{function}({lhs}, {rhs})"
-
-    comparison = ">" if operator == "max" else "<"
-
-    return f"(({lhs}) {comparison} ({rhs}) ? ({lhs}) : ({rhs}))"
+    return f"{function}({lhs}, {rhs})"
 
 
 def _curand_support(context: ModuleRenderContext) -> tuple[str, str]:
@@ -561,7 +611,7 @@ def _auxiliary_param(name, tensors) -> str:
     info = tensors.get(name)
 
     if info is not None and info.ndim == 0:
-        return _signature_param(name, info, readonly=True, restrict=False)
+        return _signature_param(name, info, readonly=True, restrict=True)
     return f"int64_t {name}"
 
 
@@ -989,10 +1039,10 @@ template <class T> __device__ T _nt_reduce_max(T lhs, T rhs) {
 template <class T> __device__ T _nt_reduce_min(T lhs, T rhs) {
     return lhs < rhs ? lhs : rhs;
 }
-__device__ inline float _nt_reduce_max(float lhs, float rhs) { return fmaxf(lhs, rhs); }
-__device__ inline float _nt_reduce_min(float lhs, float rhs) { return fminf(lhs, rhs); }
-__device__ inline double _nt_reduce_max(double lhs, double rhs) { return fmax(lhs, rhs); }
-__device__ inline double _nt_reduce_min(double lhs, double rhs) { return fmin(lhs, rhs); }
+__device__ inline float _nt_reduce_max(float lhs, float rhs) { return isnan(lhs) || isnan(rhs) ? NAN : fmaxf(lhs, rhs); }
+__device__ inline float _nt_reduce_min(float lhs, float rhs) { return isnan(lhs) || isnan(rhs) ? NAN : fminf(lhs, rhs); }
+__device__ inline double _nt_reduce_max(double lhs, double rhs) { return isnan(lhs) || isnan(rhs) ? NAN : fmax(lhs, rhs); }
+__device__ inline double _nt_reduce_min(double lhs, double rhs) { return isnan(lhs) || isnan(rhs) ? NAN : fmin(lhs, rhs); }
 
 template <class T>
 __device__ typename std::enable_if<std::is_arithmetic<T>::value, T>::type
@@ -1019,3 +1069,55 @@ __device__ auto _nt_true_divide(A lhs, B rhs)
     return static_cast<R>(_nt_arithmetic(lhs)) / static_cast<R>(_nt_arithmetic(rhs));
 }
 """
+
+
+def _cuda_extremum_support(context):
+    """Preserve integer width and propagate floating NaNs in every path."""
+    opcodes = {operation.opcode for operation in context.operations.values()}
+
+    if not opcodes.intersection(
+        {
+            "arith.maximum",
+            "arith.minimum",
+            "arith.max",
+            "arith.min",
+            "reduce.max",
+            "reduce.min",
+            "math.max",
+            "math.min",
+            "math.maximum",
+            "math.minimum",
+            "call.max",
+            "call.min",
+            "call.maximum",
+            "call.minimum",
+        }
+    ):
+        return ""
+
+    return """template <typename T>
+__device__ inline T nt_max(T a, T b) { return a > b ? a : b; }
+template <typename T>
+__device__ inline T nt_min(T a, T b) { return a < b ? a : b; }
+__device__ inline float nt_max(float a, float b) {
+    return isnan(a) || isnan(b) ? NAN : fmaxf(a, b);
+}
+__device__ inline float nt_min(float a, float b) {
+    return isnan(a) || isnan(b) ? NAN : fminf(a, b);
+}
+__device__ inline double nt_max(double a, double b) {
+    return isnan(a) || isnan(b) ? NAN : fmax(a, b);
+}
+__device__ inline double nt_min(double a, double b) {
+    return isnan(a) || isnan(b) ? NAN : fmin(a, b);
+}
+template <typename A, typename B>
+__device__ inline auto nt_max(A a, B b) -> decltype(a + b) {
+    using R = decltype(a + b);
+    return nt_max(static_cast<R>(a), static_cast<R>(b));
+}
+template <typename A, typename B>
+__device__ inline auto nt_min(A a, B b) -> decltype(a + b) {
+    using R = decltype(a + b);
+    return nt_min(static_cast<R>(a), static_cast<R>(b));
+}"""

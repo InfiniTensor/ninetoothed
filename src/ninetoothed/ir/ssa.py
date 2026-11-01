@@ -82,14 +82,21 @@ class Program:
     blocks: tuple[Block, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
+    facts: Mapping[str, Any] = field(
+        default_factory=dict, compare=False, repr=False, metadata={"serialize": False}
+    )
+
     def __post_init__(self):
         object.__setattr__(self, "inputs", tuple(self.inputs))
         object.__setattr__(self, "outputs", tuple(self.outputs))
         object.__setattr__(self, "blocks", tuple(self.blocks))
         object.__setattr__(self, "metadata", freeze(self.metadata))
+        object.__setattr__(self, "facts", freeze(self.facts))
 
 
-def verify_program(program: Program) -> Program:
+def verify_program(
+    program: Program, *, strict_types=None, frontend_layout=False
+) -> Program:
     """Verify the structured SSA invariants consumed by all backend passes."""
     if len(program.blocks) != 1:
         raise VerificationError(
@@ -107,13 +114,22 @@ def verify_program(program: Program) -> Program:
 
     symbols = set(str(name) for name in program.metadata.get("symbols", ()))
 
-    for value in (*program.inputs, *program.outputs):
-        for dimension in value.type.shape:
-            symbols.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", str(dimension)))
+    if strict_types is not True:
+        for value in (*program.inputs, *program.outputs):
+            for dimension in value.type.shape:
+                symbols.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", str(dimension)))
 
     visible = {name: Type(kind="index") for name in symbols} | definitions
     top_level = _verify_block(
-        program.blocks[0], visible, set(definitions), path="entry"
+        program.blocks[0],
+        visible,
+        set(definitions),
+        path="entry",
+        strict_types=program.metadata.get("shape_validation") == "strict"
+        if strict_types is None
+        else strict_types,
+        external_calls=frozenset(program.metadata.get("external_calls", ())),
+        frontend_layout=frontend_layout,
     )
     output_names = set()
 
@@ -140,6 +156,9 @@ def _verify_block(
     *,
     path: str,
     owner: Operation | None = None,
+    strict_types=True,
+    external_calls=(),
+    frontend_layout=False,
 ) -> dict[str, Type]:
     local_visible = dict(visible)
     block_arguments: list[str] = []
@@ -182,6 +201,23 @@ def _verify_block(
         _verify_region_contract(operation, location, local_visible)
         _verify_memory_contract(operation, location, local_visible)
 
+        if strict_types:
+            from ninetoothed.ir.operations import (
+                verify_operation_signature,
+                verify_operation_types,
+            )
+
+            verify_operation_signature(
+                operation, location, external_calls=external_calls
+            )
+            verify_operation_types(
+                operation,
+                local_visible,
+                location,
+                strict=True,
+                frontend_layout=frontend_layout,
+            )
+
         if operation.opcode == "scf.yield":
             if owner is None or index != len(block.operations) - 1:
                 raise VerificationError(
@@ -219,6 +255,9 @@ def _verify_block(
                 all_definitions,
                 path=f"{location}/region{region_index}",
                 owner=operation,
+                strict_types=strict_types,
+                external_calls=external_calls,
+                frontend_layout=frontend_layout,
             )
 
         # Results become visible only after their defining regions finish.

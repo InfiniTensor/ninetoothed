@@ -1,3 +1,15 @@
+UPSTREAM COMPATIBILITY MAINTENANCE — 2026-11-01
+Upstream: f64a6de566aa1c7321aed92edb9285690cbf3c66
+970 passed, 17 deselected in 36.49s (NumPy-only; Torch/Triton absent)
+46 passed, 17 deselected in 5.51s (upstream CPU boundary selection)
+9 passed, 1 deselected, 1 warning in 1.06s (Torch CPU adapter selection)
+Selections overlap; deselected GPU cases are not counted as passing.
+92 wheel Python sources match; fresh isolated CPU import/debug/replay passed.
+No new GPU run. Cutoff snapshots and historical hardware evidence retain their original source scopes.
+Report: docs/upstream_sync_20261101.md
+
+HISTORICAL CHECKPOINTS FOLLOW
+
 UPSTREAM COMPATIBILITY MAINTENANCE — 2026-10-03
 Source: 960645200f8647dc2f62e992a41e65841642526e
 Upstream: 1f9f476fe4f7fc510abaaeff08ce6f00a3474e3c

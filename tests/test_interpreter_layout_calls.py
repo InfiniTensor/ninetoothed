@@ -19,7 +19,7 @@ from ninetoothed.naming import make_next_power_of_2
     ),
 )
 def test_unrepresented_call_keywords_are_rejected_instead_of_dropped(source):
-    with pytest.raises(ValueError, match="keyword"):
+    with pytest.raises(ValueError, match="explicit positional arguments"):
         IndexExpr.parse(source)
 
 

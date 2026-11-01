@@ -625,6 +625,56 @@ def _real_pipeline_case(backend, case):
     return kind, kernel, pipeline, context, inputs, expected, options
 
 
+def test_dtype_canonicalization_preserves_unchanged_operation_identity():
+    from ninetoothed.compiler.canonicalize import canonicalize_dtype_expressions
+
+    original = _arithmetic()
+    canonical = canonicalize_dtype_expressions(original)
+    assert canonical.blocks[0] is original.blocks[0]
+    assert "provenance" not in canonical.metadata
+    assert ssa.verify_program(canonical) is canonical
+
+
+def test_dtype_canonicalization_records_actual_cast_rewrite_and_type_deletion():
+    from ninetoothed.compiler.passes import Canonicalize
+    from ninetoothed.frontend.python import from_source
+    from ninetoothed.ir import TensorSpec
+
+    original = seed_origins(
+        from_source(
+            "def app(x, out):\n    out = x.to(int32)\n",
+            (
+                TensorSpec(ndim=1, shape=("3",), name="x", dtype="float32"),
+                TensorSpec(ndim=1, shape=("3",), name="out", dtype="int32"),
+            ),
+        )
+    )
+    context = Context(backend=Target.TRITON, compiler_options={}, kernel_metadata={})
+    canonical = Canonicalize().run(original, context)
+    relations = canonical.metadata["provenance"]["passes"][-1]["relations"]
+    assert {entry["relation"] for entry in relations} == {
+        "preserve",
+        "replace",
+        "delete",
+    }
+    assert {source.opcode for source in source_candidates(canonical)} == {
+        "dtype.constant",
+        "tensor.cast",
+    }
+    assert all(operation.origins for _, operation in operation_locations(canonical))
+    assert [operation.opcode for operation in canonical.blocks[0].operations] == [
+        "tensor.cast",
+        "mem.store",
+    ]
+    inputs = {
+        "x": np.array([-3.5, 0.75, 9.25], dtype=np.float32),
+        "out": np.full(3, -731, dtype=np.int32),
+    }
+    assert compare_programs(original, canonical, inputs).equal
+    result = interpret_program(canonical, inputs)
+    np.testing.assert_array_equal(result.outputs["out"], [-3, 0, 9])
+
+
 @pytest.mark.parametrize("backend", ("triton", "cuda"))
 def test_real_default_linalg_passes_have_complete_nonduplicated_origin_records(
     backend, real_linalg_case

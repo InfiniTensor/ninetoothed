@@ -51,6 +51,9 @@ class EmitterTarget(ABC):
     signed_division_rounds_to_zero: bool = False
     max_vector_numel: int | None = None
 
+    def can_emit_native_matmul(self, kernel) -> bool:
+        return self.native_block_matmul
+
     def symbol(self, name: str) -> str:
         return f"v{name[1:]}" if name.startswith("%") else name
 
@@ -70,12 +73,24 @@ class EmitterTarget(ABC):
             f"Emitter {type(self).__name__} has no block value domain."
         )
 
+    def native_block_coords(self, axes: tuple[str, ...]) -> tuple[str, ...]:
+        raise NotImplementedError(
+            f"Emitter {type(self).__name__} has no native block coordinate domain."
+        )
+
+    def native_matmul_tile_shape(
+        self, kernel, axes: tuple[str, ...]
+    ) -> tuple[int, int]:
+        raise NotImplementedError(
+            f"Emitter {type(self).__name__} has no native matmul tile."
+        )
+
     def block_shape(self, axes: tuple[str, ...]) -> str:
         raise NotImplementedError(
             f"Emitter {type(self).__name__} has no block value domain."
         )
 
-    def render_view(self, operation, context) -> str:
+    def render_view(self, operation, context, *, coords=None) -> str:
         raise NotImplementedError(
             f"Emitter {type(self).__name__} has no block view syntax."
         )
@@ -95,6 +110,11 @@ class EmitterTarget(ABC):
 
         return args
 
+    def check_numeric_result(self, operation, value, context):
+        del operation, context
+
+        return value
+
     def coerce_dot_args(self, operation, args, context):
         del operation, context
 
@@ -102,6 +122,12 @@ class EmitterTarget(ABC):
 
     def emit_dot_operand(self, name, coords, context):
         del name, coords, context
+
+        return None
+
+    def materialized_element(self, name, coords):
+        """Read a target-owned tile value at explicit logical coordinates."""
+        del name, coords
 
         return None
 
@@ -220,6 +246,12 @@ class EmitterTarget(ABC):
 
     def value_dtype(self, value: str) -> str:
         raise NotImplementedError("Runtime value dtype is not supported.")
+
+    def dtype_equal(self, lhs: str, rhs: str) -> str:
+        return f"({self.value_dtype(lhs)} == {self.value_dtype(rhs)})"
+
+    def select_dtype_sample(self, condition: str, yes: str, no: str) -> str:
+        return f"({yes} if {condition} else {no})"
 
     def vector_element(self, value: str, index: str) -> str:
         raise NotImplementedError("Vector element extraction is not supported.")

@@ -36,6 +36,9 @@ class UnsupportedOperationError(InterpretationError):
 
 def _runtime_dtype(value):
     """Inspect dtype metadata without loading a referenced tensor or pointer."""
+    if isinstance(value, np.dtype):
+        return value
+
     if isinstance(value, (TensorRef, Pointer)):
         return value.array.dtype
     return np.asarray(value).dtype
@@ -116,6 +119,9 @@ class InterpretationResult:
 
 
 def _snapshot(value, *, reference_only=False):
+    if isinstance(value, np.dtype):
+        value = str(value)
+
     if isinstance(value, Pointer):
         return {
             "pointer_offsets": np.asarray(value.offset).tolist(),
@@ -424,7 +430,7 @@ class _Execution:
             ),
             "potentially overlapping input and output storage is not supported",
         )
-        metadata_operations = {"index.offset", "shape.dim", "tensor.stride"}
+        metadata_operations = {"index.offset", "shape.dim", "tensor.stride", "dtype.of"}
 
         for read_location, other in operation_locations(self.program):
             require(
@@ -677,10 +683,9 @@ class _Execution:
                     raise ValueError("Operation result arity does not match SSA.")
 
                 for result, value in zip(op.results, values):
-                    if (
-                        not isinstance(value, (TensorRef, Pointer))
-                        and result.type.kind != "tuple"
-                    ):
+                    if not isinstance(
+                        value, (TensorRef, Pointer)
+                    ) and result.type.kind not in {"tuple", "dtype"}:
                         dtype = numpy_dtype(result.type.dtype)
                         value = np.asarray(value, dtype=dtype)
 
@@ -719,6 +724,7 @@ class _Execution:
                 "shape.dim",
                 "tensor.stride",
                 "index.offset",
+                "dtype.of",
             } or (op.opcode in {"mem.store", "tensor.cast"} and index == 1)
 
             if name not in snapshots or not reference_only:
@@ -865,6 +871,17 @@ class _Execution:
             if isinstance(value, str) and value in {"inf", "-inf"}:
                 value = float(value)
             return value
+
+        if code == "dtype.constant":
+            return numpy_dtype(op.attrs["value"])
+
+        if code == "dtype.of":
+            return _runtime_dtype(args[0])
+
+        if code == "dtype.select":
+            condition = bool(self._scalar(materialize(args[0]), "dtype condition"))
+
+            return args[1] if condition else args[2]
 
         if code == "scf.for":
             start, stop, step = (
@@ -1061,13 +1078,17 @@ class _Execution:
 
         if code in {"tensor.zeros", "tensor.empty", "tensor.full"}:
             shape = shape_value(op.results[0].type.shape, self.symbols | env)
-            reference = op.attrs.get("dtype_ref")
+            reference = op.attrs.get("dtype_operand") or op.attrs.get("dtype_ref")
             dtype = (
                 _runtime_dtype(env[reference])
                 if reference is not None
                 else numpy_dtype(op.results[0].type.dtype, "float32")
             )
-            value = materialize(args[0]) if args else op.attrs.get("value", 0)
+            value = (
+                materialize(args[0])
+                if code == "tensor.full" and args
+                else op.attrs.get("value", 0)
+            )
 
             return np.full(shape, value if code == "tensor.full" else 0, dtype=dtype)
 

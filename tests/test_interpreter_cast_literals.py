@@ -3,8 +3,9 @@
 import numpy as np
 import pytest
 
+from ninetoothed.errors import LoweringError
 from ninetoothed.frontend.python import from_source
-from ninetoothed.interpreter import InterpretationError, interpret_program
+from ninetoothed.interpreter import interpret_program
 from ninetoothed.ir import TensorSpec
 
 _INTEGERS = (
@@ -60,6 +61,6 @@ def test_runtime_dtype_reference_remains_dynamic():
     _run("out.dtype", "int16")
 
 
-def test_invalid_literal_dtype_reports_the_cast_location():
-    with pytest.raises(InterpretationError, match="tensor.cast.*not_a_dtype"):
+def test_invalid_literal_dtype_is_rejected_at_the_frontend_location():
+    with pytest.raises(LoweringError, match="dtype expression at line 2"):
         _run(repr("not_a_dtype"), "int16")

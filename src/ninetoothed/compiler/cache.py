@@ -34,14 +34,23 @@ def stable_digest(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def compilation_cache_key(compilation) -> str:
+def compilation_cache_key(compilation, *, toolchain=None) -> str:
     """Return a key covering source, IR, ABI, target, options, and toolchain."""
     request = compilation.request
     artifact = compilation.artifact
 
     return stable_digest(
         {
-            "schema": 3,
+            "schema": 4,
+            "frontend_module": {
+                key: value
+                for key, value in ir_to_dict(request.frontend).items()
+                if key != "source"
+            }
+            if getattr(request, "frontend", None) is not None
+            else None,
+            "specialization_values": getattr(request, "specialization_values", None),
+            "tensor_dtypes": getattr(request, "tensor_dtypes", None),
             "source": artifact.sources,
             "ssa": ir_to_dict(compilation.kernel.ssa),
             "launch_plan": ir_to_dict(compilation.launch_plan),
@@ -52,7 +61,9 @@ def compilation_cache_key(compilation) -> str:
             "pipeline": request.pipeline,
             "pass_options": request.pass_options,
             "architecture": _architecture(compilation),
-            "toolchain": compilation_toolchain_identity(compilation),
+            "toolchain": compilation_toolchain_identity(compilation)
+            if toolchain is None
+            else toolchain,
             "versions": _compiler_versions(),
         }
     )
