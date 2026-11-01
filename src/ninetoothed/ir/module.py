@@ -561,10 +561,8 @@ def _verify_layout(layout, attrs, declared, *, roles, jagged_dim=None):
 def _verify_expression(
     expression, declared, *, coordinates=(), roles=None, predicate=False, quotient=False
 ):
-    try:
-        IndexExpr.parse(expression.render())
-    except (SyntaxError, ValueError, IndexError) as exc:
-        raise ssa.VerificationError("Malformed module index expression.") from exc
+    if not isinstance(expression, IndexExpr):
+        raise ssa.VerificationError("Malformed module index expression.")
 
     if expression.op == "symbol" and expression.value not in declared:
         if expression.value not in coordinates:
