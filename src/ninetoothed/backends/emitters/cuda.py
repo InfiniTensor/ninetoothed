@@ -68,7 +68,9 @@ class CudaTarget(CComputedTypesMixin, EmitterTarget):
         )
 
     def native_matmul_tile_shape(self, kernel, axes):
-        return 16, 16
+        from ninetoothed.backends.emitters.cuda_cta_dot import selected
+
+        return (32, 32) if selected(kernel) else (16, 16)
 
     def native_block_coords(self, axes):
         if len(axes) != 2:
@@ -265,6 +267,66 @@ class CudaTarget(CComputedTypesMixin, EmitterTarget):
 
         return _emit_cuda_wmma_reduction_loop(local, operation, context)
 
+    def _render_legacy_matrix(self, context, body, threads, grid_total):
+        kernel = context.kernel
+
+        if threads != 256:
+            raise ValueError(
+                "CUDA WMMA lowering currently requires exactly 256 threads."
+            )
+
+        schedule = kernel.ssa.metadata.get("schedule", {}) if kernel.ssa else {}
+        mma_shape = schedule.get("mma_shape", {"m": 16, "n": 16, "k": 16})
+        mma_m = int(mma_shape.get("m", 16))
+        mma_n = int(mma_shape.get("n", 16))
+        mma_k = int(mma_shape.get("k", 16))
+
+        if (mma_m, mma_n, mma_k) != (16, 16, 16):
+            raise ValueError(
+                "The current CUDA WMMA intrinsic lowering supports only "
+                "a 16x16x16 fragment; use a CTA tiling pass to compose fragments."
+            )
+
+        tile_rows = _cuda_integer_expr(f"(({context.axes[0]}) + {mma_m - 1}) / {mma_m}")
+        tile_cols = _cuda_integer_expr(f"(({context.axes[1]}) + {mma_n - 1}) / {mma_n}")
+        kernel_prelude = f"""    int64_t nt_tile_rows = {tile_rows};
+    int64_t nt_tile_cols = {tile_cols};
+    int64_t nt_tiles_per_outer = nt_tile_rows * nt_tile_cols;
+    int64_t nt_outer_index = static_cast<int64_t>(blockIdx.x) / nt_tiles_per_outer;
+    int64_t nt_tile_index = static_cast<int64_t>(blockIdx.x) % nt_tiles_per_outer;
+    int64_t nt_tile_row = (nt_tile_index / nt_tile_cols) * {mma_m};
+    int64_t nt_tile_col = (nt_tile_index % nt_tile_cols) * {mma_n};
+    int64_t nt_matrix_row = nt_tile_row + static_cast<int64_t>(threadIdx.x) / {mma_n};
+    int64_t nt_matrix_col = nt_tile_col + static_cast<int64_t>(threadIdx.x) % {mma_n};
+    int64_t {self.index_name} = nt_matrix_row * ({context.axes[1]}) + nt_matrix_col;
+    bool nt_matrix_active = nt_matrix_row < ({context.axes[0]}) && nt_matrix_col < ({context.axes[1]});
+{common.indent_block(body, "    ")}"""
+        blocks_expr = grid_total
+
+        return kernel_prelude, blocks_expr
+
+    def schedule_context(self, context):
+        from ninetoothed.backends.emitters.cuda_cta_dot import CTA_DOT_PLAN, selected
+
+        if selected(context.kernel) and not context.collective_body:
+            raise ValueError("CUDA CTA dot candidate requires a verified source loop.")
+
+        if selected(context.kernel):
+            context = replace(
+                context,
+                scheduled_metadata={
+                    **context.scheduled_metadata,
+                    "cuda_cta_dot": {
+                        "output_tile": (32, 32),
+                        "warps": 4,
+                        "shared_memory_bytes": CTA_DOT_PLAN.arena_bytes,
+                        "source_dot_add_groups_preserved": True,
+                        "fallback": "original-indexed-synchronous-cooperative-packets",
+                    },
+                },
+            )
+        return context
+
     def render_module(self, context: ModuleRenderContext) -> str:
         stream_name = "stream"
 
@@ -323,43 +385,49 @@ class CudaTarget(CComputedTypesMixin, EmitterTarget):
         )
         args = ", ".join((*context.variables, *context.outputs, *context.shape_params))
 
+        from ninetoothed.backends.emitters.cuda_cta_dot import render_launch_guard
+
+        cta_launch_guard = render_launch_guard(context, self)
+
         if context.block_program:
-            if threads != 256:
-                raise ValueError(
-                    "CUDA WMMA lowering currently requires exactly 256 threads."
+            from ninetoothed.backends.emitters.cuda_cta_dot import selected
+
+            if selected(kernel):
+                if threads != 128 or kernel.compiler_options.get("num_warps") not in (
+                    None,
+                    4,
+                ):
+                    raise ValueError("CUDA CTA dot requires exactly four warps.")
+
+                tile_m, tile_n = self.native_matmul_tile_shape(kernel, context.axes)
+                tile_rows = _cuda_integer_expr(
+                    f"(({context.axes[0]}) + {tile_m - 1}) / {tile_m}"
                 )
-
-            schedule = kernel.ssa.metadata.get("schedule", {}) if kernel.ssa else {}
-            mma_shape = schedule.get("mma_shape", {"m": 16, "n": 16, "k": 16})
-            mma_m = int(mma_shape.get("m", 16))
-            mma_n = int(mma_shape.get("n", 16))
-            mma_k = int(mma_shape.get("k", 16))
-
-            if (mma_m, mma_n, mma_k) != (16, 16, 16):
-                raise ValueError(
-                    "The current CUDA WMMA intrinsic lowering supports only "
-                    "a 16x16x16 fragment; use a CTA tiling pass to compose fragments."
+                tile_cols = _cuda_integer_expr(
+                    f"(({context.axes[1]}) + {tile_n - 1}) / {tile_n}"
                 )
-
-            tile_rows = _cuda_integer_expr(
-                f"(({context.axes[0]}) + {mma_m - 1}) / {mma_m}"
-            )
-            tile_cols = _cuda_integer_expr(
-                f"(({context.axes[1]}) + {mma_n - 1}) / {mma_n}"
-            )
-            kernel_prelude = f"""    int64_t nt_tile_rows = {tile_rows};
+                prefix = _cuda_integer_expr(context.collective_body)
+                kernel_prelude = f"""    int64_t nt_tile_rows = {tile_rows};
     int64_t nt_tile_cols = {tile_cols};
     int64_t nt_tiles_per_outer = nt_tile_rows * nt_tile_cols;
     int64_t nt_outer_index = static_cast<int64_t>(blockIdx.x) / nt_tiles_per_outer;
     int64_t nt_tile_index = static_cast<int64_t>(blockIdx.x) % nt_tiles_per_outer;
-    int64_t nt_tile_row = (nt_tile_index / nt_tile_cols) * {mma_m};
-    int64_t nt_tile_col = (nt_tile_index % nt_tile_cols) * {mma_n};
-    int64_t nt_matrix_row = nt_tile_row + static_cast<int64_t>(threadIdx.x) / {mma_n};
-    int64_t nt_matrix_col = nt_tile_col + static_cast<int64_t>(threadIdx.x) % {mma_n};
-    int64_t {self.index_name} = nt_matrix_row * ({context.axes[1]}) + nt_matrix_col;
-    bool nt_matrix_active = nt_matrix_row < ({context.axes[0]}) && nt_matrix_col < ({context.axes[1]});
-{common.indent_block(body, "    ")}"""
-            blocks_expr = grid_total
+    int64_t nt_tile_row = (nt_tile_index / nt_tile_cols) * {tile_m};
+    int64_t nt_tile_col = (nt_tile_index % nt_tile_cols) * {tile_n};
+{common.indent_block(prefix, "    ")}
+    for (int nt_cta_item = 0; nt_cta_item < 8; ++nt_cta_item) {{
+        int nt_cta_element = threadIdx.x % 32 + nt_cta_item * 32;
+        int64_t nt_matrix_row = nt_tile_row + (threadIdx.x / 32 / 2) * 16 + nt_cta_element / 16;
+        int64_t nt_matrix_col = nt_tile_col + (threadIdx.x / 32 % 2) * 16 + nt_cta_element % 16;
+        int64_t {self.index_name} = nt_matrix_row * ({context.axes[1]}) + nt_matrix_col;
+        bool nt_matrix_active = nt_matrix_row < ({context.axes[0]}) && nt_matrix_col < ({context.axes[1]});
+{common.indent_block(body, "        ")}
+    }}"""
+                blocks_expr = grid_total
+            else:
+                kernel_prelude, blocks_expr = self._render_legacy_matrix(
+                    context, body, threads, grid_total
+                )
         elif context.cooperative_reduction_program:
             group = kernel.ssa.metadata.get("schedule", {}).get("row_group", {})
 
@@ -412,7 +480,7 @@ extern "C" __global__ void {kernel.kernel_name}_kernel(
 extern "C" int launch_{kernel.kernel_name}(
 {launch_params}
 ) {{
-    constexpr int threads = {threads};
+{cta_launch_guard}    constexpr int threads = {threads};
     int64_t blocks = {blocks_expr};
     if (blocks <= 0) {{
         return static_cast<int>(cudaSuccess);
@@ -853,9 +921,160 @@ def _coerce_cuda_binary_args(
     )
 
 
+def _prove_cta_source_loop(op, ctx):
+    if len(op.results) != 1 or len(op.regions) != 1:
+        raise ValueError(
+            "CUDA CTA dot requires pure FP16 extraction/dot and FP32 carry."
+        )
+
+    iter_attrs = tuple(op.attrs.get("iter_args", ()))
+
+    if len(iter_attrs) != 1:
+        raise ValueError(
+            "CUDA CTA dot requires pure FP16 extraction/dot and FP32 carry."
+        )
+
+    region = op.regions[0]
+    dot = next(
+        (
+            inner
+            for inner in region.operations
+            if inner.opcode in {"linalg.dot", "linalg.matmul"}
+            and len(inner.operands) >= 2
+            and len(inner.results) == 1
+        ),
+        None,
+    )
+    add = next(
+        (
+            inner
+            for inner in region.operations
+            if inner.opcode == "arith.add" and len(inner.results) == 1
+        ),
+        None,
+    )
+    yield_op = next(
+        (inner for inner in region.operations if inner.opcode == "scf.yield"), None
+    )
+
+    if dot is None or add is None or yield_op is None:
+        raise ValueError(
+            "CUDA CTA dot requires pure FP16 extraction/dot and FP32 carry."
+        )
+
+    # This hook replaces the complete region. It may only absorb the exact
+    # extraction/dot/carry sequence; extra writes or control flow must remain
+    # in ordinary SSA lowering. No inferred or wider carry may become float.
+    if (
+        tuple(inner.opcode for inner in region.operations)
+        not in {
+            (
+                "tensor.extract",
+                "tensor.extract",
+                "linalg.dot",
+                "arith.add",
+                "scf.yield",
+            ),
+            (
+                "tensor.extract",
+                "tensor.extract",
+                "linalg.matmul",
+                "arith.add",
+                "scf.yield",
+            ),
+        }
+        or any(inner.regions for inner in region.operations)
+        or len(dot.operands) != 2
+        or any(len(inner.results) != 1 for inner in region.operations[:-1])
+        or dot.operands
+        != tuple(inner.results[0].name for inner in region.operations[:2])
+        or len(op.results) != 1
+        or len(region.args) != 2
+    ):
+        raise ValueError(
+            "CUDA CTA dot requires pure FP16 extraction/dot and FP32 carry."
+        )
+
+    block_arg = str(iter_attrs[0]["block_arg"])
+    dot_result = dot.results[0].name
+
+    if set(add.operands) != {block_arg, dot_result}:
+        raise ValueError(
+            "CUDA CTA dot requires pure FP16 extraction/dot and FP32 carry."
+        )
+
+    if yield_op.operands != (add.results[0].name,):
+        raise ValueError(
+            "CUDA CTA dot requires pure FP16 extraction/dot and FP32 carry."
+        )
+
+    initial = str(iter_attrs[0]["initial"])
+    initial_op = ctx.operations.get(initial)
+
+    carry_types = (
+        ctx.value_types.get(initial),
+        region.args[1].type,
+        op.results[0].type,
+        dot.results[0].type,
+        add.results[0].type,
+    )
+
+    if (
+        region.args[1].name != block_arg
+        or any(
+            type_ is None
+            or type_.kind != "tensor"
+            or _normalize_dtype(type_.dtype) != "float32"
+            or tuple(map(str, type_.shape))
+            != tuple(map(str, dot.results[0].type.shape))
+            for type_ in carry_types
+        )
+        or any(
+            _normalize_dtype(inner.results[0].type.dtype) != "float16"
+            for inner in region.operations[:2]
+        )
+    ):
+        raise ValueError(
+            "CUDA CTA dot requires pure FP16 extraction/dot and FP32 carry."
+        )
+
+    if initial_op is None or initial_op.opcode not in {
+        "arith.constant",
+        "tensor.zeros",
+    }:
+        raise ValueError(
+            "CUDA CTA dot requires pure FP16 extraction/dot and FP32 carry."
+        )
+
+    if initial_op.opcode != "tensor.zeros":
+        initial_value = initial_op.attrs.get("value", 0)
+
+        if initial_value != 0 or (
+            isinstance(initial_value, float) and math.copysign(1.0, initial_value) < 0
+        ):
+            raise ValueError(
+                "CUDA CTA dot requires pure FP16 extraction/dot and FP32 carry."
+            )
+
+    return dot
+
+
 def _emit_cuda_wmma_reduction_loop(
     local: str, op: ssa.Operation, ctx: _EmitContext
 ) -> str | None:
+    from ninetoothed.backends.emitters.cuda_cta_dot import emit_cta_dot, selected
+
+    if selected(ctx.kernel):
+        dot = _prove_cta_source_loop(op, ctx)
+
+        return emit_cta_dot(
+            f"{_local_symbol(op.results[0].name, ctx)}_wmma_reduction",
+            op,
+            dot,
+            ctx,
+            bounds=(),
+        )
+
     if len(op.results) != 1 or len(op.regions) != 1:
         return None
 

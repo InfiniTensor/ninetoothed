@@ -18,6 +18,7 @@ class ModuleRenderContext:
     shape_params: tuple[str, ...]
     total: str
     body: str
+    collective_body: str = ""
     tensors: Mapping[str, Any]
     value_types: Mapping[str, ssa.Type]
     operations: Mapping[str, ssa.Operation]

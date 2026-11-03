@@ -560,6 +560,7 @@ def _render_source(
         outer_index_expr = target.index_name
         inner_index_expr = target.index_name
 
+    collective_lines = []
     body = _render_body(
         kernel,
         target,
@@ -572,6 +573,7 @@ def _render_source(
         total,
         outer_index_expr,
         inner_index_expr,
+        collective_lines=collective_lines,
         parameter_names=parameter_names,
         block_program=vector_block_program,
         native_block_program=native_block_program,
@@ -614,6 +616,7 @@ def _render_source(
         shape_params=shape_params,
         total=total,
         body=body,
+        collective_body="\n".join(collective_lines),
         tensors=tensor_infos,
         value_types=value_types,
         operations=operations,
@@ -804,6 +807,7 @@ def _render_body(
     outer_index_expr: str,
     inner_index_expr: str,
     *,
+    collective_lines: list[str] | None = None,
     parameter_names: frozenset[str] = frozenset(),
     block_program: bool = False,
     native_block_program: bool = False,
@@ -886,6 +890,7 @@ def _render_body(
         operations=op_by_result,
         value_types=value_types,
         lines=lines,
+        collective_lines=[] if collective_lines is None else collective_lines,
         memo={},
         tensor_infos=tensor_infos,
         output=output,
@@ -4993,7 +4998,10 @@ value_axes = _value_axes
 value_axes_from_types = _value_axes_from_types
 view_base_coords = _view_base_coords
 
+access_template = _access_template
+
 __all__ = [
+    "access_template",
     "access_axes",
     "buffer_storage_extent",
     "combined_mask",

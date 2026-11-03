@@ -83,6 +83,34 @@ class CudaOptimizeSchedule(OptimizeSchedule):
             return {"enabled": False, "reason": "requires cooperative row reduction"}
         return {"mapping": "cooperative-loop"}
 
+    def run(self, program, context):
+        from dataclasses import replace
+
+        requested = None
+
+        for name in ("*", self.name, "ssa.optimize_schedule"):
+            requested = context.pass_options.get(name, {}).get("candidate", requested)
+
+        if requested != "wmma-32x32":
+            return super().run(program, context)
+
+        has_loop = any(
+            op.opcode == "scf.for"
+            and any(
+                inner.opcode in {"linalg.dot", "linalg.matmul"}
+                for region in op.regions
+                for inner in region.operations
+            )
+            for block in program.blocks
+            for op in block.operations
+        )
+        context = replace(
+            context,
+            kernel_metadata={**context.kernel_metadata, "cuda_cta_loop": has_loop},
+        )
+
+        return super().run(program, context)
+
     def schedule_candidates(
         self,
         analysis: Mapping[str, Any],
@@ -128,7 +156,7 @@ class CudaOptimizeSchedule(OptimizeSchedule):
 
         mma = {"m": 16, "n": 16, "k": 16}
 
-        return (
+        candidates = (
             ScheduleCandidate(
                 name="wmma-16x16",
                 schedule={
@@ -144,6 +172,32 @@ class CudaOptimizeSchedule(OptimizeSchedule):
                 tags=("default", "wmma"),
             ),
         )
+
+        layout_compatible = not schedule.get("layout_tile") or schedule.get("tile") == {
+            "block_m": 32,
+            "block_n": 32,
+            "block_k": 32,
+        }
+
+        if context.kernel_metadata.get("cuda_cta_loop") and layout_compatible:
+            candidates += (
+                ScheduleCandidate(
+                    name="wmma-32x32",
+                    schedule={
+                        "tile": {"block_m": 32, "block_n": 32, "block_k": 32},
+                        "mma_shape": mma,
+                        "threads": 128,
+                        "cuda_cta_dot": True,
+                    },
+                    constraints={
+                        "dtypes": ("float16",),
+                        "minimum_compute_capability": "8.0",
+                        "shared_memory_bytes": 5632,
+                    },
+                    tags=("wmma", "collective", "explicit"),
+                ),
+            )
+        return candidates
 
     def optimization_policy(
         self,

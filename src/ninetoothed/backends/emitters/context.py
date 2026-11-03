@@ -53,6 +53,7 @@ class EmitContext:
     operations: Mapping[str, ssa.Operation]
     value_types: Mapping[str, ssa.Type]
     lines: list[str]
+    collective_lines: list[str] = field(default_factory=list)
     memo: dict[str, str]
     scalar_value_coordinates: dict[str, tuple[str, ...]] = field(default_factory=dict)
     tensor_infos: Mapping[str, TensorInfo]
@@ -100,6 +101,7 @@ class EmitContext:
     ) -> "EmitContext":
         """Return a nested context that shares analysis and temporary state."""
         data = {
+            "collective_lines": self.collective_lines,
             "target": self.target,
             "kernel": self.kernel,
             "program": self.program,
