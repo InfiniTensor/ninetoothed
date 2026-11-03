@@ -93,10 +93,7 @@ class ScheduleCandidate:
 class Pass:
     """Base class for semantics-preserving SSA transforms."""
 
-    changes_ssa = False
     preserves_stage_plan = False
-    reads = ()
-    provides = ()
 
     name = "ssa.pass"
     category = HARDWARE_INDEPENDENT
@@ -119,10 +116,6 @@ class Descriptor:
     default_enabled: bool = True
     description: str = ""
     tags: tuple[str, ...] = ()
-
-    reads: tuple[str, ...] = ()
-    provides: tuple[str, ...] = ()
-    changes_ssa: bool = False
 
     def create(self) -> Pass:
         return self.factory()
@@ -188,9 +181,6 @@ class Registry:
             else bool(True if default_enabled is None else default_enabled),
             description=doc,
             tags=tuple(tags),
-            reads=probe.reads,
-            provides=probe.provides,
-            changes_ssa=probe.changes_ssa,
         )
 
     def get(self, name: str) -> Descriptor:
@@ -334,8 +324,6 @@ class Pipeline:
 class Canonicalize(Pass):
     """Normalize generic SSA into the canonical dialect used by all backends."""
 
-    changes_ssa = True
-
     name = "ssa.canonicalize"
     category = HARDWARE_INDEPENDENT
     phase = "canonicalization"
@@ -355,8 +343,6 @@ class UnrollStaticElementwiseLoops(Pass):
     name = "ssa.unroll_static_elementwise"
     category = HARDWARE_INDEPENDENT
     phase = "canonicalization"
-
-    changes_ssa = True
 
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         enabled = _reuse_pass_enabled(context, self.name)
@@ -378,8 +364,6 @@ class CommonSubexpressionElimination(Pass):
     category = HARDWARE_INDEPENDENT
     phase = "canonicalization"
 
-    changes_ssa = True
-
     def run(self, program: ssa.Program, context: Context) -> ssa.Program:
         enabled = _reuse_pass_enabled(context, self.name)
         eliminated = ()
@@ -395,8 +379,6 @@ class CommonSubexpressionElimination(Pass):
 
 class PlanMaterialization(Pass):
     """Plan storage boundaries for reused expensive tensor producer graphs."""
-
-    provides = ("materialization_plan",)
 
     name = "ssa.plan_materialization"
     category = HARDWARE_INDEPENDENT
@@ -599,8 +581,6 @@ def _refresh_schedule_contract(previous, current, context):
 class AnalyzeEffects(Pass):
     """Collect dataflow facts needed by schedule selection."""
 
-    provides = ("analysis", "reduction_reuse")
-
     name = "ssa.analyze_effects"
     category = HARDWARE_INDEPENDENT
     phase = "analysis"
@@ -663,7 +643,6 @@ class AnalyzeEffects(Pass):
 class DecomposeLinalg(Pass):
     """Lower high-level linalg ops into index/extract/store SSA operations."""
 
-    changes_ssa = True
     preserves_stage_plan = True
 
     name = "ssa.decompose_linalg"
@@ -707,8 +686,6 @@ class DecomposeLinalg(Pass):
 class SelectSchedule(Pass):
     """Attach backend-neutral schedule intent."""
 
-    reads = ("analysis",)
-
     name = "ssa.select_schedule"
     category = HARDWARE_INDEPENDENT
     phase = "schedule_intent"
@@ -747,8 +724,6 @@ class SelectSchedule(Pass):
 
 class OptimizeSchedule(Pass):
     """Contract for language-specific schedule optimization passes."""
-
-    reads = ("analysis",)
 
     name = "ssa.optimize_schedule"
     category = LANGUAGE_SPECIFIC

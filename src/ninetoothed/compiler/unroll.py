@@ -13,7 +13,7 @@ def unroll_static_elementwise_loops(program, *, max_iterations=8, max_operations
 
     Bounds must be literal integers and carry/yield types must match exactly.
     Memory, reductions, indexing, dot operations and nested regions are excluded.
-    A program-wide operation budget bounds source growth.
+    Bound inserted operations and each loop's expanded expression cost.
     """
     names = {value.name for value in (*program.inputs, *program.outputs)}
 
@@ -34,6 +34,10 @@ def unroll_static_elementwise_loops(program, *, max_iterations=8, max_operations
     budget = max_operations
     aliases = {}
     types = {value.name: value.type for value in program.inputs}
+    expression_costs = {}
+
+    def expression_cost(op, costs):
+        return min(max_operations + 1, 1 + sum(costs.get(n, 1) for n in op.operands))
 
     def fresh():
         nonlocal counter
@@ -111,6 +115,25 @@ def unroll_static_elementwise_loops(program, *, max_iterations=8, max_operations
         if count * (len(body) + 1) > budget:
             return None
 
+        # Element emission may inline a producer once per operand occurrence.
+        # Bound that expansion too, including recurrences across iterations.
+        costs = dict(expression_costs)
+        carried_costs = [costs.get(name, 1) for name in operation.operands[3:]]
+
+        for _ in range(count):
+            costs.update(zip((v.name for v in region.args[1:]), carried_costs))
+            costs[region.args[0].name] = 1
+
+            for op in body:
+                cost = expression_cost(op, costs)
+
+                if cost > max_operations:
+                    return None
+
+                costs[op.results[0].name] = cost
+
+            carried_costs = [costs.get(n, 1) for n in region.operations[-1].operands]
+
         available = types | {value.name: value.type for value in region.args}
         available.update(
             (value.name, value.type) for op in body for value in op.results
@@ -172,6 +195,12 @@ def unroll_static_elementwise_loops(program, *, max_iterations=8, max_operations
             if loop is None:
                 operations.append(current)
                 types.update((value.name, value.type) for value in current.results)
+                cost = (
+                    expression_cost(current, expression_costs)
+                    if not current.regions
+                    else max_operations + 1
+                )
+                expression_costs.update((value.name, cost) for value in current.results)
 
                 if current.opcode == "arith.constant" and len(current.results) == 1:
                     constants[current.results[0].name] = current.attrs.get("value")
@@ -217,6 +246,9 @@ def unroll_static_elementwise_loops(program, *, max_iterations=8, max_operations
                     operations.append(clone)
                     bindings[result.name] = clone.results[0].name
                     types[clone.results[0].name] = clone.results[0].type
+                    expression_costs[clone.results[0].name] = expression_cost(
+                        clone, expression_costs
+                    )
 
                 carried = tuple(
                     rewrite(name, bindings) for name in region.operations[-1].operands

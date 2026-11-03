@@ -2523,13 +2523,13 @@ def _dtype_source(name: str, ctx: _EmitContext) -> _ValueType:
 
 
 def _masked_reduction_term(term, mask, init, result_type, ctx):
-    if mask is None:
-        return term
-
     # Vendor BF16 wrappers have ambiguous implicit conversions with FP32 zeros.
     if ctx.target.c_style_syntax and result_type.dtype is not None:
         term = ctx.target.cast(result_type.dtype, term)
         init = ctx.target.cast(result_type.dtype, init)
+
+    if mask is None:
+        return term
 
     return ctx.target.where(mask, term, init)
 

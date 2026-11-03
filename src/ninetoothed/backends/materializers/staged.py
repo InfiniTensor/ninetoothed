@@ -192,6 +192,7 @@ def materialize_staged(compilation, *, stage_materializer, output_dir=None):
     """Compile stages once and retain each call's scratch through async launches."""
     from ninetoothed.compiler.runtime import (
         Handle,
+        _filter_runtime_kwargs,
         _runtime_wrapper,
         _verified_runtime_launch,
     )
@@ -301,7 +302,16 @@ def materialize_staged(compilation, *, stage_materializer, output_dir=None):
 
             try:
                 for stage, handle in zip(stages, handles):
-                    handle(*(arguments[name] for name in stage.launch_abi.public_args))
+                    meta = _filter_runtime_kwargs(stage.launch_abi, kwargs)
+                    meta = {
+                        name: value
+                        for name, value in meta.items()
+                        if name not in stage.launch_abi.public_args
+                    }
+                    handle(
+                        *(arguments[name] for name in stage.launch_abi.public_args),
+                        **meta,
+                    )
             except BaseException as error:
                 launch_error = error
                 raise
@@ -310,9 +320,13 @@ def materialize_staged(compilation, *, stage_materializer, output_dir=None):
                 # Preserve the original launch error while protecting all owners.
                 record_error = None
 
-                for tensor in arguments.values():
+                tensor_names = (
+                    spec.name for spec in compilation.kernel.tensors if spec.ndim > 0
+                )
+
+                for name in (*tensor_names, *(tensor.name for tensor in plan.scratch)):
                     try:
-                        tensor.record_stream(stream)
+                        arguments[name].record_stream(stream)
                     except BaseException as error:
                         if record_error is None:
                             record_error = error
