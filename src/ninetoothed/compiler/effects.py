@@ -72,3 +72,23 @@ def pure_expression(operation):
             "index.offset",
         }
     )
+
+
+def operation_value_references(operation):
+    """List explicit SSA uses, including value-bearing operation attributes."""
+    result = list(operation.operands)
+
+    for key in (
+        "indices",
+        "shape_values",
+        "dtype_ref",
+        "dtype_source",
+        "dtype_operand",
+        "preserve_dtype",
+    ):
+        values = operation.attrs.get(key, ())
+        values = (values,) if isinstance(values, str) else values
+
+        if isinstance(values, (tuple, list)):
+            result.extend(value for value in values if isinstance(value, str))
+    return tuple(result)

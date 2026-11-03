@@ -1,6 +1,7 @@
 """Computed C++ scalar types shared by native emitter strategies."""
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 from ninetoothed.backends.emitters.expressions import normalize_dtype
@@ -10,6 +11,16 @@ from ninetoothed.ir.type_inference import _promote_dtype
 
 class CComputedTypesMixin:
     """Keep computed dtype witnesses and declarations in the same C++ type."""
+
+    def reduction_compute_type(self, result_type):
+        if normalize_dtype(result_type.dtype) in {"float16", "bfloat16"}:
+            return replace(result_type, dtype="float32")
+        return result_type
+
+    def reduction_result(self, value, result_type):
+        if normalize_dtype(result_type.dtype) in {"float16", "bfloat16"}:
+            return self.cast(result_type.dtype, value)
+        return value
 
     def load(self, tensor, index, *, mask=None, other=0.0):
         del mask, other

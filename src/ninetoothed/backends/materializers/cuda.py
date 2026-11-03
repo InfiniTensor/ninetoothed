@@ -19,7 +19,11 @@ class CudaMaterializer(Materializer):
         return _materialize(compilation, output_dir=output_dir)
 
     def aot_build(self, compilation, *, output_dir: str | Path):
-        return _materialize(compilation, output_dir=output_dir)
+        from ninetoothed.backends.materializers.staged import aot_monolithic_compilation
+
+        return _materialize(
+            aot_monolithic_compilation(compilation), output_dir=output_dir
+        )
 
     def load_built_artifact(self, built: BuiltArtifact):
         from ninetoothed.backends.materializers.native import load_native_artifact
@@ -29,6 +33,14 @@ class CudaMaterializer(Materializer):
 
 def _materialize(compilation, *, output_dir=None):
     from ninetoothed.backends.materializers.native import materialize_native_library
+    from ninetoothed.backends.materializers.staged import materialize_staged
+
+    staged = materialize_staged(
+        compilation, stage_materializer=_materialize, output_dir=output_dir
+    )
+
+    if staged is not None:
+        return staged
 
     return materialize_native_library(
         compilation,

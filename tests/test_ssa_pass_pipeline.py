@@ -85,7 +85,10 @@ class TestPipeline:
         )
         assert tuple(lowered.metadata["pass_trace"]) == (
             "ssa.canonicalize",
+            "ssa.unroll_static_elementwise",
+            "ssa.cse",
             "ssa.analyze_effects",
+            "ssa.plan_materialization",
             "ssa.select_schedule",
             "ssa.cuda.optimize_schedule",
             "ssa.decompose_linalg",

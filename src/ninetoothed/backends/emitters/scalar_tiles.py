@@ -38,14 +38,38 @@ def plan_scalar_tiles(context, target, *, storage, budget, inline_elementwise=Fa
 
     operations = program.blocks[0].operations
     all_ops = tuple(walk_ops(operations))
+    references = Counter(
+        name for op in all_ops for name in operation_value_references(op)
+    )
 
     loop_products = (
         any(op.opcode == "scf.for" for op in all_ops)
         and sum(op.opcode in ("linalg.dot", "linalg.matmul") for op in all_ops) >= 2
     )
-    repeated_reductions = sum(op.opcode.startswith("reduce.") for op in all_ops) >= 2
+    reductions = tuple(op for op in all_ops if op.opcode.startswith("reduce."))
+    # CSE can turn multiple reductions into one multiply-used SSA producer.
+    repeated_reductions = len(reductions) >= 2 or any(
+        references[result.name] > 1 for op in reductions for result in op.results
+    )
+    reuse = common.program_facts(program, "reduction_reuse")
+    proved = frozenset(reuse.get("results", ())) if reuse.get("enabled") else ()
 
-    if not (loop_products or repeated_reductions):
+    def broadcast_reused(op):
+        if not op.results or op.results[0].name not in proved:
+            return False
+
+        axes = tuple(map(str, context.value_types[op.operands[0]].shape))
+
+        return (
+            len(axes) == 2
+            and axes == context.axes
+            and axes[-1].isdecimal()
+            and int(axes[-1]) > 1
+        )
+
+    broadcast_reductions = any(broadcast_reused(op) for op in reductions)
+
+    if not (loop_products or repeated_reductions or broadcast_reductions):
         return None
 
     if any(
@@ -93,9 +117,6 @@ def plan_scalar_tiles(context, target, *, storage, budget, inline_elementwise=Fa
         "tensor.zeros",
         "tensor.empty",
     }
-    references = Counter(
-        name for op in all_ops for name in operation_value_references(op)
-    )
     inline = {}
     costs = {}
 

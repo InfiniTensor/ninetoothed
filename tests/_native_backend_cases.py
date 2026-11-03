@@ -25,6 +25,10 @@ def _minimum(x, out):
     out = ntl.min(x, axis=1)  # noqa: F841
 
 
+def _summation(x, out):
+    out = ntl.sum(x, axis=1)  # noqa: F841
+
+
 def _entropy(x, out):
     maximum = ntl.max(x, axis=1)
     numerator = ntl.exp(x - maximum[:, None])
@@ -116,25 +120,40 @@ def check_native_baseline(tmp_path, *, backend, device, extra_integer_pairs=()):
             torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0)
             assert storage[0].item() == storage[-1].item() == -123
 
-    host = torch.tensor([[2**55 + 1, 2**55 + 3], [-(2**55) - 3, -(2**55) - 1]])
-    x = host.to(device)
-    out = torch.empty(2, dtype=torch.int64).to(device)
+    values = torch.tensor([[2**55 + 1, 2**55 + 3], [-(2**55) - 3, -(2**55) - 1]])
 
-    for application, expected in (
-        (_maximum, host.amax(1)),
-        (_minimum, host.amin(1)),
-    ):
-        kernel = nt.make(
-            _row_arrangement,
-            application,
-            (nt.Tensor(2), nt.Tensor(1)),
-            backend=backend,
-            max_num_configs=1,
-        )
-        kernel(x, out)
-        runtime.synchronize()
-        torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0)
+    for dtype in (torch.int64, torch.bfloat16):
+        host = values.to(dtype)
+        x = host.to(device)
+        out = torch.empty(2, dtype=dtype).to(device)
 
+        for application, expected in (
+            (_maximum, host.amax(1)),
+            (_minimum, host.amin(1)),
+        ):
+            kernel = nt.make(
+                _row_arrangement,
+                application,
+                (nt.Tensor(2), nt.Tensor(1)),
+                backend=backend,
+                max_num_configs=1,
+            )
+            kernel(x, out)
+            runtime.synchronize()
+            torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0)
+
+    host = torch.ones(2, 258, dtype=torch.bfloat16)
+    out = torch.empty(2, dtype=torch.bfloat16).to(device)
+    kernel = nt.make(
+        _row_arrangement,
+        _summation,
+        (nt.Tensor(2), nt.Tensor(1)),
+        backend=backend,
+        max_num_configs=1,
+    )
+    kernel(host.to(device), out)
+    runtime.synchronize()
+    torch.testing.assert_close(out.cpu(), host.sum(1), rtol=0, atol=0)
     base = torch.arange(256, dtype=torch.float32).reshape(8, 32)[:7, :30] / 32
     host = base[:, 1:30:2]
     kernel = nt.make(
