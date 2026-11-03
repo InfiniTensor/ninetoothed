@@ -25,6 +25,14 @@ debugging = ["torch>=2.4.0"]
 visualization = ["matplotlib>=3.9.0", "ninetoothed[debugging]"]
 all = ["ninetoothed[debugging]", "ninetoothed[visualization]"]
 
+[tool.pytest.ini_options]
+# Known torch_npu import warnings on shared CANN installations and newer PyTorch.
+# Keep other warnings visible, including new messages from these modules.
+filterwarnings = [
+    'ignore:.*ascend-toolkit/.* owner does not match the current owner\.$:UserWarning:torch_npu\.utils\.collect_env$',
+    'ignore:^`torch\.jit\.script_method` is deprecated\. Please switch to `torch\.compile` or `torch\.export`\.$:DeprecationWarning:torch\.jit\._script$',
+]
+
 [tool.ruff]
 src = [".", "src", "tests"]
 

@@ -1618,14 +1618,26 @@ def _decompose_matmul_store(
     product, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
     acc_next, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
     acc_result, temp_index = _fresh_value(existing_names, temp_index, scalar_type)
-    # Fixed/compound K extents are not SSA symbols. Obtain the real arranged
-    # operand extent instead of introducing an undefined fallback name `k`.
+    # Numeric K extents become constants. Compound extents use the real
+    # arranged operand extent instead of an undefined fallback symbol `k`.
     lhs_type = value_types.get(lhs)
     k_extent = None if lhs_type is None else _shape_dim(lhs_type.shape, -1)
     bound_operations = ()
     k_operand = k
 
-    if k_extent is not None and not str(k_extent).isidentifier():
+    if k.isascii() and k.isdecimal():
+        bound, temp_index = _fresh_value(
+            existing_names, temp_index, ssa.Type(kind="index", dtype="int64")
+        )
+        bound_operations = (
+            ssa.Operation(
+                opcode="arith.constant",
+                results=(bound,),
+                attrs={"value": int(k), "decomposition": "matmul"},
+            ),
+        )
+        k_operand = bound.name
+    elif k_extent is not None and not str(k_extent).isidentifier():
         bound, temp_index = _fresh_value(
             existing_names, temp_index, ssa.Type(kind="index", dtype="int64")
         )
@@ -1823,7 +1835,7 @@ def _first_symbol(*candidates: object) -> str:
 
         text = str(candidate)
 
-        if text.isidentifier():
+        if text.isidentifier() or (text.isascii() and text.isdecimal()):
             return text
     return str(candidates[-1])
 

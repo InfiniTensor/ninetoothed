@@ -13,6 +13,8 @@ NineToothed Documentation
    installation
    basics
    named_layout
+   bangc
+   ascendc
    build
    cpu_interpreter
    python_api

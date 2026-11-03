@@ -418,7 +418,14 @@ def test_fixed_k_tiled_dot_matches_numpy_after_target_decomposition(
     handle = interpret(_matrix_tiles, _dot, tensors, backend=backend, trace=True)
     assert handle.program.metadata["linalg_decomposed"]
     operations = handle.program.blocks[0].operations
-    assert any(op.opcode == "shape.dim" and op.attrs["dim"] == -1 for op in operations)
+    loop = next(op for op in operations if op.opcode == "scf.for")
+    bound = next(
+        op
+        for op in operations
+        if any(value.name == loop.operands[1] for value in op.results)
+    )
+    assert bound.opcode == "arith.constant"
+    assert bound.attrs["value"] == 4
     assert not any(op.opcode == "linalg.dot" for op in operations)
     backing = np.full(expected.size + 2, -731, dtype=dtype)
     out = backing[1:-1].reshape(expected.shape)
