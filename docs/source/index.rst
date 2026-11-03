@@ -16,4 +16,5 @@ NineToothed Documentation
    bangc
    ascendc
    build
+   cpu_interpreter
    python_api

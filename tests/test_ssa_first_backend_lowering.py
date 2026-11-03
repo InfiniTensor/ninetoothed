@@ -10,6 +10,19 @@ from ninetoothed.frontend.python import from_source
 from ninetoothed.ir import Kernel, TensorSpec, ssa
 
 
+def _ssa_opcodes(artifact):
+    # Origins retain removed operation names; inspect executable operations only.
+    def visit(blocks):
+        for block in blocks:
+            for operation in block["operations"]:
+                yield operation["opcode"]
+                yield from visit(operation.get("regions", ()))
+
+    program = artifact.metadata.get("ssa") or {}
+
+    return set(visit(program.get("blocks", ())))
+
+
 def arrangement(x, out, BLOCK_SIZE=block_size()):
     return (x[0:BLOCK_SIZE], out[0:BLOCK_SIZE])
 
@@ -316,7 +329,7 @@ def random_application(seed, out):
                 kernel_name=f"ssa_fused_expr_{backend}",
             )
             _assert_ssa_artifact(artifact, route=route)
-            assert "select.where" in str(artifact.metadata["ssa"])
+            assert "select.where" in _ssa_opcodes(artifact)
 
             for fragment in fragments:
                 assert fragment in artifact.primary_source
@@ -467,7 +480,7 @@ def random_application(seed, out):
             kernel_name="public_triton_codegen_matmul_process",
         )
         assert artifact.metadata["source_route"] == "ssa-unified-triton-emitter"
-        assert "linalg.matmul" not in str(artifact.metadata.get("ssa", ""))
+        assert "linalg.matmul" not in _ssa_opcodes(artifact)
         assert "@triton.jit" in artifact.primary_source
         assert "ssa.Program" in artifact.primary_source
 
@@ -1002,7 +1015,7 @@ def canonical_math_application(x, y, out):
             )
             _assert_ssa_artifact(artifact, route=route)
             assert source_fragment in artifact.primary_source
-            assert "reduce.sum" in str(artifact.metadata["ssa"])
+            assert "reduce.sum" in _ssa_opcodes(artifact)
 
     def test_public_lower_inlines_user_helper_calls_before_ssa_lowering(self):
         expected = {
@@ -1037,7 +1050,7 @@ def canonical_math_application(x, y, out):
                 kernel_name=f"ssa_helper_inline_{backend}",
             )
             _assert_ssa_artifact(artifact, route=route)
-            assert "call.fused_affine_helper" not in str(artifact.metadata["ssa"])
+            assert "call.fused_affine_helper" not in _ssa_opcodes(artifact)
             assert "fused_affine_helper" not in artifact.primary_source
 
             for source_fragment in source_fragments:
@@ -1500,7 +1513,7 @@ def scalarized_index_application(x, indices, y):
             artifact = emit_kernel(kernel, backend)
             _assert_ssa_artifact(artifact, route=route)
             assert source_fragment in artifact.primary_source
-            assert "reduce.sum" in str(artifact.metadata["ssa"])
+            assert "reduce.sum" in _ssa_opcodes(artifact)
 
             if backend == "triton":
                 assert "for v1_i in range" not in artifact.primary_source
@@ -1528,7 +1541,7 @@ def scalarized_index_application(x, indices, y):
             artifact = emit_kernel(kernel, backend)
             _assert_ssa_artifact(artifact, route=route)
             assert source_fragment in artifact.primary_source
-            assert "reduce.sum" in str(artifact.metadata["ssa"])
+            assert "reduce.sum" in _ssa_opcodes(artifact)
 
     def test_transpose_aliases_share_one_backend_emission_contract(self):
         tensors = (
@@ -1569,7 +1582,7 @@ def scalarized_index_application(x, indices, y):
             for backend, (route, source_fragment) in expected.items():
                 artifact = emit_kernel(frontend_kernel, backend)
                 _assert_ssa_artifact(artifact, route=route)
-                assert "linalg.transpose" not in str(artifact.metadata["ssa"])
+                assert "linalg.transpose" not in _ssa_opcodes(artifact)
                 assert source_fragment in artifact.primary_source
 
     def test_from_source_emits_store_inside_scf_for_without_operator_dispatch(self):
@@ -1599,7 +1612,7 @@ def scalarized_index_application(x, indices, y):
         for backend, (route, source_fragments) in expected.items():
             artifact = emit_kernel(kernel, backend)
             _assert_ssa_artifact(artifact, route=route)
-            assert "scf.for" in str(artifact.metadata["ssa"])
+            assert "scf.for" in _ssa_opcodes(artifact)
             assert "lower_loop_store" not in artifact.primary_source
 
             for source_fragment in source_fragments:
@@ -1695,7 +1708,7 @@ def scalarized_index_application(x, indices, y):
                 kernel_name=f"ssa_control_flow_{backend}",
             )
             _assert_ssa_artifact(artifact, route=route)
-            rendered_ssa = str(artifact.metadata["ssa"])
+            rendered_ssa = _ssa_opcodes(artifact)
             assert "scf.for" in rendered_ssa
             assert "scf.if" in rendered_ssa
 

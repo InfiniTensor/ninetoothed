@@ -3,7 +3,7 @@
 from dataclasses import replace
 
 
-def canonicalize_dtype_expressions(program):
+def canonicalize_dtype_expressions(program, *, provenance=None):
     """Erase redundant type operands after the frontend proves a result dtype.
 
     Unknown dtype expressions remain explicit. Only unused, pure type values
@@ -16,7 +16,9 @@ def canonicalize_dtype_expressions(program):
         operations = []
 
         # SSA definitions dominate their uses, including captures in nested regions.
-        for current in reversed(block.operations):
+        for original in reversed(block.operations):
+            current = original
+
             if (
                 current.opcode
                 in {"tensor.cast", "tensor.zeros", "tensor.empty", "tensor.full"}
@@ -37,13 +39,18 @@ def canonicalize_dtype_expressions(program):
                     and current.operands[-1] == current.attrs.get("dtype_operand")
                     else current.operands
                 )
-                current = replace(current, attrs=attrs, operands=operands)
+
+                if attrs != current.attrs or operands != current.operands:
+                    current = replace(current, attrs=attrs, operands=operands)
 
             if current.opcode in {
                 "dtype.constant",
                 "dtype.of",
                 "dtype.select",
             } and not any(result.name in used for result in current.results):
+                if provenance is not None:
+                    provenance.delete(original)
+
                 continue
 
             used.update(current.operands)
@@ -52,14 +59,23 @@ def canonicalize_dtype_expressions(program):
                 for key in references
                 if current.attrs.get(key) is not None
             )
-            operations.append(
-                replace(
-                    current,
-                    regions=tuple(rewrite(region) for region in current.regions),
-                )
-            )
+            regions = tuple(rewrite(region) for region in current.regions)
 
-        return replace(block, operations=tuple(reversed(operations)))
+            if any(new is not old for new, old in zip(regions, current.regions)):
+                current = replace(current, regions=regions)
+
+            if current is not original and provenance is not None:
+                (current,) = provenance.derive((current,), (original,))
+
+            operations.append(current)
+
+        operations = tuple(reversed(operations))
+
+        if len(operations) == len(block.operations) and all(
+            new is old for new, old in zip(operations, block.operations)
+        ):
+            return block
+        return replace(block, operations=operations)
 
     return replace(
         program,

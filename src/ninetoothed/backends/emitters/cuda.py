@@ -44,6 +44,7 @@ class CudaTarget(CComputedTypesMixin, EmitterTarget):
     suffix: str = "cu"
     source_route: str = "ssa-unified-cuda-emitter"
     c_style_syntax: bool = True
+    signed_division_rounds_to_zero: bool = True
     native_block_matmul: bool = True
 
     def can_emit_native_matmul(self, kernel) -> bool:

@@ -49,6 +49,7 @@ class EmitterTarget(ABC):
     vector_value_semantics: bool = False
     tir_value_semantics: bool = False
     native_block_matmul: bool = False
+    signed_division_rounds_to_zero: bool = False
     max_vector_numel: int | None = None
 
     def can_emit_native_matmul(self, kernel) -> bool:

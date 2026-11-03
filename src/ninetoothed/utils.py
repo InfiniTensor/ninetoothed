@@ -1,11 +1,11 @@
 from contextlib import contextmanager
 
-import triton
-
 
 @contextmanager
 def device_scope(device):
     """Select a device through the active Triton driver and restore it afterward."""
+    import triton
+
     driver = triton.runtime.driver.active
     previous = driver.get_current_device()
     index = device if isinstance(device, int) else getattr(device, "index", None)
@@ -23,6 +23,8 @@ def device_scope(device):
 
 def get_device_properties(device=None):
     """Normalize device limits through the active driver's runtime interface."""
+    import triton
+
     driver = triton.runtime.driver.active
 
     with device_scope(device):

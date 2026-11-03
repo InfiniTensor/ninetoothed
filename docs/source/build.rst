@@ -264,7 +264,7 @@ and configuration types. Python-only configurations, such as jagged tensors or
 arbitrary string keys, remain available through the returned callable.
 
 Shared runtime timing
---------------------
+---------------------
 
 Python auto-tuning shares an internal timer, preferring device graphs and events
 and falling back to Python timing. Available device synchronization is used;
