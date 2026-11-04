@@ -1,0 +1,11 @@
+Platform: Google Colab
+GPU: NVIDIA T4
+Python: 3.12.13
+pytest: 8.4.2
+pluggy: 1.6.0
+NineToothed: 0.26.0
+
+Notes:
+- Tests were run in a CUDA-enabled Colab runtime.
+- Dependencies were installed with `pip install -r requirements.txt`.
+- Local Windows workspace may not have pytest/ninetoothed/triton installed; Colab is the validation environment.

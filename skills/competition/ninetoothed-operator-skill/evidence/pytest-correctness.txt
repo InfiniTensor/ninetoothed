@@ -1,0 +1,26 @@
+Correctness validation summary from Google Colab T4.
+
+Run timestamp: 2026-07-12, Google Colab session (exact wall-clock time not recorded).
+Summary file: selected coverage and final result.
+Full raw terminal output: `terminal-correctness-raw.txt`.
+
+Command:
+python scripts/run_correctness.py
+
+Observed result:
+28 passed, 16 deselected in 25.76s
+
+Selected coverage:
+
+- ReLU correctness: fp32/fp16 sizes 63, 1024, 3333, 65536; all-negative;
+  all-positive; stride-2 fallback; transposed fallback.
+- RMSNorm correctness: contiguous shapes, transposed input, row slice,
+  column slice, and `test_rms_norm_rejects_dynamic_eps`.
+- Softmax correctness: five shapes, row sums to one, large positive logits,
+  large negative logits, and non-contiguous row fallback.
+
+The RMSNorm eps-limit test verifies that unsupported eps values raise
+`ValueError`, documenting the fixed-`eps=1e-6` limitation instead of silently
+accepting unsupported API semantics.
+
+Full terminal output is also preserved in `terminal-correctness-raw.txt`.

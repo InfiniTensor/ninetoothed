@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "ninetoothed-operator-skill"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "ninetoothed==0.26.0",
+    "torch>=2.0",
+    "triton>=2.0",
+    "pytest>=7.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ops*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "benchmark: performance and generated-source dump checks that may take longer than correctness tests",
+]

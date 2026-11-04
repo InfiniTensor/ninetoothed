@@ -1,0 +1,9 @@
+ninetoothed==0.26.0
+torch>=2.0.0
+triton>=2.0.0
+pytest>=7.0.0
+
+# Version note for reproducibility:
+# Tests were validated on ninetoothed==0.26.x with torch 2.x and T4 GPU (CUDA sm75).
+# If you encounter compilation errors on a different version, pin ninetoothed to
+# the version you have:  pip show ninetoothed | grep Version
