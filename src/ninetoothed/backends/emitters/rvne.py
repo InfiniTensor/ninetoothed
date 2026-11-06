@@ -111,6 +111,8 @@ class RvneTarget(EmitterTarget):
         if name in {"dot", "block_dot"} and len(args) == 2:
             return f"(({args[0]}) * ({args[1]}))"
 
+        # TODO(rvne): Pattern-match quantized dot/convolution applications and
+        # lower them to this primitive, then remove the frontend escape hatch.
         if name == "spike_accumulate" and len(args) == 4:
             return f"nt_spike_accumulate({', '.join(args)})"
 

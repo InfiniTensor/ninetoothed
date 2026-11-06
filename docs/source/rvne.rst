@@ -32,16 +32,14 @@ host; the generated RISC-V executable does not require Triton or PyTorch.
 AOT execution
 -------------
 
-``aot`` is a public NineToothed compiler entrypoint and is intentionally
-imported from ``ninetoothed.compiler``. The RVNE backend does not introduce a
-separate compiler namespace. Save the application in a Python file so the
-compiler can inspect its source:
+Use the historical NineToothed AOT entrypoint. Save the application in a
+Python file so the compiler can inspect its source:
 
 .. code-block:: python
 
    import numpy as np
    from ninetoothed import Tensor
-   from ninetoothed.compiler import aot
+   from ninetoothed.aot import aot
 
    def affine(
        x: Tensor(shape=(4,), dtype="int32"),
@@ -63,19 +61,15 @@ integration runner, not an on-device performance benchmark. A compiler or
 emulator failure raises an exception; unsuccessful execution does not replace
 host outputs.
 
-``load_built_artifact`` is an optional advanced entrypoint for reconstructing
-a callable handle from a previously built artifact after the original Python
-handle is gone. Normal AOT compilation and execution do not require it.
-
 Packed spike accumulation
 -------------------------
 
 ``ntl.spike_accumulate(current, spikes, weight_low, weight_high)`` is a narrow
 RVNE primitive, not the intended pattern for exposing every hardware feature.
 It exists so the first backend can state the exact packed INT4 ABI and avoid
-silently changing quantization semantics. Future backend work should recognize
-suitable quantized dot-product and convolution patterns and lower them to this
-operation rather than adding one frontend intrinsic per hardware feature.
+silently changing quantization semantics. TODO(rvne): recognize suitable
+already-quantized dot-product and convolution patterns and lower them to this
+primitive; once that path exists, remove the temporary frontend escape hatch.
 Automatic floating-point quantization is outside this backend.
 
 The primitive computes
@@ -100,7 +94,7 @@ Host-side packing helpers are part of the backend-specific RVNE boundary:
    import ninetoothed.language as ntl
    from ninetoothed import Tensor
    from ninetoothed.backends.rvne import pack_spikes, pack_weights
-   from ninetoothed.compiler import aot
+   from ninetoothed.aot import aot
 
    def accumulate(
        current: Tensor(shape=(1,), dtype="int32"),
