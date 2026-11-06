@@ -203,12 +203,20 @@ class LaunchABI:
     kernel_args: tuple[LaunchBinding, ...] = ()
     outputs: tuple[str, ...] = ()
     shape_params: tuple[str, ...] = ()
+    symbol_constraints: tuple[Mapping[str, Any], ...] = ()
+    named_layout: Mapping[str, Any] | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "public_args", tuple(self.public_args))
         object.__setattr__(self, "kernel_args", tuple(self.kernel_args))
         object.__setattr__(self, "outputs", tuple(self.outputs))
         object.__setattr__(self, "shape_params", tuple(self.shape_params))
+        object.__setattr__(self, "named_layout", freeze(self.named_layout))
+        object.__setattr__(
+            self,
+            "symbol_constraints",
+            tuple(freeze(value) for value in self.symbol_constraints),
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -277,6 +285,7 @@ def ir_to_dict(value: Any) -> Any:
         return {
             field.name: ir_to_dict(getattr(value, field.name))
             for field in fields(value)
+            if field.metadata.get("serialize", True)
         }
 
     if isinstance(value, tuple):
@@ -427,6 +436,8 @@ def _index_compare(node: ast.Compare) -> IndexExpr:
 
 
 def _index_call(node: ast.Call) -> IndexExpr:
+    if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):
+        raise ValueError("Index calls require explicit positional arguments.")
     return IndexExpr(
         op="call",
         value=ast.unparse(node.func),

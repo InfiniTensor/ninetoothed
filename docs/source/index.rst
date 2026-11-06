@@ -12,6 +12,9 @@ NineToothed Documentation
 
    installation
    basics
+   named_layout
+   bangc
+   ascendc
    build
    rvne
    python_api

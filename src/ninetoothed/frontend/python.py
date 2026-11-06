@@ -17,10 +17,10 @@ from typing import Any
 
 from ninetoothed.dtype import normalize_dtype
 from ninetoothed.frontend.errors import LoweringError
-from ninetoothed.frontend.types import (
+from ninetoothed.ir import TensorSpec, ssa
+from ninetoothed.ir.type_inference import (
     _binary_type,
     _bool_type,
-    _broadcast_type,
     _cast_type,
     _load_type,
     _math_result_type,
@@ -28,11 +28,11 @@ from ninetoothed.frontend.types import (
     _next_dtype_shape,
     _offset_type,
     _reduce_type,
+    _select_type,
     _shape_dim_from_type,
     _subscript_type,
     _transpose_type,
 )
-from ninetoothed.ir import TensorSpec, ssa
 
 _DTYPE_NAMES = {
     "bool",
@@ -102,7 +102,23 @@ def from_source(
     if globalns is not None:
         func = _InlineHelperCalls(globalns).inline(func)
 
+    return _from_function(func, tensor_irs, kind=kind, strict=strict)
+
+
+def prepare_application(application):
+    """Share helper expansion with layout adapters; return a fresh AST and scope."""
+    source = textwrap.dedent(inspect.getsource(application))
+    tree = ast.parse(source)
+    func = next(node for node in tree.body if isinstance(node, ast.FunctionDef))
+    closure = inspect.getclosurevars(application)
+    scope = dict(application.__globals__) | closure.globals | closure.nonlocals
+
+    return _InlineHelperCalls(scope).inline(func), scope
+
+
+def _from_function(func, tensor_irs, *, kind, strict, named=False):
     builder = _ApplicationSSABuilder(func, tensor_irs, kind, strict=strict)
+    builder.named_layout = named
     builder.lower()
     program = builder.finish()
     ssa.verify_program(program)
@@ -559,20 +575,26 @@ class _ApplicationSSABuilder:
             if destination not in self.outputs:
                 self.outputs.append(destination)
 
-            index_values = tuple(
-                value.name
-                for value in self._lower_subscript_values(target.slice, operations, env)
+            indices = self._lower_subscript_values(target.slice, operations, env)
+            index_values = tuple(index.name for index in indices)
+            source = (
+                isinstance(target.value, ast.Attribute)
+                and target.value.attr == "source"
             )
-            target_type = _subscript_type(destination.type, target.slice)
+            target_type = _subscript_type(
+                destination.type,
+                target.slice,
+                source=source,
+                index_types=tuple(index.type for index in indices),
+            )
             operations.append(
                 ssa.Operation(
                     opcode="mem.store",
                     operands=(value.name, destination.name),
                     attrs={
-                        "subscript": _unparse(target.slice),
+                        "subscript": _subscript_contract(target.slice),
                         "indices": index_values,
-                        "source": isinstance(target.value, ast.Attribute)
-                        and target.value.attr == "source",
+                        "source": source,
                         "target_shape": tuple(target_type.shape),
                         "target_dtype_level": int(
                             target_type.attrs.get("dtype_level", 0)
@@ -615,37 +637,40 @@ class _ApplicationSSABuilder:
             if destination not in self.outputs:
                 self.outputs.append(destination)
 
-            index_values = tuple(
-                value.name
-                for value in self._lower_subscript_values(
-                    stmt.target.slice, operations, env
-                )
+            indices = self._lower_subscript_values(stmt.target.slice, operations, env)
+            index_values = tuple(index.name for index in indices)
+            source = (
+                isinstance(stmt.target.value, ast.Attribute)
+                and stmt.target.value.attr == "source"
             )
-            target_type = _subscript_type(destination.type, stmt.target.slice)
+            target_type = _subscript_type(
+                destination.type,
+                stmt.target.slice,
+                source=source,
+                index_types=tuple(index.type for index in indices),
+            )
             lhs = self._emit(
                 operations,
                 "tensor.extract" if index_values else "tensor.view",
                 operands=(destination.name, *index_values),
-                attrs={"subscript": _unparse(stmt.target.slice)},
-                result_type=target_type,
+                attrs={
+                    "subscript": _subscript_contract(stmt.target.slice),
+                    "source": source,
+                },
+                result_type=_subscript_type(
+                    destination.type, stmt.target.slice, source=source
+                ),
             )
             rhs = self._lower_expr(stmt.value, operations, env)
-            result = self._emit(
-                operations,
-                f"arith.{_binop_name(stmt.op)}",
-                operands=(lhs.name, rhs.name),
-                result_type=lhs.type,
-                attrs={
-                    "python": f"{_unparse(stmt.target)} {_augop_symbol(stmt.op)}= ..."
-                },
-            )
+            result = self._lower_augmented_value(stmt, lhs, rhs, operations)
             operations.append(
                 ssa.Operation(
                     opcode="mem.store",
                     operands=(result.name, destination.name),
                     attrs={
-                        "subscript": _unparse(stmt.target.slice),
+                        "subscript": _subscript_contract(stmt.target.slice),
                         "indices": index_values,
+                        "source": source,
                         "target_shape": tuple(target_type.shape),
                         "target_dtype_level": int(
                             target_type.attrs.get("dtype_level", 0)
@@ -670,14 +695,36 @@ class _ApplicationSSABuilder:
             raise LoweringError(f"Unknown AugAssign target {stmt.target.id!r}.")
 
         rhs = self._lower_expr(stmt.value, operations, env)
+        result = self._lower_augmented_value(stmt, lhs, rhs, operations)
+        env[stmt.target.id] = result
+
+    def _lower_augmented_value(self, stmt, lhs, rhs, operations):
+        result_type = _binary_type(stmt.op, lhs.type, rhs.type)
         result = self._emit(
             operations,
             f"arith.{_binop_name(stmt.op)}",
             operands=(lhs.name, rhs.name),
-            result_type=lhs.type,
-            attrs={"python": f"{stmt.target.id} {_augop_symbol(stmt.op)}= ..."},
+            result_type=result_type,
+            attrs={"python": f"{_unparse(stmt.target)} {_augop_symbol(stmt.op)}= ..."},
         )
-        env[stmt.target.id] = result
+
+        if lhs.type.kind != "pointer" and (
+            lhs.type.dtype is None or result_type.dtype != lhs.type.dtype
+        ):
+            dtype = self._emit(
+                operations,
+                "dtype.of",
+                operands=(lhs.name,),
+                result_type=ssa.Type(kind="dtype", dtype=lhs.type.dtype),
+            )
+            result = self._emit(
+                operations,
+                "tensor.cast",
+                operands=(result.name, dtype.name),
+                result_type=_cast_type(result_type, lhs.type.dtype),
+            )
+
+        return result
 
     def _lower_for(
         self,
@@ -748,7 +795,7 @@ class _ApplicationSSABuilder:
         env: dict[str, ssa.Value],
     ) -> None:
         condition = self._ensure_bool_condition(
-            self._lower_expr(stmt.test, operations, env), env
+            self._lower_expr(stmt.test, operations, env), operations
         )
         known = self.constant_values.get(condition.name)
 
@@ -925,7 +972,9 @@ class _ApplicationSSABuilder:
             operations,
             f"arith.{_unaryop_name(node.op)}",
             operands=(operand.name,),
-            result_type=operand.type,
+            result_type=(
+                _bool_type(operand) if isinstance(node.op, ast.Not) else operand.type
+            ),
         )
 
         if isinstance(node.op, ast.Not) and self._is_dtype_condition(operand):
@@ -953,7 +1002,12 @@ class _ApplicationSSABuilder:
         )
 
     def _lower_bool_expr(self, node, operations, env) -> ssa.Value:
-        values = [self._lower_expr(value, operations, env) for value in node.values]
+        values = [
+            self._ensure_bool_condition(
+                self._lower_expr(value, operations, env), operations
+            )
+            for value in node.values
+        ]
 
         if not values:
             raise LoweringError("Empty BoolOp is unsupported.")
@@ -968,9 +1022,7 @@ class _ApplicationSSABuilder:
                 operations,
                 f"arith.{_boolop_name(node.op)}",
                 operands=(result.name, rhs.name),
-                result_type=ssa.Type(
-                    kind="scalar" if is_dtype else "tensor", dtype="bool"
-                ),
+                result_type=_bool_type(result, rhs),
             )
 
             if is_dtype:
@@ -1051,7 +1103,7 @@ class _ApplicationSSABuilder:
             operations,
             "select.where",
             operands=(condition.name, body.name, orelse.name),
-            result_type=body.type,
+            result_type=_select_type(condition.type, body.type, orelse.type),
         )
 
     def _lower_subscript_expr(self, node, operations, env) -> ssa.Value:
@@ -1061,17 +1113,15 @@ class _ApplicationSSABuilder:
             return shape_dim
 
         base = self._lower_expr(node.value, operations, env)
-        index_values = tuple(
-            value.name
-            for value in self._lower_subscript_values(node.slice, operations, env)
-        )
+        indices = self._lower_subscript_values(node.slice, operations, env)
+        index_values = tuple(index.name for index in indices)
         source = isinstance(node.value, ast.Attribute) and node.value.attr == "source"
 
         return self._emit(
             operations,
             "tensor.extract" if index_values else "tensor.view",
             operands=(base.name, *index_values),
-            attrs={"subscript": _unparse(node.slice), "source": source},
+            attrs={"subscript": _subscript_contract(node.slice), "source": source},
             result_type=_subscript_type(base.type, node.slice, source=source),
         )
 
@@ -1172,6 +1222,9 @@ class _ApplicationSSABuilder:
 
         if literal == "inf":
             return self._constant(operations, float("inf"))
+
+        if literal == "nan":
+            return self._constant(operations, float("nan"))
         return None
 
     def _lower_tensor_method_call(self, node, operations, env):
@@ -1417,10 +1470,29 @@ class _ApplicationSSABuilder:
         dtype_ref = self.dtype_refs.get(target.name)
         attrs = {
             "shape": _unparse(node.args[0]) if node.args else None,
+            "shape_values": shape,
+            "element_dtype": result_dtype,
             "dtype": result_dtype,
             "dtype_ref": dtype_ref,
             "dtype_operand": target.name,
         }
+
+        if getattr(self, "named_layout", False):
+            shape_node = node.args[0]
+
+            if (
+                isinstance(shape_node, ast.Attribute)
+                and shape_node.attr == "shape"
+                and isinstance(shape_node.value, ast.Name)
+                and shape_node.value.id in self.param_names
+            ):
+                attrs["shape_origins"] = tuple(
+                    (shape_node.value.id, dim) for dim in range(len(shape))
+                )
+            else:
+                raise _lowering_error(
+                    node, "Named constructor shape must be parameter.shape"
+                )
 
         if is_full:
             attrs["value"] = (
@@ -1531,6 +1603,7 @@ class _ApplicationSSABuilder:
                 operations,
                 "linalg.matmul" if name == "matmul" else "linalg.dot",
                 operands=(operands[0].name, operands[1].name),
+                attrs={"dtype_ref": operands[2].name},
                 result_type=operands[2].type,
             )
             self._store_intrinsic_result(operations, operands[2], result, name)
@@ -1560,6 +1633,7 @@ class _ApplicationSSABuilder:
                 operations,
                 "linalg.transpose",
                 operands=(operands[0].name,),
+                attrs={"dtype_ref": operands[1].name},
                 result_type=operands[1].type,
             )
             self._store_intrinsic_result(operations, operands[1], result, name)
@@ -1589,7 +1663,7 @@ class _ApplicationSSABuilder:
                 operations,
                 "select.where",
                 operands=tuple(value.name for value in operands),
-                result_type=_broadcast_type(operands[1].type, operands[2].type),
+                result_type=_select_type(*(value.type for value in operands)),
             )
 
         if name in {"maximum", "minimum"}:
@@ -1745,7 +1819,9 @@ class _ApplicationSSABuilder:
 
         attr_value: Any = value
 
-        if isinstance(value, float) and not math.isfinite(value):
+        if isinstance(value, float) and math.isnan(value):
+            attr_value = "nan"
+        elif isinstance(value, float) and not math.isfinite(value):
             attr_value = "-inf" if value < 0 else "inf"
 
         result = self._emit(
@@ -1823,29 +1899,22 @@ class _ApplicationSSABuilder:
         return self.values[name]
 
     def _ensure_bool_condition(
-        self, value: ssa.Value, env: dict[str, ssa.Value]
+        self, value: ssa.Value, operations: list[ssa.Operation]
     ) -> ssa.Value:
         if value.type.dtype == "bool":
             return value
 
-        if value.type.kind != "scalar" or value.type.dtype not in {None, "symbol"}:
+        if value.type.kind not in {"scalar", "index", "tensor"}:
             return value
 
-        replacement = ssa.Value(
-            name=value.name,
-            type=ssa.Type(
-                kind="scalar",
-                shape=value.type.shape,
-                dtype="bool",
-                attrs=dict(value.type.attrs),
-            ),
-        )
-        self.values[value.name] = replacement
+        zero = self._constant(operations, 0)
 
-        for name, current in tuple(env.items()):
-            if current.name == value.name:
-                env[name] = replacement
-        return replacement
+        return self._emit(
+            operations,
+            "cmp.ne",
+            operands=(value.name, zero.name),
+            result_type=_bool_type(value, zero),
+        )
 
 
 class _AssignedNameVisitor(ast.NodeVisitor):
@@ -2105,6 +2174,20 @@ def _is_namespace_ref(node: ast.AST) -> bool:
     if isinstance(node, ast.Attribute):
         return _is_namespace_ref(node.value)
     return False
+
+
+def _subscript_contract(node: ast.AST) -> str:
+    """Describe view positions; computed indices are explicit SSA operands."""
+    elements = node.elts if isinstance(node, ast.Tuple) else (node,)
+    parts = tuple(
+        item
+        if isinstance(item, ast.Slice)
+        or (isinstance(item, ast.Constant) and item.value in (None, Ellipsis))
+        else ast.Name(id=f"_index_{position}", ctx=ast.Load())
+        for position, item in enumerate(elements)
+    )
+
+    return _unparse(ast.Tuple(elts=list(parts), ctx=ast.Load()))
 
 
 def _unparse(node: ast.AST) -> str:

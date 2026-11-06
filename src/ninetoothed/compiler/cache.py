@@ -10,7 +10,13 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
-from ninetoothed.backends.toolchain import cuda_compiler_identity
+from ninetoothed.backends.toolchain import (
+    ascendc_compiler_identity,
+    bangc_compiler_identity,
+    cuda_compiler_identity,
+    resolve_ascendc_arch,
+    resolve_bangc_arch,
+)
 from ninetoothed.ir import ir_to_dict
 
 _CACHE_ROOT = Path(
@@ -34,14 +40,23 @@ def stable_digest(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def compilation_cache_key(compilation) -> str:
+def compilation_cache_key(compilation, *, toolchain=None) -> str:
     """Return a key covering source, IR, ABI, target, options, and toolchain."""
     request = compilation.request
     artifact = compilation.artifact
 
     return stable_digest(
         {
-            "schema": 3,
+            "schema": 4,
+            "frontend_module": {
+                key: value
+                for key, value in ir_to_dict(request.frontend).items()
+                if key != "source"
+            }
+            if getattr(request, "frontend", None) is not None
+            else None,
+            "specialization_values": getattr(request, "specialization_values", None),
+            "tensor_dtypes": getattr(request, "tensor_dtypes", None),
             "source": artifact.sources,
             "ssa": ir_to_dict(compilation.kernel.ssa),
             "launch_plan": ir_to_dict(compilation.launch_plan),
@@ -52,7 +67,9 @@ def compilation_cache_key(compilation) -> str:
             "pipeline": request.pipeline,
             "pass_options": request.pass_options,
             "architecture": _architecture(compilation),
-            "toolchain": compilation_toolchain_identity(compilation),
+            "toolchain": compilation_toolchain_identity(compilation)
+            if toolchain is None
+            else toolchain,
             "versions": _compiler_versions(),
         }
     )
@@ -208,6 +225,20 @@ def _architecture(compilation) -> Mapping[str, Any]:
     if target.get("platform") not in {None, "generic"} or target.get("compute_arch"):
         return architecture
 
+    if backend == "ascendc":
+        architecture["ascendc_target"] = resolve_ascendc_arch(
+            backend_options.get("arch", "native")
+        )
+
+        return architecture
+
+    if backend == "bangc":
+        architecture["bangc_target"] = resolve_bangc_arch(
+            backend_options.get("arch", "native")
+        )
+
+        return architecture
+
     if backend == "cuda":
         target = str(backend_options.get("arch", "native"))
         architecture["cuda_target"] = target
@@ -237,6 +268,30 @@ def _target_metadata(compilation) -> Mapping[str, Any]:
 def compilation_toolchain_identity(compilation) -> Mapping[str, Any]:
     """Return external compiler identity that affects emitted binaries."""
     backend = compilation.artifact.backend.value
+
+    if backend == "ascendc":
+        return {
+            "ascendc": dict(
+                ascendc_compiler_identity(),
+                arch=resolve_ascendc_arch(
+                    dict(compilation.request.backend_options or {}).get(
+                        "arch", "native"
+                    )
+                ),
+            )
+        }
+
+    if backend == "bangc":
+        return {
+            "bangc": dict(
+                bangc_compiler_identity(),
+                arch=resolve_bangc_arch(
+                    dict(compilation.request.backend_options or {}).get(
+                        "arch", "native"
+                    )
+                ),
+            )
+        }
 
     if backend == "cuda":
         return {"cuda": cuda_compiler_identity()}

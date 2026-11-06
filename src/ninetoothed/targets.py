@@ -305,6 +305,18 @@ class TargetContext:
         }
 
 
+def _target_context_from_snapshot(snapshot):
+    """Restore the target from its pickle-safe fact snapshot, without discovery."""
+    if snapshot is None:
+        return None
+
+    return TargetContext(
+        backend=snapshot["backend"],
+        platform=PlatformProfile(**snapshot["profile"]),
+        compute_arch=snapshot["compute_arch"],
+    )
+
+
 class PlatformRegistry:
     """Explicit platform registry with replaceable aliases and profiles."""
 
@@ -466,7 +478,15 @@ def create_default_platform_registry() -> PlatformRegistry:
         PlatformProfile(
             name="generic",
             device_types=("cuda",),
-            backend_modes=_backend_modes(gpu_backends),
+            backend_modes=_backend_modes(
+                (
+                    Target.TRITON,
+                    Target.TILELANG,
+                    Target.CUDA,
+                    Target.ASCENDC,
+                    Target.BANGC,
+                )
+            ),
             metadata={"legacy_default": True},
         ),
         PlatformProfile(
@@ -493,9 +513,20 @@ def create_default_platform_registry() -> PlatformRegistry:
             accelerator_name="mlu590",
             compute_arch="mlu590",
             device_types=("mlu",),
-            backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
+            backend_modes={
+                **_backend_modes((Target.TRITON,), modes=("jit",)),
+                **_backend_modes((Target.BANGC,)),
+            },
             constraints={"compiler_options": {"triton": {"max_num_configs": 1}}},
             metadata={"triton_grid_limit": 65535},
+        ),
+        PlatformProfile(
+            name="ascend-910b2c",
+            accelerator_vendor="ascend",
+            accelerator_name="910b2c",
+            compute_arch="ascend910b2c",
+            device_types=("npu",),
+            backend_modes=_backend_modes((Target.ASCENDC,)),
         ),
         PlatformProfile(
             name="ascend-910b3",
@@ -503,10 +534,12 @@ def create_default_platform_registry() -> PlatformRegistry:
             accelerator_name="910b3",
             compute_arch="ascend910b3",
             device_types=("npu",),
-            backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
-            unsupported_capabilities=frozenset({"math.pow"}),
+            backend_modes={
+                **_backend_modes((Target.TRITON,), modes=("jit",)),
+                **_backend_modes((Target.ASCENDC,)),
+            },
             backend_unsupported_capabilities={
-                Target.TRITON.value: frozenset({"dtype.fp8"})
+                Target.TRITON.value: frozenset({"dtype.fp8", "math.pow"})
             },
             constraints={"compiler_options": {"triton": {"max_num_configs": 1}}},
             metadata={"triton_block_size": 512},
@@ -517,8 +550,13 @@ def create_default_platform_registry() -> PlatformRegistry:
             accelerator_name="910b4",
             compute_arch="ascend910b4",
             device_types=("npu",),
-            backend_modes=_backend_modes((Target.TRITON,), modes=("jit",)),
-            unsupported_capabilities=frozenset({"math.pow"}),
+            backend_modes={
+                **_backend_modes((Target.TRITON,), modes=("jit",)),
+                **_backend_modes((Target.ASCENDC,)),
+            },
+            backend_unsupported_capabilities={
+                Target.TRITON.value: frozenset({"math.pow"})
+            },
             constraints={"compiler_options": {"triton": {"max_num_configs": 1}}},
             metadata={"triton_block_size": 512},
         ),
@@ -771,6 +809,12 @@ def runtime_device_types(value: Any) -> tuple[str, ...]:
     context = getattr(value, "target", None)
 
     if isinstance(context, TargetContext):
+        if context.backend == Target.ASCENDC:
+            return ("npu",)
+
+        if context.backend == Target.BANGC:
+            return ("mlu",)
+
         return (
             context.device_types
             if context.backend in {Target.TRITON, Target.RVNE}
@@ -779,6 +823,12 @@ def runtime_device_types(value: Any) -> tuple[str, ...]:
 
     artifact = getattr(value, "artifact", value)
     backend = getattr(getattr(artifact, "backend", None), "value", None)
+
+    if backend == Target.ASCENDC.value:
+        return ("npu",)
+
+    if backend == Target.BANGC.value:
+        return ("mlu",)
 
     return (
         target_device_types(value)

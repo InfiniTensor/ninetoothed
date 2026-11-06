@@ -32,15 +32,19 @@ class TileLangMaterializer(Materializer):
         from ninetoothed.compiler.runtime import (
             _launch_abi_from_dict,
             _runtime_specs,
+            _runtime_wrapper,
+            _verified_runtime_launch,
         )
 
         module = tvm.runtime.load_module(built.binary_path)
         function = module[built.source.kernel_name]
 
-        return _host_wrapper(
-            function,
-            _launch_abi_from_dict(built.abi),
-            specs=_runtime_specs(built.source),
+        return _verified_runtime_launch(
+            _runtime_wrapper(
+                _tilelang_streamed_call(function),
+                _launch_abi_from_dict(built.abi),
+                specs=_runtime_specs(built.source),
+            )
         )
 
 
@@ -76,6 +80,11 @@ def _materialize(compilation, *, output_dir=None):
                 prim_func,
                 execution_backend="tvm_ffi",
                 target="cuda",
+                pass_configs=(
+                    {tilelang.PassConfigKey.TIR_DISABLE_VECTORIZE: True}
+                    if source_module._NT_DISABLE_VECTORIZE
+                    else {}
+                ),
             )
             bundled_library = getattr(kernel.adapter, "libpath", None)
 
@@ -99,10 +108,19 @@ def _materialize(compilation, *, output_dir=None):
 
     runtime_module = tvm.runtime.load_module(str(cache_library))
     function = runtime_module[artifact.kernel_name]
-    wrapped = _host_wrapper(
-        function,
-        compilation.launch_abi,
-        specs=compilation.kernel.tensors,
+    from ninetoothed.compiler.runtime import (
+        _runtime_wrapper,
+        _verified_runtime_launch,
+        runtime_device_types,
+    )
+
+    wrapped = _verified_runtime_launch(
+        _runtime_wrapper(
+            _tilelang_streamed_call(function),
+            compilation.launch_abi,
+            specs=compilation.kernel.tensors,
+            device_types=runtime_device_types(compilation),
+        )
     )
 
     return Handle(
@@ -114,45 +132,22 @@ def _materialize(compilation, *, output_dir=None):
     )
 
 
-def _host_wrapper(function, abi, *, specs=()):
-    from ninetoothed.compiler.runtime import (
-        _bound_values,
-        _empty_launch,
-        _first_output,
-        _flatten_ffi_tensor_args,
-        _public_values,
-    )
+def _tilelang_streamed_call(function):
+    """Bind the TileLang kernel to the caller's current CUDA stream per call."""
+    import torch
+    import tvm
 
-    def launch(*args, **kwargs):
-        import torch
-        import tvm
-        import tvm_ffi
+    get_raw_stream = torch._C._cuda_getCurrentRawStream
 
-        public = _public_values(abi, args, kwargs, specs=specs)
-
-        if _empty_launch(abi, public):
-            return _first_output(abi, public)
-
-        values, keepalive = _bound_values(abi, public, scalar_mode="value")
-        values, flattened = _flatten_ffi_tensor_args(abi.kernel_args, values)
-        keepalive.extend(flattened)
-        # Tensor views need not start at a 64-byte storage boundary.
-        converted = [
-            tvm_ffi.from_dlpack(value, require_contiguous=True)
-            if isinstance(value, torch.Tensor) and value.ndim > 0
-            else value.item()
-            if hasattr(value, "item")
-            else value
-            for value in values
-        ]
+    def call(*values):
         device = torch.cuda.current_device()
-        tvm.cuda(device).set_raw_stream(torch.cuda.current_stream(device).cuda_stream)
-        function(*converted)
-        del keepalive
+        # TVM's binding is shared by kernels on this thread and device.
+        # Another handle can change it between two calls to this handle.
+        tvm.cuda(device).set_raw_stream(get_raw_stream(device))
 
-        return _first_output(abi, public)
+        function(*values)
 
-    return launch
+    return call
 
 
 __all__ = ["TileLangMaterializer"]

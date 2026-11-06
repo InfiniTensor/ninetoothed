@@ -31,6 +31,7 @@ class ModuleRenderContext:
     cooperative_reduction_program: bool = False
     private_meta_parameters: tuple[tuple[str, int], ...] = ()
     scheduled_metadata: Mapping[str, Any] = field(default_factory=dict)
+    lowering_plans: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -50,6 +51,9 @@ class EmitterTarget(ABC):
     native_block_matmul: bool = False
     max_vector_numel: int | None = None
 
+    def can_emit_native_matmul(self, kernel) -> bool:
+        return self.native_block_matmul
+
     def symbol(self, name: str) -> str:
         return f"v{name[1:]}" if name.startswith("%") else name
 
@@ -67,6 +71,18 @@ class EmitterTarget(ABC):
     def block_coords(self, axes: tuple[str, ...]) -> tuple[str, ...]:
         raise NotImplementedError(
             f"Emitter {type(self).__name__} has no block value domain."
+        )
+
+    def native_block_coords(self, axes: tuple[str, ...]) -> tuple[str, ...]:
+        raise NotImplementedError(
+            f"Emitter {type(self).__name__} has no native block coordinate domain."
+        )
+
+    def native_matmul_tile_shape(
+        self, kernel, axes: tuple[str, ...]
+    ) -> tuple[int, int]:
+        raise NotImplementedError(
+            f"Emitter {type(self).__name__} has no native matmul tile."
         )
 
     def block_shape(self, axes: tuple[str, ...]) -> str:
@@ -105,6 +121,11 @@ class EmitterTarget(ABC):
 
         return args
 
+    def check_numeric_result(self, operation, value, context):
+        del operation, context
+
+        return value
+
     def coerce_dot_args(self, operation, args, context):
         del operation, context
 
@@ -112,6 +133,12 @@ class EmitterTarget(ABC):
 
     def emit_dot_operand(self, name, coords, context):
         del name, coords, context
+
+        return None
+
+    def materialized_element(self, name, coords):
+        """Read a target-owned tile value at explicit logical coordinates."""
+        del name, coords
 
         return None
 
@@ -252,6 +279,12 @@ class EmitterTarget(ABC):
 
     def reduction_identity(self, dtype: str, operator: str, shape: str) -> str:
         raise NotImplementedError("Runtime reduction dtype is not supported.")
+
+    def reduction_compute_type(self, result_type: ssa.Type) -> ssa.Type:
+        return result_type
+
+    def reduction_result(self, value: str, result_type: ssa.Type) -> str:
+        return value
 
     def cast_like(self, value: str, reference: str) -> str:
         raise NotImplementedError("Casting to a computed dtype is not supported.")

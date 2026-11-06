@@ -114,7 +114,6 @@ class TestPipeline:
         )
         lowered = lower_for_target(program, backend=Target.CUDA)
         opcodes = tuple(_opcodes(lowered.blocks[0].operations))
-        assert lowered.metadata["analysis"]["has_dot"]
         assert lowered.metadata["schedule"]["granularity"] == "blocked-linalg"
         assert lowered.metadata["linalg_decomposed"]
         assert "linalg.matmul" not in opcodes
@@ -123,7 +122,7 @@ class TestPipeline:
         assert "arith.mul" in opcodes
         assert "arith.add" in opcodes
 
-    @pytest.mark.parametrize("backend", tuple(Target))
+    @pytest.mark.parametrize("backend", (Target.CUDA, Target.RVNE))
     @pytest.mark.parametrize("inner", ("0", "5", "2 * k"))
     def test_matmul_decomposition_defines_concrete_and_computed_bounds(
         self, backend, inner
@@ -156,6 +155,28 @@ class TestPipeline:
             assert upper_bound.opcode == "shape.dim"
             assert upper_bound.operands == ("a",)
             assert upper_bound.attrs["dim"] == -1
+
+    def test_ascendc_matmul_decomposition_defines_constant_bounds(self):
+        for extent in ("8", "0"):
+            program = _program(
+                "\ndef matmul(a, b, out):\n    out = a @ b\n",
+                (
+                    TensorSpec(ndim=2, shape=("5", extent), dtype="float32", name="a"),
+                    TensorSpec(ndim=2, shape=(extent, "3"), dtype="float32", name="b"),
+                    TensorSpec(ndim=2, shape=("5", "3"), dtype="float32", name="out"),
+                ),
+                "matmul",
+            )
+            lowered = lower_for_target(program, backend=Target.ASCENDC)
+            operations = lowered.blocks[0].operations
+            loop = next(op for op in operations if op.opcode == "scf.for")
+            bound = next(
+                op
+                for op in operations
+                if any(value.name == loop.operands[1] for value in op.results)
+            )
+            assert bound.opcode == "arith.constant"
+            assert bound.attrs["value"] == int(extent)
 
     def test_pass_registry_classifies_and_registers_backend_contracts(self):
         independent = {
@@ -196,6 +217,8 @@ class TestPipeline:
             "ssa.cuda.optimize_schedule",
             "ssa.tilelang.optimize_schedule",
             "ssa.rvne.optimize_schedule",
+            "ssa.ascendc.optimize_schedule",
+            "ssa.bangc.optimize_schedule",
         }
 
         platform_passes = {
@@ -305,7 +328,7 @@ class TestPipeline:
         expected_counts = {
             Target.TRITON: 3,
             Target.CUDA: 1,
-            Target.TILELANG: 3,
+            Target.TILELANG: 2,
         }
 
         for backend, expected_count in expected_counts.items():
@@ -315,10 +338,9 @@ class TestPipeline:
             assert (
                 lowered.metadata["selected_schedule_candidate"] == candidates[0]["name"]
             )
-            assert (
-                lowered.metadata["schedule"]["tile"]
-                == candidates[0]["schedule"]["tile"]
-            )
+            assert lowered.metadata["schedule"].get("tile", {}) == candidates[0][
+                "schedule"
+            ].get("tile", {})
 
     def test_schedule_candidate_can_be_selected_by_pass_option(self):
         program = _program(

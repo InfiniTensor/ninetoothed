@@ -144,7 +144,7 @@ class TritonOptimizeSchedule(OptimizeSchedule):
             if "num_stages" not in schedule:
                 defaults["num_stages"] = 1
 
-            return {"schedule": defaults}
+            return {"preserve_linalg": True, "schedule": defaults}
 
         if granularity == "blocked-linalg":
             preserve_linalg = bool(

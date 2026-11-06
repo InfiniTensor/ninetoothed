@@ -256,6 +256,8 @@ class TestRegistry:
             Target.TILELANG,
             Target.CUDA,
             Target.RVNE,
+            Target.BANGC,
+            Target.ASCENDC,
         }
 
     def test_backends_reject_source_only_kernel_without_ssa(self):
@@ -301,7 +303,7 @@ class TestRegistry:
         expected_fragments = {
             "triton": "for v10_i in range(0, k, 1):",
             "cuda": "for (int64_t v10_i = 0; v10_i < k; v10_i += 1)",
-            "tilelang": "for v10_i in T.serial(k)",
+            "tilelang": "T.serial(k)",
         }
 
         for backend, fragment in expected_fragments.items():

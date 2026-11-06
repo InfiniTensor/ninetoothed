@@ -294,6 +294,9 @@ def test_cuda_compiler_identity_is_part_of_compilation_cache_key(monkeypatch):
         lambda: {"available": True, "path": "/opt/vendor-a/cucc", "version": "A"},
     )
     first = compilation_cache_key(_compilation("cuda", {"arch": "native"}))
+    pinned = cache.compilation_toolchain_identity(
+        _compilation("cuda", {"arch": "native"})
+    )
     monkeypatch.setattr(
         cache,
         "cuda_compiler_identity",
@@ -302,6 +305,12 @@ def test_cuda_compiler_identity_is_part_of_compilation_cache_key(monkeypatch):
     second = compilation_cache_key(_compilation("cuda", {"arch": "native"}))
 
     assert first != second
+    assert (
+        compilation_cache_key(
+            _compilation("cuda", {"arch": "native"}), toolchain=pinned
+        )
+        == first
+    )
 
 
 def test_concurrent_source_writes_are_atomic(tmp_path, monkeypatch):
