@@ -16,4 +16,5 @@ NineToothed Documentation
    bangc
    ascendc
    build
+   rvne
    python_api
