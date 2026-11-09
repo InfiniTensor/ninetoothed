@@ -36,6 +36,7 @@ from ninetoothed.ir.type_inference import (
 
 _DTYPE_NAMES = {
     "bool",
+    "int4",
     "int8",
     "int16",
     "int32",

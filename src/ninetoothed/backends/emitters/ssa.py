@@ -1651,6 +1651,11 @@ def _emit_linalg_dot(
     rhs_axes = _value_axes(rhs, ctx)
     result_axes = tuple(str(dim) for dim in op.results[0].type.shape)
 
+    specialized = ctx.target.emit_dot(op, ctx, coords=coords)
+
+    if specialized is not None:
+        return specialized
+
     if ctx.native_block_program and len(lhs_axes) == 2 and len(rhs_axes) == 2:
         result = ctx.target.emit_block_dot(op, ctx, coords=coords)
 
@@ -1885,6 +1890,9 @@ def _emit_element(name: str, coords: tuple[str, ...], ctx: _EmitContext) -> str:
             level = int(
                 op.results[0].type.attrs.get("dtype_level", _dtype_level(base, ctx))
             )
+
+            if level == _dtype_level(base, ctx):
+                coords = (*extract_indices, *coords)
 
             return _load_tensor_at(
                 base, coords, ctx, level=level, extract_indices=extract_indices
@@ -2228,6 +2236,11 @@ def _render_unchecked_scalar_expr(
 
     if opcode == "select.where":
         return target.where(*args)
+
+    specialized = target.arithmetic_expr(op, args, ctx)
+
+    if specialized is not None:
+        return specialized
 
     name = opcode.split(".", 1)[1]
 
@@ -4351,6 +4364,11 @@ def _coords_from_linear(
 
 
 def _target_index_expr(target: _Target, expr: str) -> str:
+    specialized = target.render_index_expr(expr)
+
+    if specialized is not None:
+        return specialized
+
     rewritten = _rewrite_index_math(expr, c_style=target.c_style_syntax)
 
     return rewritten

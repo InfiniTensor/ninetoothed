@@ -255,6 +255,7 @@ def _reduce_type(
     if operator == "sum":
         promoted_dtype = {
             "bool": "uint32",
+            "int4": "int32",
             "int8": "int32",
             "int16": "int32",
             "uint8": "uint32",
@@ -377,7 +378,15 @@ def _offset_type(type_: ssa.Type, dim: Any) -> ssa.Type:
 def _matmul_type(lhs: ssa.Type, rhs: ssa.Type, *, strict: bool = True) -> ssa.Type:
     lhs_shape = tuple(str(dim) for dim in lhs.shape)
     rhs_shape = tuple(str(dim) for dim in rhs.shape)
-    dtype = _dot_accumulator_dtype(lhs.dtype or rhs.dtype)
+    operand_dtypes = {
+        normalize_dtype(lhs.dtype),
+        normalize_dtype(rhs.dtype),
+    }
+    dtype = (
+        "int32"
+        if operand_dtypes == {"bool", "int4"}
+        else _dot_accumulator_dtype(lhs.dtype or rhs.dtype)
+    )
     attrs = dict(lhs.attrs)
 
     if not lhs_shape or not rhs_shape:
@@ -595,7 +604,11 @@ def _promote_dtype(
     if {lhs, rhs} == {"float16", "bfloat16"}:
         return "float32"
 
-    integers = {"index": (64, True), "bool": (0, False)}
+    integers = {
+        "index": (64, True),
+        "bool": (0, False),
+        "int4": (4, True),
+    }
     integers.update(
         (f"{prefix}int{bits}", (bits, not prefix))
         for prefix in ("", "u")
@@ -621,6 +634,7 @@ def _promote_dtype(
 
     ranks = {
         "bool": 0,
+        "int4": 1,
         "int8": 1,
         "uint8": 1,
         "int16": 2,

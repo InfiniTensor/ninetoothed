@@ -137,6 +137,7 @@ def specialize_module(module, *, values=None, dtypes=None):
     if dtypes:
         supported = {
             "bool",
+            "int4",
             "int8",
             "int16",
             "int32",

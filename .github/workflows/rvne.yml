@@ -1,0 +1,30 @@
+name: RVNE
+on:
+  push:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/rvne.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/rvne.yml"
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e . pytest
+      - name: Test source generation and runtime contracts
+        run: |
+          python -m pytest -q tests/test_rvne_*.py tests/test_backend_registry.py tests/test_target_profiles.py tests/test_ssa_pass_pipeline.py tests/test_materializer_registry.py tests/test_scalar_element_reads.py

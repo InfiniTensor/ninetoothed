@@ -1,3 +1,4 @@
+int4 = "i4"
 int8 = "i8"
 int16 = "i16"
 int32 = "i32"
@@ -21,6 +22,7 @@ def normalize_dtype(dtype: str | None) -> str | None:
 
     name = dtype.strip().strip("'\"").rsplit(".", 1)[-1]
     aliases = {
+        "i4": "int4",
         "i8": "int8",
         "i16": "int16",
         "i32": "int32",

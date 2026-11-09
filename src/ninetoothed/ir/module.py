@@ -671,6 +671,7 @@ def _verify_expression(
 
 _DTYPES = {
     "bool",
+    "int4",
     "int8",
     "int16",
     "int32",

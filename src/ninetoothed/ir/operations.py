@@ -93,6 +93,7 @@ def verify_operation_types(
     integer_dtypes = {
         None,
         "index",
+        "int4",
         "int8",
         "int16",
         "int32",
@@ -251,6 +252,7 @@ def verify_operation_types(
             not in {
                 None,
                 "index",
+                "int4",
                 "int8",
                 "int16",
                 "int32",
