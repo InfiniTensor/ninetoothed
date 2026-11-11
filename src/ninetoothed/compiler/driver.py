@@ -27,8 +27,8 @@ from ninetoothed.targets import (
 )
 
 from .specialization import (
+    _specialize_verified_module,
     scheduled_meta_defaults,
-    specialize_module,
 )
 
 
@@ -309,7 +309,7 @@ def _compile_kernel(request: CompileRequest, *, module: FrontendModule) -> Compi
     )
 
     if specialization_values or request.tensor_dtypes:
-        module = specialize_module(
+        module = _specialize_verified_module(
             module, values=specialization_values, dtypes=request.tensor_dtypes
         )
         specs, program = module.tensors, module.program
