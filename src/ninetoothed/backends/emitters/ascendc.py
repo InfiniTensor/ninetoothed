@@ -170,6 +170,39 @@ class AscendCTarget(CScalarArithmeticMixin, EmitterTarget):
         return f"nt_scalar_load({self.tensor_ref(tensor)}, {index})"
 
     def schedule_context(self, context):
+        elements = context.kernel.ssa.metadata.get("schedule", {}).get(
+            "ascendc_vector_chunk"
+        )
+
+        if elements is not None:
+            from ninetoothed.backends.emitters.ascendc_vector import plan_vector
+
+            plan = plan_vector(context, elements)
+
+            if plan is None:
+                raise ValueError(
+                    "The explicit AscendC vector candidate requires a proved pure flat domain."
+                )
+
+            context.lowering_plans["ascendc_vector"] = plan
+            context.scheduled_metadata["ascendc_vector"] = {
+                "chunk": elements,
+                "storage_bytes": plan.vectors.storage.nbytes,
+                "buffers": len(plan.vectors.dag.buffer_dtypes),
+                "guard": plan.vectors.guard,
+                "physical_block_limit": plan.block_limit,
+                "aivs_per_block": plan.aivs_per_block,
+                "task_stride": plan.task_stride,
+                "logical_tasks": plan.vectors.tasks,
+            }
+            context.scheduled_metadata["ascendc_execution"] = {
+                "physical_blocks": plan.blocks,
+                "scalar_executor": "guarded-block-zero/subblock-zero-fallback",
+                "parallel_scalar_stores": False,
+            }
+
+            return context
+
         from ninetoothed.backends.emitters.memory_guard import (
             dense_staging_memory_guard,
         )
@@ -283,6 +316,8 @@ class AscendCTarget(CScalarArithmeticMixin, EmitterTarget):
         fallback = f"for (int64_t {self.index_name}=0; {self.index_name}<({total}); ++{self.index_name}) {{\n{common.indent_block(body, '    ')}\n}}"
         selected = context.lowering_plans.get("scalar_tiles")
         task_body = fallback
+        ownership = "    if (GetBlockIdx()!=0 || GetSubBlockIdx()!=0) { return; }"
+        blocks = "1"
 
         if selected is not None:
             plan, guard, arena = selected
@@ -298,6 +333,24 @@ class AscendCTarget(CScalarArithmeticMixin, EmitterTarget):
                 + "\n}"
             )
 
+        vector = context.lowering_plans.get("ascendc_vector")
+        vector_support = ""
+
+        if vector is not None:
+            from ninetoothed.backends.emitters.ascendc_vector import (
+                render_support,
+                render_vector,
+            )
+
+            guard = vector.vectors.guard
+            vector_body = render_vector(vector, self)
+            task_body = f"if ({guard}) {{\n{common.indent_block(vector_body, '    ')}\n}} else if (::AscendC::GetBlockIdx() == 0 && ::AscendC::GetSubBlockIdx() == 0) {{\n{common.indent_block(fallback, '    ')}\n}}"
+            # AIV-only launches give each vector block its own GetBlockIdx.
+            # Subblock is a physical sub-core identifier, not a duplicate ID.
+            ownership = ""
+            blocks = f"(::uint32_t)(({guard}) ? ({vector.blocks}) : 1)"
+            vector_support = render_support()
+
         support = "\n\n".join(
             (
                 _ascendc_support(context, task_body),
@@ -309,6 +362,10 @@ class AscendCTarget(CScalarArithmeticMixin, EmitterTarget):
                 ),
             )
         )
+
+        if vector_support:
+            support += "\n\n" + vector_support
+
         arguments = [
             f"(GM_ADDR)(uintptr_t){name}" if name in gm else name for name in names
         ]
@@ -329,7 +386,7 @@ extern "C" __global__ __aicore__ void {kernel_name}_kernel(
 #ifdef __DAV_C220_CUBE__
     return;
 #endif
-    if (GetBlockIdx()!=0 || GetSubBlockIdx()!=0) {{ return; }}
+{ownership}
 {casts}
 {common.indent_block(task_body, "    ")}
 }}
@@ -337,7 +394,7 @@ extern "C" int launch_{kernel_name}(
 {_render_signature_params(host_parameters)}
 ) {{
 {decode}
-    {kernel_name}_kernel<<<1, nullptr, {stream}>>>({", ".join(arguments)});
+    {kernel_name}_kernel<<<{blocks}, nullptr, {stream}>>>({", ".join(arguments)});
     return 0;
 }}
 """

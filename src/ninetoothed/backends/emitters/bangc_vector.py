@@ -1,102 +1,18 @@
 """BANG primitives consuming a proved typed vector DAG."""
 
-from dataclasses import dataclass
-
-from ninetoothed.backends.emitters.expressions import c_integer_expr
-from ninetoothed.backends.emitters.memory_guard import dense_staging_memory_guard
-from ninetoothed.backends.emitters.vector_dag import plan_vector_dag
-from ninetoothed.backends.emitters.vector_domain import prove_flat_domain
-from ninetoothed.compiler.vector_resources import plan_vector_storage
+from ninetoothed.backends.emitters.native_vector import plan_native_vector
+from ninetoothed.backends.emitters.vector_ops import COMPARISON_OPERATORS as _COMPARE
+from ninetoothed.backends.emitters.vector_ops import classify_pointwise as classify
 
 _TYPES = {"float32": "float", "float16": "half"}
 _WIDTHS = {"float32": 4, "float16": 2}
 _BINARY = {"arith.add": "add", "arith.sub": "sub", "arith.mul": "mul"}
-_COMPARE = {
-    "cmp.lt": "<",
-    "cmp.le": "<=",
-    "cmp.gt": ">",
-    "cmp.ge": ">=",
-    "cmp.eq": "==",
-    "cmp.ne": "!=",
-}
-
-
-def classify(operation, operands, dtype):
-    code = operation.opcode
-
-    if code in _BINARY and dtype in _TYPES and len(operands) == 2:
-        if any(v.dtype not in _TYPES and v.literal is None for v in operands):
-            return None
-
-        if any(v.dtype != dtype and v.literal is None for v in operands):
-            return "scalar" if dtype == "float32" else None
-
-        if all(not v.scalar for v in operands):
-            return "binary"
-
-        if code in {"arith.add", "arith.mul"} and dtype == "float32":
-            return "scalar_binary"
-
-        return "scalar"
-
-    if code in _COMPARE and dtype == "bool" and len(operands) == 2:
-        if all(v.dtype == "float32" or v.literal is not None for v in operands):
-            return "scalar"
-
-    if code == "select.where" and dtype == "float32" and len(operands) == 3:
-        if operands[0].dtype == "bool" and all(
-            v.dtype == dtype or v.literal is not None for v in operands[1:]
-        ):
-            return "scalar"
-
-    if code == "tensor.cast" and len(operands) == 1:
-        if dtype in _TYPES and operands[0].dtype in _TYPES and not operands[0].scalar:
-            return "cast"
-
-    return None
-
-
-@dataclass(frozen=True)
-class BangCVectorPlan:
-    dag: object
-    extent: str
-    guard: str
-    storage: object
-
-    @property
-    def tasks(self):
-        chunk = self.storage.elements
-
-        return f"(({self.extent}) / {chunk} + (({self.extent}) % {chunk} != 0))"
 
 
 def plan_vector(context, elements):
-    extent = prove_flat_domain(context)
-
-    if extent is None:
-        return None
-
-    dag = plan_vector_dag(
-        context,
-        classify,
-        supported_dtypes=frozenset(_TYPES),
-        storage_dtype=lambda dtype: "float32" if dtype == "bool" else dtype,
+    return plan_native_vector(
+        context, classify, elements=elements, dtype_bytes=_WIDTHS, budget=384 * 1024
     )
-
-    if dag is None or any(value.dtype not in _TYPES for _, _, value in dag.stores):
-        return None
-
-    storage = plan_vector_storage(
-        (_WIDTHS[d] for d in dag.buffer_dtypes), elements=elements, budget=384 * 1024
-    )
-    guard = c_integer_expr(
-        dense_staging_memory_guard(context, context.variables, context.outputs)
-    )
-
-    if guard == "false":
-        return None
-
-    return BangCVectorPlan(dag, extent, guard, storage)
 
 
 def render_vector(plan, target):
