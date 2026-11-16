@@ -258,6 +258,30 @@ class BangCTarget(CScalarArithmeticMixin, EmitterTarget):
         )
         from ninetoothed.backends.emitters.scalar_tiles import plan_scalar_tiles
 
+        elements = context.kernel.ssa.metadata.get("schedule", {}).get(
+            "bangc_vector_chunk"
+        )
+
+        if elements is not None:
+            from ninetoothed.backends.emitters.bangc_vector import plan_vector
+
+            vector = plan_vector(context, elements)
+
+            if vector is None:
+                raise ValueError(
+                    "The explicit BangC vector candidate requires a proved pure flat domain."
+                )
+
+            context.lowering_plans["bangc_vector"] = vector
+            context.scheduled_metadata["bangc_vector"] = {
+                "chunk": elements,
+                "storage_bytes": vector.storage.nbytes,
+                "buffers": len(vector.dag.buffer_dtypes),
+                "guard": vector.guard,
+            }
+
+            return context
+
         plan = plan_scalar_tiles(context, self, storage="__nram__", budget=384 * 1024)
 
         if plan is not None:
@@ -340,6 +364,15 @@ class BangCTarget(CScalarArithmeticMixin, EmitterTarget):
             tile_plan, guard = tile_storage
             task_body = f"if ({guard}) {{\n{common.indent_block(tile_plan.body, '    ')}\n}} else {{\n{task_body}\n}}"
             tasks = f"({guard}) ? ({tile_plan.tasks}) : ({tasks})"
+
+        vector = context.lowering_plans.get("bangc_vector")
+
+        if vector is not None:
+            from ninetoothed.backends.emitters.bangc_vector import render_vector
+
+            vector_body = render_vector(vector, self)
+            task_body = f"if ({vector.guard}) {{\n{common.indent_block(vector_body, '    ')}\n}} else {{\n{task_body}\n}}"
+            tasks = f"({vector.guard}) ? ({vector.tasks}) : ({tasks})"
 
         task_body = symbols.kernel_body(
             task_body,

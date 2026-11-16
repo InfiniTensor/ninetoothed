@@ -3,7 +3,11 @@
 from ninetoothed.backends.core import Backend, Capability, Target
 from ninetoothed.backends.emitters.bangc import emit
 from ninetoothed.backends.toolchain import normalize_bangc_arch
-from ninetoothed.compiler.passes import OptimizeSchedule
+from ninetoothed.compiler.passes import (
+    OptimizeSchedule,
+    ScheduleCandidate,
+    _pass_options,
+)
 
 
 class BangCBackend(Backend):
@@ -32,6 +36,24 @@ class BangCBackend(Backend):
 class BangCOptimizeSchedule(OptimizeSchedule):
     name = "ssa.bangc.optimize_schedule"
     supported_backends = (Target.BANGC,)
+
+    def schedule_candidates(self, analysis, schedule, context):
+        del analysis, schedule
+        requested = _pass_options(context, self.name, "ssa.optimize_schedule").get(
+            "candidate"
+        )
+
+        if requested not in {"vector-1024", "vector-4096"}:
+            return ()
+
+        return tuple(
+            ScheduleCandidate(
+                name=f"vector-{elements}",
+                schedule={"bangc_vector_chunk": elements},
+                tags=("vector", "explicit"),
+            )
+            for elements in (1024, 4096)
+        )
 
     def optimization_policy(self, backend, analysis, schedule):
         return {}
