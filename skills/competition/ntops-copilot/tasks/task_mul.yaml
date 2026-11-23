@@ -1,0 +1,18 @@
+id: t1-mul
+repo: InfiniTensor/ntops
+pattern: binary
+op_name: mul
+spec: |
+  mul(x, y) = x * y
+  Match PyTorch mul semantics for shape and dtype.
+reference_kernel: ntops/src/ntops/kernels/mul.py
+formula_hint: "output = input * other"
+pytest_file: tests/test_mul.py
+scaffold_style: ntops
+acceptance:
+  - preflight passes on src/ntops/kernels/mul.py
+  - pytest -k mul passes
+deliverables:
+  - src/ntops/kernels/mul.py
+  - src/ntops/kernels/__init__.py updated
+  - src/ntops/torch wrapper

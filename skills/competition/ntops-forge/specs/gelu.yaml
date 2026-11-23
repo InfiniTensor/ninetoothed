@@ -1,0 +1,15 @@
+id: forge-gelu
+op: gelu
+family: elementwise_unary
+pattern: unary
+spec: |
+  gelu(x) default PyTorch approximation
+formula: "output = input * 0.5 * (1 + ntl.erf(input / ntl.sqrt(2.0)))"
+reference: src/ntops/kernels/gelu.py
+pytest: tests/test_gelu.py
+contest_id: T1-1-1
+github_id: hongwei-2026
+acceptance:
+  preflight_strict: true
+  compare_ref: true
+  pytest: true

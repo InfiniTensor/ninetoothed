@@ -1,0 +1,15 @@
+id: forge-relu
+op: relu
+family: elementwise_unary
+pattern: unary
+spec: |
+  relu(x) = max(0, x)
+formula: "output = max(0.0, input)"
+reference: src/ntops/kernels/relu.py
+pytest: tests/test_relu.py
+contest_id: T3-1-1
+github_id: hongwei-2026
+acceptance:
+  preflight_strict: true
+  compare_ref: true
+  pytest: true

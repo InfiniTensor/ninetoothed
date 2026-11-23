@@ -1,0 +1,17 @@
+# 复制为 tasks/<op_name>.yaml，供 Agent 读取任务规格
+id: example-silu
+repo: InfiniTensor/ntops
+pattern: unary
+op_name: silu
+spec: |
+  silu(x) = x * sigmoid(x)
+  Match PyTorch silu semantics.
+reference_kernel: ninetoothed-examples/ops/ninetoothed/kernels/silu.py
+acceptance:
+  - preflight passes on src/ntops/kernels/silu.py
+  - pytest -k silu passes
+deliverables:
+  - src/ntops/kernels/silu.py
+  - src/ntops/kernels/__init__.py updated
+  - src/ntops/torch wrapper
+  - HONOR_CODE.md and REFERENCE.md in ntops PR

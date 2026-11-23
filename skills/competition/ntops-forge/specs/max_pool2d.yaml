@@ -1,0 +1,18 @@
+id: forge-max-pool2d
+op: max_pool2d
+family: pooling
+pattern: block
+status: planned_final
+spec: |
+  2D max pooling with stride/padding; layout-sensitive inputs.
+reference: src/ntops/kernels/max_pool2d.py
+pytest: tests/test_max_pool2d.py
+contest_id: T3-1-1
+github_id: hongwei-2026
+notes: |
+  决赛自测任务 #3：布局敏感（non-contiguous / stride / padding）。
+  pytest 含 stride=(None,1,(2,3)) 等多组参数。
+acceptance:
+  preflight_strict: true
+  compare_ref: true
+  pytest: true

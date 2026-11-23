@@ -1,0 +1,15 @@
+{
+  "name": "ntops-forge",
+  "version": "1.0.0",
+  "stage": "initial-round",
+  "author": "hongwei-2026",
+  "description": "NineToothed ntops operator factory: PLAN→CODEGEN→GUARD→PROVE→SHIP pipeline with taxonomy routing and failure diagnosis.",
+  "replaces": "ntops-copilot (v0.5) for new workflows",
+  "innovation": [
+    "five-stage factory pipeline",
+    "operator taxonomy routing",
+    "failure diagnosis fix-cards",
+    "forge run audit log (jsonl)",
+    "NL-to-spec bootstrap"
+  ]
+}
