@@ -1,0 +1,17 @@
+label=layout-skill-enabled
+expected_revision=6bc90d5aba29146a8757fe0b67e7e1966b92bb5f
+actual_revision=6bc90d5aba29146a8757fe0b67e7e1966b92bb5f
+repo_clean=true
+patch_sha256=5974e9381115a1622784b9cf2cd97a57b9e72fd068540d4f1c9b9a77e83c37d1
+patch_crlf_count=0
+changed_files=tests/test_avg_pool2d.py,tests/test_max_pool2d.py
+command=git apply --check PATCH
+returncode=0
+stdout=
+stderr=
+strict_command=git apply --check --whitespace=error-all PATCH
+strict_returncode=0
+strict_stdout=
+strict_stderr=
+server_recheck=80 passed, 72 skipped in 29.26s
+server_recheck_status=PASS

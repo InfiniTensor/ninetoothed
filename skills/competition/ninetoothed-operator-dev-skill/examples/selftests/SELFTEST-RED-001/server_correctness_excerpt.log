@@ -1,0 +1,4 @@
+[VERIFIED] softmax: status=PASS, pytest_returncode=0; ============================== 8 passed in 10.45s ==============================
+[VERIFIED] layer_norm: status=PASS, pytest_returncode=0; ======================== 96 passed in 83.71s (0:01:23) =========================
+[VERIFIED] rms_norm: status=PASS, pytest_returncode=0; ======================== 64 passed in 60.68s (0:01:00) =========================
+[VERIFIED] skill-guided softmax isolated run: ============================== 12 passed in 8.22s ==============================
