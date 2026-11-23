@@ -1,0 +1,9 @@
+Test Environment (Colab, 2026-07-11)
+=====================================
+GPU:        Tesla T4
+CUDA:       12.8
+PyTorch:    2.11.0+cu128
+NineToothed: 0.26.0 (installed via git clone + pip install -e .)
+Triton:     3.6.0
+Python:     3.12.13
+OS:         Linux (Colab)
