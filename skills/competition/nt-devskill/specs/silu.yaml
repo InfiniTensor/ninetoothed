@@ -1,0 +1,39 @@
+name: silu
+family: elementwise_unary
+pattern: 1d_tile_activation
+
+description: SiLU 激活函数 (Swish)
+
+formula: "output = x * sigmoid(x)"
+
+inputs:
+  - name: input
+    ndim: "any (flatten to 1D)"
+    dtype: float16
+
+outputs:
+  - name: output
+    ndim: "same as input"
+    dtype: float16
+
+template: examples/silu/kernel.py
+torch_wrapper: examples/silu/torch_impl.py
+
+tile_strategy:
+  type: 1d
+  block_size: 1024
+  symbol: "Symbol('BLOCK_SIZE', constexpr=True)"
+  precision_ops:
+    - "ntl.sigmoid(ntl.cast(input, ntl.float32))"
+
+reference: "torch.nn.functional.silu(x)"
+
+acceptance:
+  correctness:
+    shapes: [[8, 256, 512]]
+    atol: 0.001
+    rtol: 0.001
+  benchmark:
+    shapes: [[4096, 4096]]
+    warmup: 10
+    trials: 50

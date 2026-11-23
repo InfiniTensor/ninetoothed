@@ -1,0 +1,41 @@
+name: softmax
+family: reduction
+pattern: 2d_tile_row_reduce
+
+description: 行方向 softmax，对最后一维归一化
+
+formula: |
+  x_shifted = x - max(x)
+  exp_x = exp(x_shifted)
+  output = exp_x / sum(exp_x)
+
+inputs:
+  - name: input
+    ndim: 2
+    dtype: float16
+
+outputs:
+  - name: output
+    ndim: 2
+    dtype: float16
+
+template: examples/softmax/kernel.py
+torch_wrapper: examples/softmax/torch_impl.py
+
+tile_strategy:
+  type: 2d_row
+  block_size: "input.shape[-1]"
+  symbol: "Symbol('BLOCK_SIZE', constexpr=True)"
+  fill_value: "float('-inf')"
+
+reference: "torch.softmax(x, dim=-1)"
+
+acceptance:
+  correctness:
+    shapes: [[1823, 781]]
+    atol: 0.001
+    rtol: 0
+  benchmark:
+    shapes: [[4096, 4096]]
+    warmup: 10
+    trials: 50

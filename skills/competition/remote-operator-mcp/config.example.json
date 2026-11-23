@@ -1,0 +1,7 @@
+{
+  "host": "your-host",
+  "port": 22,
+  "user": "your-user",
+  "password": "your-password",
+  "remote_root": "/data"
+}

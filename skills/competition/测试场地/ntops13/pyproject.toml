@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ntops"
+version = "0.1.0"
+authors = [{ name = "Jiacheng Huang", email = "huangjiacheng0709@outlook.com" }]
+description = "NineToothed operators for LLMs."
+readme = "README.md"
+dependencies = ["ninetoothed>=0.16.0", "torch"]
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/InfiniTensor/ntops"
+Issues = "https://github.com/InfiniTensor/ntops/issues"
+
+[project.optional-dependencies]
+testing = ["pytest", "pytest-cov"]
+all = ["ntops[testing]"]
+
+[tool.ruff]
+src = [".", "src", "tests"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
