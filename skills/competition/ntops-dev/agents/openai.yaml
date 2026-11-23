@@ -1,0 +1,4 @@
+interface:
+  display_name: "NineToothed 算子开发"
+  short_description: "开发、验证、优化和诊断 NineToothed/ntops 算子"
+  default_prompt: "使用 $ntops-dev 完成一个可复现、经过正确性与性能验证的 NineToothed 算子任务。"
