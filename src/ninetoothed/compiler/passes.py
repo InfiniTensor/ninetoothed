@@ -302,6 +302,19 @@ class Canonicalize(Pass):
         )
 
 
+class EliminateCommonSubexpressions(Pass):
+    """Remove duplicate pure computations before scheduling and emission."""
+
+    name = "ssa.eliminate_common_subexpressions"
+    category = HARDWARE_INDEPENDENT
+    phase = "canonicalization"
+
+    def run(self, program: ssa.Program, context: Context) -> ssa.Program:
+        from ninetoothed.compiler.cse import eliminate_common_subexpressions
+
+        return eliminate_common_subexpressions(program)
+
+
 def program_facts(program, name):
     """Read a fact only from the SSA snapshot that established it."""
     facts = program.facts
@@ -778,6 +791,9 @@ def create_default_registry() -> Registry:
 
     registry = Registry()
     registry.register(Canonicalize, tags=("generic", "required"))
+    registry.register(
+        EliminateCommonSubexpressions, tags=("generic", "canonicalization", "cse")
+    )
     registry.register(AnalyzeEffects, tags=("generic", "analysis", "required"))
     registry.register(SelectSchedule, tags=("schedule",))
     registry.register(GroupReductionRows, tags=("schedule", "reduction"))
